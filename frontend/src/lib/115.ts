@@ -2,6 +2,7 @@
 import axios from "axios";
 import { encrypt, decrypt } from "./115crypto";
 import { SimpleCache } from "./SimpleCache";
+import { readSettings } from "./serverUtils";
 
 // 创建缓存实例
 const dirIdCache = new SimpleCache<{ id: number }>(10 * 60 * 1000); // 目录ID缓存10分钟
@@ -596,7 +597,13 @@ export function sleep(ms) {
 }
 
 function defaultUA() {
-  // Reasonable UA; adjust if 115 checks UA strictly
+  // 从配置文件读取user-agent
+  const settings = readSettings();
+  if (settings['user-agent']) {
+    return settings['user-agent'];
+  }
+  
+  // 默认UA作为fallback
   return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 }
 
