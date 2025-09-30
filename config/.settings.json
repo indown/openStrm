@@ -1,0 +1,7 @@
+{
+  "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/116.0.5845.89 Mobile/15E148 Safari/604.1",
+  "emby": {
+    "url": "http://172.17.0.1:8096",
+    "apiKey": "YOUR_EMBY_API_KEY"
+  }
+}

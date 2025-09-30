@@ -1,0 +1,9 @@
+**/node_modules
+.DS_Store
+*.log
+**/data
+**/account.json
+**/tasks.json
+**/config.json
+**/settings.json
+cache
