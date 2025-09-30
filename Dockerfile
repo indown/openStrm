@@ -2,8 +2,13 @@
 FROM node:22-alpine AS frontend-builder
 WORKDIR /app/frontend
 
+# 设置yarn配置
+RUN yarn config set registry https://registry.npmjs.org/ && \
+    yarn config set network-timeout 600000 -g
+
 # 安装依赖
 COPY frontend/package*.json ./
+COPY frontend/yarn.lock ./
 RUN yarn install --frozen-lockfile
 
 # 拷贝源码并构建 standalone
