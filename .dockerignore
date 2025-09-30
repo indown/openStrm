@@ -1,0 +1,6 @@
+**/node_modules
+**/data
+**/account.json
+**/tasks.json
+**/config.json
+**/settings.json

@@ -1,0 +1,13 @@
+version: "3.9"
+services:
+  openstrm:
+    image: indown/openstrm:latest
+    container_name: openstrm
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    restart: unless-stopped
