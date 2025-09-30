@@ -4,7 +4,6 @@ WORKDIR /app/frontend
 
 # 安装依赖
 COPY frontend/package*.json ./
-COPY frontend/yarn.lock ./
 RUN yarn install --frozen-lockfile
 
 # 拷贝源码并构建 standalone
