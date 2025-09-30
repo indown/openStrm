@@ -1,6 +1,8 @@
 {
-  "name": "frontend",
-  "version": "0.1.0",
+  "name": "openstrm",
+  "version": "0.0.1",
+  "description": "OpenStrm - Strm Management Platform Frontend",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
