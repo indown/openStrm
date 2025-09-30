@@ -168,6 +168,7 @@ export function normalizeToStrm(path: string): string {
 export type AppSettings = {
   "user-agent"?: string;
   strmExtensions?: string[];  // strm文件扩展名配置
+  downloadExtensions?: string[];  // 需要下载的文件扩展名配置
   emby?: {
     url?: string;
     apiKey?: string;

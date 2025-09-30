@@ -9,5 +9,6 @@
     "chatId": "YOUR_TELEGRAM_CHAT_ID",
     "allowedUsers": []
   },
-  "strmExtensions": [".mp4", ".mkv", ".avi", ".iso", ".mov", ".rmvb", ".webm", ".flv", ".m3u8", ".mp3", ".flac", ".ogg", ".m4a", ".wav", ".opus", ".wma"]
+  "strmExtensions": [".mp4", ".mkv", ".avi", ".iso", ".mov", ".rmvb", ".webm", ".flv", ".m3u8", ".mp3", ".flac", ".ogg", ".m4a", ".wav", ".opus", ".wma"],
+  "downloadExtensions": [".srt", ".ass", ".sub", ".nfo", ".jpg", ".png"]
 }

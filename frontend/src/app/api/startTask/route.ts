@@ -199,9 +199,10 @@ function startDownloadTask({
     }
   };
 
-  // 从配置文件读取strm扩展名，如果没有配置则使用默认值
+  // 从配置文件读取扩展名配置
   const settings = readSettings();
   const strmExtensions = (settings.strmExtensions || []).map(ext => ext.toLowerCase());
+  const downloadExtensions = (settings.downloadExtensions || []).map(ext => ext.toLowerCase());
 
   // strm 文件
   const strmFiles = filePaths.filter((fp) =>
@@ -222,9 +223,9 @@ function startDownloadTask({
     });
   });
 
-  // 普通下载（限流）
-  const downloadFiles = filePaths.filter(
-    (fp) => !strmExtensions.includes(path.extname(fp).toLowerCase())
+  // 普通下载（限流）- 使用downloadExtensions过滤
+  const downloadFiles = filePaths.filter((fp) =>
+    downloadExtensions.includes(path.extname(fp).toLowerCase())
   );
   console.log("downloadFiles: ", downloadFiles);
   const subscription = from(downloadFiles)
