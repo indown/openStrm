@@ -10,6 +10,7 @@ import axios from "axios";
 type Settings = {
   "user-agent"?: string;
   strmExtensions?: string[];
+  downloadExtensions?: string[];
   emby?: { url?: string; apiKey?: string };
 } & Record<string, unknown>;
 
@@ -18,6 +19,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [strmExtensionsInput, setStrmExtensionsInput] = useState("");
+  const [downloadExtensionsInput, setDownloadExtensionsInput] = useState("");
 
   useEffect(() => {
     axios.get("/api/settings")
@@ -25,6 +27,7 @@ export default function SettingsPage() {
         const settings = r.data || {};
         setData(settings);
         setStrmExtensionsInput((settings.strmExtensions || []).join(", "));
+        setDownloadExtensionsInput((settings.downloadExtensions || []).join(", "));
       })
       .finally(() => setLoading(false));
   }, []);
@@ -33,7 +36,15 @@ export default function SettingsPage() {
     setSaving(true);
     try {
       // 处理strmExtensions输入
-      const extensions = strmExtensionsInput
+      const strmExtensions = strmExtensionsInput
+        .split(",")
+        .map(ext => ext.trim())
+        .filter(ext => ext.length > 0)
+        .map(ext => ext.startsWith(".") ? ext : `.${ext}`)
+        .map(ext => ext.toLowerCase()); // 确保扩展名都是小写
+      
+      // 处理downloadExtensions输入
+      const downloadExtensions = downloadExtensionsInput
         .split(",")
         .map(ext => ext.trim())
         .filter(ext => ext.length > 0)
@@ -42,7 +53,8 @@ export default function SettingsPage() {
       
       const saveData = {
         ...data,
-        strmExtensions: extensions
+        strmExtensions,
+        downloadExtensions
       };
       
       await axios.put("/api/settings", saveData);
@@ -84,7 +96,20 @@ export default function SettingsPage() {
             <Input
               value={strmExtensionsInput}
               onChange={(e) => setStrmExtensionsInput(e.target.value)}
-              placeholder=".mkv, .mp4, .mp3"
+              placeholder="请输入 例如：.mkv, .mp4, .mp3"
+            />
+            <p className="text-xs text-muted-foreground">
+              用逗号分隔，自动添加点号前缀
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label>下载文件扩展名</Label>
+            <Input
+              value={downloadExtensionsInput}
+              onChange={(e) => setDownloadExtensionsInput(e.target.value)}
+              placeholder="请输入 例如：.srt, .ass, .sub, .nfo"
             />
             <p className="text-xs text-muted-foreground">
               用逗号分隔，自动添加点号前缀
