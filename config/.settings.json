@@ -3,5 +3,11 @@
   "emby": {
     "url": "http://172.17.0.1:8096",
     "apiKey": "YOUR_EMBY_API_KEY"
-  }
+  },
+  "telegram": {
+    "botToken": "YOUR_TELEGRAM_BOT_TOKEN",
+    "chatId": "YOUR_TELEGRAM_CHAT_ID",
+    "allowedUsers": []
+  },
+  "strmExtensions": [".mp4", ".mkv", ".avi", ".iso", ".mov", ".rmvb", ".webm", ".flv", ".m3u8", ".mp3", ".flac", ".ogg", ".m4a", ".wav", ".opus", ".wma"]
 }
