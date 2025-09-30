@@ -28,7 +28,8 @@ import {
   Plus,
   CheckCircle,
   XCircle,
-  AlertCircle
+  AlertCircle,
+  FolderX
 } from "lucide-react";
 
 // Task 类型
@@ -60,6 +61,7 @@ export default function Home() {
   const [data, setData] = useState<Task[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState<string | null>(null);
+  const [clearDialogOpen, setClearDialogOpen] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<string[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const router = useRouter();
@@ -138,6 +140,17 @@ export default function Home() {
     }
   };
 
+  // 清空目录
+  const clearDirectory = async (targetPath: string) => {
+    try {
+      await axios.post("/api/clearDirectory", { targetPath });
+      toast.success(`目录 ${targetPath} 清空成功`);
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.error || "清空目录失败";
+      toast.error(errorMessage);
+    }
+  };
+
   const columns: ColumnDef<Task>[] = [
     { 
       accessorKey: "id", 
@@ -172,11 +185,64 @@ export default function Home() {
     { 
       accessorKey: "targetPath", 
       header: "目标路径",
-      cell: ({ row }) => (
-        <span className="text-sm text-gray-600 max-w-xs truncate block">
-          {row.original.targetPath}
-        </span>
-      )
+      cell: ({ row }) => {
+        const task = row.original;
+        return (
+          <div className="group flex items-center gap-2 max-w-xs">
+            <span className="text-sm text-gray-600 truncate flex-1">
+              {task.targetPath}
+            </span>
+            <Dialog 
+              open={clearDialogOpen === task.id} 
+              onOpenChange={(open) => setClearDialogOpen(open ? task.id : null)}
+            >
+              <DialogTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0 text-gray-400 hover:text-red-600 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all duration-200 flex-shrink-0"
+                  title="清空目录"
+                >
+                  <FolderX className="w-4 h-4" />
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-[425px]">
+                <DialogHeader>
+                  <DialogTitle>确认清空目录</DialogTitle>
+                  <DialogDescription>
+                    你确定要清空目标路径下的所有文件吗？此操作无法撤销。
+                    <br />
+                    <span className="text-sm text-gray-500 mt-2 block">
+                      目标路径: {task.targetPath}
+                    </span>
+                    <br />
+                    <span className="text-sm text-red-600 mt-2 block font-medium">
+                      ⚠️ 这将删除该目录下的所有文件和子目录！
+                    </span>
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="gap-2">
+                  <Button 
+                    variant="outline"
+                    onClick={() => setClearDialogOpen(null)}
+                  >
+                    取消
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={() => {
+                      clearDirectory(task.targetPath);
+                      setClearDialogOpen(null);
+                    }}
+                  >
+                    确认清空
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
+        );
+      }
     },
     { 
       accessorKey: "status", 
