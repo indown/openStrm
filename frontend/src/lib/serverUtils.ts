@@ -167,6 +167,7 @@ export function normalizeToStrm(path: string): string {
 // Settings helpers
 export type AppSettings = {
   "user-agent"?: string;
+  strmExtensions?: string[];  // strm文件扩展名配置
   emby?: {
     url?: string;
     apiKey?: string;

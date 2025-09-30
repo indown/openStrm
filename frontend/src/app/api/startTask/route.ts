@@ -13,6 +13,7 @@ import {
   removeExtraFiles,
   notifyEmbyRefresh,
   readAccounts,
+  readSettings,
 } from "@/lib/serverUtils";
 import {
   getRealDownloadLinkLimited,
@@ -198,7 +199,9 @@ function startDownloadTask({
     }
   };
 
-  const strmExtensions = [".mkv", ".mp3", ".mp4"];
+  // 从配置文件读取strm扩展名，如果没有配置则使用默认值
+  const settings = readSettings();
+  const strmExtensions = (settings.strmExtensions || []).map(ext => ext.toLowerCase());
 
   // strm 文件
   const strmFiles = filePaths.filter((fp) =>
