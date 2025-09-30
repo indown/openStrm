@@ -79,3 +79,22 @@ docker-compose -f docker-compose.prod.yml up -d
 
 - `./data/`: 存储应用数据
 - `./config/`: 存储配置文件
+
+**配置项说明**:
+- `user-agent`: 用于115 API请求的User-Agent字符串，可以根据需要修改
+- `strmExtensions`: 需要转换为.strm文件的扩展名数组，默认为[".mp4", ".mkv", ".avi", ".iso", ".mov", ".rmvb", ".webm", ".flv", ".m3u8", ".mp3", ".flac", ".ogg", ".m4a", ".wav", ".opus", ".wma"]，会自动转换为小写
+- `downloadExtensions`: 需要直接下载的文件扩展名数组，默认为[".srt", ".ass", ".sub", ".nfo", ".jpg", ".png"]，会自动转换为小写
+- `emby.url`: Emby媒体服务器地址
+- `emby.apiKey`: Emby API密钥
+
+## 📄 许可证
+
+本项目采用 [MIT License](LICENSE) 许可证。
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request 来改进这个项目。
+
+## ⚠️ 免责声明
+
+本项目仅供学习和研究使用。请确保你遵守相关的法律法规和服务条款。
