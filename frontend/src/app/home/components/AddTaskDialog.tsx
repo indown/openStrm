@@ -124,11 +124,11 @@ export function AddTaskDialog({
                       </SelectTrigger>
                       <SelectContent>
                         {accountsLoading ? (
-                          <SelectItem value="" disabled>
+                          <SelectItem value="loading" disabled>
                             加载中...
                           </SelectItem>
                         ) : accounts.length === 0 ? (
-                          <SelectItem value="" disabled>
+                          <SelectItem value="no-accounts" disabled>
                             暂无账号
                           </SelectItem>
                         ) : (
