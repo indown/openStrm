@@ -292,3 +292,46 @@ function formatFileSize(bytes: number): string {
   
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
+
+// 发送 Telegram 通知的公共方法
+export async function sendTelegramNotification(message: string, type: 'start' | 'complete' | 'error' = 'start') {
+  try {
+    // 动态导入 readSettings 避免循环依赖
+    const { readSettings } = await import('./serverUtils');
+    const settings = readSettings();
+    const telegram = settings.telegram;
+    
+    if (!telegram || !telegram.botToken || !telegram.chatId) {
+      console.log('Telegram not configured, skipping notification');
+      return;
+    }
+
+    const bot = createTelegramBot(telegram.botToken);
+    
+    let emoji = 'ℹ️';
+    let prefix = '';
+    
+    switch (type) {
+      case 'start':
+        emoji = '🚀';
+        prefix = 'Task Started';
+        break;
+      case 'complete':
+        emoji = '✅';
+        prefix = 'Task Completed';
+        break;
+      case 'error':
+        emoji = '❌';
+        prefix = 'Task Error';
+        break;
+    }
+    
+    const formattedMessage = `${emoji} <b>${prefix}</b>\n\n${message}\n\n<b>Time:</b> ${new Date().toLocaleString()}`;
+    
+    await bot.sendNotification(formattedMessage, telegram.chatId);
+    console.log(`Telegram notification sent: ${type}`);
+  } catch (error) {
+    console.error('Failed to send Telegram notification:', error);
+    // 不抛出错误，避免影响主流程
+  }
+}

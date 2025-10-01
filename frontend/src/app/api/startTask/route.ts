@@ -21,6 +21,7 @@ import {
   downloadOrCreateStrm,
 } from "@/lib/enqueueForAccount";
 import { exportDirParse, fs_dir_getid } from "@/lib/115";
+import { sendTelegramNotification } from "@/lib/telegram";
 
 // openlist API 接口类型定义
 interface OpenlistItem {
@@ -189,6 +190,15 @@ function startDownloadTask({
     logs: [],
   };
 
+  // 发送任务开始通知
+  const startMessage = `<b>Task ID:</b> ${taskId}\n` +
+    `<b>Account:</b> ${account}\n` +
+    `<b>Target Path:</b> ${targetPath}\n` +
+    `<b>Files to Download:</b> ${total}\n` +
+    `<b>Origin Path:</b> ${originPath}`;
+  
+  sendTelegramNotification(startMessage, 'start');
+
   const pushLog = (log: DownloadProgress) => {
     const line = JSON.stringify(log);
     const task = downloadTasks[taskId];
@@ -260,12 +270,32 @@ function startDownloadTask({
       complete: () => {
         pushLog({ done: true });
         taskSubject.complete();
+        
+        // 发送任务完成通知
+        const completeMessage = `<b>Task ID:</b> ${taskId}\n` +
+          `<b>Account:</b> ${account}\n` +
+          `<b>Target Path:</b> ${targetPath}\n` +
+          `<b>Files Downloaded:</b> ${total}\n` +
+          `<b>Status:</b> Successfully completed`;
+        
+        sendTelegramNotification(completeMessage, 'complete');
+        
         // 下载完成后通知 Emby 刷新
         notifyEmbyRefresh();
         delete downloadTasks[taskId];
       },
       error: (err) => {
         pushLog({ error: err.message });
+        
+        // 发送任务错误通知
+        const errorMessage = `<b>Task ID:</b> ${taskId}\n` +
+          `<b>Account:</b> ${account}\n` +
+          `<b>Target Path:</b> ${targetPath}\n` +
+          `<b>Error:</b> ${err.message}\n` +
+          `<b>Status:</b> Failed`;
+        
+        sendTelegramNotification(errorMessage, 'error');
+        
         taskSubject.complete();
         delete downloadTasks[taskId];
       },
