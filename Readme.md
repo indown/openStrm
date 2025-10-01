@@ -86,7 +86,8 @@ docker-compose -f docker-compose.prod.yml up -d
 }
 ```
 
-⚠️ **安全提示**: 请在生产环境中及时修改默认密码！
+⚠️ **安全提示**: 请在生产环境中及时修改默认密码！  
+📝 **修改方法**: 编辑 `config/config.json` 文件中的 `username` 和 `password` 字段。
 
 ### 数据目录
 
