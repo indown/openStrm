@@ -24,6 +24,12 @@ COPY --from=frontend-builder /app/frontend/.next/standalone ./frontend
 COPY --from=frontend-builder /app/frontend/.next/static ./frontend/.next/static
 COPY --from=frontend-builder /app/frontend/public ./frontend/public
 
+# 拷贝默认配置文件
+COPY config/.config.json /app/config/.config.json
+COPY config/.account.json /app/config/.account.json
+COPY config/.tasks.json /app/config/.tasks.json
+COPY config/.settings.json /app/config/.settings.json
+
 # 拷贝启动脚本
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
