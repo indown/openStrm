@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import { Bot, Settings, Users, MessageSquare, CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square } from "lucide-react";
-import axios from "axios";
+import axiosInstance from "@/lib/axios";
 
 interface TelegramConfig {
   botToken?: string;
@@ -56,7 +56,7 @@ export default function TelegramPage() {
   const loadBotInfo = async () => {
     try {
       setLoading(true);
-      const response = await axios.get('/api/telegram/bot');
+      const response = await axiosInstance.get('/api/telegram/bot');
       if (response.data.configured) {
         setBotInfo(response.data.bot.result);
         setWebhookInfo(response.data.webhook.result);
@@ -79,7 +79,7 @@ export default function TelegramPage() {
       setError(null);
       setSuccess(null);
 
-      const response = await axios.post('/api/telegram/bot', {
+      const response = await axiosInstance.post('/api/telegram/bot', {
         botToken: config.botToken,
         chatId: config.chatId,
         webhookUrl: config.webhookUrl
@@ -117,7 +117,7 @@ export default function TelegramPage() {
       setError(null);
       setSuccess(null);
 
-      await axios.delete('/api/telegram/bot');
+      await axiosInstance.delete('/api/telegram/bot');
       setSuccess('Telegram bot configuration removed successfully!');
       setBotInfo(null);
       setWebhookInfo(null);
@@ -132,7 +132,7 @@ export default function TelegramPage() {
   // 检查轮询状态
   const checkPollingStatus = async () => {
     try {
-      const response = await axios.get('/api/telegram/polling');
+      const response = await axiosInstance.get('/api/telegram/polling');
       setPollingStatus(response.data);
     } catch (error) {
       console.error('Failed to check polling status:', error);
@@ -146,7 +146,7 @@ export default function TelegramPage() {
       setError(null);
       setSuccess(null);
 
-      const response = await axios.post('/api/telegram/polling');
+      const response = await axiosInstance.post('/api/telegram/polling');
       
       if (response.data.success) {
         setSuccess('Polling started successfully!');
@@ -166,7 +166,7 @@ export default function TelegramPage() {
       setError(null);
       setSuccess(null);
 
-      const response = await axios.delete('/api/telegram/polling');
+      const response = await axiosInstance.delete('/api/telegram/polling');
       
       if (response.data.success) {
         setSuccess('Polling stopped successfully!');
@@ -190,7 +190,7 @@ export default function TelegramPage() {
       setError(null);
       setSuccess(null);
 
-      await axios.post('/api/telegram/send', {
+      await axiosInstance.post('/api/telegram/send', {
         message: '🤖 Test message from FreeStrm!',
         type: 'info'
       });

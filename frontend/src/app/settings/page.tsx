@@ -5,7 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
-import axios from "axios";
+import axiosInstance from "@/lib/axios";
 
 type Settings = {
   "user-agent"?: string;
@@ -22,7 +22,7 @@ export default function SettingsPage() {
   const [downloadExtensionsInput, setDownloadExtensionsInput] = useState("");
 
   useEffect(() => {
-    axios.get("/api/settings")
+    axiosInstance.get("/api/settings")
       .then((r) => {
         const settings = r.data || {};
         setData(settings);
@@ -57,7 +57,7 @@ export default function SettingsPage() {
         downloadExtensions
       };
       
-      await axios.put("/api/settings", saveData);
+      await axiosInstance.put("/api/settings", saveData);
       setData(saveData);
       toast.success("保存成功");
     } catch {

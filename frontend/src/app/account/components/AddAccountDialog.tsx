@@ -5,7 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { useForm } from "react-hook-form";
 
-import axios from "axios";
+import axiosInstance from "@/lib/axios";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -88,11 +88,11 @@ export function AddAccountDialog({ account, trigger, onSuccess }: AddAccountDial
     try {
       if (account) {
         // 编辑 → PUT
-        await axios.put("/api/account", values);
+        await axiosInstance.put("/api/account", values);
         toast("账号更新成功");
       } else {
         // 新增 → POST
-        await axios.post("/api/account", values);
+        await axiosInstance.post("/api/account", values);
         toast("账号添加成功");
       }
 

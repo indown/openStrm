@@ -18,7 +18,7 @@ import { ColumnDef } from "@tanstack/react-table";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import axios from "axios";
+import axiosInstance from "@/lib/axios";
 import { 
   Play, 
   Square, 
@@ -75,7 +75,7 @@ export default function Home() {
   const fetchTasks = async () => {
     try {
       setIsLoading(true);
-      const res = await axios.get("/api/task");
+      const res = await axiosInstance.get("/api/task");
       setData(res.data);
     } catch {
       toast.error("获取任务列表失败");
@@ -88,7 +88,7 @@ export default function Home() {
   const fetchAccounts = async () => {
     try {
       setAccountsLoading(true);
-      const res = await axios.get("/api/account");
+      const res = await axiosInstance.get("/api/account");
       setAccounts(res.data.map((a: { name: string }) => a.name));
     } catch {
       toast.error("获取账户列表失败");
@@ -101,7 +101,7 @@ export default function Home() {
   // 删除任务
   const deleteTask = async (id: string) => {
     try {
-      await axios.delete(`/api/task?id=${id}`);
+      await axiosInstance.delete(`/api/task?id=${id}`);
       toast.success("任务删除成功");
       fetchTasks();
     } catch {
@@ -112,7 +112,7 @@ export default function Home() {
   // 开始任务
   const startTask = async (id: string) => {
     try {
-      const res = await axios.post("/api/startTask", { id });
+      const res = await axiosInstance.post("/api/startTask", { id });
       toast.success(`任务已开始: ${res.data.message}`);
     } catch {
       toast.error("任务开始失败");
@@ -122,7 +122,7 @@ export default function Home() {
   // 取消任务
   const cancelTask = async (id: string) => {
     try {
-      await axios.post("/api/cancelTask", { id });
+      await axiosInstance.post("/api/cancelTask", { id });
       toast.success("任务已取消");
     } catch {
       toast.error("任务取消失败");
@@ -132,7 +132,7 @@ export default function Home() {
   // 查看日志
   const goToLog = async (id: string) => {
     try {
-      const logRes = await axios.get(`/api/taskLog/${id}`);
+      const logRes = await axiosInstance.get(`/api/taskLog/${id}`);
       if (logRes.data.taskId) router.push(`/log/${id}`);
       else toast.error("没有找到对应的任务日志");
     } catch {
@@ -143,7 +143,7 @@ export default function Home() {
   // 清空目录
   const clearDirectory = async (targetPath: string) => {
     try {
-      await axios.post("/api/clearDirectory", { targetPath });
+      await axiosInstance.post("/api/clearDirectory", { targetPath });
       toast.success(`目录 ${targetPath} 清空成功`);
     } catch (error: any) {
       const errorMessage = error.response?.data?.error || "清空目录失败";

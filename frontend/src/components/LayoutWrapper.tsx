@@ -4,7 +4,7 @@ import { usePathname } from "next/navigation";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { Settings, Github } from "lucide-react";
-import axios from "axios";
+import axiosInstance, { clearToken } from "@/lib/axios";
 import {
   Menubar,
   MenubarContent,
@@ -21,8 +21,13 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     return <>{children}</>; // 登录页不显示导航等
   }
   const logout = async () => {
-    await axios.post("/api/auth/logout");
-    router.push('/login') // 退出后跳转到登录页
+    try {
+      await axiosInstance.post("/api/auth/logout");
+    } catch {
+      // 即使API调用失败也要清除token
+    }
+    clearToken(); // 清除本地token
+    router.push('/login'); // 退出后跳转到登录页
   }
   return (
     <>
