@@ -11,6 +11,8 @@ interface Progress {
   done?: boolean;
   error?: string;
   strm?: boolean;
+  cancelled?: boolean;
+  message?: string;
 }
 
 export default function DownloadProgressPage({
@@ -92,10 +94,12 @@ export default function DownloadProgressPage({
                   }
                   
                   // 检查任务是否完成
-                  if (data.done && data.overallPercent === "100.00") {
+                  if (data.cancelled) {
+                    setTaskStatus("已取消");
+                  } else if (data.done && data.overallPercent === "100.00") {
                     setTaskStatus("已完成");
                   } else if (data.done) {
-                    setTaskStatus("已取消");
+                    setTaskStatus("已完成");
                   } else {
                     setTaskStatus("运行中");
                   }
@@ -145,12 +149,20 @@ export default function DownloadProgressPage({
     
     setIsCancelling(true);
     try {
-      await axiosInstance.post('/api/cancelTask', { taskId });
-      setTaskStatus("取消中...");
-      console.log('Task cancellation requested');
-    } catch (error) {
+      const response = await axiosInstance.post('/api/cancelTask', { taskId });
+      console.log('Task cancellation response:', response.data);
+      
+      if (response.data.message) {
+        setTaskStatus("已取消");
+        // 显示成功消息
+        console.log('Task cancelled successfully');
+      }
+    } catch (error: unknown) {
       console.error('Failed to cancel task:', error);
-      alert('取消任务失败，请重试');
+      const errorMessage = error instanceof Error && 'response' in error 
+        ? (error as { response?: { data?: { error?: string } } }).response?.data?.error || '取消任务失败，请重试'
+        : '取消任务失败，请重试';
+      alert(errorMessage);
     } finally {
       setIsCancelling(false);
     }
