@@ -19,14 +19,15 @@ const limiters = new Map<string, Bottleneck>();
 export function enqueueForAccount<T>(
   account: string,
   fn: () => Observable<T>,
-  maxPerSecond = 2
+  maxPerSecond = 2,
+  maxConcurrent = 5  // 新增参数，允许更多并发
 ): Observable<T> {
   if (!limiters.has(account)) {
     const limiter = new Bottleneck({
       reservoir: maxPerSecond,
       reservoirRefreshAmount: maxPerSecond,
       reservoirRefreshInterval: 1000,
-      maxConcurrent: 1,
+      maxConcurrent: maxConcurrent,  // 使用参数而不是硬编码的1
     });
     limiters.set(account, limiter);
   }
@@ -209,6 +210,9 @@ export function getRealDownloadLinkLimited(
   maxRetries = 3,
   retryDelay = 2000
 ): Promise<string> {
+  const settings = readSettings();
+  const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
+  
   const obs$ = defer(() =>
     enqueueForAccount(
       account,
@@ -220,7 +224,9 @@ export function getRealDownloadLinkLimited(
               observer.complete();
             })
             .catch((err) => observer.error(err));
-        })
+        }),
+      downloadConfig.maxPerSecond || 2,
+      downloadConfig.linkMaxConcurrent || 2 
     )
   ).pipe(
     retry({
@@ -246,10 +252,16 @@ export function downloadOrCreateStrmLimited(
   maxRetries = 10,
   retryDelay = 2000
 ): Observable<Progress> {
+  const settings = readSettings();
+  const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
+  
   return defer(() =>
     // defer 保证每次订阅才创建 Observable
-    enqueueForAccount(account, () =>
-      downloadOrCreateStrm(filePathOrUrl, savePath, opts)
+    enqueueForAccount(
+      account, 
+      () => downloadOrCreateStrm(filePathOrUrl, savePath, opts),
+      downloadConfig.maxPerSecond || 2,
+      downloadConfig.maxConcurrent || 5
     )
   ).pipe(
     retry({
