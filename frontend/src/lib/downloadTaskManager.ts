@@ -6,6 +6,7 @@ export interface DownloadProgress {
   overallPercent?: string;
   done?: boolean;
   error?: string;
+  message?: string;
 }
 // 每个任务存 subject 和 subscription
 export interface DownloadTask {
