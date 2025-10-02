@@ -1,44 +1,50 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { getIronSession } from "iron-session";
-import { sessionOptions, SessionData } from "@/lib/session";
+import { verifyToken, extractTokenFromHeader } from "@/lib/jwt";
 
 // 注意：middleware 只能用 edge runtime，iron-session 支持
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // 登录接口和静态资源直接放行
-  if (
-    pathname.startsWith("/login") ||
-    pathname.startsWith("/api/auth") ||
-    pathname.startsWith("/_next") ||
-    pathname.startsWith("/static") ||
-    pathname === "/favicon.ico" ||
-    pathname.startsWith("/logo")
-  ) {
+  // 只对API路由进行token验证，页面路由交给客户端处理
+  if (!pathname.startsWith("/api")) {
     return NextResponse.next();
   }
 
-  const res = NextResponse.next();
-  const session = await getIronSession<SessionData>(req.cookies, sessionOptions);
-
-  // 如果没有用户信息
-  if (!session.user) {
-    if (pathname.startsWith("/api")) {
-      return NextResponse.json({ error: "未登录" }, { status: 401 });
-    }
-    return NextResponse.redirect(new URL("/login", req.url));
-  }
-  // 如果过期
-  if (Date.now() > session.user.expiresAt) {
-    session.destroy();
-    if (pathname.startsWith("/api")) {
-      return NextResponse.json({ error: "登录已过期" }, { status: 401 });
-    }
-    return NextResponse.redirect(new URL("/login", req.url));
+  // 登录相关API直接放行
+  if (pathname.startsWith("/api/auth")) {
+    return NextResponse.next();
   }
 
-  return res;
+  // 从Authorization头部获取token
+  const authHeader = req.headers.get('authorization');
+  const token = extractTokenFromHeader(authHeader);
+
+  console.log("Middleware API check:", {
+    pathname,
+    hasAuthHeader: !!authHeader,
+    hasToken: !!token,
+  });
+
+  if (!token) {
+    console.log("No token found for API request");
+    return NextResponse.json({ error: "未登录" }, { status: 401 });
+  }
+
+  // 验证token
+  const payload = await verifyToken(token);
+  if (!payload) {
+    console.log("Invalid token for API request");
+    return NextResponse.json({ error: "登录已过期" }, { status: 401 });
+  }
+
+  console.log("Token valid for API request, user:", payload.username);
+  
+  // 将用户信息添加到请求头中，供后续API使用
+  const response = NextResponse.next();
+  response.headers.set('x-user', payload.username);
+  
+  return response;
 }
 
 export const config = {

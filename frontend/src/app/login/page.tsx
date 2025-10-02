@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Form, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import axios from "axios";
+import axiosInstance, { setToken } from "@/lib/axios";
 import Image from "next/image";
 
 interface LoginForm {
@@ -22,7 +22,13 @@ export default function LoginPage() {
 
   const onSubmit = async (values: LoginForm) => {
     try {
-      await axios.post("/api/auth/login", values);
+      const response = await axiosInstance.post("/api/auth/login", values);
+      const { token } = response.data;
+      
+      // 存储token
+      setToken(token);
+      
+      // 跳转到首页
       router.push("/");
     } catch {
       alert("登录失败，请检查用户名或密码");

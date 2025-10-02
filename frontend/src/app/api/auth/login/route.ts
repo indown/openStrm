@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getIronSession } from "iron-session";
-import { sessionOptions, SessionData } from "@/lib/session";
+import { generateToken } from "@/lib/jwt";
 import path from "path";
 import fs from "fs";
 
@@ -14,16 +13,16 @@ export async function POST(req: Request) {
   );
   const configData = JSON.parse(config);
   if (username === configData.username && password === configData.password) {
-    const res = NextResponse.json({ message: "登录成功" });
-
-    const session = await getIronSession<SessionData>(req, res, sessionOptions);
-    session.user = {
-      username,
-      expiresAt: Date.now() + 1000 * 60 * 60 * 24, // 1天有效期
-    };
-    await session.save();
-
-    return res;
+    // 生成JWT token
+    const token = await generateToken(username);
+    
+    console.log("Login successful, token generated for user:", username);
+    
+    return NextResponse.json({ 
+      message: "登录成功",
+      token,
+      user: { username }
+    });
   }
 
   return NextResponse.json({ error: "账号或密码错误" }, { status: 401 });
