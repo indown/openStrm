@@ -1,9 +1,9 @@
-import { NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
 import { generateToken } from "@/lib/jwt";
 import path from "path";
 import fs from "fs";
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   const { username, password } = await req.json();
 
   const configFile = path.join(process.cwd(), "../config/config.json");

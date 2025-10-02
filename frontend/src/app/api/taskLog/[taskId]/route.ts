@@ -1,7 +1,8 @@
 import { downloadTasks } from "@/lib/downloadTaskManager";
+import { NextRequest } from "next/server";
 
 export async function GET(
-  request: Request,
+  request: NextRequest,
   { params }: { params: { taskId: string } }
 ) {
   const { taskId } = await params;
