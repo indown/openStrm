@@ -11,7 +11,9 @@ export async function POST() {
     const settings = readSettings();
     const telegram = settings.telegram;
     
+    // 检查 Telegram 配置是否完整
     if (!telegram || !telegram.botToken) {
+      console.log("Telegram not configured (missing botToken), cannot start polling");
       return NextResponse.json({ error: "Telegram not configured" }, { status: 400 });
     }
 
@@ -49,7 +51,9 @@ export async function DELETE() {
     const settings = readSettings();
     const telegram = settings.telegram;
     
+    // 检查 Telegram 配置是否完整
     if (!telegram || !telegram.botToken) {
+      console.log("Telegram not configured (missing botToken), cannot stop polling");
       return NextResponse.json({ error: "Telegram not configured" }, { status: 400 });
     }
 
@@ -83,7 +87,9 @@ export async function GET() {
     const settings = readSettings();
     const telegram = settings.telegram;
     
+    // 检查 Telegram 配置是否完整
     if (!telegram || !telegram.botToken) {
+      console.log("Telegram not configured (missing botToken), cannot get polling status");
       return NextResponse.json({ error: "Telegram not configured" }, { status: 400 });
     }
 

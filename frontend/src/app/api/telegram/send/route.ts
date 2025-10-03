@@ -12,12 +12,12 @@ export async function POST(request: NextRequest) {
     const settings = readSettings();
     const telegram = settings.telegram;
     
-    if (!telegram || !telegram.botToken) {
-      return NextResponse.json({ error: "Telegram not configured" }, { status: 400 });
-    }
+    // 检查 Telegram 配置是否完整
+    if (!telegram || !telegram.botToken || !telegram.chatId) {
+      return NextResponse.json({ 
+        error: "Telegram not configured (missing botToken or chatId)" 
+      }, { status: 400 });
 
-    if (!telegram.chatId) {
-      return NextResponse.json({ error: "Chat ID not configured" }, { status: 400 });
     }
 
     // 创建机器人实例
