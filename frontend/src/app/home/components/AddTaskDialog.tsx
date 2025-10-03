@@ -67,7 +67,7 @@ export function AddTaskDialog({
       account: "",
       originPath: "",
       targetPath: "",
-      strmType: "",
+      strmType: "local",
       strmPrefix: "",
     },
   });
@@ -195,7 +195,15 @@ export function AddTaskDialog({
                 <FormItem>
                   <FormLabel>Strm Type</FormLabel>
                   <FormControl>
-                    <Input {...field} placeholder="Strm Type" />
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select strm type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="local">local</SelectItem>
+                        <SelectItem value="cloud" disabled>cloud</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </FormControl>
                   <FormMessage />
                 </FormItem>
