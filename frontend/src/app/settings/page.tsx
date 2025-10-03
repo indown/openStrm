@@ -12,6 +12,11 @@ type Settings = {
   strmExtensions?: string[];
   downloadExtensions?: string[];
   emby?: { url?: string; apiKey?: string };
+  download?: {
+    maxConcurrent?: number;
+    maxPerSecond?: number;
+    linkMaxConcurrent?: number;
+  };
 } & Record<string, unknown>;
 
 export default function SettingsPage() {
@@ -113,6 +118,80 @@ export default function SettingsPage() {
             />
             <p className="text-xs text-muted-foreground">
               用逗号分隔，自动添加点号前缀
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <Separator />
+
+      <section className="space-y-4">
+        <h2 className="text-base font-medium">下载限流配置</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="space-y-2">
+            <Label>每秒最大请求数 (maxPerSecond)</Label>
+            <Input
+              type="number"
+              min="1"
+              max="100"
+              value={data.download?.maxPerSecond || 2}
+              onChange={(e) =>
+                setData({
+                  ...data,
+                  download: { 
+                    ...(data.download || {}), 
+                    maxPerSecond: parseInt(e.target.value) || 2 
+                  },
+                })
+              }
+              placeholder="2"
+            />
+            <p className="text-xs text-muted-foreground">
+              控制每秒最多发送的请求数量
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label>最大并发数 (maxConcurrent)</Label>
+            <Input
+              type="number"
+              min="1"
+              max="50"
+              value={data.download?.maxConcurrent || 5}
+              onChange={(e) =>
+                setData({
+                  ...data,
+                  download: { 
+                    ...(data.download || {}), 
+                    maxConcurrent: parseInt(e.target.value) || 5 
+                  },
+                })
+              }
+              placeholder="5"
+            />
+            <p className="text-xs text-muted-foreground">
+              控制同时进行的下载任务数量
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label>链接获取并发数 (linkMaxConcurrent)</Label>
+            <Input
+              type="number"
+              min="1"
+              max="50"
+              value={data.download?.linkMaxConcurrent || 10}
+              onChange={(e) =>
+                setData({
+                  ...data,
+                  download: { 
+                    ...(data.download || {}), 
+                    linkMaxConcurrent: parseInt(e.target.value) || 10 
+                  },
+                })
+              }
+              placeholder="10"
+            />
+            <p className="text-xs text-muted-foreground">
+              控制同时获取下载链接的数量
             </p>
           </div>
         </div>
