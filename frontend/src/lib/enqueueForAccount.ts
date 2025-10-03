@@ -20,7 +20,7 @@ export function enqueueForAccount<T>(
   account: string,
   fn: () => Observable<T>,
   maxPerSecond = 2,
-  maxConcurrent = 5  // 新增参数，允许更多并发
+  maxConcurrent = 2 // 新增参数，允许更多并发
 ): Observable<T> {
   if (!limiters.has(account)) {
     const limiter = new Bottleneck({
@@ -261,7 +261,7 @@ export function downloadOrCreateStrmLimited(
       account, 
       () => downloadOrCreateStrm(filePathOrUrl, savePath, opts),
       downloadConfig.maxPerSecond || 2,
-      downloadConfig.maxConcurrent || 5
+      downloadConfig.maxConcurrent || 2
     )
   ).pipe(
     retry({
