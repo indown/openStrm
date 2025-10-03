@@ -35,7 +35,6 @@ import {
 
 export const taskFormSchema = z.object({
   account: z.string().min(1, "Account 不能为空"),
-  accountType: z.string().min(1, "Account Type 不能为空"),
   originPath: z.string().min(1, "Origin Path 不能为空"),
   targetPath: z.string().optional(),
   strmType: z.string().optional(),
@@ -48,10 +47,9 @@ interface AddTaskDialogProps {
   task?: TaskFormValues & { name?: string; id?: string };
   trigger?: React.ReactNode;
   onSuccess?: () => void;
-  accounts?: string[];
+  accounts?: Array<{name: string, accountType: string}>;
   accountsLoading?: boolean;
 }
-const accountTypes = ["115", "openlist"];
 export function AddTaskDialog({
   task,
   trigger,
@@ -62,11 +60,11 @@ export function AddTaskDialog({
   const [open, setOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
 
+
   const form = useForm<TaskFormValues>({
     resolver: zodResolver(taskFormSchema),
     defaultValues: task ?? {
       account: "",
-      accountType: "",
       originPath: "",
       targetPath: "",
       strmType: "",
@@ -74,14 +72,26 @@ export function AddTaskDialog({
     },
   });
 
+  // 获取选中账户的类型
+  const getAccountType = (accountName: string) => {
+    const selectedAccount = accounts.find(acc => acc.name === accountName);
+    return selectedAccount?.accountType || "";
+  };
 
   const onSubmit = async (values: TaskFormValues) => {
     setLoading(true);
     try {
+      // 自动获取选中账户的类型
+      const accountType = getAccountType(values.account);
+      const taskData = {
+        ...values,
+        accountType
+      };
+
       if (task?.id) {
-        await axiosInstance.put("/api/task", { id: task.id, ...values });
+        await axiosInstance.put("/api/task", { id: task.id, ...taskData });
       } else {
-        await axiosInstance.post("/api/task", values);
+        await axiosInstance.post("/api/task", taskData);
       }
 
       onSuccess?.();
@@ -122,7 +132,7 @@ export function AddTaskDialog({
                       <SelectTrigger>
                         <SelectValue placeholder="Select account" />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent className="z-[60]">
                         {accountsLoading ? (
                           <SelectItem value="loading" disabled>
                             加载中...
@@ -133,8 +143,8 @@ export function AddTaskDialog({
                           </SelectItem>
                         ) : (
                           accounts.map((acc) => (
-                            <SelectItem key={acc} value={acc}>
-                              {acc}
+                            <SelectItem key={acc.name} value={acc.name}>
+                              {acc.name} ({acc.accountType})
                             </SelectItem>
                           ))
                         )}
@@ -146,31 +156,6 @@ export function AddTaskDialog({
               )}
             />
 
-            {/* Account Type */}
-            <FormField
-              control={form.control}
-              name="accountType"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Account Type</FormLabel>
-                  <FormControl>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select Account Type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {accountTypes.map((type) => (
-                          <SelectItem key={type} value={type}>
-                            {type}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
 
             {/* Origin Path */}
             <FormField

@@ -62,7 +62,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState<string | null>(null);
   const [clearDialogOpen, setClearDialogOpen] = useState<string | null>(null);
-  const [accounts, setAccounts] = useState<string[]>([]);
+  const [accounts, setAccounts] = useState<Array<{name: string, accountType: string}>>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const router = useRouter();
 
@@ -89,7 +89,7 @@ export default function Home() {
     try {
       setAccountsLoading(true);
       const res = await axiosInstance.get("/api/account");
-      setAccounts(res.data.map((a: { name: string }) => a.name));
+      setAccounts(res.data.map((a: { name: string, accountType: string }) => ({ name: a.name, accountType: a.accountType })));
     } catch {
       toast.error("获取账户列表失败");
     } finally {
@@ -145,8 +145,8 @@ export default function Home() {
     try {
       await axiosInstance.post("/api/clearDirectory", { targetPath });
       toast.success(`目录 ${targetPath} 清空成功`);
-    } catch (error: any) {
-      const errorMessage = error.response?.data?.error || "清空目录失败";
+    } catch (error: unknown) {
+      const errorMessage = (error as { response?: { data?: { error?: string } } })?.response?.data?.error || "清空目录失败";
       toast.error(errorMessage);
     }
   };
