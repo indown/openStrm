@@ -54,6 +54,7 @@ export interface TelegramResponse {
   result?: unknown;
   error_code?: number;
   description?: string;
+  error?: string;
 }
 
 export interface TelegramBotInfo {
@@ -82,21 +83,28 @@ class TelegramBot {
       return response.data;
     } catch (error) {
       console.error('Telegram sendMessage error:', error);
-      throw error;
+      // 不抛出错误，避免影响主流程，只记录日志
+      return { ok: false, error: `Telegram API error: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
   // 发送通知消息（简化版本）
   async sendNotification(text: string, chatId?: string): Promise<TelegramResponse> {
     if (!chatId) {
-      throw new Error('Chat ID is required for sending notifications');
+      console.warn('Chat ID is required for sending notifications, skipping...');
+      return { ok: false, error: 'Chat ID is required for sending notifications' };
     }
 
-    return this.sendMessage({
-      chat_id: chatId,
-      text,
-      parse_mode: 'HTML'
-    });
+    try {
+      return await this.sendMessage({
+        chat_id: chatId,
+        text,
+        parse_mode: 'HTML'
+      });
+    } catch (error) {
+      console.error('Failed to send Telegram notification:', error);
+      return { ok: false, error: `Failed to send notification: ${error instanceof Error ? error.message : String(error)}` };
+    }
   }
 
   // 获取机器人信息
@@ -106,7 +114,7 @@ class TelegramBot {
       return response.data;
     } catch (error) {
       console.error('Telegram getMe error:', error);
-      throw error;
+      return { ok: false, error: `Failed to get bot info: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -122,13 +130,15 @@ class TelegramBot {
         timeout: (timeout || 30) * 1000 + 5000, // 给额外的5秒缓冲时间
       });
       return response.data.result || [];
-    } catch (error: any) {
+    } catch (error: unknown) {
       // 409 错误表示没有新消息，这是正常的，不需要记录
-      if (error.response?.status === 409) {
-        throw error; // 重新抛出，让上层处理
+      if (error && typeof error === 'object' && 'response' in error && 
+          (error as { response?: { status?: number } }).response?.status === 409) {
+        console.log('Telegram getUpdates: No new messages (409)');
+        return []; // 返回空数组而不是抛出错误
       }
       console.error('Telegram getUpdates error:', error);
-      throw error;
+      return []; // 返回空数组而不是抛出错误
     }
   }
 
@@ -142,7 +152,7 @@ class TelegramBot {
       return response.data;
     } catch (error) {
       console.error('Telegram setWebhook error:', error);
-      throw error;
+      return { ok: false, error: `Failed to set webhook: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -153,7 +163,7 @@ class TelegramBot {
       return response.data;
     } catch (error) {
       console.error('Telegram deleteWebhook error:', error);
-      throw error;
+      return { ok: false, error: `Failed to delete webhook: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -164,7 +174,7 @@ class TelegramBot {
       return response.data;
     } catch (error) {
       console.error('Telegram getWebhookInfo error:', error);
-      throw error;
+      return { ok: false, error: `Failed to get webhook info: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -210,7 +220,7 @@ class TelegramBot {
       return response.data;
     } catch (error) {
       console.error('Telegram editMessageText error:', error);
-      throw error;
+      return { ok: false, error: `Failed to edit message: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -224,7 +234,7 @@ class TelegramBot {
       return response.data;
     } catch (error) {
       console.error('Telegram answerCallbackQuery error:', error);
-      throw error;
+      return { ok: false, error: `Failed to answer callback query: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 }
@@ -301,11 +311,11 @@ export async function sendTelegramNotification(message: string, type: 'start' | 
     const settings = readSettings();
     const telegram = settings.telegram;
     
+    // 检查 Telegram 配置是否完整
     if (!telegram || !telegram.botToken || !telegram.chatId) {
-      console.log('Telegram not configured, skipping notification');
+      console.log('Telegram not configured (missing botToken or chatId), skipping notification');
       return;
     }
-
     const bot = createTelegramBot(telegram.botToken);
     
     let emoji = 'ℹ️';
