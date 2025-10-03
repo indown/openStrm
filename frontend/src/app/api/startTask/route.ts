@@ -310,7 +310,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const tasks = readTasks();
   const task = tasks.find((t: { id: string }) => t.id === body.id);
-  const { id, account, accountType, originPath, targetPath, strmPrefix } = task;
+  const { id, account, originPath, targetPath, strmPrefix } = task;
   
   // 从 account.json 中读取账户信息
   const accounts = readAccounts();
@@ -320,6 +320,9 @@ export async function POST(req: NextRequest) {
   if (!accountInfo) {
     throw new Error(`No account found: ${account}`);
   }
+  
+  // 从 accountInfo 中获取 accountType
+  const accountType = accountInfo.accountType;
   
   let tree;
   if (accountType === "115") {
