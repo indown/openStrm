@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="https://raw.githubusercontent.com/indown/openStrm/refs/heads/main/frontend/public/logo.png" alt="OpenStrm Logo" width="200" height="200">
+</div>
+
 # OpenStrm
 
 一个开源的 **Strm 生成工具**。
@@ -104,6 +108,12 @@ docker-compose -f docker-compose.prod.yml up -d
 ## 📄 许可证
 
 本项目采用 [MIT License](LICENSE) 许可证。
+
+## 💬 交流群组
+
+欢迎加入我们的 Telegram 群组进行交流讨论：
+
+[![Telegram Group](https://img.shields.io/badge/Telegram-OpenStrm%20Group-blue?style=for-the-badge&logo=telegram)](https://t.me/OpenStrmGroup)
 
 ## 🤝 贡献
 
