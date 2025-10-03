@@ -47,7 +47,7 @@ interface AddTaskDialogProps {
   task?: TaskFormValues & { name?: string; id?: string };
   trigger?: React.ReactNode;
   onSuccess?: () => void;
-  accounts?: Array<{name: string, accountType: string}>;
+  accounts?: Array<{ name: string; accountType: string }>;
   accountsLoading?: boolean;
 }
 export function AddTaskDialog({
@@ -59,7 +59,22 @@ export function AddTaskDialog({
 }: AddTaskDialogProps) {
   const [open, setOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
+  const [formValues, setFormValues] = React.useState({
+    strmPrefix: "",
+    targetPath: "",
+  });
 
+  // 计算预览路径
+  const getPreviewPath = () => {
+    const { strmPrefix, targetPath } = formValues;
+    if (!strmPrefix && !targetPath) {
+      return "请输入 Strm Prefix 和 Target Path";
+    }
+    const prefix = strmPrefix || "";
+    const target = targetPath || "";
+    const combinedPath = prefix + "/" + target;
+    return `${combinedPath}/....../abc.mkv`;
+  };
 
   const form = useForm<TaskFormValues>({
     resolver: zodResolver(taskFormSchema),
@@ -72,9 +87,30 @@ export function AddTaskDialog({
     },
   });
 
+  // 监听表单值变化
+  React.useEffect(() => {
+    const subscription = form.watch((value) => {
+      setFormValues({
+        strmPrefix: value.strmPrefix || "",
+        targetPath: value.targetPath || "",
+      });
+    });
+    return () => subscription.unsubscribe();
+  }, [form]);
+
+  // 初始化时同步表单值到状态
+  React.useEffect(() => {
+    if (task) {
+      setFormValues({
+        strmPrefix: task.strmPrefix || "",
+        targetPath: task.targetPath || "",
+      });
+    }
+  }, [task]);
+
   // 获取选中账户的类型
   const getAccountType = (accountName: string) => {
-    const selectedAccount = accounts.find(acc => acc.name === accountName);
+    const selectedAccount = accounts.find((acc) => acc.name === accountName);
     return selectedAccount?.accountType || "";
   };
 
@@ -85,7 +121,7 @@ export function AddTaskDialog({
       const accountType = getAccountType(values.account);
       const taskData = {
         ...values,
-        accountType
+        accountType,
       };
 
       if (task?.id) {
@@ -156,7 +192,6 @@ export function AddTaskDialog({
               )}
             />
 
-
             {/* Origin Path */}
             <FormField
               control={form.control}
@@ -167,6 +202,9 @@ export function AddTaskDialog({
                   <FormControl>
                     <Input {...field} placeholder="Origin Path" />
                   </FormControl>
+                  <div className="text-sm text-muted-foreground">
+                    在这里输入网盘路径或openlist的路径，如：tv 或 kuake/tv
+                  </div>
                   <FormMessage />
                 </FormItem>
               )}
@@ -182,6 +220,11 @@ export function AddTaskDialog({
                   <FormControl>
                     <Input {...field} placeholder="Target Path" />
                   </FormControl>
+                  <div className="text-sm text-muted-foreground">
+                    这里将生成strm文件到你的挂载目录里，比如填写 tv
+                    将在挂载目录创建tv目录，并将 Origin Path
+                    内所有的文件strm到TargetPath
+                  </div>
                   <FormMessage />
                 </FormItem>
               )}
@@ -201,7 +244,9 @@ export function AddTaskDialog({
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="local">local</SelectItem>
-                        <SelectItem value="cloud" disabled>cloud</SelectItem>
+                        <SelectItem value="cloud" disabled>
+                          cloud
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   </FormControl>
@@ -220,6 +265,12 @@ export function AddTaskDialog({
                   <FormControl>
                     <Input {...field} placeholder="Strm Prefix" />
                   </FormControl>
+                  <div className="text-sm text-muted-foreground">
+                    用户生成strm文件的前缀，为Strm Prefix+target Path
+                  </div>
+                  <div className="text-sm text-red-600 font-medium">
+                    请确保emby可以访问到该路径: {getPreviewPath()}
+                  </div>
                   <FormMessage />
                 </FormItem>
               )}
