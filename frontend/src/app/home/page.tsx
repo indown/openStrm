@@ -51,12 +51,12 @@ export type Task = {
 // 状态图标和颜色映射
 const getStatusConfig = (status: Task["status"]) => {
   const configs = {
-    pending: { icon: AlertCircle, color: "bg-yellow-100 text-yellow-800", label: "待处理" },
-    processing: { icon: AlertCircle, color: "bg-blue-100 text-blue-800", label: "处理中" },
-    success: { icon: CheckCircle, color: "bg-green-100 text-green-800", label: "成功" },
-    failed: { icon: XCircle, color: "bg-red-100 text-red-800", label: "失败" }
+    pending: { icon: AlertCircle, color: "bg-yellow-100 text-yellow-800 hover:bg-yellow-200 hover:text-yellow-900", label: "待处理" },
+    processing: { icon: AlertCircle, color: "bg-blue-100 text-blue-800 hover:bg-blue-200 hover:text-blue-900", label: "处理中" },
+    success: { icon: CheckCircle, color: "bg-green-100 text-green-800 hover:bg-green-200 hover:text-green-900", label: "成功" },
+    failed: { icon: XCircle, color: "bg-red-100 text-red-800 hover:bg-red-200 hover:text-red-900", label: "失败" }
   };
-  return configs[status] || { icon: AlertCircle, color: "bg-gray-100 text-gray-800", label: "未知" };
+  return configs[status] || { icon: CheckCircle, color: "bg-gray-200 text-gray-700 border border-gray-300 hover:bg-gray-300 hover:text-gray-900", label: "空闲" };
 };
 
 // UI 样式常量
