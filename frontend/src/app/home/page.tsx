@@ -171,7 +171,9 @@ export default function Home() {
     setStartingTasks(prev => new Set(prev).add(id));
     
     try {
-      const res = await axiosInstance.post("/api/startTask", { id });
+      const res = await axiosInstance.post("/api/startTask", { id }, {
+        timeout: 180000 // 设置60秒超时
+      });
       toast.success(`任务已开始: ${res.data.message}`);
       
       // 立即更新本地状态，将任务状态设为processing
@@ -183,8 +185,12 @@ export default function Home() {
       
       // 延迟刷新任务列表以确保状态同步
       setTimeout(fetchTasks, 1000);
-    } catch {
-      toast.error("任务开始失败");
+    } catch (error: unknown) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ECONNABORTED') {
+        toast.error("任务启动超时，请稍后检查任务状态");
+      } else {
+        toast.error("任务开始失败");
+      }
     } finally {
       // 从正在启动的任务集合中移除
       setStartingTasks(prev => {
