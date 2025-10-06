@@ -69,7 +69,7 @@ export function AppSidebar() {
             />
             <div className="flex flex-col">
               <span className="text-xl font-bold text-foreground">Open Strm</span>
-              <span className="text-xs text-muted-foreground">Stream Management</span>
+              <span className="text-xs text-muted-foreground">Strm Management</span>
             </div>
           </div>
         </div>
