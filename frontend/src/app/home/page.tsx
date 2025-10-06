@@ -30,7 +30,8 @@ import {
   XCircle,
   AlertCircle,
   FolderX,
-  Loader2
+  Loader2,
+  RefreshCw
 } from "lucide-react";
 
 // Task 类型
@@ -176,15 +177,14 @@ export default function Home() {
       });
       toast.success(`任务已开始: ${res.data.message}`);
       
-      // 立即更新本地状态，将任务状态设为processing
+      // 只有在API成功返回后才更新状态为processing
       setData(prevData => 
         prevData.map(task => 
           task.id === id ? { ...task, status: "processing" as const } : task
         )
       );
       
-      // 延迟刷新任务列表以确保状态同步
-      setTimeout(fetchTasks, 1000);
+      // 移除自动刷新，让用户手动刷新或通过其他方式查看状态
     } catch (error: unknown) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ECONNABORTED') {
         toast.error("任务启动超时，请稍后检查任务状态");
@@ -507,17 +507,27 @@ export default function Home() {
           <h1 className="text-2xl font-semibold">任务管理</h1>
           <p className="text-gray-600 mt-1">管理和监控你的下载任务</p>
         </div>
-        <AddTaskDialog 
-          onSuccess={fetchTasks}
-          accounts={accounts}
-          accountsLoading={accountsLoading}
-          trigger={
-            <Button>
-              <Plus className="w-4 h-4 mr-2" />
-              新建任务
-            </Button>
-          }
-        />
+        <div className="flex gap-2">
+          <Button 
+            variant="outline" 
+            onClick={fetchTasks}
+            disabled={isLoading}
+          >
+            <RefreshCw className={`w-4 h-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+            刷新状态
+          </Button>
+          <AddTaskDialog 
+            onSuccess={fetchTasks}
+            accounts={accounts}
+            accountsLoading={accountsLoading}
+            trigger={
+              <Button>
+                <Plus className="w-4 h-4 mr-2" />
+                新建任务
+              </Button>
+            }
+          />
+        </div>
       </div>
       
       {data.length === 0 ? (
