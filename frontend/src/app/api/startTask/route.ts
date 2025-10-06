@@ -48,85 +48,100 @@ type TreeNode = {
 };
 
 // 获取 openlist 目录树数据
-async function getOpenlistTreeData(baseUrl: string, token: string, originPath: string): Promise<TreeNode[]> {
+async function getOpenlistTreeData(
+  baseUrl: string,
+  token: string,
+  originPath: string
+): Promise<TreeNode[]> {
   const allPaths: string[] = [];
-  
+
   // 递归收集所有文件路径
   async function collectPaths(currentPath: string): Promise<void> {
-    const response = await axios.post<OpenlistResponse>(`${baseUrl}/api/fs/list`, {
-      path: currentPath,
-      page: 1,
-      per_page: 0,
-      refresh: true
-    }, {
-      headers: { 'Authorization': token }
-    });
+    const response = await axios.post<OpenlistResponse>(
+      `${baseUrl}/api/fs/list`,
+      {
+        path: currentPath,
+        page: 1,
+        per_page: 0,
+        refresh: true,
+      },
+      {
+        headers: { Authorization: token },
+      }
+    );
 
     if (response.data.code !== 200) {
-      throw new Error(`Failed to list directory ${currentPath}: ${response.data.message}`);
+      throw new Error(
+        `Failed to list directory ${currentPath}: ${response.data.message}`
+      );
     }
 
     const items = response.data.data.content || [];
-    
+
     for (const item of items) {
       const itemPath = buildPath(currentPath, item.name);
       allPaths.push(itemPath);
-      
+
       if (item.is_dir) {
         await collectPaths(itemPath);
       }
     }
   }
-  
+
   // 构建路径的辅助函数
   function buildPath(basePath: string, itemName: string): string {
-    if (basePath === '/' || basePath === '') {
+    if (basePath === "/" || basePath === "") {
       return itemName;
     }
-    return basePath.endsWith('/') ? `${basePath}${itemName}` : `${basePath}/${itemName}`;
+    return basePath.endsWith("/")
+      ? `${basePath}${itemName}`
+      : `${basePath}/${itemName}`;
   }
-  
+
   // 清理路径，保留 originPath 的最后一层
   function cleanPaths(paths: string[]): string[] {
-    const pathParts = originPath.split('/').filter(part => part !== '');
-    const lastDir = pathParts[pathParts.length - 1] || '';
-    const prefixToRemove = originPath.substring(0, originPath.lastIndexOf('/' + lastDir));
-    
+    const pathParts = originPath.split("/").filter((part) => part !== "");
+    const lastDir = pathParts[pathParts.length - 1] || "";
+    const prefixToRemove = originPath.substring(
+      0,
+      originPath.lastIndexOf("/" + lastDir)
+    );
+
     return paths
-      .map(path => {
+      .map((path) => {
         if (prefixToRemove.length === 0) return path;
-        
-        if (path.startsWith(prefixToRemove + '/')) {
+
+        if (path.startsWith(prefixToRemove + "/")) {
           return path.substring(prefixToRemove.length + 1);
         }
         if (path.startsWith(prefixToRemove)) {
           const cleaned = path.substring(prefixToRemove.length);
-          return cleaned.startsWith('/') ? cleaned.substring(1) : cleaned;
+          return cleaned.startsWith("/") ? cleaned.substring(1) : cleaned;
         }
         return path;
       })
-      .filter(path => path.length > 0);
+      .filter((path) => path.length > 0);
   }
-  
+
   // 转换为 115 兼容的扁平格式
   function convertToFlatFormat(paths: string[]): TreeNode[] {
     const treeData: TreeNode[] = [];
     const nodeMap = new Map<string, number>(); // path -> key 映射，优化查找性能
     let keyCounter = 1;
-    
+
     // 添加根节点
-    treeData.push({ depth: 0, key: 0, name: '', parent_key: 0 });
-    
+    treeData.push({ depth: 0, key: 0, name: "", parent_key: 0 });
+
     for (const fullPath of paths) {
-      const pathParts = fullPath.split('/').filter(part => part !== '');
+      const pathParts = fullPath.split("/").filter((part) => part !== "");
       let parentKey = 0;
-      let currentPath = '';
-      
+      let currentPath = "";
+
       for (let i = 0; i < pathParts.length; i++) {
         const name = pathParts[i].trim();
         const depth = i + 1;
         currentPath = i === 0 ? name : `${currentPath}/${name}`;
-        
+
         // 使用 Map 优化节点查找
         const nodeKey = `${depth}-${name}-${parentKey}`;
         if (!nodeMap.has(nodeKey)) {
@@ -134,7 +149,7 @@ async function getOpenlistTreeData(baseUrl: string, token: string, originPath: s
             depth,
             key: keyCounter++,
             name,
-            parent_key: parentKey
+            parent_key: parentKey,
           };
           treeData.push(newNode);
           nodeMap.set(nodeKey, newNode.key);
@@ -144,17 +159,19 @@ async function getOpenlistTreeData(baseUrl: string, token: string, originPath: s
         }
       }
     }
-    
+
     return treeData;
   }
-  
+
   try {
     await collectPaths(originPath);
     const cleanedPaths = cleanPaths(allPaths);
     return convertToFlatFormat(cleanedPaths);
   } catch (error) {
     if (axios.isAxiosError(error)) {
-      throw new Error(`Openlist API error: ${error.response?.statusText || error.message}`);
+      throw new Error(
+        `Openlist API error: ${error.response?.statusText || error.message}`
+      );
     }
     throw error;
   }
@@ -191,13 +208,14 @@ function startDownloadTask({
   };
 
   // 发送任务开始通知
-  const startMessage = `<b>Task ID:</b> ${taskId}\n` +
+  const startMessage =
+    `<b>Task ID:</b> ${taskId}\n` +
     `<b>Account:</b> ${account}\n` +
     `<b>Target Path:</b> ${targetPath}\n` +
     `<b>Files to Download:</b> ${total}\n` +
     `<b>Origin Path:</b> ${originPath}`;
-  
-  sendTelegramNotification(startMessage, 'start');
+
+  sendTelegramNotification(startMessage, "start");
 
   const pushLog = (log: DownloadProgress) => {
     const line = JSON.stringify(log);
@@ -211,8 +229,12 @@ function startDownloadTask({
 
   // 从配置文件读取扩展名配置
   const settings = readSettings();
-  const strmExtensions = (settings.strmExtensions || []).map(ext => ext.toLowerCase());
-  const downloadExtensions = (settings.downloadExtensions || []).map(ext => ext.toLowerCase());
+  const strmExtensions = (settings.strmExtensions || []).map((ext) =>
+    ext.toLowerCase()
+  );
+  const downloadExtensions = (settings.downloadExtensions || []).map((ext) =>
+    ext.toLowerCase()
+  );
 
   // strm 文件
   const strmFiles = filePaths.filter((fp) =>
@@ -270,32 +292,34 @@ function startDownloadTask({
       complete: () => {
         pushLog({ done: true });
         taskSubject.complete();
-        
+
         // 发送任务完成通知
-        const completeMessage = `<b>Task ID:</b> ${taskId}\n` +
+        const completeMessage =
+          `<b>Task ID:</b> ${taskId}\n` +
           `<b>Account:</b> ${account}\n` +
           `<b>Target Path:</b> ${targetPath}\n` +
           `<b>Files Downloaded:</b> ${total}\n` +
           `<b>Status:</b> Successfully completed`;
-        
-        sendTelegramNotification(completeMessage, 'complete');
-        
+
+        sendTelegramNotification(completeMessage, "complete");
+
         // 下载完成后通知 Emby 刷新
         notifyEmbyRefresh();
         delete downloadTasks[taskId];
       },
       error: (err) => {
         pushLog({ error: err.message });
-        
+
         // 发送任务错误通知
-        const errorMessage = `<b>Task ID:</b> ${taskId}\n` +
+        const errorMessage =
+          `<b>Task ID:</b> ${taskId}\n` +
           `<b>Account:</b> ${account}\n` +
           `<b>Target Path:</b> ${targetPath}\n` +
           `<b>Error:</b> ${err.message}\n` +
           `<b>Status:</b> Failed`;
-        
-        sendTelegramNotification(errorMessage, 'error');
-        
+
+        sendTelegramNotification(errorMessage, "error");
+
         taskSubject.complete();
         delete downloadTasks[taskId];
       },
@@ -307,23 +331,41 @@ function startDownloadTask({
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json();
-  const tasks = readTasks();
-  const task = tasks.find((t: { id: string }) => t.id === body.id);
-  const { id, account, originPath, targetPath, strmPrefix } = task;
-  
+  try {
+    const body = await req.json();
+    const tasks = readTasks();
+    const task = tasks.find((t: { id: string }) => t.id === body.id);
+    
+    if (!task) {
+      return NextResponse.json({ 
+        message: "Task not found", 
+        error: `Task with id ${body.id} not found` 
+      }, { status: 404 });
+    }
+    
+    const { id, account, originPath, targetPath, strmPrefix } = task;
+
   // 从 account.json 中读取账户信息
   const accounts = readAccounts();
   const accountInfo = accounts.find(
-    (acc: { name: string; accountType?: string; cookie?: string; account?: string; password?: string; url?: string; token?: string; expiresAt?: number }) => acc.name === account
+    (acc: {
+      name: string;
+      accountType?: string;
+      cookie?: string;
+      account?: string;
+      password?: string;
+      url?: string;
+      token?: string;
+      expiresAt?: number;
+    }) => acc.name === account
   );
   if (!accountInfo) {
     throw new Error(`No account found: ${account}`);
   }
-  
+
   // 从 accountInfo 中获取 accountType
   const accountType = accountInfo.accountType;
-  
+
   let tree;
   if (accountType === "115") {
     // 检查 115 必要字段
@@ -335,32 +377,60 @@ export async function POST(req: NextRequest) {
     const idRes = await fs_dir_getid(originPath, { cookie });
     // const data = await getData({ account, id, originPath });
 
-    const data = await exportDirParse({
-      cookie,
-      exportFileIds: idRes.id, // or ['123','456'] or a string
-      targetPid: 0,
-      layerLimit: 0,
-      deleteAfter: true,
-      timeoutMs: 300000,
-      checkIntervalMs: 1000,
-    });
-    tree = buildTree(data);
-  } else if(accountType === "openlist") {
+    try {
+      const data = await exportDirParse({
+        cookie,
+        exportFileIds: idRes.id, // or ['123','456'] or a string
+        targetPid: 0,
+        layerLimit: 0,
+        deleteAfter: true,
+        timeoutMs: 300000,
+        checkIntervalMs: 1000,
+      });
+      console.log("data: ", data);
+      tree = buildTree(data);
+    } catch (error) {
+      console.error("Failed to parse 115 directory: ", error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // 检测115账号封控错误
+      if (errorMessage.includes('<!doctypehtml>') || 
+          errorMessage.includes('405') || 
+          errorMessage.includes('您的访问被阻断') ||
+          errorMessage.includes('potential threats to the server')) {
+        return NextResponse.json({ 
+          message: "115账号被封控", 
+          error: "账号访问被阿里云阻断，请检查账号状态或稍后重试" 
+        }, { status: 403 });
+      }
+      
+      return NextResponse.json({ 
+        message: "Failed to parse 115 directory", 
+        error: errorMessage 
+      }, { status: 500 });
+    }
+  } else if (accountType === "openlist") {
     // 检查 openlist 必要字段
     if (!accountInfo.account || !accountInfo.password || !accountInfo.url) {
       throw new Error(`Missing openlist credentials for account: ${account}`);
     }
 
     let token = accountInfo.token;
-    
+
     // 检查 token 是否过期
-    if (!token || (accountInfo.expiresAt && Date.now() / 1000 > accountInfo.expiresAt)) {
+    if (
+      !token ||
+      (accountInfo.expiresAt && Date.now() / 1000 > accountInfo.expiresAt)
+    ) {
       // 获取新的 JWT token
       try {
-        const loginResponse = await axios.post(`${accountInfo.url}/api/auth/login`, {
-          username: accountInfo.account,
-          password: accountInfo.password
-        });
+        const loginResponse = await axios.post(
+          `${accountInfo.url}/api/auth/login`,
+          {
+            username: accountInfo.account,
+            password: accountInfo.password,
+          }
+        );
 
         const loginData = loginResponse.data;
         console.log("loginData: ", loginData);
@@ -371,25 +441,33 @@ export async function POST(req: NextRequest) {
         token = loginData.data.token;
       } catch (error) {
         if (axios.isAxiosError(error)) {
-          throw new Error(`Failed to login to openlist: ${error.response?.statusText || error.message}`);
+          throw new Error(
+            `Failed to login to openlist: ${
+              error.response?.statusText || error.message
+            }`
+          );
         }
         throw error;
       }
-      
+
       // 更新账户信息中的 token 和过期时间
       accountInfo.token = token;
-      accountInfo.expiresAt = Math.floor(Date.now() / 1000) + (47 * 60 * 60); // 48小时后过期
-      
+      accountInfo.expiresAt = Math.floor(Date.now() / 1000) + 47 * 60 * 60; // 48小时后过期
+
       // 保存更新后的账户信息
-      const accountPath = path.join(process.cwd(), '../config/account.json');
+      const accountPath = path.join(process.cwd(), "../config/account.json");
       fs.writeFileSync(accountPath, JSON.stringify(accounts, null, 2));
     }
 
     // 获取 openlist 目录树并转换为 115 兼容格式
-    const openlistTreeData = await getOpenlistTreeData(accountInfo.url, token, originPath);
+    const openlistTreeData = await getOpenlistTreeData(
+      accountInfo.url,
+      token,
+      originPath
+    );
     tree = buildTree(openlistTreeData);
   }
-  
+
   // 对于 115 网盘，继续使用原有的 buildTree 逻辑
   // const tree = buildTree(data);
 
@@ -435,4 +513,12 @@ export async function POST(req: NextRequest) {
     message: `${missingLocally.length} files to download for task, ${extraLocally.length} files to delete.`,
     taskId: id,
   });
+  } catch (error) {
+    console.error("StartTask error: ", error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ 
+      message: "Failed to start task", 
+      error: errorMessage 
+    }, { status: 500 });
+  }
 }
