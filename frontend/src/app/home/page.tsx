@@ -188,6 +188,13 @@ export default function Home() {
     } catch (error: unknown) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ECONNABORTED') {
         toast.error("任务启动超时，请稍后检查任务状态");
+      } else if (error && typeof error === 'object' && 'response' in error) {
+        // 处理API错误响应
+        const apiError = error as { response?: { data?: { message?: string; error?: string } } };
+        const message = apiError.response?.data?.message || "任务开始失败";
+        const detail = apiError.response?.data?.error;
+        const errorText = detail ? `${message}: ${detail}` : message;
+        toast.error(errorText);
       } else {
         toast.error("任务开始失败");
       }

@@ -97,6 +97,16 @@ export async function getRealDownloadLink(
       return downloadUrl;
     } catch (error) {
       console.error(`Failed to get download link for ${filePath}:`, error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // 检测115账号封控错误
+      if (errorMessage.includes('<!doctypehtml>') || 
+          errorMessage.includes('405') || 
+          errorMessage.includes('您的访问被阻断') ||
+          errorMessage.includes('potential threats to the server')) {
+        throw new Error("115账号被封控，账号访问被阿里云阻断");
+      }
+      
       throw error;
     }
   } else if (accountInfo.accountType === "openlist") {
