@@ -14,7 +14,7 @@
   "download": {
     "linkMaxPerSecond": 2,
     "linkMaxConcurrent": 2,
-    "downloadMaxPerSecond": 2,
+    "downloadMaxPerSecond": 1,
     "downloadMaxConcurrent": 5
   }
 }
