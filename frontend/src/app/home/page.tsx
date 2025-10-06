@@ -29,7 +29,8 @@ import {
   CheckCircle,
   XCircle,
   AlertCircle,
-  FolderX
+  FolderX,
+  Loader2
 } from "lucide-react";
 
 // Task 类型
@@ -57,6 +58,28 @@ const getStatusConfig = (status: Task["status"]) => {
   return configs[status] || { icon: AlertCircle, color: "bg-gray-100 text-gray-800", label: "未知" };
 };
 
+// UI 样式常量
+const BUTTON_STYLES = {
+  disabled: "opacity-30 cursor-not-allowed bg-gray-100 hover:bg-gray-100",
+  enabled: "hover:bg-green-50 hover:text-green-600",
+  loading: "text-blue-600",
+  icon: {
+    disabled: "text-gray-400",
+    enabled: "text-gray-600"
+  }
+} as const;
+
+const ACCOUNT_STYLES = {
+  busy: "border-orange-300 bg-orange-50 text-orange-700",
+  normal: ""
+} as const;
+
+// 状态标签常量
+const STATUS_LABELS = {
+  starting: "启动中",
+  running: "运行中"
+} as const;
+
 export default function Home() {
   const [data, setData] = useState<Task[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -64,7 +87,39 @@ export default function Home() {
   const [clearDialogOpen, setClearDialogOpen] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<Array<{name: string, accountType: string}>>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
+  const [startingTasks, setStartingTasks] = useState<Set<string>>(new Set());
   const router = useRouter();
+
+  // 检查账户是否有任务正在运行或启动
+  const isAccountBusy = (accountName: string) => {
+    return data.some(task => 
+      task.account === accountName && 
+      (task.status === "processing" || startingTasks.has(task.id))
+    );
+  };
+
+  // 检查任务是否应该被禁用
+  const isTaskDisabled = (task: Task) => {
+    const isStarting = startingTasks.has(task.id);
+    const isRunning = task.status === "processing";
+    const hasSameAccountRunning = isAccountBusy(task.account);
+    
+    return isStarting || isRunning || hasSameAccountRunning;
+  };
+
+  // 获取任务显示状态
+  const getTaskDisplayStatus = (task: Task) => {
+    const isStarting = startingTasks.has(task.id);
+    const isRunning = task.status === "processing";
+    
+    if (isStarting) {
+      return { status: "processing" as const, label: STATUS_LABELS.starting };
+    } else if (isRunning) {
+      return { status: "processing" as const, label: STATUS_LABELS.running };
+    } else {
+      return { status: task.status, label: getStatusConfig(task.status).label };
+    }
+  };
 
   useEffect(() => {
     fetchTasks();
@@ -98,6 +153,7 @@ export default function Home() {
   };
 
 
+
   // 删除任务
   const deleteTask = async (id: string) => {
     try {
@@ -111,11 +167,31 @@ export default function Home() {
 
   // 开始任务
   const startTask = async (id: string) => {
+    // 添加到正在启动的任务集合
+    setStartingTasks(prev => new Set(prev).add(id));
+    
     try {
       const res = await axiosInstance.post("/api/startTask", { id });
       toast.success(`任务已开始: ${res.data.message}`);
+      
+      // 立即更新本地状态，将任务状态设为processing
+      setData(prevData => 
+        prevData.map(task => 
+          task.id === id ? { ...task, status: "processing" as const } : task
+        )
+      );
+      
+      // 延迟刷新任务列表以确保状态同步
+      setTimeout(fetchTasks, 1000);
     } catch {
       toast.error("任务开始失败");
+    } finally {
+      // 从正在启动的任务集合中移除
+      setStartingTasks(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(id);
+        return newSet;
+      });
     }
   };
 
@@ -164,14 +240,31 @@ export default function Home() {
     { 
       accessorKey: "account", 
       header: "账户",
-      cell: ({ row }) => (
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="text-xs">
-            {row.original.accountType}
-          </Badge>
-          <span className="font-medium">{row.original.account}</span>
-        </div>
-      )
+      cell: ({ row }) => {
+        const task = row.original;
+        const isBusy = isAccountBusy(task.account);
+        
+        return (
+          <div className="flex items-center gap-2">
+            <Badge 
+              variant="outline" 
+              className={`text-xs ${
+                isBusy ? ACCOUNT_STYLES.busy : ACCOUNT_STYLES.normal
+              }`}
+            >
+              {task.accountType}
+            </Badge>
+            <span className={`font-medium ${
+              isBusy ? "text-orange-700" : ""
+            }`}>
+              {task.account}
+              {isBusy && (
+                <span className="ml-1 text-xs text-orange-600">●</span>
+              )}
+            </span>
+          </div>
+        );
+      }
     },
     { 
       accessorKey: "originPath", 
@@ -248,12 +341,15 @@ export default function Home() {
       accessorKey: "status", 
       header: "状态",
       cell: ({ row }) => {
-        const config = getStatusConfig(row.original.status);
+        const task = row.original;
+        const { status, label } = getTaskDisplayStatus(task);
+        const config = getStatusConfig(status);
         const Icon = config.icon;
+        
         return (
           <Badge className={`${config.color} border-0`}>
             <Icon className="w-3 h-3 mr-1" />
-            {config.label}
+            {label}
           </Badge>
         );
       }
@@ -263,16 +359,41 @@ export default function Home() {
       header: "操作",
       cell: ({ row }) => {
         const task = row.original;
+        const isStarting = startingTasks.has(task.id);
+        const isDisabled = isTaskDisabled(task);
+        
         return (
           <div className="flex gap-1">
             <Button
               variant="ghost"
               size="sm"
               onClick={() => startTask(task.id)}
-              className="h-8 w-8 p-0"
-              title="开始任务"
+              disabled={isDisabled}
+              className={`h-8 w-8 p-0 ${
+                isDisabled 
+                  ? BUTTON_STYLES.disabled 
+                  : task.status === "processing"
+                    ? "bg-blue-50 hover:bg-blue-100" 
+                    : BUTTON_STYLES.enabled
+              }`}
+              title={
+                isStarting ? `${STATUS_LABELS.starting}...` :
+                task.status === "processing" ? "任务运行中" :
+                isAccountBusy(task.account) ? `账户 ${task.account} 有任务正在运行` :
+                "开始任务"
+              }
             >
-              <Play className="w-4 h-4" />
+              {isStarting ? (
+                <Loader2 className={`w-4 h-4 animate-spin ${BUTTON_STYLES.loading}`} />
+              ) : task.status === "processing" ? (
+                <div className="w-4 h-4 flex items-center justify-center">
+                  <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse"></div>
+                </div>
+              ) : (
+                <Play className={`w-4 h-4 ${
+                  isDisabled ? BUTTON_STYLES.icon.disabled : BUTTON_STYLES.icon.enabled
+                }`} />
+              )}
             </Button>
             <Button
               variant="ghost"
