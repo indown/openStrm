@@ -162,7 +162,7 @@ export function AddTaskDialog({
               name="account"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Account</FormLabel>
+                  <FormLabel>账户</FormLabel>
                   <FormControl>
                     <Select onValueChange={field.onChange} value={field.value}>
                       <SelectTrigger>
@@ -198,7 +198,7 @@ export function AddTaskDialog({
               name="originPath"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Origin Path</FormLabel>
+                  <FormLabel>远程路径</FormLabel>
                   <FormControl>
                     <Input {...field} placeholder="Origin Path" />
                   </FormControl>
@@ -216,7 +216,7 @@ export function AddTaskDialog({
               name="targetPath"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Target Path</FormLabel>
+                  <FormLabel>本地路径</FormLabel>
                   <FormControl>
                     <Input {...field} placeholder="Target Path" />
                   </FormControl>
@@ -236,7 +236,7 @@ export function AddTaskDialog({
               name="strmType"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Strm Type</FormLabel>
+                  <FormLabel>Strm 类型</FormLabel>
                   <FormControl>
                     <Select onValueChange={field.onChange} value={field.value}>
                       <SelectTrigger>
@@ -261,7 +261,7 @@ export function AddTaskDialog({
               name="strmPrefix"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Strm Prefix</FormLabel>
+                  <FormLabel>Strm 前缀</FormLabel>
                   <FormControl>
                     <Input {...field} placeholder="Strm Prefix" />
                   </FormControl>
