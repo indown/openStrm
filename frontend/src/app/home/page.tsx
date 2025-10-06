@@ -274,7 +274,7 @@ export default function Home() {
     },
     { 
       accessorKey: "originPath", 
-      header: "源路径",
+      header: "远程路径",
       cell: ({ row }) => (
         <span className="text-sm text-gray-600 max-w-xs truncate block">
           {row.original.originPath}
@@ -283,7 +283,7 @@ export default function Home() {
     },
     { 
       accessorKey: "targetPath", 
-      header: "目标路径",
+      header: "本地路径",
       cell: ({ row }) => {
         const task = row.original;
         return (
