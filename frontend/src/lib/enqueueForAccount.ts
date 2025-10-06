@@ -69,9 +69,7 @@ export async function getRealDownloadLink(
   }
   if (accountInfo.accountType === "115") {
     const cookie = accountInfo.cookie;
-    const userAgent =
-      settings["user-agent"] ||
-      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+    const userAgent = settings["user-agent"];
 
     try {
       console.log(`Looking for file: ${filePath}`);
@@ -174,10 +172,7 @@ export function downloadOrCreateStrm(
       }
       return;
     }
-    const userAgent =
-      readSettings()["user-agent"] ||
-      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
-    // console.log("Using User-Agent:", userAgent);
+    const userAgent = readSettings()["user-agent"];
     const headers = {
       "User-Agent": userAgent,
     };

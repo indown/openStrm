@@ -482,12 +482,9 @@ function commonHeaders({ cookie, userAgent }) {
 // Fetch the download URL and return a ReadableStream of bytes
 // Use axios to match downloadOrCreateStrm behavior and handle 302
 async function openFileStream(url: string, { userAgent }: { cookie: string; userAgent?: string }) {
-  // Use the same User-Agent logic as downloadOrCreateStrm
-  const finalUserAgent = userAgent || 
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
   
   const headers = {
-    "User-Agent": finalUserAgent,
+    "User-Agent": userAgent,
   };
 
   // Use axios exactly like downloadOrCreateStrm - let it handle 302 automatically
@@ -604,7 +601,7 @@ function defaultUA() {
   }
   
   // 默认UA作为fallback
-  return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+  return "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/116.0.5845.89 Mobile/15E148 Safari/604.1";
 }
 
 function ensureOk(resp) {
