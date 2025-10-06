@@ -225,7 +225,7 @@ export function getRealDownloadLinkLimited(
             })
             .catch((err) => observer.error(err));
         }),
-      downloadConfig.maxPerSecond || 2,
+      downloadConfig.linkMaxPerSecond || 2,
       downloadConfig.linkMaxConcurrent || 2 
     )
   ).pipe(
@@ -258,10 +258,10 @@ export function downloadOrCreateStrmLimited(
   return defer(() =>
     // defer 保证每次订阅才创建 Observable
     enqueueForAccount(
-      account, 
+      account + 'download', 
       () => downloadOrCreateStrm(filePathOrUrl, savePath, opts),
-      downloadConfig.maxPerSecond || 2,
-      downloadConfig.maxConcurrent || 2
+      downloadConfig.downloadMaxPerSecond || 2,
+      downloadConfig.downloadMaxConcurrent || 5
     )
   ).pipe(
     retry({
