@@ -6,6 +6,7 @@ import * as z from "zod";
 import { useForm } from "react-hook-form";
 import { Button } from "@/components/ui/button";
 import axiosInstance from "@/lib/axios";
+import { HelpCircle } from "lucide-react";
 import {
   Dialog,
   DialogClose,
@@ -198,13 +199,19 @@ export function AddTaskDialog({
               name="originPath"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>远程路径</FormLabel>
+                  <FormLabel className="flex items-center gap-1">
+                    远程路径
+                    <div className="group relative">
+                      <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-600 cursor-help" />
+                      <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 text-white text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
+                        在这里输入网盘路径或openlist的路径，如：tv 或 kuake/tv
+                        <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                      </div>
+                    </div>
+                  </FormLabel>
                   <FormControl>
                     <Input {...field} placeholder="Origin Path" />
                   </FormControl>
-                  <div className="text-sm text-muted-foreground">
-                    在这里输入网盘路径或openlist的路径，如：tv 或 kuake/tv
-                  </div>
                   <FormMessage />
                 </FormItem>
               )}
@@ -216,15 +223,19 @@ export function AddTaskDialog({
               name="targetPath"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>本地路径</FormLabel>
+                  <FormLabel className="flex items-center gap-1">
+                    本地路径
+                    <div className="group relative">
+                      <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-600 cursor-help" />
+                      <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 text-white text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
+                        这里将生成strm文件到你的挂载目录里，比如填写 tv 将在挂载目录创建tv目录，并将 Origin Path 内所有的文件strm到TargetPath
+                        <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                      </div>
+                    </div>
+                  </FormLabel>
                   <FormControl>
                     <Input {...field} placeholder="Target Path" />
                   </FormControl>
-                  <div className="text-sm text-muted-foreground">
-                    这里将生成strm文件到你的挂载目录里，比如填写 tv
-                    将在挂载目录创建tv目录，并将 Origin Path
-                    内所有的文件strm到TargetPath
-                  </div>
                   <FormMessage />
                 </FormItem>
               )}
@@ -261,13 +272,19 @@ export function AddTaskDialog({
               name="strmPrefix"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Strm 前缀</FormLabel>
+                  <FormLabel className="flex items-center gap-1">
+                    Strm 前缀
+                    <div className="group relative">
+                      <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-600 cursor-help" />
+                      <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 text-white text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
+                        用户生成strm文件的前缀，为Strm Prefix+target Path
+                        <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                      </div>
+                    </div>
+                  </FormLabel>
                   <FormControl>
                     <Input {...field} placeholder="Strm Prefix" />
                   </FormControl>
-                  <div className="text-sm text-muted-foreground">
-                    用户生成strm文件的前缀，为Strm Prefix+target Path
-                  </div>
                   <div className="text-sm text-red-600 font-medium">
                     请确保emby可以访问到该路径: {getPreviewPath()}
                   </div>
