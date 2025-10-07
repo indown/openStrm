@@ -1,9 +1,20 @@
 import { readTasks, saveTasks } from "@/lib/serverUtils";
+import { downloadTasks } from "@/lib/downloadTaskManager";
 import { NextRequest, NextResponse } from "next/server";
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   const tasks = readTasks();
-  return NextResponse.json(tasks);
+  
+  // 获取运行中的任务ID
+  const runningTaskIds = new Set(Object.keys(downloadTasks));
+  
+  // 为任务添加状态信息
+  const tasksWithStatus = tasks.map((task: { id: string; [key: string]: unknown }) => ({
+    ...task,
+    status: runningTaskIds.has(task.id) ? "processing" : "pending"
+  }));
+  
+  return NextResponse.json(tasksWithStatus);
 }
 
 export async function POST(req: NextRequest) {
@@ -26,7 +37,7 @@ export async function PUT(req: NextRequest) {
   const { id, ...updateData } = body;
 
   const tasks = readTasks();
-  const index = tasks.findIndex((t: { id: any; }) => t.id === id);
+  const index = tasks.findIndex((t: { id: string; }) => t.id === id);
   if (index === -1) {
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }

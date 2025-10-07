@@ -1,6 +1,7 @@
 **/node_modules
 .DS_Store
 *.log
+**/logs
 **/data
 **/account.json
 **/tasks.json
