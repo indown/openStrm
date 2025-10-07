@@ -43,6 +43,7 @@ export type Task = {
   targetPath: string;
   strmType: string;
   strmPrefix: string;
+  removeExtraFiles?: boolean;
   name: string;
   path: string;
   status: "pending" | "processing" | "success" | "failed";
