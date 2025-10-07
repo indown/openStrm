@@ -52,7 +52,7 @@ export type Task = {
 // 状态图标和颜色映射
 const getStatusConfig = (status: Task["status"]) => {
   const configs = {
-    pending: { icon: AlertCircle, color: "bg-yellow-100 text-yellow-800 hover:bg-yellow-200 hover:text-yellow-900", label: "待处理" },
+    pending: { icon: AlertCircle, color: "bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-800", label: "待处理" },
     processing: { icon: AlertCircle, color: "bg-blue-100 text-blue-800 hover:bg-blue-200 hover:text-blue-900", label: "处理中" },
     success: { icon: CheckCircle, color: "bg-green-100 text-green-800 hover:bg-green-200 hover:text-green-900", label: "成功" },
     failed: { icon: XCircle, color: "bg-red-100 text-red-800 hover:bg-red-200 hover:text-red-900", label: "失败" }

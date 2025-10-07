@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import axiosInstance from "@/lib/axios";
 
 interface Progress {
@@ -17,17 +17,69 @@ interface Progress {
 
 export default function DownloadProgressPage({
   params,
+  searchParams,
 }: {
   params: { taskId: string };
+  searchParams?: { executionId?: string };
 }) {
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-expect-error
   const { taskId } = React.use(params);
+  const executionId = searchParams?.executionId;
   const [logs, setLogs] = useState<Progress[]>([]);
   const [overall, setOverall] = useState<string>("0");
   const [connectionStatus, setConnectionStatus] = useState<string>("连接中...");
   const [isCancelling, setIsCancelling] = useState<boolean>(false);
   const [taskStatus, setTaskStatus] = useState<string>("运行中");
+
+  // 加载历史日志
+  const loadHistoryLogs = useCallback(async () => {
+    try {
+      console.log("Loading history logs for taskId:", taskId, "executionId:", executionId);
+      // 获取所有历史记录，然后找到特定的执行记录
+      const response = await axiosInstance.get("/api/taskHistory");
+      const allHistory = response.data;
+      console.log("All history data:", allHistory);
+      const execution = allHistory.find((h: { id: string }) => h.id === executionId);
+      console.log("Found execution:", execution);
+      
+      if (execution) {
+        setConnectionStatus("历史记录");
+        setTaskStatus(execution.status === "completed" ? "已完成" : 
+                     execution.status === "failed" ? "失败" : 
+                     execution.status === "cancelled" ? "已取消" : "运行中");
+        
+        // 解析历史日志
+        const parsedLogs: Progress[] = [];
+        execution.logs.forEach((logLine: string) => {
+          try {
+            const logData = JSON.parse(logLine);
+            parsedLogs.push(logData);
+          } catch {
+            console.error("Failed to parse log line:", logLine);
+          }
+        });
+        
+        setLogs(parsedLogs);
+        
+        // 计算总体进度 - 查找最后一个有overallPercent的日志
+        let finalOverallPercent = "0";
+        for (let i = parsedLogs.length - 1; i >= 0; i--) {
+          if (parsedLogs[i]?.overallPercent) {
+            finalOverallPercent = parsedLogs[i].overallPercent;
+            break;
+          }
+        }
+        setOverall(finalOverallPercent);
+      } else {
+        setConnectionStatus("历史记录不存在");
+        setTaskStatus("不存在");
+      }
+    } catch (error) {
+      console.error("Failed to load history logs:", error);
+      setConnectionStatus("加载历史记录失败");
+    }
+  }, [taskId, executionId]);
 
   useEffect(() => {
     let abortController: AbortController | null = null;
@@ -37,6 +89,12 @@ export default function DownloadProgressPage({
       setConnectionStatus("连接中...");
 
       try {
+        // 如果是查看历史记录，直接加载历史日志
+        if (executionId) {
+          await loadHistoryLogs();
+          return;
+        }
+
         console.log('Starting SSE connection to:', `/api/taskLog/${taskId}`);
         
         const response = await fetch(`/api/taskLog/${taskId}`, {
@@ -141,7 +199,7 @@ export default function DownloadProgressPage({
         abortController.abort();
       }
     };
-  }, [taskId]);
+  }, [taskId, executionId, loadHistoryLogs]);
 
   // 取消任务函数
   const cancelTask = async () => {

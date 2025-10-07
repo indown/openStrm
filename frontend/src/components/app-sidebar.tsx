@@ -1,5 +1,5 @@
 "use client"
-import { Home, Inbox, Settings, Github, Bot, Users } from "lucide-react";
+import { Home, Inbox, Settings, Github, Bot, Users, History } from "lucide-react";
 import Image from "next/image";
 
 import {
@@ -36,6 +36,11 @@ const items = [
     title: "Settings",
     url: "/settings",
     icon: Settings,
+  },
+  {
+    title: "History",
+    url: "/history",
+    icon: History,
   },
 ];
 

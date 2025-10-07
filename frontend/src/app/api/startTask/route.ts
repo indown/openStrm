@@ -16,6 +16,12 @@ import {
   readSettings,
 } from "@/lib/serverUtils";
 import {
+  createTaskExecution,
+  updateTaskExecution,
+  addLogToTaskExecution,
+  completeTaskExecution,
+} from "@/lib/taskHistoryManager";
+import {
   getRealDownloadLinkLimited,
   downloadOrCreateStrmLimited,
   downloadOrCreateStrm,
@@ -186,6 +192,7 @@ function startDownloadTask({
   strmPrefix,
   originPath,
   targetPath,
+  removeExtraFiles,
 }: {
   filePaths: string[];
   saveDir: string;
@@ -194,11 +201,29 @@ function startDownloadTask({
   strmPrefix?: string;
   originPath: string;
   targetPath: string;
+  removeExtraFiles?: boolean;
 }): string {
   const total = filePaths.length;
   const taskSubject = new Subject<DownloadProgress>();
   const perFile = new Map<string, number>();
   for (const fp of filePaths) perFile.set(fp, 0);
+
+  // 创建任务执行历史记录
+  const executionHistory = createTaskExecution(taskId, {
+    account,
+    originPath,
+    targetPath,
+    removeExtraFiles,
+  });
+
+  // 更新历史记录，包含文件统计信息
+  updateTaskExecution(executionHistory.id, {
+    summary: {
+      totalFiles: total,
+      downloadedFiles: 0,
+      deletedFiles: 0,
+    },
+  });
 
   // 初始化 downloadTasks
   downloadTasks[taskId] = {
@@ -217,13 +242,36 @@ function startDownloadTask({
 
   sendTelegramNotification(startMessage, "start");
 
+  // 用于跟踪每个文件的最后记录进度，避免重复记录
+  const lastRecordedProgress = new Map<string, number>();
+  
   const pushLog = (log: DownloadProgress) => {
     const line = JSON.stringify(log);
     const task = downloadTasks[taskId];
+    
+    // 实时推送给前端（保持原有行为）
     if (task) {
       task.logs.push(line);
       if (task.logs.length > 20000) task.logs.shift(); // 防止无限增长
       task.subject.next(log);
+    }
+    
+    // 智能记录到历史记录：只记录进度达到100%的文件
+    let shouldRecordToHistory = false;
+    
+    if (log.filePath && log.percent !== undefined) {
+      // 只记录进度达到100%的文件
+      if (log.percent === 100) {
+        shouldRecordToHistory = true;
+        lastRecordedProgress.set(log.filePath, log.percent);
+      }
+    } else if (log.done || log.error) {
+      // 任务完成或出错时总是记录
+      shouldRecordToHistory = true;
+    }
+    
+    if (shouldRecordToHistory) {
+      addLogToTaskExecution(executionHistory.id, line);
     }
   };
 
@@ -290,8 +338,10 @@ function startDownloadTask({
         pushLog({ filePath: p.filePath, percent: p.percent, overallPercent });
       },
       complete: () => {
-        pushLog({ done: true });
+        // 记录任务完成，包含100%的总体进度
+        pushLog({ done: true, overallPercent: "100.00" });
         taskSubject.complete();
+
 
         // 发送任务完成通知
         const completeMessage =
@@ -303,12 +353,19 @@ function startDownloadTask({
 
         sendTelegramNotification(completeMessage, "complete");
 
+        // 更新历史记录为完成状态
+        completeTaskExecution(executionHistory.id, "completed", {
+          totalFiles: total,
+          downloadedFiles: total,
+        });
+
         // 下载完成后通知 Emby 刷新
         notifyEmbyRefresh();
         delete downloadTasks[taskId];
       },
       error: (err) => {
         pushLog({ error: err.message });
+
 
         // 发送任务错误通知
         const errorMessage =
@@ -319,6 +376,13 @@ function startDownloadTask({
           `<b>Status:</b> Failed`;
 
         sendTelegramNotification(errorMessage, "error");
+
+        // 更新历史记录为失败状态
+        completeTaskExecution(executionHistory.id, "failed", {
+          totalFiles: total,
+          downloadedFiles: 0,
+          errorMessage: err.message,
+        });
 
         taskSubject.complete();
         delete downloadTasks[taskId];
@@ -510,6 +574,7 @@ export async function POST(req: NextRequest) {
     account: task.account,
     taskId: task.id,
     strmPrefix,
+    removeExtraFiles: task.removeExtraFiles,
   });
 
   const deleteMessage = task.removeExtraFiles 
@@ -519,6 +584,8 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     message: `${missingLocally.length} files to download for task, ${deleteMessage}`,
     taskId: id,
+    extraFilesCount: extraLocally.length,
+    willDeleteExtraFiles: task.removeExtraFiles || false,
   });
   } catch (error) {
     console.error("StartTask error: ", error);
