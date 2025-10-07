@@ -153,39 +153,8 @@ export function cleanupOldHistory(): void {
   saveTaskHistory(filtered);
 }
 
-// 清理重复的日志记录
-export function cleanupDuplicateLogs(): void {
-  const allHistory = readTaskHistory();
-  
-  allHistory.forEach(execution => {
-    if (execution.logs && execution.logs.length > 0) {
-      const cleanedLogs: string[] = [];
-      
-      execution.logs.forEach(logLine => {
-        try {
-          const logData = JSON.parse(logLine);
-          
-          // 如果是进度更新，只保留100%完成的记录
-          if (logData.filePath && logData.percent !== undefined) {
-            if (logData.percent === 100) {
-              cleanedLogs.push(logLine);
-            }
-          } else if (logData.done || logData.error) {
-            // 任务完成或错误日志直接保留
-            cleanedLogs.push(logLine);
-          } else if (logData.overallPercent) {
-            // 总体进度更新也保留
-            cleanedLogs.push(logLine);
-          }
-        } catch {
-          // 解析失败的日志直接保留
-          cleanedLogs.push(logLine);
-        }
-      });
-      
-      execution.logs = cleanedLogs;
-    }
-  });
-  
-  saveTaskHistory(allHistory);
+// 删除所有历史记录
+export function deleteAllHistory(): void {
+  // 直接保存空数组，删除所有历史记录
+  saveTaskHistory([]);
 }

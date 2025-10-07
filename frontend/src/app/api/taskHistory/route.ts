@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAllTaskHistory, getTaskHistory, deleteTaskHistory, cleanupDuplicateLogs } from "@/lib/taskHistoryManager";
+import { getAllTaskHistory, getTaskHistory, deleteTaskHistory, deleteAllHistory } from "@/lib/taskHistoryManager";
 
 // 获取所有任务历史记录
 export async function GET(req: NextRequest) {
@@ -33,9 +33,9 @@ export async function DELETE(req: NextRequest) {
     const action = searchParams.get("action");
     
     if (action === "cleanup") {
-      // 清理重复日志
-      cleanupDuplicateLogs();
-      return NextResponse.json({ success: true, message: "Duplicate logs cleaned up" });
+      // 删除所有历史记录
+      deleteAllHistory();
+      return NextResponse.json({ success: true, message: "All history deleted" });
     }
     
     if (!executionId) {

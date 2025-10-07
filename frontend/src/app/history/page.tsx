@@ -117,15 +117,15 @@ export default function TaskHistoryPage() {
     }
   };
 
-  const cleanupDuplicateLogs = async () => {
+  const deleteAllHistory = async () => {
     try {
       await axiosInstance.delete("/api/taskHistory?action=cleanup");
-      toast.success("重复日志清理完成");
+      toast.success("所有历史记录已删除");
       // 重新加载历史记录
       fetchHistory();
     } catch (error) {
-      console.error("Failed to cleanup logs:", error);
-      toast.error("清理失败");
+      console.error("Failed to delete history:", error);
+      toast.error("删除失败");
     }
   };
 
@@ -158,8 +158,8 @@ export default function TaskHistoryPage() {
           <Button onClick={fetchHistory} variant="outline">
             刷新
           </Button>
-          <Button onClick={cleanupDuplicateLogs} variant="outline">
-            清理重复日志
+          <Button onClick={deleteAllHistory} variant="outline">
+            删除所有历史
           </Button>
         </div>
       </div>
