@@ -493,7 +493,10 @@ export async function POST(req: NextRequest) {
   );
   const extraLocally = [...localPaths].filter((p) => !remotePaths.has(p));
 
-  removeExtraFiles(extraLocally, saveDir);
+  // 根据任务配置决定是否删除多余文件
+  if (task.removeExtraFiles) {
+    removeExtraFiles(extraLocally, saveDir);
+  }
 
   if (missingLocally.length === 0) {
     return NextResponse.json({ message: "no files to download" });
@@ -509,8 +512,12 @@ export async function POST(req: NextRequest) {
     strmPrefix,
   });
 
+  const deleteMessage = task.removeExtraFiles 
+    ? `${extraLocally.length} files to delete.`
+    : `${extraLocally.length} extra files found (not deleted due to task settings).`;
+    
   return NextResponse.json({
-    message: `${missingLocally.length} files to download for task, ${extraLocally.length} files to delete.`,
+    message: `${missingLocally.length} files to download for task, ${deleteMessage}`,
     taskId: id,
   });
   } catch (error) {
