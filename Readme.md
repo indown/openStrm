@@ -4,7 +4,7 @@
 
 # OpenStrm
 
-一个开源的 **Strm 生成工具**。
+一个开源的 **Strm 生成工具**。不完全使用指南：[文档地址](https://www.yuque.com/aitiaodetuzi/ueexc2/ynkwg2flhsvf233c)
 
 ## ✨ 为什么做这个软件
 
