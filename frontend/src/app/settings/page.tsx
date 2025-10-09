@@ -64,9 +64,21 @@ export default function SettingsPage() {
       
       await axiosInstance.put("/api/settings", saveData);
       setData(saveData);
-      toast.success("保存成功");
-    } catch {
-      toast.error("保存失败");
+      toast.success("保存成功，速率限制器已重置");
+    } catch (error: unknown) {
+      if (error && typeof error === 'object' && 'response' in error) {
+        const apiError = error as { response?: { status?: number; data?: { message?: string } } };
+        if (apiError.response?.status === 409) {
+          // 有任务正在执行
+          toast.error(apiError.response.data?.message || "有任务正在执行中，无法保存设置。请等待任务完成后再试。");
+        } else if (apiError.response?.status === 400) {
+          toast.error("保存失败：参数错误");
+        } else {
+          toast.error("保存失败");
+        }
+      } else {
+        toast.error("保存失败");
+      }
     } finally {
       setSaving(false);
     }

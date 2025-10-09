@@ -17,22 +17,45 @@ interface Progress {
 const limiters = new Map<string, Bottleneck>();
 const sharedLimiters = new Map<string, Bottleneck>();
 
-// 根据账户类型获取共享限制器
-function getSharedLimiter({account, maxPerSecond = 2}: {account : string, maxPerSecond: number}): Bottleneck {
-  // 从账户名中提取类型，例如 "115:abc123" -> "115"
+// 清除所有限制器缓存，用于设置更改后重新初始化
+export function clearRateLimiters(): void {
+  // 销毁所有现有的限制器
+  limiters.forEach(limiter => {
+    limiter.stop();
+  });
+  sharedLimiters.forEach(limiter => {
+    limiter.stop();
+  });
   
-  if (!sharedLimiters.has(account)) { // 默认每秒2次
+  // 清空缓存
+  limiters.clear();
+  sharedLimiters.clear();
+  
+  console.log("[RATE_LIMITER] All rate limiters cleared and reinitialized");
+}
+
+// 根据账户类型获取共享限制器
+function getSharedLimiter(account: string): Bottleneck {
+  // 从账户名中提取类型，例如 "115:abc123" -> "115"
+  const accountType = account.split(':')[0];
+  
+  if (!sharedLimiters.has(accountType)) {
+    // 每次创建时都读取最新的设置
+    const settings = readSettings();
+    const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
     
+    const reservoir = downloadConfig.linkMaxPerSecond || 2; // 默认每秒2次
+
     const sharedLimiter = new Bottleneck({
-      reservoir: maxPerSecond,
-      reservoirRefreshAmount: maxPerSecond,
+      reservoir,
+      reservoirRefreshAmount: reservoir,
       reservoirRefreshInterval: 1000, // 每秒重置
     });
     
-    sharedLimiters.set(account, sharedLimiter);
+    sharedLimiters.set(accountType, sharedLimiter);
   }
   
-  return sharedLimiters.get(account)!;
+  return sharedLimiters.get(accountType)!;
 }
 
 export function enqueueForAccount<T>(
@@ -44,14 +67,12 @@ export function enqueueForAccount<T>(
   const account = accountKey.split(':')[0];
 
   if (!limiters.has(accountKey)) {
-    const settings = readSettings();
-    const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
     const limiter = new Bottleneck({
       maxConcurrent, // 每个账号自己的并发限制
     });
 
     // 让它继承同类型账户的共享速率控制
-    const sharedLimiter = getSharedLimiter({account, maxPerSecond: downloadConfig.linkMaxPerSecond || 2});
+    const sharedLimiter = getSharedLimiter(account);
     limiter.chain(sharedLimiter);
 
     limiters.set(accountKey, limiter);
