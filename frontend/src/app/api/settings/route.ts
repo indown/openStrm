@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readSettings, writeSettings, AppSettings } from "@/lib/serverUtils";
+import { clearRateLimiters } from "@/lib/enqueueForAccount";
+import { downloadTasks } from "@/lib/downloadTaskManager";
 
 export async function GET() {
   const settings = readSettings();
@@ -12,7 +14,22 @@ export async function PUT(req: NextRequest) {
   if (!body || typeof body !== "object") {
     return NextResponse.json({ message: "invalid payload" }, { status: 400 });
   }
+  
+  // 检查是否有正在执行的任务
+  const runningTasks = Object.keys(downloadTasks);
+  if (runningTasks.length > 0) {
+    return NextResponse.json({ 
+      message: "有任务正在执行中，无法保存设置。请等待任务完成后再试。",
+      hasRunningTasks: true,
+      runningTasks: runningTasks
+    }, { status: 409 });
+  }
+  
   writeSettings(body);
+  
+  // 清除所有速率限制器缓存，使新设置立即生效
+  clearRateLimiters();
+  
   return NextResponse.json({ message: "ok" });
 }
 
