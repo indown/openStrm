@@ -22,7 +22,7 @@ import {
   completeTaskExecution,
 } from "@/lib/taskHistoryManager";
 import {
-  getRealDownloadLinkLimited,
+  getRealDownloadLink,
   downloadOrCreateStrmLimited,
   downloadOrCreateStrm,
 } from "@/lib/enqueueForAccount";
@@ -313,7 +313,7 @@ function startDownloadTask({
       mergeMap(
         (filePath) =>
           from(
-            getRealDownloadLinkLimited(originPath + "/" + filePath, account)
+            getRealDownloadLink(originPath + "/" + filePath, account)
           ).pipe(
             mergeMap((url) =>
               downloadOrCreateStrmLimited(
@@ -429,27 +429,26 @@ export async function POST(req: NextRequest) {
 
   // 从 accountInfo 中获取 accountType
   const accountType = accountInfo.accountType;
-
+  
   let tree;
   if (accountType === "115") {
     // 检查 115 必要字段
     if (!accountInfo.cookie) {
       throw new Error(`Missing cookie for 115 account: ${account}`);
     }
-    const cookie = accountInfo.cookie;
 
-    const idRes = await fs_dir_getid(originPath, { cookie });
+    const idRes = await fs_dir_getid(originPath, { accountInfo });
     // const data = await getData({ account, id, originPath });
 
     try {
       const data = await exportDirParse({
-        cookie,
         exportFileIds: idRes.id, // or ['123','456'] or a string
         targetPid: 0,
         layerLimit: 0,
         deleteAfter: true,
         timeoutMs: 300000,
         checkIntervalMs: 1000,
+        accountInfo,
       });
       console.log("data: ", data);
       tree = buildTree(data);

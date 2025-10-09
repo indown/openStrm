@@ -15,24 +15,49 @@ interface Progress {
 }
 
 const limiters = new Map<string, Bottleneck>();
+const sharedLimiters = new Map<string, Bottleneck>();
 
-export function enqueueForAccount<T>(
-  account: string,
-  fn: () => Observable<T>,
-  maxPerSecond = 2,
-  maxConcurrent = 2 // 新增参数，允许更多并发
-): Observable<T> {
-  if (!limiters.has(account)) {
-    const limiter = new Bottleneck({
+// 根据账户类型获取共享限制器
+function getSharedLimiter({account, maxPerSecond = 2}: {account : string, maxPerSecond: number}): Bottleneck {
+  // 从账户名中提取类型，例如 "115:abc123" -> "115"
+  
+  if (!sharedLimiters.has(account)) { // 默认每秒2次
+    
+    const sharedLimiter = new Bottleneck({
       reservoir: maxPerSecond,
       reservoirRefreshAmount: maxPerSecond,
-      reservoirRefreshInterval: 1000,
-      maxConcurrent: maxConcurrent,  // 使用参数而不是硬编码的1
+      reservoirRefreshInterval: 1000, // 每秒重置
     });
-    limiters.set(account, limiter);
+    
+    sharedLimiters.set(account, sharedLimiter);
+  }
+  
+  return sharedLimiters.get(account)!;
+}
+
+export function enqueueForAccount<T>(
+  accountKey: string,
+  fn: () => Observable<T>,
+  maxConcurrent = 2
+): Observable<T> {
+  // 每个账户都有自己的 limiter，但共享同类型的速率
+  const account = accountKey.split(':')[0];
+
+  if (!limiters.has(accountKey)) {
+    const settings = readSettings();
+    const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
+    const limiter = new Bottleneck({
+      maxConcurrent, // 每个账号自己的并发限制
+    });
+
+    // 让它继承同类型账户的共享速率控制
+    const sharedLimiter = getSharedLimiter({account, maxPerSecond: downloadConfig.linkMaxPerSecond || 2});
+    limiter.chain(sharedLimiter);
+
+    limiters.set(accountKey, limiter);
   }
 
-  const limiter = limiters.get(account)!;
+  const limiter = limiters.get(accountKey)!;
 
   return new Observable<T>((observer) => {
     limiter.schedule(() => {
@@ -55,7 +80,9 @@ export function enqueueForAccount<T>(
 
 export async function getRealDownloadLink(
   filePath: string,
-  account: string
+  account: string,
+  maxRetries = 3,
+  retryDelay = 2000
 ): Promise<string> {
   const settings = readSettings();
   const accounts = readAccounts();
@@ -67,49 +94,117 @@ export async function getRealDownloadLink(
   if (!accountInfo) {
     throw new Error(`No cookie found for account: ${account}`);
   }
-  if (accountInfo.accountType === "115") {
-    const cookie = accountInfo.cookie;
-    const userAgent = settings["user-agent"];
+  
+  // 创建带重试的 Observable
+  const createRetryObservable = (fn: () => Observable<string>) => {
+    return defer(fn).pipe(
+      retry({
+        count: maxRetries,
+        delay: (err, i) => {
+          console.warn(`获取下载链接失败，正在重试 ${i}/${maxRetries}`, err);
+          return timer(retryDelay);
+        },
+      })
+    );
+  };
 
-    try {
-      console.log(`Looking for file: ${filePath}`);
-      // 1. 通过路径获取文件 ID
-      const pickcode = await get_id_to_path({
-        cookie,
-        path: filePath,
-        userAgent,
-      });
-
-      console.log(`Found pickcode: ${pickcode}`);
-
-      if (!pickcode) {
-        throw new Error(`No pickcode found for file: ${filePath}`);
-      }
-
-      // 3. 通过 pickcode 获取下载 URL
-      console.log(`Getting download URL for pickcode: ${pickcode}`);
-      const downloadUrl = await getDownloadUrlWeb(pickcode, {
-        cookie,
-        userAgent,
-      });
-      return downloadUrl;
-    } catch (error) {
-      console.error(`Failed to get download link for ${filePath}:`, error);
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      
-      // 检测115账号封控错误
-      if (errorMessage.includes('<!doctypehtml>') || 
-          errorMessage.includes('405') || 
-          errorMessage.includes('您的访问被阻断') ||
-          errorMessage.includes('potential threats to the server')) {
-        throw new Error("115账号被封控，账号访问被阿里云阻断");
-      }
-      
-      throw error;
+  // 根据账户类型创建对应的 Observable
+  const createAccountObservable = (): Observable<string> => {
+    const accountType = accountInfo.accountType || "unknown";
+    
+    switch (accountType) {
+      case "115":
+        // 115账户直接调用，不使用限流
+        const userAgent = settings["user-agent"];
+        return new Observable<string>((observer) => {
+          getRealDownloadLinkDirect115(filePath, accountInfo, userAgent)
+            .then((url) => {
+              observer.next(url);
+              observer.complete();
+            })
+            .catch((err) => observer.error(err));
+        });
+        
+      case "openlist":
+      case "other":
+      default:
+        // 非115账户使用限流
+        const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
+        
+        return enqueueForAccount(
+          account,
+          () =>
+            new Observable<string>((observer) => {
+              getRealDownloadLinkDirect(filePath, accountInfo)
+                .then((url) => {
+                  observer.next(url);
+                  observer.complete();
+                })
+                .catch((err) => observer.error(err));
+            }),
+          downloadConfig.linkMaxConcurrent || 2
+        );
     }
-  } else if (accountInfo.accountType === "openlist") {
+  };
+
+  // 创建带重试的 Observable 并执行
+  const obs$ = createRetryObservable(createAccountObservable);
+  return firstValueFrom(obs$);
+}
+
+// 115账户直接获取下载链接的内部函数
+async function getRealDownloadLinkDirect115(
+  filePath: string,
+  accountInfo: { name: string; cookie: string; accountType?: string },
+  userAgent: string
+): Promise<string> {
+  try {
+    console.log(`Looking for file: ${filePath}`);
+    // 1. 通过路径获取文件 ID
+    const pickcode = await get_id_to_path({
+      path: filePath,
+      userAgent,
+      accountInfo,
+    });
+
+    console.log(`Found pickcode: ${pickcode}`);
+
+    if (!pickcode) {
+      throw new Error(`No pickcode found for file: ${filePath}`);
+    }
+
+    // 3. 通过 pickcode 获取下载 URL
+    console.log(`Getting download URL for pickcode: ${pickcode}`);
+    const downloadUrl = await getDownloadUrlWeb(pickcode, {
+      userAgent,
+      accountInfo,
+    });
+    return downloadUrl;
+  } catch (error) {
+    console.error(`Failed to get download link for ${filePath}:`, error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    // 检测115账号封控错误
+    if (errorMessage.includes('<!doctypehtml>') || 
+        errorMessage.includes('405') || 
+        errorMessage.includes('您的访问被阻断') ||
+        errorMessage.includes('potential threats to the server')) {
+      throw new Error("115账号被封控，账号访问被阿里云阻断");
+    }
+    
+    throw error;
+  }
+}
+
+// 直接获取下载链接的内部函数（不包含限流逻辑）
+async function getRealDownloadLinkDirect(
+  filePath: string,
+  accountInfo: { name: string; accountType?: string; url?: string; token?: string }
+): Promise<string> {
+  
+  if (accountInfo.accountType === "openlist") {
     if (!accountInfo.url || !accountInfo.token) {
-      throw new Error(`Missing openlist credentials for account: ${account}`);
+      throw new Error(`Missing openlist credentials for account: ${accountInfo.name}`);
     }
 
     try {
@@ -143,6 +238,8 @@ export async function getRealDownloadLink(
       }
       throw error;
     }
+  } else {
+    throw new Error(`Unsupported account type: ${accountInfo.accountType}`);
   }
 }
 
@@ -206,44 +303,6 @@ export function downloadOrCreateStrm(
   });
 }
 
-/**
- * 获取真实下载链接，账号限流 + 错误重试
- */
-export function getRealDownloadLinkLimited(
-  filePath: string,
-  account: string,
-  maxRetries = 3,
-  retryDelay = 2000
-): Promise<string> {
-  const settings = readSettings();
-  const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
-  
-  const obs$ = defer(() =>
-    enqueueForAccount(
-      account,
-      () =>
-        new Observable<string>((observer) => {
-          getRealDownloadLink(filePath, account)
-            .then((url) => {
-              observer.next(url);
-              observer.complete();
-            })
-            .catch((err) => observer.error(err));
-        }),
-      downloadConfig.linkMaxPerSecond || 2,
-      downloadConfig.linkMaxConcurrent || 2 
-    )
-  ).pipe(
-    retry({
-      count: maxRetries,
-      delay: (err, i) => {
-        console.warn(`获取真实下载链接失败，正在重试 ${i}/${maxRetries}`, err);
-        return timer(retryDelay);
-      },
-    })
-  );
-  return firstValueFrom(obs$); // 保留 Promise 返回类型
-}
 
 /**
  * 下载或生成 strm 文件，带账号级别限流和错误重试
@@ -263,9 +322,8 @@ export function downloadOrCreateStrmLimited(
   return defer(() =>
     // defer 保证每次订阅才创建 Observable
     enqueueForAccount(
-      account + 'download', 
+      `${account}:download`, 
       () => downloadOrCreateStrm(filePathOrUrl, savePath, opts),
-      downloadConfig.downloadMaxPerSecond || 2,
       downloadConfig.downloadMaxConcurrent || 5
     )
   ).pipe(

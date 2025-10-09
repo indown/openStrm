@@ -1,8 +1,19 @@
 // 115 export-dir end-to-end implementation using real 115 APIs.
-import axios from "axios";
+import axios, { type AxiosRequestConfig } from "axios";
+import { enqueueForAccount } from "./enqueueForAccount";
+import { defer, firstValueFrom, Observable } from "rxjs";
 import { encrypt, decrypt } from "./115crypto";
 import { SimpleCache } from "./SimpleCache";
 import { readSettings } from "./serverUtils";
+
+// 定义账户信息类型
+interface AccountInfo {
+  name: string;
+  cookie: string;
+  accountType?: string;
+  url?: string;
+  token?: string;
+}
 
 // 创建缓存实例
 const dirIdCache = new SimpleCache<{ id: number }>(10 * 60 * 1000); // 目录ID缓存10分钟
@@ -38,16 +49,16 @@ export function getCacheStats(): { dirId: number; files: number; pickcode: numbe
 }
 export async function exportDirParse(options) {
   const {
-    cookie, // required: string cookie for 115
     exportFileIds = 0, // number | string | string[]
     exportId = 0, // number | string; if string => it's pickcode, skip export
     layerLimit = 0, // number; <=0 no limit
     timeoutMs = 10 * 60 * 1000, // default 10 minutes
     checkIntervalMs = 1000, // polling interval
     userAgent = defaultUA(), // optional: override user-agent; some endpoints validate UA
+    accountInfo, // required: account information
   } = options || {};
 
-  if (!cookie) throw new Error("cookie is required");
+  if (!accountInfo?.cookie) throw new Error("accountInfo.cookie is required");
 
   let pickcode;
   let result; // { export_id, file_id, file_name, pick_code }
@@ -67,30 +78,30 @@ export async function exportDirParse(options) {
         target,
         layer_limit: layerLimit > 0 ? layerLimit : undefined,
       },
-      { cookie, userAgent }
+      { userAgent, accountInfo }
     );
     const export_id = ensureOk(exportResp)?.data?.export_id;
     if (!export_id) throw new Error("Failed to get export_id");
 
     // 2) Poll result
     result = await exportDirResult(export_id, {
-      cookie,
       userAgent,
       timeoutMs,
       checkIntervalMs,
+      accountInfo,
     });
     pickcode = result.pick_code;
   } 
 
   // 3) Resolve download URL (try web first, then app as fallback)
-  const url = await getDownloadUrlWeb(pickcode, { cookie, userAgent });
+  const url = await getDownloadUrlWeb(pickcode, { userAgent, accountInfo });
   
   if (!url) throw new Error("Failed to resolve download URL");
 
   // 4) Download and parse
   const fileIdForDelete = result && result.file_id;
   try {
-    const stream = await openFileStream(url, { cookie, userAgent });
+    const stream = await openFileStream(url, { cookie: accountInfo.cookie, userAgent });
     const treeData: Array<{ depth: number; key: number; name: string; parent_key: number }> = [];
     let keyCounter = 0;
     
@@ -139,7 +150,7 @@ export async function exportDirParse(options) {
     // if (mustDelete && fileIdForDelete) {
     if (mustDelete) {
       try {
-        await fsDelete(String(fileIdForDelete), { cookie, userAgent });
+        await fsDelete(String(fileIdForDelete), { userAgent, accountInfo });
       } catch {
       }
     }
@@ -147,17 +158,17 @@ export async function exportDirParse(options) {
 }
 // 从路径获取对应的 115 文件/目录 ID - 简化版本
 export async function get_id_to_path(options: {
-  cookie: string;
   path: string;
   userAgent?: string;
+  accountInfo?: AccountInfo;
 }) {
   const {
-    cookie,
     path,
     userAgent = defaultUA(),
+    accountInfo,
   } = options || {};
 
-  if (!cookie) throw new Error('cookie is required');
+  if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
   if (!path) throw new Error('path is required');
 
   console.log(`[get_id_to_path] Looking for file: ${path}`);
@@ -172,7 +183,7 @@ export async function get_id_to_path(options: {
   // 如果是单层路径，直接查找
   if (pathParts.length === 1) {
     console.log(`[get_id_to_path] Searching in root directory for: ${pathParts[0]}`);
-    const files = await fs_files(0, { cookie, userAgent });
+    const files = await fs_files(0, { userAgent, accountInfo });
     
     for (const file of files.data || []) {
       if (file.n === pathParts[0]) {
@@ -191,7 +202,7 @@ export async function get_id_to_path(options: {
   
   // 使用 fs_dir_getid 获取目录 ID
   try {
-    const dirResp = await fs_dir_getid(dirPath, { cookie, userAgent });
+    const dirResp = await fs_dir_getid(dirPath, { userAgent, accountInfo });
     const dirId = dirResp.id;
     
     if (!dirId) {
@@ -201,14 +212,14 @@ export async function get_id_to_path(options: {
     console.log(`[get_id_to_path] Directory ID for ${dirPath}: ${dirId}`);
 
     // 列出目录中的文件
-    const files = await fs_files(dirId, { cookie, userAgent });
+    const files = await fs_files(dirId, { userAgent, accountInfo });
     console.log(`[get_id_to_path] Found ${files.data?.length || 0} files in directory ${dirPath}`);
     
     // 查找目标文件
     for (const file of files.data || []) {
       if (file.n === fileName) {
         console.log(`[get_id_to_path] Found target file: ${fileName}, fid: ${file.fid}`);
-        const pickcode = await getPickcodeToId(file.fid, { cookie, userAgent });
+        const pickcode = await getPickcodeToId(file.fid, { userAgent, accountInfo });
         console.log(`[get_id_to_path] Successfully got pickcode for ${path}: ${pickcode}`);
         return pickcode;
       }
@@ -225,9 +236,11 @@ export async function get_id_to_path(options: {
 }
 
 // 通过路径获取目录 ID
-export async function fs_dir_getid(path: string, { cookie, userAgent }: { cookie: string; userAgent?: string; app?: string }) {
+export async function fs_dir_getid(path: string, { userAgent, accountInfo }: { userAgent?: string; app?: string; accountInfo?: AccountInfo }) {
+  if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
+  
   // 生成缓存键
-  const cacheKey = `dir_id:${path}:${cookie.substring(0, 20)}`; // 使用路径和cookie前20位作为键
+  const cacheKey = `dir_id:${path}:${accountInfo.cookie.substring(0, 20)}`; // 使用路径和cookie前20位作为键
   
   // 尝试从缓存获取
   const cached = dirIdCache.get(cacheKey);
@@ -239,13 +252,13 @@ export async function fs_dir_getid(path: string, { cookie, userAgent }: { cookie
   console.log(`[CACHE MISS] Fetching directory ID for path: ${path}`);
   const url = 'https://webapi.115.com/files/getid';
   const params = new URLSearchParams({ path });
-  
-  const response = await axios.get(url + '?' + params, {
-    headers: commonHeaders({ cookie, userAgent }),
+  const data = await request115<{ id: number }>(url + '?' + params, {
+    method: 'GET',
+    userAgent,
+    ensureOk: true,
+    useCommonHeaders: true,
+    accountInfo,
   });
-
-  const data = response.data;
-  ensureOk(data);
   
   // 缓存结果
   dirIdCache.set(cacheKey, data);
@@ -253,15 +266,17 @@ export async function fs_dir_getid(path: string, { cookie, userAgent }: { cookie
 }
 
 // 获取目录中的文件列表
-export async function fs_files(cid: number, { cookie, userAgent, limit = 1000, offset = 0 }: { 
-  cookie: string; 
+export async function fs_files(cid: number, { userAgent, limit = 1000, offset = 0, accountInfo }: { 
   userAgent?: string; 
   app?: string; 
   limit?: number; 
   offset?: number; 
+  accountInfo?: AccountInfo;
 }) {
+  if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
+  
   // 生成缓存键
-  const cacheKey = `files:${cid}:${limit}:${offset}:${cookie.substring(0, 20)}`;
+  const cacheKey = `files:${cid}:${limit}:${offset}:${accountInfo.cookie.substring(0, 20)}`;
   
   // 尝试从缓存获取
   const cached = filesListCache.get(cacheKey);
@@ -277,13 +292,13 @@ export async function fs_files(cid: number, { cookie, userAgent, limit = 1000, o
     limit: String(limit),
     offset: String(offset),
   });
-
-  const response = await axios.get(url + '?' + params, {
-    headers: commonHeaders({ cookie, userAgent }),
+  const data = await request115<{ data: Array<{ n: string; fid: number; cid: number; fc: number }> }>(url + '?' + params, {
+    method: 'GET',
+    userAgent,
+    ensureOk: true,
+    useCommonHeaders: true,
+    accountInfo,
   });
-
-  const data = response.data;
-  ensureOk(data);
   
   // 缓存结果
   filesListCache.set(cacheKey, data);
@@ -292,61 +307,59 @@ export async function fs_files(cid: number, { cookie, userAgent, limit = 1000, o
 
 
 // 通过文件 ID 获取文件信息
-export async function getFileInfoById(fileId: number, { cookie, userAgent }: { cookie: string; userAgent?: string }) {
+export async function getFileInfoById(fileId: number, { userAgent, accountInfo }: { userAgent?: string; accountInfo?: AccountInfo }) {
   const url = `https://webapi.115.com/files/info?fid=${fileId}`;
-  const response = await axios.get(url, {
-    headers: {
-      'User-Agent': userAgent || defaultUA(),
-      'Accept': 'application/json, text/plain, */*',
-      'Referer': 'https://115.com/',
-      'Origin': 'https://115.com',
-      'Cookie': cookie,
-    },
+  const data = await request115<{ errno?: unknown; state?: boolean; data: unknown }>(url, {
+    method: 'GET',
+    userAgent,
+    useCommonHeaders: true,
+    accountInfo,
   });
-
-  const data = response.data;
   if (data.errno || data.state === false) {
     throw new Error(`115 API error: ${JSON.stringify(data)}`);
   }
-  
   return data.data;
 }
 
 /* ------------------------ HTTP helpers (real 115 APIs) ------------------------ */
 
 // POST https://proapi.115.com/android/2.0/ufile/export_dir
-async function fsExportDir(payload, ctx) {
+async function fsExportDir(payload, { userAgent, accountInfo }) {
   const url = "https://proapi.115.com/android/2.0/ufile/export_dir";
   const form = new URLSearchParams();
   // Only include defined values
   Object.entries(payload).forEach(([k, v]) => {
     if (v !== undefined && v !== null && v !== "") form.append(k, String(v));
   });
-  return fetchJson(
-    url,
-    {
-      method: "POST",
-      body: form,
-    },
-    ctx
-  );
+  return request115(url, {
+    method: 'POST',
+    data: form,
+    userAgent,
+    useCommonHeaders: true,
+    accountInfo,
+  });
 }
 
 // GET https://webapi.115.com/files/export_dir?export_id=...
-async function fsExportDirStatus(exportId, ctx) {
+async function fsExportDirStatus(exportId, { userAgent, accountInfo }) {
   const url =
     "https://webapi.115.com/files/export_dir?export_id=" +
     encodeURIComponent(exportId);
-  return fetchJson(url, {}, ctx);
+  return request115<{ data: { export_id?: string } }>(url, {
+    method: 'GET',
+    userAgent,
+    useCommonHeaders: true,
+    accountInfo,
+  });
 }
 
 async function exportDirResult(
   exportId,
-  { cookie, userAgent, timeoutMs, checkIntervalMs }
+  { userAgent, timeoutMs, checkIntervalMs, accountInfo }
 ) {
   const deadline = isFinite(timeoutMs) ? Date.now() + timeoutMs : Infinity;
   while (true) {
-    const resp = await fsExportDirStatus(exportId, { cookie, userAgent });
+    const resp = await fsExportDirStatus(exportId, { userAgent, accountInfo });
     
     // 检查响应是否有效
     if (resp && resp.data) {
@@ -361,28 +374,69 @@ async function exportDirResult(
     if (checkIntervalMs > 0) await sleep(checkIntervalMs);
   }
 }
-async function request115(url: string, method: string = "GET", headers: Record<string, string> | null = null, data: string | null = null, cookie: string | null = null) {
+async function request115<T = unknown>(
+  url: string,
+  options?: {
+    method?: string;
+    headers?: Record<string, string>;
+    data?: unknown;
+    userAgent?: string;
+    responseType?: AxiosRequestConfig['responseType'];
+    ensureOk?: boolean;
+    useCommonHeaders?: boolean;
+    accountInfo?: AccountInfo;
+  }
+) {
+  const {
+    method = "GET",
+    headers = {},
+    data,
+    userAgent,
+    responseType,
+    ensureOk: shouldEnsureOk = false,
+    useCommonHeaders = true,
+    accountInfo,
+  } = options || {};
+  const settings = readSettings();
+  const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
+  // 从 accountInfo 中获取 cookie
+  const cookie = accountInfo?.cookie || null;
+  
+  // accountInfo 现在可以在函数内部使用，用于根据账户类型进行不同的处理
+  // 例如：根据 accountInfo.accountType 设置不同的请求头或参数
+  if (accountInfo) {
+    // 可以根据账户类型进行特殊处理
+    // console.log(`Request for account: ${accountInfo.name}, type: ${accountInfo.accountType}`);
+  }
+  
   try {
-    const config: {
-      method: string;
-      url: string;
-      headers: Record<string, string>;
-      data?: string;
-    } = {
-      method: method.toLowerCase(),
-      url: url,
-      headers: {
-        ...headers,
-        ...(cookie ? { "Cookie": cookie } : {})
-      }
+    const mergedHeaders = {
+      ...(useCommonHeaders ? commonHeaders({ cookie: cookie || "", userAgent }) : {}),
+      ...headers,
+      ...(cookie && !useCommonHeaders ? { "Cookie": cookie } : {}),
     };
-    
-    if (data && (method.toUpperCase() === "POST" || method.toUpperCase() === "PUT")) {
-      config.data = data;
-    }
-    
-    const response = await axios(config);
-    return response.data;
+    const config: AxiosRequestConfig = {
+      method: method.toLowerCase(),
+      url,
+      headers: mergedHeaders,
+    };
+    if (data !== undefined) config.data = data;
+    if (responseType) config.responseType = responseType;
+    const accountKey = accountInfo?.name + ':' + 'normal';
+    const obs$ = enqueueForAccount(accountKey, () =>
+      defer(() => new Observable<T>((observer) => {
+        axios(config)
+          .then((response) => {
+            observer.next(response.data as T);
+            observer.complete();
+          })
+          .catch((err) => observer.error(err));
+      })),
+      downloadConfig.linkMaxConcurrent || 2
+    );
+    const respData = await firstValueFrom(obs$);
+    if (shouldEnsureOk) ensureOk(respData as unknown as Record<string, unknown>);
+    return respData;
   } catch (error) {
     if (axios.isAxiosError(error) && error.response) {
       throw error.response.data;
@@ -392,23 +446,28 @@ async function request115(url: string, method: string = "GET", headers: Record<s
 }
 // POST https://proapi.115.com/android/2.0/ufile/download
 // Use the same getUrl function as the Node.js script
-export async function getDownloadUrlWeb(pickcode, ctx) {
-  const { cookie, userAgent } = ctx;
+export async function getDownloadUrlWeb(pickcode, { userAgent, accountInfo }) {
   const data = `data=${encodeURIComponent(encrypt(`{"pick_code":"${pickcode}"}`))}`;
-    const response = await request115(
-        `http://pro.api.115.com/android/2.0/ufile/download`, 
-        "POST", 
-        {"User-Agent": userAgent, "Content-Type": "application/x-www-form-urlencoded", "Content-Length": String(Buffer.byteLength(data))}, 
-        data, 
-        cookie
+    const response = await request115<{ data: string }>(
+      `http://pro.api.115.com/android/2.0/ufile/download`,
+      {
+        method: 'POST',
+        headers: { "User-Agent": userAgent, "Content-Type": "application/x-www-form-urlencoded", "Content-Length": String(Buffer.byteLength(data)) },
+        data,
+        userAgent,
+        useCommonHeaders: false,
+        accountInfo,
+      }
     );
-    const decryptedData = JSON.parse(decrypt((response as { data: string }).data));
+    const decryptedData = JSON.parse(decrypt(response.data));
     return decryptedData.url;
 }
 
-export async function getPickcodeToId(id: number, { cookie, userAgent = defaultUA() }: { cookie: string; userAgent?: string }) {
+export async function getPickcodeToId(id: number, { userAgent = defaultUA(), accountInfo }: { userAgent?: string; accountInfo?: AccountInfo }) {
+  if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
+  
   // 生成缓存键
-  const cacheKey = `pickcode:${id}:${cookie.substring(0, 20)}`;
+  const cacheKey = `pickcode:${id}:${accountInfo.cookie.substring(0, 20)}`;
   
   // 尝试从缓存获取
   const cached = pickcodeCache.get(cacheKey);
@@ -418,13 +477,16 @@ export async function getPickcodeToId(id: number, { cookie, userAgent = defaultU
   }
 
   console.log(`[CACHE MISS] Fetching pickcode for file ID: ${id}`);
-  const response = await request115(
-    `http://web.api.115.com/files/file?file_id=${id}`, 
-    "GET", 
-    {"User-Agent": userAgent}, 
-    null, 
-    cookie
-  ) as { state: boolean; data: Array<{ pick_code: string }> };
+  const response = await request115<{ state: boolean; data: Array<{ pick_code: string }> }>(
+    `http://web.api.115.com/files/file?file_id=${id}`,
+    {
+      method: 'GET',
+      headers: { "User-Agent": userAgent },
+      userAgent,
+      useCommonHeaders: false,
+      accountInfo,
+    }
+  );
   
   if (!response.state) throw new Error(JSON.stringify(response));
   
@@ -435,36 +497,20 @@ export async function getPickcodeToId(id: number, { cookie, userAgent = defaultU
   return pickcode;
 }
 // POST https://webapi.115.com/rb/delete (fs_delete)
-async function fsDelete(fileId, ctx) {
+async function fsDelete(fileId, { userAgent, accountInfo }) {
   const url = "https://webapi.115.com/rb/delete";
   const form = new URLSearchParams();
   form.set("fid[0]", String(fileId));
-  return fetchJson(url, { method: "POST", body: form }, ctx);
+  return request115(url, {
+    method: 'POST',
+    data: form,
+    userAgent,
+    useCommonHeaders: true,
+    accountInfo,
+  });
 }
 
-async function fetchJson(url, init, { cookie, userAgent }) {
-  try {
-    const res = await axios({
-      url,
-      method: init.method || 'GET',
-      data: init.body,
-      headers: {
-        ...commonHeaders({ cookie, userAgent }),
-        ...(init && init.headers ? init.headers : {}),
-      },
-      maxRedirects: 5,
-    });
-    return res.data;
-  } catch (error) {
-    if (axios.isAxiosError(error) && error.response) {
-      // Some 115 endpoints return text-first; try a second attempt as JSON via regex
-      throw new Error(
-        `Unexpected response (not JSON) from ${url}: ${JSON.stringify(error.response.data).slice(0, 256)}`
-      );
-    }
-    throw new Error(`Request error from ${url}: ${error.message}`);
-  }
-}
+// fetchJson removed after consolidating on request115
 
 function commonHeaders({ cookie, userAgent }) {
   return {

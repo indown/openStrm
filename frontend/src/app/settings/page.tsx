@@ -15,7 +15,6 @@ type Settings = {
   download?: {
     linkMaxPerSecond?: number;
     linkMaxConcurrent?: number;
-    downloadMaxPerSecond?: number;
     downloadMaxConcurrent?: number;
   };
 } & Record<string, unknown>;
@@ -175,28 +174,6 @@ export default function SettingsPage() {
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <Label>文件下载每秒请求数 (downloadMaxPerSecond)</Label>
-            <Input
-              type="number"
-              min="1"
-              max="100"
-              value={data.download?.downloadMaxPerSecond || 2}
-              onChange={(e) =>
-                setData({
-                  ...data,
-                  download: { 
-                    ...(data.download || {}), 
-                    downloadMaxPerSecond: parseInt(e.target.value) || 2 
-                  },
-                })
-              }
-              placeholder="2"
-            />
-            <p className="text-xs text-muted-foreground">
-              控制文件下载的每秒请求数
-            </p>
-          </div>
           <div className="space-y-2">
             <Label>文件下载并发数 (downloadMaxConcurrent)</Label>
             <Input
