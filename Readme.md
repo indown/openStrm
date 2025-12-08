@@ -4,6 +4,8 @@
 
 # OpenStrm
 
+**重要通知（必读）**：由于 Next.js 的重大漏洞 https://nextjs.org/blog/CVE-2025-66478 ，请务必将项目依赖更新到最新版 v0.2.5。请立即停止使用 v0.2.4 及以下版本，以免造成安全风险。
+
 一个开源的 **Strm 生成工具**。不完全使用指南：[文档地址](https://www.yuque.com/aitiaodetuzi/ueexc2/ynkwg2flhsvf233c)
 
 ## ✨ 为什么做这个软件
