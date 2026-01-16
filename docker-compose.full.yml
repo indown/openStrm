@@ -1,0 +1,26 @@
+version: "3.9"
+services:
+  openstrm:
+    image: indown/openstrm:full
+    container_name: openstrm
+    ports:
+      - "3000:3000"   # Next.js 直接访问（可选）
+      - "8091:8091"   # nginx 统一入口（emby 客户端使用此端口）
+    environment:
+      - NODE_ENV=production
+      - ALIST_API_TOKEN=openstrm-internal-token
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+        reservations:
+          memory: 256M
