@@ -11,6 +11,7 @@ type Settings = {
   "user-agent"?: string;
   strmExtensions?: string[];
   downloadExtensions?: string[];
+  mediaMountPath?: string[];
   emby?: { url?: string; apiKey?: string };
   download?: {
     linkMaxPerSecond?: number;
@@ -25,6 +26,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [strmExtensionsInput, setStrmExtensionsInput] = useState("");
   const [downloadExtensionsInput, setDownloadExtensionsInput] = useState("");
+  const [mediaMountPathInput, setMediaMountPathInput] = useState("");
 
   useEffect(() => {
     axiosInstance.get("/api/settings")
@@ -33,6 +35,7 @@ export default function SettingsPage() {
         setData(settings);
         setStrmExtensionsInput((settings.strmExtensions || []).join(", "));
         setDownloadExtensionsInput((settings.downloadExtensions || []).join(", "));
+        setMediaMountPathInput((settings.mediaMountPath || []).join(", "));
       })
       .finally(() => setLoading(false));
   }, []);
@@ -56,10 +59,17 @@ export default function SettingsPage() {
         .map(ext => ext.startsWith(".") ? ext : `.${ext}`)
         .map(ext => ext.toLowerCase()); // 确保扩展名都是小写
       
+      // 处理mediaMountPath输入
+      const mediaMountPath = mediaMountPathInput
+        .split(",")
+        .map(p => p.trim())
+        .filter(p => p.length > 0);
+      
       const saveData = {
         ...data,
         strmExtensions,
-        downloadExtensions
+        downloadExtensions,
+        mediaMountPath
       };
       
       await axiosInstance.put("/api/settings", saveData);
@@ -130,6 +140,17 @@ export default function SettingsPage() {
             />
             <p className="text-xs text-muted-foreground">
               用逗号分隔，自动添加点号前缀
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label>媒体挂载路径 (mediaMountPath)</Label>
+            <Input
+              value={mediaMountPathInput}
+              onChange={(e) => setMediaMountPathInput(e.target.value)}
+              placeholder="/root/webdav/115, /mnt/media"
+            />
+            <p className="text-xs text-muted-foreground">
+              多个路径用逗号分隔，保存后自动重载 nginx
             </p>
           </div>
         </div>

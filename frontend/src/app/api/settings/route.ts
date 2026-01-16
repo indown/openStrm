@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { readSettings, writeSettings, AppSettings } from "@/lib/serverUtils";
 import { clearRateLimiters } from "@/lib/enqueueForAccount";
 import { downloadTasks } from "@/lib/downloadTaskManager";
+import { exec } from "child_process";
 
 export async function GET() {
   const settings = readSettings();
@@ -29,6 +30,11 @@ export async function PUT(req: NextRequest) {
   
   // 清除所有速率限制器缓存，使新设置立即生效
   clearRateLimiters();
+  
+  // 重载 nginx 使 mediaMountPath 等配置生效
+  exec('nginx -s reload', (err) => {
+    if (err) console.error('nginx reload failed:', err);
+  });
   
   return NextResponse.json({ message: "ok" });
 }
