@@ -16,8 +16,8 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // alist 兼容接口使用内部 API Token 验证
-  if (pathname.startsWith("/api/alist")) {
+  // alist 兼容接口使用内部 API Token 验证 (/api/fs/*)
+  if (pathname.startsWith("/api/fs")) {
     const authHeader = req.headers.get('authorization') || '';
     // 从环境变量或固定值获取内部 token
     const internalToken = process.env.ALIST_API_TOKEN || '';

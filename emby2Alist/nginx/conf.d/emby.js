@@ -80,6 +80,7 @@ async function redirect2Pan(r) {
     } else {
       r.warn(`not is CloudDrive/AList link, decodeURIComponent filePath before: ${embyRes.path}`);
       embyRes.path = decodeURIComponent(embyRes.path);
+      embyRes.notLocal = false;
     }
   }
 

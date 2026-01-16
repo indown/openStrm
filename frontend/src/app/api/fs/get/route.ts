@@ -8,35 +8,33 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { path } = body;
 
+    console.log("[alist-compat] Request path:", path);
+
     if (!path) {
       return NextResponse.json({ code: 400, message: "path is required" }, { status: 400 });
     }
 
-    // 路径格式: /115/{accountName}/xxx/xxx.mkv
-    const pathParts = path.split("/").filter(Boolean);
-    if (pathParts.length < 2 || pathParts[0] !== "115") {
-      return NextResponse.json({ code: 400, message: "invalid path format, expected /115/{account}/..." }, { status: 400 });
-    }
-
-    const accountName = pathParts[1];
-    const realPath = "/" + pathParts.slice(2).join("/");
-
-    // 获取账户信息
+    // 获取第一个 115 账户
     const accounts = readAccounts();
-    const account = accounts.find((a: { name: string; accountType?: string }) => 
-      a.name === accountName && a.accountType === "115"
-    );
+    const account = accounts.find((a: { accountType?: string }) => a.accountType === "115");
     
     if (!account) {
-      return NextResponse.json({ code: 404, message: `account not found: ${accountName}` }, { status: 404 });
+      console.log("[alist-compat] No 115 account found");
+      return NextResponse.json({ code: 404, message: "no 115 account configured" }, { status: 404 });
     }
 
+    console.log("[alist-compat] Using account:", account.name);
+
     const settings = readSettings();
-    const userAgent = settings["user-agent"] || undefined;
+    // 优先使用请求头的 UA，否则用配置的
+    const reqUA = req.headers.get("user-agent");
+    const userAgent = reqUA || settings["user-agent"] || undefined;
+
+    console.log("[alist-compat] Using UA:", userAgent);
 
     // 获取 pickcode
     const pickcode = await get_id_to_path({
-      path: realPath,
+      path: path,
       userAgent,
       accountInfo: account,
     });
@@ -56,12 +54,13 @@ export async function POST(req: NextRequest) {
     }
 
     // 返回 alist 格式响应
+    const fileName = path.split("/").pop() || "";
     return NextResponse.json({
       code: 200,
       message: "success",
       data: {
         raw_url: rawUrl,
-        name: pathParts[pathParts.length - 1],
+        name: fileName,
         provider: "115",
       },
     });
