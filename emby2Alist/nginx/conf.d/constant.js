@@ -26,10 +26,10 @@ let mediaMountPath = ["/root/webdav/115"];
 try {
   const data = fs.readFileSync('/app/config/settings.json', 'utf8');
   const settings = JSON.parse(data);
-  if (settings.emby?.url) {
+  if (settings.emby && settings.emby.url) {
     embyHost = settings.emby.url;
   }
-  if (settings.emby?.apiKey) {
+  if (settings.emby && settings.emby.apiKey) {
     embyApiKey = settings.emby.apiKey;
   }
   if (Array.isArray(settings.mediaMountPath) && settings.mediaMountPath.length > 0) {
