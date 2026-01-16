@@ -1,5 +1,6 @@
 // 如果使用拆分配置,请注意填写 config 下使用到的配置文件
 
+import fs from "fs";
 import commonConfig from "./config/constant-common.js";
 import mountConfig from "./config/constant-mount.js";
 import proConfig from "./config/constant-pro.js";
@@ -12,15 +13,31 @@ import nginxConfig from "./config/constant-nginx.js";
 // 必填项,根据实际情况修改下面的设置
 
 // 这里默认 emby/jellyfin 的地址是宿主机,要注意 iptables 给容器放行端口
-const embyHost = "http://172.17.0.1:8096";
+let embyHost = "http://172.17.0.1:8096";
 
 // emby/jellyfin api key, 在 emby/jellyfin 后台设置
-const embyApiKey = "f839390f50a648fd92108bc11ca6730a";
+let embyApiKey = "f839390f50a648fd92108bc11ca6730a";
 
 // 挂载工具 rclone/CD2 多出来的挂载目录, 例如将 od,gd 挂载到 /mnt 目录下: /mnt/onedrive /mnt/gd ,那么这里就填写 /mnt
 // 通常配置一个远程挂载根路径就够了,默认非此路径开头文件将转给原始 emby 处理
 // 如果没有挂载,全部使用 strm 文件,此项填[""],必须要是数组
-const mediaMountPath = ["/root/webdav/115"];
+let mediaMountPath = ["/root/webdav/115"];
+
+try {
+  const data = fs.readFileSync('/app/config/settings.json', 'utf8');
+  const settings = JSON.parse(data);
+  if (settings.emby?.url) {
+    embyHost = settings.emby.url;
+  }
+  if (settings.emby?.apiKey) {
+    embyApiKey = settings.emby.apiKey;
+  }
+  if (Array.isArray(settings.mediaMountPath) && settings.mediaMountPath.length > 0) {
+    mediaMountPath = settings.mediaMountPath;
+  }
+} catch (e) {
+  // 读取失败使用默认值
+}
 
 // for js_set
 function getEmbyHost(r) {
