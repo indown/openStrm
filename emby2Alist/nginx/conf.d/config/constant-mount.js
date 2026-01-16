@@ -6,8 +6,8 @@ const strHead = commonConfig.strHead;
 
 // rclone/CD2 挂载的 alist 文件配置,根据实际情况修改下面的设置
 // 指向 openstrm 容器的 alist 兼容接口
-// 容器间通过服务名访问，路径格式: /115/{accountName}/{115内路径}
-const alistAddr = "http://openstrm:3000/api/alist";
+// 路径格式: /115/{accountName}/{115内路径}
+const alistAddr = "http://172.17.0.1:8095";
 
 // token 用于 openstrm 内部 API 验证
 const alistToken = "openstrm-internal-token";
@@ -32,7 +32,7 @@ const alistPublicAddr = "http://youralist.com:5244";
 const clientSelfAlistRule = [
   // Infuse 客户端对于 115 的进度条拖动可能依赖于此
   // 如果 nginx 为 https,则此 alist 也必须 https,浏览器行为客户端会阻止非 https 请求
-  [2, strHead["115"], alistPublicAddr],
+  // [2, strHead["115"], alistPublicAddr],  // 注释掉，openstrm 已直接返回直链
   // [2, strHead.ali, alistPublicAddr],
   // 优先使用 filePath,可省去一次查询 alist,如驱动为 alias,则应使用 alistRes
   // ["115-local", "filePath", 0, "/mnt/115", alistPublicAddr],
