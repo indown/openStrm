@@ -1,6 +1,9 @@
 version: "3.9"
 services:
   openstrm:
+    build:
+      context: .
+      dockerfile: Dockerfile.full
     image: indown/openstrm:full
     container_name: openstrm
     ports:
