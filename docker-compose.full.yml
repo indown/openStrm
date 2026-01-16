@@ -15,6 +15,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./config:/app/config
+      - ./emby2Alist/nginx/log:/var/log/nginx
     restart: unless-stopped
     logging:
       driver: "json-file"
