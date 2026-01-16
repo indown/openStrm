@@ -1,0 +1,53 @@
+version: '3.5'
+services:
+    service.nginx-emby:
+      image: nginx:1.27.1
+      container_name: nginx-emby
+      # 需要 Docker Swarm 模式
+      # deploy:
+      #   resources:
+      #     limits:
+      #       cpus: '0.50'
+      #       memory: 128M
+      # 更改为默认host网络,纠正流量标识,直接占用宿主机端口,docker层会禁用端口映射
+      network_mode: host
+      # 如果需要使用bridge(桥接)网络,请取消ports(端口映射)注释,并注释network_mode
+      # 端口映射规则为,宿主机端口:容器内部端口
+      # ports:
+      #   - 8091:8091
+      #   - 8095:8095
+      # 如果遇到海报全部裂开或日志中 permission denied,以下二选一
+      # 还不行的话,自己给宿主机 embyCache 读写权限
+      # privileged: true
+      # entrypoint: |
+      #   /bin/sh -c "chmod -R 777 /var/cache/nginx/emby"
+      volumes:
+        - ../nginx/nginx.conf:/etc/nginx/nginx.conf
+        - ../nginx/conf.d:/etc/nginx/conf.d
+        - ../nginx/embyCache:/var/cache/nginx/emby
+        - ../nginx/log:/var/log/nginx
+      restart: always
+      # depends_on:
+      #   - service.ali
+
+    # service.ali:
+    #   image: xhofe/alist:latest
+    #   container_name: alist
+    #   ports:
+    #     - 5244:5244
+    #   volumes:
+    #     - ../alist:/opt/alist/data
+    #   restart: always
+
+    # service.ali-webdav:
+    #   image: messense/aliyundrive-webdav
+    #   container_name: ali-webdav
+    #   ports:
+    #     - 8080:8080
+    #   volumes:
+    #     - ./aliyundrive-webdav/:/etc/aliyundrive-webdav/
+    #   environment:
+    #     - REFRESH_TOKEN=1111111111111aaaaaaaaaa
+    #     - WEBDAV_AUTH_USER=admin
+    #     - WEBDAV_AUTH_PASSWORD=admin
+    #   restart: always
