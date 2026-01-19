@@ -63,18 +63,18 @@ export function AddTaskDialog({
   const [loading, setLoading] = React.useState(false);
   const [formValues, setFormValues] = React.useState({
     strmPrefix: "",
-    targetPath: "",
+    originPath: "",
   });
 
   // 计算预览路径
   const getPreviewPath = () => {
-    const { strmPrefix, targetPath } = formValues;
-    if (!strmPrefix && !targetPath) {
-      return "请输入 Strm Prefix 和 Target Path";
+    const { strmPrefix, originPath } = formValues;
+    if (!strmPrefix && !originPath) {
+      return "请输入 Strm Prefix 和 Origin Path";
     }
     const prefix = strmPrefix || "";
-    const target = targetPath || "";
-    const combinedPath = prefix + "/" + target;
+    const origin = originPath || "";
+    const combinedPath = prefix + "/" + origin;
     return `${combinedPath}/....../abc.mkv`;
   };
 
@@ -95,7 +95,7 @@ export function AddTaskDialog({
     const subscription = form.watch((value) => {
       setFormValues({
         strmPrefix: value.strmPrefix || "",
-        targetPath: value.targetPath || "",
+        originPath: value.originPath || "",
       });
     });
     return () => subscription.unsubscribe();
@@ -106,7 +106,7 @@ export function AddTaskDialog({
     if (task) {
       setFormValues({
         strmPrefix: task.strmPrefix || "",
-        targetPath: task.targetPath || "",
+        originPath: task.originPath || "",
       });
     }
   }, [task]);
@@ -279,7 +279,7 @@ export function AddTaskDialog({
                     <div className="group relative">
                       <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-600 cursor-help" />
                       <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 text-white text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
-                        用户生成strm文件的前缀，为Strm Prefix+target Path
+                        用于生成strm文件的前缀，最终路径为 Strm Prefix + Origin Path
                         <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
                       </div>
                     </div>

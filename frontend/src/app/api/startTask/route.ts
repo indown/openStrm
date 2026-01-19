@@ -290,7 +290,7 @@ function startDownloadTask({
   );
   strmFiles.forEach((filePath) => {
     const savePath = path.join(saveDir, filePath);
-    downloadOrCreateStrm(targetPath + "/" + filePath, savePath, {
+    downloadOrCreateStrm(originPath + "/" + filePath, savePath, {
       asStrm: true,
       displayPath: filePath,
       strmPrefix,
