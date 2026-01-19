@@ -45,6 +45,7 @@ EXPOSE 3000 8091
 
 # Next.js 内部监听 8000 端口，nginx 监听 3000 代理过来
 ENV PORT=8000
+ENV HOSTNAME=0.0.0.0
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "/app/frontend/server.js"]
