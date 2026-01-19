@@ -14,16 +14,41 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ code: 400, message: "path is required" }, { status: 400 });
     }
 
-    // 获取第一个 115 账户
+    // 获取所有 115 账户
     const accounts = readAccounts();
-    const account = accounts.find((a: { accountType?: string }) => a.accountType === "115");
+    const accounts115 = accounts.filter((a: { accountType?: string }) => a.accountType === "115");
     
-    if (!account) {
+    if (accounts115.length === 0) {
       console.log("[alist-compat] No 115 account found");
       return NextResponse.json({ code: 404, message: "no 115 account configured" }, { status: 404 });
     }
 
-    console.log("[alist-compat] Using account:", account.name);
+    // 根据路径判断使用哪个账户（路径中包含账户名）
+    // 例如路径：/root/webdav/115/my115/tv/xxx.mkv，匹配账户名 my115
+    let account = accounts115.find((a: { name?: string }) => {
+      if (!a.name) return false;
+      // 检查路径中是否包含 /账户名/ 的格式
+      return path.includes(`/${a.name}/`);
+    });
+
+    // 处理后的网盘路径（去掉前缀部分）
+    let actualPath = path;
+
+    // 如果没有匹配到，使用第一个 115 账户
+    if (!account) {
+      account = accounts115[0];
+      console.log("[alist-compat] No account matched in path, using first account:", account.name);
+    } else {
+      console.log("[alist-compat] Matched account from path:", account.name);
+      // 从路径中提取实际的网盘路径（去掉 /账户名/ 之前的部分）
+      // 例如 /root/webdav/115/my115/tv/xxx.mkv -> tv/xxx.mkv
+      const accountNamePattern = `/${account.name}/`;
+      const idx = path.indexOf(accountNamePattern);
+      if (idx !== -1) {
+        actualPath = path.substring(idx + accountNamePattern.length);
+        console.log("[alist-compat] Extracted actual path:", actualPath);
+      }
+    }
 
     const settings = readSettings();
     // 优先使用请求头的 UA，否则用配置的
@@ -32,9 +57,9 @@ export async function POST(req: NextRequest) {
 
     console.log("[alist-compat] Using UA:", userAgent);
 
-    // 获取 pickcode
+    // 获取 pickcode（使用处理后的实际网盘路径）
     const pickcode = await get_id_to_path({
-      path: path,
+      path: actualPath,
       userAgent,
       accountInfo: account,
     });
