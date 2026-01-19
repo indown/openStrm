@@ -7,8 +7,8 @@ services:
     image: indown/openstrm:full
     container_name: openstrm
     ports:
-      - "3000:3000"   # Next.js 直接访问（可选）
-      - "8091:8091"   # nginx 统一入口（emby 客户端使用此端口）
+      - "3000:3000"   # nginx 代理 -> Next.js (前端界面)
+      - "8091:8091"   # nginx 代理 -> emby (emby 客户端使用此端口)
     environment:
       - NODE_ENV=production
       - ALIST_API_TOKEN=openstrm-internal-token
