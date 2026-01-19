@@ -137,8 +137,16 @@ export function AddTaskDialog({
     try {
       // 自动获取选中账户的类型
       const accountType = getAccountType(values.account);
+      
+      // 如果是115账户且开启了302，在strmPrefix后拼接账户名
+      let finalStrmPrefix = values.strmPrefix || "";
+      if (accountType === "115" && values.enable302 && values.account) {
+        finalStrmPrefix = finalStrmPrefix.replace(/\/+$/, "") + "/" + values.account;
+      }
+      
       const taskData = {
         ...values,
+        strmPrefix: finalStrmPrefix,
         accountType,
       };
 
