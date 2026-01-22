@@ -167,6 +167,7 @@ export function normalizeToStrm(path: string): string {
 // Settings helpers
 export type AppSettings = {
   "user-agent"?: string;
+  internalToken?: string;  // 内部 API 验证 token，首次启动时自动生成
   strmExtensions?: string[];  // strm文件扩展名配置
   downloadExtensions?: string[];  // 需要下载的文件扩展名配置
   emby?: {
