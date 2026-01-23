@@ -7,7 +7,7 @@ const strHead = commonConfig.strHead;
 // rclone/CD2 挂载的 alist 文件配置,根据实际情况修改下面的设置
 // 指向 openstrm 容器的 alist 兼容接口
 // 路径格式: /115/{accountName}/{115内路径}
-const alistAddr = "http://172.17.0.1:8095";
+const alistAddr = "http://127.0.0.1:8000";
 
 // token 用于 openstrm 内部 API 验证
 const alistToken = "openstrm-internal-token";
