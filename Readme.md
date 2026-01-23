@@ -78,10 +78,22 @@ docker pull indown/openstrm:latest
 docker run -d \
   --name openstrm \
   -p 3000:3000 \
+  -p 8091:8091 \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/config:/app/config \
+  -v $(pwd)/emby2Alist/nginx/log:/var/log/nginx \
   indown/openstrm:latest
 ```
+
+**端口说明**：
+- `3000`: 前端管理界面
+- `8091`: Emby 302 代理端口（Emby 客户端使用此端口连接）
+
+**目录挂载说明**：
+- `./data`: 存储应用数据
+- `./config`: 存储配置文件
+- `./emby2Alist/nginx/log`: Nginx 日志目录
+
 ### 生产环境部署
 
 ```bash
