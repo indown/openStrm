@@ -94,9 +94,22 @@ export function AddTaskDialog({
     return `${combinedPath}/....../abc.mkv`;
   };
 
+  // 编辑时，如果启用了302且strmPrefix以账号结尾，需要去掉账号后缀
+  const getInitialStrmPrefix = () => {
+    if (!task) return "";
+    let prefix = task.strmPrefix || "";
+    if (task.enable302 && task.account && prefix.endsWith("/" + task.account)) {
+      prefix = prefix.slice(0, -(task.account.length + 1));
+    }
+    return prefix;
+  };
+
   const form = useForm<TaskFormValues>({
     resolver: zodResolver(taskFormSchema),
-    defaultValues: task ?? {
+    defaultValues: task ? {
+      ...task,
+      strmPrefix: getInitialStrmPrefix(),
+    } : {
       account: "",
       originPath: "",
       targetPath: "",
@@ -123,8 +136,13 @@ export function AddTaskDialog({
   // 初始化时同步表单值到状态
   React.useEffect(() => {
     if (task) {
+      // 如果启用了302且strmPrefix以账号结尾，去掉账号后缀
+      let prefix = task.strmPrefix || "";
+      if (task.enable302 && task.account && prefix.endsWith("/" + task.account)) {
+        prefix = prefix.slice(0, -(task.account.length + 1));
+      }
       setFormValues({
-        strmPrefix: task.strmPrefix || "",
+        strmPrefix: prefix,
         originPath: task.originPath || "",
         account: task.account || "",
         enable302: task.enable302 || false,
