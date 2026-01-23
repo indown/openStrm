@@ -20,13 +20,12 @@ export async function GET() {
 
 // 辅助函数：当开启302时，把前缀路径添加到 mediaMountPath
 function updateMediaMountPathFor302(taskData: { enable302?: boolean; strmPrefix?: string; account?: string }) {
-  if (!taskData.enable302 || !taskData.strmPrefix || !taskData.account) {
+  if (!taskData.enable302 || !taskData.strmPrefix) {
     return;
   }
   
-  // 构建完整的前缀路径：strmPrefix + "/" + account
-  const prefix = (taskData.strmPrefix || "").replace(/\/+$/, "");
-  const fullPath = `${prefix}/${taskData.account}`;
+  // strmPrefix 在前端提交时已经拼接了账户名，直接使用即可
+  const fullPath = (taskData.strmPrefix || "").replace(/\/+$/, "");
   
   // 读取当前设置
   const settings = readSettings();
