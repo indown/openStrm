@@ -23,22 +23,22 @@ const appVersion = (frontendPkg as PackageJson).version ?? "";
 // Menu items.
 const items = [
   {
-    title: "Home",
+    title: "首页",
     url: "/home",
     icon: Home,
   },
   {
-    title: "Account",
+    title: "账户",
     url: "/account",
     icon: Inbox,
   },
   {
-    title: "Settings",
+    title: "设置",
     url: "/settings",
     icon: Settings,
   },
   {
-    title: "History",
+    title: "历史",
     url: "/history",
     icon: History,
   },
@@ -74,12 +74,12 @@ export function AppSidebar() {
             />
             <div className="flex flex-col">
               <span className="text-xl font-bold text-foreground">Open Strm</span>
-              <span className="text-xs text-muted-foreground">Strm Management</span>
+              <span className="text-xs text-muted-foreground">流媒体管理</span>
             </div>
           </div>
         </div>
         <SidebarGroup>
-          <SidebarGroupLabel>Main</SidebarGroupLabel>
+          <SidebarGroupLabel>主菜单</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {items.map((item) => {
