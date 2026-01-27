@@ -80,7 +80,6 @@ export async function POST(req: NextRequest) {
         });
       }
     }
-    console.log("cid: ", cid);
     // 只获取当前目录的直接子目录，不递归
     try {
       const filesResponse = await fs_files(cid, {
@@ -89,7 +88,6 @@ export async function POST(req: NextRequest) {
         limit: 1000,
         offset: 0,
       });
-      console.log("filesResponse: ", JSON.stringify(filesResponse, null, 2));
       const items: FileItem[] = filesResponse.data || [];
       const nodes: TreeNode[] = [];
       
