@@ -12,6 +12,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface TreeNode {
   name: string;
@@ -26,6 +36,7 @@ interface DirectoryTreeDialogProps {
   onOpenChange: (open: boolean) => void;
   account: string;
   onSelect: (path: string) => void;
+  onSelectWithTargetPath?: (originPath: string, targetPath: string) => void; // 同时设置远程和本地路径的回调
 }
 
 export function DirectoryTreeDialog({
@@ -33,6 +44,7 @@ export function DirectoryTreeDialog({
   onOpenChange,
   account,
   onSelect,
+  onSelectWithTargetPath,
 }: DirectoryTreeDialogProps) {
   const [tree, setTree] = React.useState<TreeNode[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -43,6 +55,7 @@ export function DirectoryTreeDialog({
     new Set()
   );
   const [selectedPath, setSelectedPath] = React.useState<string>("");
+  const [showAutoFillDialog, setShowAutoFillDialog] = React.useState(false);
 
   // 加载目录树
   const loadTree = React.useCallback(
@@ -166,10 +179,38 @@ export function DirectoryTreeDialog({
 
   // 确认选择
   const handleConfirm = () => {
-    if (selectedPath) {
-      onSelect(selectedPath);
-      onOpenChange(false);
+    if (!selectedPath) return;
+    
+    // 如果有回调函数，总是显示确认对话框
+    if (onSelectWithTargetPath) {
+      setShowAutoFillDialog(true);
+      return;
     }
+    
+    // 否则直接选择
+    onSelect(selectedPath);
+    onOpenChange(false);
+  };
+
+  // 自动填充确认
+  const handleAutoFillConfirm = () => {
+    if (!selectedPath || !onSelectWithTargetPath) return;
+    
+    // 自动填充本地路径：账号名/远程路径
+    const autoTargetPath = `${account}/${selectedPath}`;
+    onSelectWithTargetPath(selectedPath, autoTargetPath);
+    setShowAutoFillDialog(false);
+    onOpenChange(false);
+  };
+
+  // 不自动填充
+  const handleAutoFillCancel = () => {
+    if (!selectedPath) return;
+    
+    // 只设置远程路径，不设置本地路径
+    onSelect(selectedPath);
+    setShowAutoFillDialog(false);
+    onOpenChange(false);
   };
 
   // 渲染树节点
@@ -289,6 +330,30 @@ export function DirectoryTreeDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      {/* 自动填充本地路径确认对话框 */}
+      <AlertDialog open={showAutoFillDialog} onOpenChange={setShowAutoFillDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>自动填写本地路径</AlertDialogTitle>
+            <AlertDialogDescription>
+              将为您自动填写本地路径，是否需要？
+              <br />
+              <span className="font-medium text-gray-700 mt-2 block">
+                本地路径: {selectedPath ? `${account}/${selectedPath}` : ""}
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleAutoFillCancel}>
+              我不需要
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={handleAutoFillConfirm}>
+              好的
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }

@@ -432,8 +432,18 @@ export function AddTaskDialog({
               form.setValue("originPath", path);
               setFormValues((prev) => ({ ...prev, originPath: path }));
             }}
+            onSelectWithTargetPath={(originPath, targetPath) => {
+              form.setValue("originPath", originPath);
+              form.setValue("targetPath", targetPath);
+              setFormValues((prev) => ({
+                ...prev,
+                originPath,
+                targetPath,
+              }));
+            }}
           />
         )}
+
       </DialogContent>
     </Dialog>
   );
