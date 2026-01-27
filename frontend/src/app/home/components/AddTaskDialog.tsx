@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/select";
 import { FolderOpen } from "lucide-react";
 import { DirectoryTreeDialog } from "./DirectoryTreeDialog";
+import { LocalDirectoryTreeDialog } from "./LocalDirectoryTreeDialog";
 
 export const taskFormSchema = z.object({
   account: z.string().min(1, "Account 不能为空"),
@@ -65,6 +66,7 @@ export function AddTaskDialog({
   const [open, setOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [directoryDialogOpen, setDirectoryDialogOpen] = React.useState(false);
+  const [localDirectoryDialogOpen, setLocalDirectoryDialogOpen] = React.useState(false);
   const [formValues, setFormValues] = React.useState({
     strmPrefix: "",
     originPath: "",
@@ -330,7 +332,18 @@ export function AddTaskDialog({
                     </div>
                   </FormLabel>
                   <FormControl>
-                    <Input {...field} placeholder="Target Path" />
+                    <div className="flex items-center gap-2">
+                      <Input {...field} placeholder="Target Path" className="flex-1" />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => setLocalDirectoryDialogOpen(true)}
+                        title="选择目录"
+                      >
+                        <FolderOpen className="w-4 h-4" />
+                      </Button>
+                    </div>
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -444,6 +457,15 @@ export function AddTaskDialog({
           />
         )}
 
+        {/* 本地目录树选择对话框 */}
+        <LocalDirectoryTreeDialog
+          open={localDirectoryDialogOpen}
+          onOpenChange={setLocalDirectoryDialogOpen}
+          onSelect={(path) => {
+            form.setValue("targetPath", path);
+            setFormValues((prev) => ({ ...prev, targetPath: path }));
+          }}
+        />
       </DialogContent>
     </Dialog>
   );
