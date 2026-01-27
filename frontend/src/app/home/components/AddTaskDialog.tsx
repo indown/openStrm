@@ -33,6 +33,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { FolderOpen } from "lucide-react";
+import { DirectoryTreeDialog } from "./DirectoryTreeDialog";
 
 export const taskFormSchema = z.object({
   account: z.string().min(1, "Account 不能为空"),
@@ -62,6 +64,7 @@ export function AddTaskDialog({
 }: AddTaskDialogProps) {
   const [open, setOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
+  const [directoryDialogOpen, setDirectoryDialogOpen] = React.useState(false);
   const [formValues, setFormValues] = React.useState({
     strmPrefix: "",
     originPath: "",
@@ -290,7 +293,20 @@ export function AddTaskDialog({
                     </div>
                   </FormLabel>
                   <FormControl>
-                    <Input {...field} placeholder="Origin Path" />
+                    <div className="flex items-center gap-2">
+                      <Input {...field} placeholder="Origin Path" className="flex-1" />
+                      {is115Account && formValues.account && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          onClick={() => setDirectoryDialogOpen(true)}
+                          title="选择目录"
+                        >
+                          <FolderOpen className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </div>
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -429,6 +445,19 @@ export function AddTaskDialog({
             </DialogFooter>
           </form>
         </Form>
+
+        {/* 目录树选择对话框 */}
+        {is115Account && formValues.account && (
+          <DirectoryTreeDialog
+            open={directoryDialogOpen}
+            onOpenChange={setDirectoryDialogOpen}
+            account={formValues.account}
+            onSelect={(path) => {
+              form.setValue("originPath", path);
+              setFormValues((prev) => ({ ...prev, originPath: path }));
+            }}
+          />
+        )}
       </DialogContent>
     </Dialog>
   );
