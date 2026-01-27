@@ -9,7 +9,7 @@ services:
     environment:
       - NODE_ENV=production
     volumes:
-      - ./data:/app/data
+      - ./strmData:/app/data     # strm下载目录
       - ./config:/app/config
       - ./emby2Alist/nginx/log:/var/log/nginx
     restart: unless-stopped

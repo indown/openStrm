@@ -11,7 +11,7 @@ services:
       - NODE_ENV=production
       # ALIST_API_TOKEN 由 entrypoint 从 settings.json 自动读取/生成
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data    # strm下载目录
       - ./config:/app/config
       - ./emby2Alist/nginx/log:/var/log/nginx
     restart: unless-stopped
