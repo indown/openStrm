@@ -425,11 +425,11 @@ export function AddTaskDialog({
             <DialogFooter>
               <DialogClose asChild>
                 <Button variant="outline" disabled={loading}>
-                  Cancel
+                  取消
                 </Button>
               </DialogClose>
               <Button type="submit" disabled={loading}>
-                {loading ? "Saving..." : "Save"}
+                {loading ? "保存中..." : "保存"}
               </Button>
             </DialogFooter>
           </form>
