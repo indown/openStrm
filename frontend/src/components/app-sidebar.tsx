@@ -100,7 +100,7 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
         
-        <SidebarGroup>
+        {/* <SidebarGroup>
           <SidebarGroupLabel>Telegram</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
@@ -119,7 +119,7 @@ export function AppSidebar() {
               })}
             </SidebarMenu>
           </SidebarGroupContent>
-        </SidebarGroup>
+        </SidebarGroup> */}
       </SidebarContent>
       <SidebarSeparator className="ml-0 mr-2 w-auto group-data-[collapsible=icon]:mx-0" />
       <SidebarFooter>
