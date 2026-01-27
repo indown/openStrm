@@ -33,6 +33,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Info } from "lucide-react";
 import { toast } from "sonner";
 
 // 表单验证规则
@@ -173,19 +175,27 @@ export function AddAccountDialog({ account, trigger, onSuccess }: AddAccountDial
 
             {/* 115 类型字段 */}
             {watchAccountType === "115" && (
-              <FormField
-                control={form.control}
-                name="cookie"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Cookie</FormLabel>
-                    <FormControl>
-                      <Input placeholder="输入 115 网盘的 Cookie" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              <>
+                <FormField
+                  control={form.control}
+                  name="cookie"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Cookie</FormLabel>
+                      <FormControl>
+                        <Input placeholder="输入 115 网盘的 Cookie" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <Alert>
+                  <Info className="h-4 w-4" />
+                  <AlertDescription>
+                    如果希望使用 302 重定向功能，推荐将账户名称与 openlist、cd2 的 115 账户用户名保持一致，这样可以保证正确回源。
+                  </AlertDescription>
+                </Alert>
+              </>
             )}
 
             {/* openlist 类型字段 */}
