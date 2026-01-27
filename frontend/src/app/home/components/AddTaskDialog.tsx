@@ -337,30 +337,6 @@ export function AddTaskDialog({
               )}
             />
 
-            {/* Strm Type */}
-            <FormField
-              control={form.control}
-              name="strmType"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Strm 类型</FormLabel>
-                  <FormControl>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select strm type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="local">local</SelectItem>
-                        <SelectItem value="cloud" disabled>
-                          cloud
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
 
             {/* Strm Prefix */}
             <FormField
