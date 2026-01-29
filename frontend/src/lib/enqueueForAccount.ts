@@ -268,11 +268,12 @@ async function getRealDownloadLinkDirect(
 export function downloadOrCreateStrm(
   url: string,
   savePath: string,
-  opts?: { asStrm?: boolean; displayPath?: string; strmPrefix?: string }
+  opts?: { asStrm?: boolean; displayPath?: string; strmPrefix?: string; enablePathEncoding?: boolean }
 ): Observable<Progress> {
   const asStrm = !!opts?.asStrm;
   const displayPath = opts?.displayPath ?? savePath;
   const strmPrefix = opts?.strmPrefix ?? "";
+  const enablePathEncoding = !!opts?.enablePathEncoding;
 
   const dir = path.dirname(savePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -282,7 +283,8 @@ export function downloadOrCreateStrm(
       try {
         const ext = path.extname(savePath);
         const strmPath = savePath.replace(ext, ".strm");
-        fs.writeFileSync(strmPath, `${strmPrefix}/${url}`, "utf8");
+        const encodedUrl = enablePathEncoding ? encodeURI(url) : url;
+        fs.writeFileSync(strmPath, `${strmPrefix}/${encodedUrl}`, "utf8");
         observer.next({ percent: 100, filePath: displayPath });
         observer.complete();
       } catch (err: unknown) {
@@ -333,7 +335,7 @@ export function downloadOrCreateStrmLimited(
   filePathOrUrl: string,
   savePath: string,
   account: string,
-  opts?: { asStrm?: boolean; displayPath?: string; strmPrefix?: string },
+  opts?: { asStrm?: boolean; displayPath?: string; strmPrefix?: string; enablePathEncoding?: boolean },
   maxRetries = 10,
   retryDelay = 2000
 ): Observable<Progress> {

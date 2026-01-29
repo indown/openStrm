@@ -193,6 +193,7 @@ function startDownloadTask({
   originPath,
   targetPath,
   removeExtraFiles,
+  enablePathEncoding,
 }: {
   filePaths: string[];
   saveDir: string;
@@ -202,6 +203,7 @@ function startDownloadTask({
   originPath: string;
   targetPath: string;
   removeExtraFiles?: boolean;
+  enablePathEncoding?: boolean;
 }): string {
   const total = filePaths.length;
   const taskSubject = new Subject<DownloadProgress>();
@@ -294,6 +296,7 @@ function startDownloadTask({
       asStrm: true,
       displayPath: filePath,
       strmPrefix,
+      enablePathEncoding,
     }).subscribe({
       next: (p) => {
         perFile.set(p.filePath!, 100);
@@ -574,6 +577,7 @@ export async function POST(req: NextRequest) {
     taskId: task.id,
     strmPrefix,
     removeExtraFiles: task.removeExtraFiles,
+    enablePathEncoding: task.enablePathEncoding,
   });
 
   const deleteMessage = task.removeExtraFiles 
