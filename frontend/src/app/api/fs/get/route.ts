@@ -14,6 +14,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ code: 400, message: "path is required" }, { status: 400 });
     }
 
+    // URL 解码路径（兼容编码后的路径，包括账户名）
+    const decodedPath = decodeURIComponent(path);
+    console.log("[alist-compat] Decoded path:", decodedPath);
+
     // 获取所有 115 账户
     const accounts = readAccounts();
     const accounts115 = accounts.filter((a: { accountType?: string }) => a.accountType === "115");
@@ -28,11 +32,11 @@ export async function POST(req: NextRequest) {
     let account = accounts115.find((a: { name?: string }) => {
       if (!a.name) return false;
       // 检查路径中是否包含 /账户名/ 的格式
-      return path.includes(`/${a.name}/`);
+      return decodedPath.includes(`/${a.name}/`);
     });
 
     // 处理后的网盘路径（去掉前缀部分）
-    let actualPath = path;
+    let actualPath = decodedPath;
 
     // 如果没有匹配到，使用第一个 115 账户
     if (!account) {
@@ -43,9 +47,9 @@ export async function POST(req: NextRequest) {
       // 从路径中提取实际的网盘路径（去掉 /账户名/ 之前的部分）
       // 例如 /root/webdav/115/my115/tv/xxx.mkv -> tv/xxx.mkv
       const accountNamePattern = `/${account.name}/`;
-      const idx = path.indexOf(accountNamePattern);
+      const idx = decodedPath.indexOf(accountNamePattern);
       if (idx !== -1) {
-        actualPath = path.substring(idx + accountNamePattern.length);
+        actualPath = decodedPath.substring(idx + accountNamePattern.length);
         console.log("[alist-compat] Extracted actual path:", actualPath);
       }
     }
@@ -79,7 +83,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 返回 alist 格式响应
-    const fileName = path.split("/").pop() || "";
+    const fileName = decodedPath.split("/").pop() || "";
     return NextResponse.json({
       code: 200,
       message: "success",

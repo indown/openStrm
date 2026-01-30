@@ -283,8 +283,9 @@ export function downloadOrCreateStrm(
       try {
         const ext = path.extname(savePath);
         const strmPath = savePath.replace(ext, ".strm");
-        const encodedUrl = enablePathEncoding ? encodeURI(url) : url;
-        fs.writeFileSync(strmPath, `${strmPrefix}/${encodedUrl}`, "utf8");
+        const fullPath = `${strmPrefix}/${url}`;
+        const finalPath = enablePathEncoding ? encodeURI(fullPath) : fullPath;
+        fs.writeFileSync(strmPath, finalPath, "utf8");
         observer.next({ percent: 100, filePath: displayPath });
         observer.complete();
       } catch (err: unknown) {
