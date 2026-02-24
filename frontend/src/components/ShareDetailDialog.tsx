@@ -16,9 +16,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { File, ChevronRight, FolderOpen } from "lucide-react";
+import { File, ChevronRight, FolderOpen, Download } from "lucide-react";
 import axiosInstance from "@/lib/axios";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { DirectoryPickerDialog } from "@/components/DirectoryPickerDialog";
 
 export interface ShareFileItem {
   id: number;
@@ -62,6 +65,10 @@ export function ShareDetailDialog({
   const [breadcrumb, setBreadcrumb] = useState<BreadcrumbItem[]>([{ id: "0", name: "根目录" }]);
   const [currentList, setCurrentList] = useState<ShareFileItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [showDirPicker, setShowDirPicker] = useState(false);
+  const [targetCid, setTargetCid] = useState(0);
 
   const shareInfoData = shareInfo?.share_info as Record<string, unknown> | undefined;
   const title = (shareInfoData?.name ?? shareInfoData?.share_name ?? "115 分享") as string;
@@ -75,6 +82,7 @@ export function ShareDetailDialog({
     if (open) {
       setBreadcrumb([{ id: "0", name: "根目录" }]);
       setCurrentList(initialFileList);
+      setSelectedIds(new Set());
     }
   }, [open, initialFileList]);
 
@@ -110,6 +118,49 @@ export function ShareDetailDialog({
     const item = breadcrumb[index];
     setBreadcrumb((prev) => prev.slice(0, index + 1));
     fetchList(item.id);
+  };
+
+  const toggleSelect = (item: ShareFileItem) => {
+    const itemId = item.is_dir ? String(item.cid) : String(item.id);
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) {
+        next.delete(itemId);
+      } else {
+        next.add(itemId);
+      }
+      return next;
+    });
+  };
+
+  const handleSaveToMyDrive = async () => {
+    if (selectedIds.size === 0) {
+      toast.error("请先选择要保存的文件");
+      return;
+    }
+    setShowDirPicker(true);
+  };
+
+  const handleDirSelected = async (cid: number) => {
+    setSaving(true);
+    try {
+      const res = await axiosInstance.post("/api/115/share", {
+        action: "receive",
+        url: shareLink.trim(),
+        fileIds: Array.from(selectedIds),
+        toPid: cid,
+      });
+      if (res.data.code === 200) {
+        toast.success("保存成功");
+        setSelectedIds(new Set());
+      } else {
+        toast.error("保存失败");
+      }
+    } catch {
+      toast.error("保存失败");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const displayList = open ? currentList : [];
@@ -150,41 +201,72 @@ export function ShareDetailDialog({
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[40px]" />
+                  <TableHead className="w-[40px]" />
                   <TableHead>名称</TableHead>
                   <TableHead className="text-right">大小</TableHead>
                   <TableHead className="w-[80px]">类型</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {displayList.map((item) => (
-                  <TableRow
-                    key={item.is_dir ? (item.cid as number) : item.id}
-                    className={item.is_dir ? "cursor-pointer hover:bg-muted/50" : ""}
-                    onClick={() => handleOpenFolder(item)}
-                  >
-                    <TableCell className="py-1">
-                      {item.is_dir ? (
-                        <FolderOpen className="h-4 w-4 text-amber-500" />
-                      ) : (
-                        <File className="h-4 w-4 text-muted-foreground" />
-                      )}
-                    </TableCell>
-                    <TableCell className="font-medium truncate max-w-[200px]" title={item.name}>
-                      {item.name}
-                    </TableCell>
-                    <TableCell className="text-right text-muted-foreground">
-                      {item.is_dir ? "-" : formatSize(item.size)}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {item.is_dir ? "文件夹" : "文件"}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {displayList.map((item) => {
+                  const itemId = item.is_dir ? String(item.cid) : String(item.id);
+                  const isSelected = selectedIds.has(itemId);
+                  return (
+                    <TableRow key={itemId}>
+                      <TableCell className="py-1">
+                        <Checkbox
+                          checked={isSelected}
+                          onCheckedChange={() => toggleSelect(item)}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </TableCell>
+                      <TableCell
+                        className="py-1 cursor-pointer"
+                        onClick={() => handleOpenFolder(item)}
+                      >
+                        {item.is_dir ? (
+                          <FolderOpen className="h-4 w-4 text-amber-500" />
+                        ) : (
+                          <File className="h-4 w-4 text-muted-foreground" />
+                        )}
+                      </TableCell>
+                      <TableCell
+                        className="font-medium truncate max-w-[200px] cursor-pointer"
+                        title={item.name}
+                        onClick={() => handleOpenFolder(item)}
+                      >
+                        {item.name}
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground">
+                        {item.is_dir ? "-" : formatSize(item.size)}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {item.is_dir ? "文件夹" : "文件"}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           )}
         </div>
+        {selectedIds.size > 0 && (
+          <div className="flex items-center justify-between pt-4 border-t">
+            <span className="text-sm text-muted-foreground">
+              已选择 {selectedIds.size} 项
+            </span>
+            <Button onClick={handleSaveToMyDrive} disabled={saving}>
+              <Download className="h-4 w-4 mr-2" />
+              {saving ? "保存中..." : "保存到我的网盘"}
+            </Button>
+          </div>
+        )}
       </DialogContent>
+      <DirectoryPickerDialog
+        open={showDirPicker}
+        onOpenChange={setShowDirPicker}
+        onSelect={handleDirSelected}
+      />
     </Dialog>
   );
 }
