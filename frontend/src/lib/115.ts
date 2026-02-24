@@ -6,8 +6,8 @@ import { encrypt, decrypt } from "./115crypto";
 import { SimpleCache } from "./SimpleCache";
 import { readSettings } from "./serverUtils";
 
-// 定义账户信息类型
-interface AccountInfo {
+// 定义账户信息类型（导出供 115share 等模块使用）
+export interface AccountInfo {
   name: string;
   cookie: string;
   accountType?: string;
@@ -496,6 +496,88 @@ export async function getPickcodeToId(id: number, { userAgent = defaultUA(), acc
   pickcodeCache.set(cacheKey, pickcode);
   return pickcode;
 }
+
+/* ------------------------ 115 分享接口 (对应 p115client P115ShareFileSystem) ------------------------ */
+const SHARE_BASE = "https://webapi.115.com";
+
+/** 分享快照/列目录 GET share/snap */
+export async function shareSnap(
+  accountInfo: AccountInfo,
+  params: { share_code: string; receive_code?: string; limit?: number; cid?: string; offset?: number },
+  opts?: { userAgent?: string }
+) {
+  if (!accountInfo?.cookie) throw new Error("accountInfo.cookie is required");
+  const url = `${SHARE_BASE}/share/snap`;
+  const q = new URLSearchParams();
+  q.set("share_code", params.share_code);
+  if (params.receive_code != null) q.set("receive_code", params.receive_code);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  if (params.cid != null) q.set("cid", String(params.cid));
+  if (params.offset != null) q.set("offset", String(params.offset));
+  return request115<{ state?: boolean; errno?: number; data?: Record<string, unknown> & { list?: unknown[] }; list?: unknown[] }>(
+    url + "?" + q.toString(),
+    {
+      method: "GET",
+      userAgent: opts?.userAgent ?? defaultUA(),
+      useCommonHeaders: true,
+      accountInfo,
+    }
+  );
+}
+
+/** 分享下载链接 GET share/download_url */
+export async function shareDownloadUrl(
+  accountInfo: AccountInfo,
+  shareCode: string,
+  receiveCode: string,
+  fileId: number | string,
+  opts?: { userAgent?: string }
+) {
+  if (!accountInfo?.cookie) throw new Error("accountInfo.cookie is required");
+  const url = `${SHARE_BASE}/share/download_url`;
+  const q = new URLSearchParams({
+    share_code: shareCode,
+    receive_code: receiveCode || "",
+    file_id: String(fileId),
+  });
+  return request115<{ state?: boolean; errno?: number; data?: { url?: string }; url?: string }>(
+    url + "?" + q.toString(),
+    {
+      method: "GET",
+      userAgent: opts?.userAgent ?? defaultUA(),
+      useCommonHeaders: true,
+      accountInfo,
+    }
+  );
+}
+
+/** 转存到我的网盘 POST share/receive */
+export async function shareReceive(
+  accountInfo: AccountInfo,
+  shareCode: string,
+  receiveCode: string,
+  fileIds: number | string | (number | string)[],
+  toPid: number,
+  opts?: { userAgent?: string }
+) {
+  if (!accountInfo?.cookie) throw new Error("accountInfo.cookie is required");
+  const url = `${SHARE_BASE}/share/receive`;
+  const fileIdStr = Array.isArray(fileIds) ? fileIds.join(",") : String(fileIds);
+  const form = new URLSearchParams();
+  form.set("share_code", shareCode);
+  form.set("receive_code", receiveCode || "");
+  form.set("file_id", fileIdStr);
+  form.set("cid", String(toPid));
+  return request115<{ state?: boolean; errno?: number; error?: string }>(url, {
+    method: "POST",
+    data: form,
+    userAgent: opts?.userAgent ?? defaultUA(),
+    useCommonHeaders: true,
+    accountInfo,
+    ensureOk: true,
+  });
+}
+
 // POST https://webapi.115.com/rb/delete (fs_delete)
 async function fsDelete(fileId, { userAgent, accountInfo }) {
   const url = "https://webapi.115.com/rb/delete";
