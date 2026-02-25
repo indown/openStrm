@@ -148,10 +148,14 @@ export function ShareDetailDialog({
         action: "receive",
         url: shareLink.trim(),
         fileIds: Array.from(selectedIds),
-        toPid: cid,
+        toPid: String(cid),
       });
       if (res.data.code === 200) {
-        toast.success("保存成功");
+        if (res.data.strmGenerated) {
+          toast.success(`保存成功并生成了 ${res.data.generatedCount} 个 strm 文件`);
+        } else {
+          toast.success("保存成功");
+        }
         setSelectedIds(new Set());
       } else {
         toast.error("保存失败");

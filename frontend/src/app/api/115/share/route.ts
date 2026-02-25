@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readAccounts, readSettings } from "@/lib/serverUtils";
+import { readAccounts, readSettings, readTasks } from "@/lib/serverUtils";
 import {
   shareExtractPayload,
   getShareData,
@@ -8,6 +8,35 @@ import {
   receiveToMyDrive,
 } from "@/lib/115share";
 import type { AccountInfo } from "@/lib/115";
+import { fs_files } from "@/lib/115";
+import * as path from "path";
+import * as fs from "fs";
+
+// 通过 cid 获取完整路径
+async function getPathByCid(cid: number, accountInfo: AccountInfo): Promise<string> {
+  if (cid === 0) return "/";
+  
+  const pathParts: string[] = [];
+  let currentCid = cid;
+  
+  // 最多查询 20 层，防止无限循环
+  for (let i = 0; i < 20 && currentCid !== 0; i++) {
+    try {
+      const data = await fs_files(currentCid, { accountInfo, limit: 1 });
+      const items = data.data || [];
+      if (items.length === 0) break;
+      
+      const item = items[0];
+      pathParts.unshift(item.n);
+      currentCid = Number(item.pid) || 0;
+    } catch (err) {
+      console.error(`Failed to get path for cid ${currentCid}:`, err);
+      break;
+    }
+  }
+  
+  return "/" + pathParts.join("/");
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -33,7 +62,7 @@ export async function POST(req: NextRequest) {
       cid?: string;
       fileId?: number | string;
       fileIds?: number | string | (number | string)[];
-      toPid?: number;
+      toPid?: string;
       limit?: number;
       offset?: number;
     };
@@ -107,7 +136,88 @@ export async function POST(req: NextRequest) {
         if (ids == null) {
           return NextResponse.json({ code: 400, message: "fileIds or fileId is required for receive" }, { status: 400 });
         }
-        const result = await receiveToMyDrive(accountInfo, sc, rc, ids, Number(toPid), opts);
+        const result = await receiveToMyDrive(accountInfo, sc, rc, ids, toPid, opts);
+        
+        // 保存成功后，直接生成 strm 文件
+        if (result && !result.error) {
+          try {
+            // 获取保存的目标路径
+            const targetPath = await getPathByCid(Number(toPid), accountInfo);
+            
+            // 读取任务配置
+            const tasks = readTasks();
+            
+            // 查找匹配的任务（必须是同一个账户）
+            const matchedTask = tasks.find((task: any) => {
+              if (task.accountType !== "115" || task.account !== accountName) return false;
+              const originPath = task.originPath.startsWith("/") ? task.originPath : "/" + task.originPath;
+              return targetPath === originPath || targetPath.startsWith(originPath + "/");
+            });
+
+            if (matchedTask) {
+              
+              const strmPrefix = matchedTask.strmPrefix || "";
+              const enablePathEncoding = matchedTask.enablePathEncoding || false;
+              const saveDir = path.resolve(process.cwd(), `../data/${matchedTask.targetPath}`);
+              if (!fs.existsSync(saveDir)) {
+                fs.mkdirSync(saveDir, { recursive: true });
+              }
+              
+              // 获取目标目录下的所有文件
+              const fileData = await fs_files(Number(toPid), { accountInfo, limit: 1000 });
+              const files = fileData.data || [];
+              
+              let generatedCount = 0;
+              for (const fileItem of files) {
+                try {
+                  const fileName = fileItem.n;
+                  const isDir = fileItem.fc === 0;
+                  
+                  // 只处理视频文件
+                  if (!isDir && /\.(mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts)$/i.test(fileName)) {
+                    // 计算相对路径
+                    const originPath = matchedTask.originPath.startsWith("/") ? matchedTask.originPath : "/" + matchedTask.originPath;
+                    const relativePath = targetPath.replace(originPath, "").replace(/^\//, "");
+                    const localFilePath = path.join(saveDir, relativePath, fileName);
+                    const localDir = path.dirname(localFilePath);
+                    
+                    if (!fs.existsSync(localDir)) {
+                      fs.mkdirSync(localDir, { recursive: true });
+                    }
+                    
+                    // 检查 strm 文件是否已存在
+                    const ext = path.extname(fileName);
+                    const strmPath = localFilePath.replace(ext, ".strm");
+                    
+                    if (!fs.existsSync(strmPath)) {
+                      // 生成 strm 文件
+                      const remoteFilePath = path.join(targetPath, fileName).replace(/\\/g, "/");
+                      const fullPath = `${strmPrefix}${remoteFilePath}`;
+                      const finalPath = enablePathEncoding ? encodeURI(fullPath) : fullPath;
+                      
+                      fs.writeFileSync(strmPath, finalPath, "utf8");
+                      generatedCount++;
+                    }
+                  }
+                } catch (err) {
+                  console.error(`[share/receive] Failed to generate strm for file ${fileItem.n}:`, err);
+                }
+              }
+              
+              return NextResponse.json({ 
+                code: 200, 
+                data: result,
+                strmGenerated: true,
+                taskId: matchedTask.id,
+                generatedCount,
+              });
+            }
+          } catch (err) {
+            console.error("[share/receive] Failed to generate strm files:", err);
+            // 不影响保存结果，只是记录错误
+          }
+        }
+        
         return NextResponse.json({ code: 200, data: result });
       }
       default:
