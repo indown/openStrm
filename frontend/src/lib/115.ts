@@ -557,7 +557,7 @@ export async function shareReceive(
   shareCode: string,
   receiveCode: string,
   fileIds: number | string | (number | string)[],
-  toPid: number,
+  toPid: string,
   opts?: { userAgent?: string }
 ) {
   if (!accountInfo?.cookie) throw new Error("accountInfo.cookie is required");

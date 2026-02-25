@@ -159,7 +159,7 @@ export async function receiveToMyDrive(
   shareCode: string,
   receiveCode: string,
   fileIds: number | string | (number | string)[],
-  toPid: number,
+  toPid: string,
   opts?: { userAgent?: string }
 ): Promise<Record<string, unknown>> {
   const resp = await shareReceive(accountInfo, shareCode, receiveCode, fileIds, toPid, opts);
