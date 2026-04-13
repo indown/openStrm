@@ -18,8 +18,13 @@ export function clearToken(): void {
   localStorage.removeItem('auth-token');
 }
 
+// API base URL: in dev, next.config.ts rewrites /api/* to backend
+// In production, same origin or set NEXT_PUBLIC_API_URL
+const baseURL = process.env.NEXT_PUBLIC_API_URL || '';
+
 // 创建axios实例
 export const axiosInstance = axios.create({
+  baseURL,
   timeout: 30000,
 });
 
