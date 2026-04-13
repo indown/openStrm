@@ -20,12 +20,14 @@ import taskRoute from "./routes/task/index.js";
 import taskHistoryRoute from "./routes/task-history/index.js";
 
 // Task execution routes
+import taskStartRoute from "./routes/task/start.js";
 import taskCancelRoute from "./routes/task/cancel.js";
 import taskLogRoute from "./routes/task/log.js";
 import taskCronRoute from "./routes/task/cron.js";
 
 // Cloud storage routes
 import cloudFilesRoute from "./routes/cloud/files.js";
+import cloudShareRoute from "./routes/cloud/share.js";
 
 // Directory routes
 import directoryLocalRoute from "./routes/directory/local.js";
@@ -66,12 +68,14 @@ await app.register(taskRoute);
 await app.register(taskHistoryRoute);
 
 // Task execution routes
+await app.register(taskStartRoute);
 await app.register(taskCancelRoute);
 await app.register(taskLogRoute);
 await app.register(taskCronRoute);
 
 // Cloud storage routes
 await app.register(cloudFilesRoute);
+await app.register(cloudShareRoute);
 
 // Directory routes
 await app.register(directoryLocalRoute);

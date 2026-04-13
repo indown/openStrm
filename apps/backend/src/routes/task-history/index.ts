@@ -8,7 +8,7 @@ import {
 
 export default async function (fastify: FastifyInstance) {
   // GET: task history
-  fastify.get("/api/task-history", { preHandler: [fastify.authenticate] }, async (request) => {
+  fastify.get("/api/taskHistory", { preHandler: [fastify.authenticate] }, async (request) => {
     const { taskId } = request.query as { taskId?: string };
     if (taskId) {
       return getTaskHistory(taskId);
@@ -17,7 +17,7 @@ export default async function (fastify: FastifyInstance) {
   });
 
   // DELETE: delete task history
-  fastify.delete("/api/task-history", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  fastify.delete("/api/taskHistory", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const { executionId, action } = request.query as { executionId?: string; action?: string };
 
     if (action === "cleanup") {

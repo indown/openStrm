@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 
 export default async function (fastify: FastifyInstance) {
-  fastify.post("/api/task/cancel", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  fastify.post("/api/cancelTask", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const body = request.body as { taskId?: string; id?: string };
     const taskId = body.taskId || body.id;
 
