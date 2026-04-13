@@ -5,15 +5,15 @@ services:
     image: indown/openstrm:latest
     container_name: openstrm
     ports:
-      - "3000:3000"   # nginx 代理 -> Next.js (前端界面)
-      - "8091:8091"   # nginx 代理 -> emby (emby 客户端使用此端口)
+      - "3000:3000"   # Next.js frontend (管理界面)
+      - "8091:8091"   # Fastify Emby proxy (emby 客户端使用此端口)
+      # - "4000:4000" # Fastify API (可选暴露，前端通过 rewrites 访问)
     environment:
       - NODE_ENV=production
-      # ALIST_API_TOKEN 由 entrypoint 从 settings.json 自动读取/生成
     volumes:
-      - ./data:/app/data    # strm下载目录
+      - ./data:/app/data
       - ./config:/app/config
-      - ./emby2Alist/nginx/log:/var/log/nginx
+      - ./logs:/app/logs
     restart: unless-stopped
     logging:
       driver: "json-file"

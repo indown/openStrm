@@ -1,51 +1,54 @@
-# ---------- 构建 Next.js ----------
-FROM node:22-alpine AS frontend-builder
-WORKDIR /app/frontend
+# ========== Stage 1: Install dependencies ==========
+FROM node:22-alpine AS deps
+RUN corepack enable pnpm
+WORKDIR /app
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/backend/package.json apps/backend/
+COPY apps/frontend/package.json apps/frontend/
+RUN pnpm install --frozen-lockfile
 
-RUN yarn config set registry https://registry.npmjs.org/ && \
-    yarn config set network-timeout 600000 -g
+# ========== Stage 2: Build shared ==========
+FROM deps AS shared-builder
+COPY packages/shared packages/shared
+RUN pnpm --filter @openstrm/shared build
 
-COPY frontend/package*.json ./
-COPY frontend/yarn.lock ./
-RUN yarn install --frozen-lockfile
+# ========== Stage 3: Build backend ==========
+FROM shared-builder AS backend-builder
+COPY apps/backend apps/backend
+RUN pnpm --filter @openstrm/backend build
 
-COPY frontend .
-RUN yarn build
+# ========== Stage 4: Build frontend ==========
+FROM shared-builder AS frontend-builder
+COPY apps/frontend apps/frontend
+RUN pnpm --filter @openstrm/frontend build
 
-# ---------- 最终镜像 (含 nginx + emby2alist) ----------
+# ========== Stage 5: Production image ==========
 FROM node:22-alpine AS runner
 WORKDIR /app
 
-# 安装 nginx (alpine 自带 njs 模块)
-RUN apk add --no-cache nginx nginx-mod-http-js
+# Copy backend build + dependencies
+COPY --from=backend-builder /app/apps/backend/dist ./backend
+COPY --from=backend-builder /app/apps/backend/node_modules ./backend/node_modules
+COPY --from=shared-builder /app/packages/shared/dist ./packages/shared/dist
+COPY --from=shared-builder /app/packages/shared/package.json ./packages/shared/
 
-# 拷贝 Next.js standalone
-COPY --from=frontend-builder /app/frontend/.next/standalone ./frontend
-COPY --from=frontend-builder /app/frontend/.next/static ./frontend/.next/static
-COPY --from=frontend-builder /app/frontend/public ./frontend/public
+# Copy frontend standalone output
+COPY --from=frontend-builder /app/apps/frontend/.next/standalone ./frontend
+COPY --from=frontend-builder /app/apps/frontend/.next/static ./frontend/.next/static
+COPY --from=frontend-builder /app/apps/frontend/public ./frontend/public
 
-# 拷贝 nginx 配置
-COPY emby2Alist/nginx/nginx.conf /etc/nginx/nginx.conf
-COPY emby2Alist/nginx/conf.d /etc/nginx/conf.d
-
-# 拷贝默认配置
+# Copy default config
 COPY .config /app/.config
 
-# 创建 nginx 缓存目录
-RUN mkdir -p /var/cache/nginx/emby/images \
-    /var/cache/nginx/emby/subtitles \
-    /var/cache/nginx/client_temp \
-    /var/log/nginx
-
-# 拷贝启动脚本
+# Entrypoint
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-EXPOSE 3000 8091
+# API + Emby proxy
+EXPOSE 3000 4000 8091
 
-# Next.js 内部监听 8000 端口，nginx 监听 3000 代理过来
-ENV PORT=8000
+ENV NODE_ENV=production
 ENV HOSTNAME=0.0.0.0
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["node", "/app/frontend/server.js"]
