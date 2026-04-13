@@ -2,6 +2,11 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import compress from "@fastify/compress";
 
+// Prevent unhandled rejections from crashing the process
+process.on("unhandledRejection", (err) => {
+  console.error("[unhandledRejection]", err);
+});
+
 // Core plugins
 import { configPlugin } from "./plugins/config.js";
 import { authPlugin } from "./plugins/auth.js";
