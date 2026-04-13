@@ -1,0 +1,25 @@
+{
+  "name": "openstrm",
+  "private": true,
+  "version": "2.0.0",
+  "description": "OpenStrm - Strm Management Platform",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,green \"pnpm --filter @openstrm/backend dev\" \"pnpm --filter @openstrm/frontend dev\"",
+    "build": "pnpm --filter @openstrm/shared build && pnpm --filter @openstrm/backend build && pnpm --filter @openstrm/frontend build",
+    "build:shared": "pnpm --filter @openstrm/shared build",
+    "build:backend": "pnpm --filter @openstrm/backend build",
+    "build:frontend": "pnpm --filter @openstrm/frontend build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=9"
+  },
+  "packageManager": "pnpm@9.12.3"
+}
