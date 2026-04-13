@@ -1,17 +1,40 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import compress from "@fastify/compress";
+
+// Core plugins
 import { configPlugin } from "./plugins/config.js";
 import { authPlugin } from "./plugins/auth.js";
 import { cachePlugin } from "./plugins/cache.js";
+import { taskManagerPlugin } from "./plugins/task-manager.js";
 
-// Route modules
+// Auth routes
 import authLoginRoute from "./routes/auth/login.js";
 import authLogoutRoute from "./routes/auth/logout.js";
+
+// CRUD routes
 import accountRoute from "./routes/account/index.js";
 import settingsRoute from "./routes/settings/index.js";
 import taskRoute from "./routes/task/index.js";
 import taskHistoryRoute from "./routes/task-history/index.js";
+
+// Task execution routes
+import taskCancelRoute from "./routes/task/cancel.js";
+import taskLogRoute from "./routes/task/log.js";
+
+// Cloud storage routes
+import cloudFilesRoute from "./routes/cloud/files.js";
+
+// Directory routes
+import directoryLocalRoute from "./routes/directory/local.js";
+import directoryRemoteRoute from "./routes/directory/remote.js";
+
+// Alist-compatible file system route
+import fsGetRoute from "./routes/fs/get.js";
+
+// System routes
+import clearDirectoryRoute from "./routes/system/clear-directory.js";
+import clearRateLimitersRoute from "./routes/system/clear-rate-limiters.js";
 
 const app = Fastify({
   logger: {
@@ -27,16 +50,36 @@ await app.register(compress);
 await app.register(configPlugin);
 await app.register(cachePlugin);
 await app.register(authPlugin);
+await app.register(taskManagerPlugin);
 
-// API routes
+// Auth routes
 await app.register(authLoginRoute);
 await app.register(authLogoutRoute);
+
+// CRUD routes
 await app.register(accountRoute);
 await app.register(settingsRoute);
 await app.register(taskRoute);
 await app.register(taskHistoryRoute);
 
-// Phase 3: task start/cancel/log, cloud, directory, fs, system routes
+// Task execution routes
+await app.register(taskCancelRoute);
+await app.register(taskLogRoute);
+
+// Cloud storage routes
+await app.register(cloudFilesRoute);
+
+// Directory routes
+await app.register(directoryLocalRoute);
+await app.register(directoryRemoteRoute);
+
+// Alist-compatible route
+await app.register(fsGetRoute);
+
+// System routes
+await app.register(clearDirectoryRoute);
+await app.register(clearRateLimitersRoute);
+
 // Phase 4: telegram routes
 // Phase 5: emby proxy routes
 
