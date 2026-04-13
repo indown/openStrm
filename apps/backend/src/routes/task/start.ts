@@ -155,9 +155,17 @@ export default async function (fastify: FastifyInstance) {
 
     if (accountType === "115") {
       if (!accountInfo.cookie) return reply.code(500).send({ message: `Missing cookie for 115 account: ${account}` });
-      const idRes = await fs_dir_getid(originPath, { accountInfo });
-      const data = await exportDirParse({ exportFileIds: (idRes as any).id, targetPid: 0, layerLimit: 0, deleteAfter: true, timeoutMs: 300000, checkIntervalMs: 1000, accountInfo });
-      tree = buildTree(data as any);
+      try {
+        const idRes = await fs_dir_getid(originPath, { accountInfo });
+        const data = await exportDirParse({ exportFileIds: (idRes as any).id, targetPid: 0, layerLimit: 0, deleteAfter: true, timeoutMs: 300000, checkIntervalMs: 1000, accountInfo });
+        tree = buildTree(data as any);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg.includes("<!doctypehtml>") || msg.includes("405") || msg.includes("您的访问被阻断")) {
+          return reply.code(403).send({ message: "115账号被封控", error: "账号访问被阿里云阻断，请检查账号状态或稍后重试" });
+        }
+        return reply.code(500).send({ message: "Failed to parse 115 directory", error: msg });
+      }
     } else if (accountType === "openlist") {
       if (!accountInfo.account || !accountInfo.password || !accountInfo.url) return reply.code(500).send({ message: `Missing openlist credentials` });
       let token = accountInfo.token;
