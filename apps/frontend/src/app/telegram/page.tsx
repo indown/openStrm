@@ -191,7 +191,7 @@ export default function TelegramPage() {
       setSuccess(null);
 
       await axiosInstance.post('/api/telegram/send', {
-        message: '🤖 Test message from FreeStrm!',
+        message: '🤖 Test message from OpenStrm!',
         type: 'info'
       });
 

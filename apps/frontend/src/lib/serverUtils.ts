@@ -246,7 +246,7 @@ export async function notifyTelegram(message: string, type: 'info' | 'error' | '
         break;
     }
 
-    const formattedMessage = `${emoji} <b>FreeStrm Notification</b>\n\n${message}\n\n<b>Time:</b> ${new Date().toLocaleString()}`;
+    const formattedMessage = `${emoji} <b>OpenStrm Notification</b>\n\n${message}\n\n<b>Time:</b> ${new Date().toLocaleString()}`;
     
     await bot.sendNotification(formattedMessage, telegram.chatId);
     console.log("Telegram notification sent successfully");

@@ -250,7 +250,7 @@ async function handleCommand(bot: ReturnType<typeof createTelegramBot>, chatId: 
     case '/help':
       await bot.sendMessage({
         chat_id: chatId,
-        text: `<b>🤖 FreeStrm Bot Commands</b>\n\n` +
+        text: `<b>🤖 OpenStrm Bot Commands</b>\n\n` +
               `<b>Available Commands:</b>\n` +
               `<b>/start</b> - Start the bot\n` +
               `<b>/help</b> - Show this help message\n` +
@@ -357,7 +357,7 @@ async function handleStartCommand(bot: ReturnType<typeof createTelegramBot>, cha
     if (tasks.length === 0) {
       await bot.sendMessage({
         chat_id: chatId,
-        text: `Welcome to FreeStrm Bot! 🤖\n\n` +
+        text: `Welcome to OpenStrm Bot! 🤖\n\n` +
               `Hello ${username}! You are authorized to use this bot.\n\n` +
               `📋 <b>Current Tasks:</b> No tasks available\n\n` +
               `Use /help to see all available commands.`,
@@ -367,7 +367,7 @@ async function handleStartCommand(bot: ReturnType<typeof createTelegramBot>, cha
     }
 
     // 构建任务列表消息
-    let message = `Welcome to FreeStrm Bot! 🤖\n\n` +
+    let message = `Welcome to OpenStrm Bot! 🤖\n\n` +
                   `Hello ${username}! You are authorized to use this bot.\n\n` +
                   `📋 <b>Current Tasks (${tasks.length}):</b>\n\n`;
 

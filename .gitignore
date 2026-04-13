@@ -8,3 +8,8 @@
 **/config.json
 **/settings.json
 cache
+p115client/
+
+# Build outputs
+**/dist
+apps/frontend/.next
