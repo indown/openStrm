@@ -5,8 +5,7 @@ export default async function (fastify: FastifyInstance) {
   fastify.get("/api/task", { preHandler: [fastify.authenticate] }, async () => {
     const tasks = fastify.readTasks();
 
-    // Running task tracking will be wired up in Phase 3
-    const runningTaskIds = new Set<string>();
+    const runningTaskIds = new Set(Object.keys(fastify.downloadTasks));
 
     return tasks.map((task) => ({
       ...task,

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 
 export default async function (fastify: FastifyInstance) {
-  fastify.get("/api/task/:taskId/log", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  fastify.get("/api/taskLog/:taskId", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const { taskId } = request.params as { taskId: string };
     const task = fastify.downloadTasks[taskId];
 
