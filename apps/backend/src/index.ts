@@ -91,17 +91,30 @@ await app.register(telegramSendRoute);
 await app.register(telegramUsersRoute);
 await app.register(telegramPollingRoute);
 
-// Phase 5: emby proxy routes
+// Emby proxy server (separate port, replaces nginx/njs emby2Alist)
+import proxyPlugin from "./routes/proxy/index.js";
 
-const PORT = Number(process.env.BACKEND_PORT) || 4000;
+const proxyApp = Fastify({
+  logger: { level: process.env.LOG_LEVEL || "info" },
+});
+await proxyApp.register(proxyPlugin);
+
+// Start both servers
+const API_PORT = Number(process.env.BACKEND_PORT) || 4000;
+const PROXY_PORT = Number(process.env.PROXY_PORT) || 8091;
 const HOST = process.env.BACKEND_HOST || "0.0.0.0";
 
 try {
-  await app.listen({ port: PORT, host: HOST });
-  app.log.info(`Backend server running on http://${HOST}:${PORT}`);
+  await Promise.all([
+    app.listen({ port: API_PORT, host: HOST }),
+    proxyApp.listen({ port: PROXY_PORT, host: HOST }),
+  ]);
+  app.log.info(`API server running on http://${HOST}:${API_PORT}`);
+  app.log.info(`Emby proxy running on http://${HOST}:${PROXY_PORT}`);
 } catch (err) {
   app.log.error(err);
   process.exit(1);
 }
 
+export { proxyApp };
 export default app;
