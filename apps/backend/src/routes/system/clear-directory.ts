@@ -1,8 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import fs from "node:fs";
 import nodePath from "node:path";
-
-const DATA_DIR = process.env.DATA_DIR || nodePath.resolve(process.cwd(), "data");
+import { DATA_DIR } from "../../paths.js";
 
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/clearDirectory", { preHandler: [fastify.authenticate] }, async (request, reply) => {

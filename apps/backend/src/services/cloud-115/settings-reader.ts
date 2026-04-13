@@ -1,8 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AppSettings } from "@openstrm/shared";
-
-const CONFIG_DIR = process.env.CONFIG_DIR || path.resolve(process.cwd(), "config");
+import { CONFIG_DIR } from "../../paths.js";
 const settingsFile = path.join(CONFIG_DIR, "settings.json");
 
 export function readSettings(): AppSettings {

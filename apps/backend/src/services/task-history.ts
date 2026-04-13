@@ -1,8 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { TaskExecutionHistory } from "@openstrm/shared";
-
-const LOGS_DIR = process.env.LOGS_DIR || path.resolve(process.cwd(), "logs");
+import { LOGS_DIR } from "../paths.js";
 const historyFile = path.join(LOGS_DIR, "task-history.json");
 
 if (!fs.existsSync(LOGS_DIR)) {

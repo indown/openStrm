@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AppSettings, AccountInfo, TaskDefinition } from "@openstrm/shared";
 
-const CONFIG_DIR = process.env.CONFIG_DIR || path.resolve(process.cwd(), "config");
+import { CONFIG_DIR } from "../paths.js";
 
 function readJsonFile<T>(filePath: string, fallback: T): T {
   try {
