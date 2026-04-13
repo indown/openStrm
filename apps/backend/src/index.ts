@@ -124,5 +124,13 @@ try {
   process.exit(1);
 }
 
+// Graceful shutdown for tsx watch / SIGTERM
+async function shutdown() {
+  await Promise.allSettled([app.close(), proxyApp.close()]);
+  process.exit(0);
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+
 export { proxyApp };
 export default app;
