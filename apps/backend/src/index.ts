@@ -80,7 +80,17 @@ await app.register(fsGetRoute);
 await app.register(clearDirectoryRoute);
 await app.register(clearRateLimitersRoute);
 
-// Phase 4: telegram routes
+// Telegram routes
+import telegramBotRoute from "./routes/telegram/bot.js";
+import telegramSendRoute from "./routes/telegram/send.js";
+import telegramUsersRoute from "./routes/telegram/users.js";
+import telegramPollingRoute from "./routes/telegram/polling.js";
+
+await app.register(telegramBotRoute);
+await app.register(telegramSendRoute);
+await app.register(telegramUsersRoute);
+await app.register(telegramPollingRoute);
+
 // Phase 5: emby proxy routes
 
 const PORT = Number(process.env.BACKEND_PORT) || 4000;
