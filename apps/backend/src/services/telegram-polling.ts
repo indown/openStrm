@@ -3,8 +3,7 @@ import { createTelegramBot } from "./telegram.js";
 import { readSettings } from "./cloud-115/settings-reader.js";
 import fs from "node:fs";
 import path from "node:path";
-
-const CONFIG_DIR = process.env.CONFIG_DIR || path.resolve(process.cwd(), "config");
+import { CONFIG_DIR } from "../paths.js";
 
 function readTasks(): any[] {
   try {
