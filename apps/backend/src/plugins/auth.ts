@@ -3,7 +3,7 @@ import { SignJWT, jwtVerify } from "jose";
 import type { FastifyRequest, FastifyReply } from "fastify";
 
 const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || "openstrm-jwt-secret-key"
+  process.env.JWT_SECRET || "your-super-secret-jwt-key-change-in-production"
 );
 
 export const authPlugin = fp(async (fastify) => {
