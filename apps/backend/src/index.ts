@@ -7,6 +7,7 @@ import { configPlugin } from "./plugins/config.js";
 import { authPlugin } from "./plugins/auth.js";
 import { cachePlugin } from "./plugins/cache.js";
 import { taskManagerPlugin } from "./plugins/task-manager.js";
+import { cronPlugin } from "./plugins/cron.js";
 
 // Auth routes
 import authLoginRoute from "./routes/auth/login.js";
@@ -21,6 +22,7 @@ import taskHistoryRoute from "./routes/task-history/index.js";
 // Task execution routes
 import taskCancelRoute from "./routes/task/cancel.js";
 import taskLogRoute from "./routes/task/log.js";
+import taskCronRoute from "./routes/task/cron.js";
 
 // Cloud storage routes
 import cloudFilesRoute from "./routes/cloud/files.js";
@@ -51,6 +53,7 @@ await app.register(configPlugin);
 await app.register(cachePlugin);
 await app.register(authPlugin);
 await app.register(taskManagerPlugin);
+await app.register(cronPlugin);
 
 // Auth routes
 await app.register(authLoginRoute);
@@ -65,6 +68,7 @@ await app.register(taskHistoryRoute);
 // Task execution routes
 await app.register(taskCancelRoute);
 await app.register(taskLogRoute);
+await app.register(taskCronRoute);
 
 // Cloud storage routes
 await app.register(cloudFilesRoute);
