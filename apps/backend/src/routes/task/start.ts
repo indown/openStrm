@@ -18,8 +18,8 @@ import {
 } from "../../services/task-history.js";
 import { sendTelegramNotification } from "../../services/telegram.js";
 
-const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), "../../data");
-const CONFIG_DIR = process.env.CONFIG_DIR || path.resolve(process.cwd(), "../../config");
+const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), "data");
+const CONFIG_DIR = process.env.CONFIG_DIR || path.resolve(process.cwd(), "config");
 
 type TreeNode = { depth: number; key: number; name: string; parent_key: number; children?: TreeNode[] };
 
