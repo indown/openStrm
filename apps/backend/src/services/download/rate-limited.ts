@@ -3,7 +3,7 @@ import Bottleneck from "bottleneck";
 import path from "node:path";
 import fs from "node:fs";
 import { defer, firstValueFrom, Observable, retry, timer } from "rxjs";
-import { get_id_to_path, getDownloadUrlWeb } from "../cloud-115/client.js";
+import { getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
 import { readSettings } from "../cloud-115/settings-reader.js";
 
 interface Progress {
@@ -117,7 +117,7 @@ async function getRealDownloadLinkDirect115(
   accountInfo: { name: string; cookie: string; accountType?: string },
   userAgent: string
 ): Promise<string> {
-  const pickcode = await get_id_to_path({ path: filePath, userAgent, accountInfo });
+  const pickcode = await getIdToPath({ path: filePath, userAgent, accountInfo });
   if (!pickcode) throw new Error(`No pickcode found for file: ${filePath}`);
   return getDownloadUrlWeb(pickcode, { userAgent, accountInfo });
 }

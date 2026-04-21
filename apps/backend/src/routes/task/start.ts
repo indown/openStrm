@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import axios from "axios";
 import type { DownloadProgress } from "../../plugins/task-manager.js";
-import { exportDirParse, fs_dir_getid } from "../../services/cloud-115/client.js";
+import { exportDirParse, fsDirGetId } from "../../services/cloud-115/client.js";
 import {
   getRealDownloadLink,
   downloadOrCreateStrmLimited,
@@ -18,7 +18,7 @@ import {
 } from "../../services/task-history.js";
 import { sendTelegramNotification } from "../../services/telegram.js";
 
-import { DATA_DIR, CONFIG_DIR } from "../../paths.js";
+import { DATA_DIR } from "../../paths.js";
 
 type TreeNode = { depth: number; key: number; name: string; parent_key: number; children?: TreeNode[] };
 
@@ -86,13 +86,11 @@ function removeExtraFiles(extraLocally: string[], saveDir: string) {
   }
 }
 
-function readSettings() {
-  try { return JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, "settings.json"), "utf-8") || "{}"); } catch { return {}; }
-}
+import { readAppSettings } from "../../db/repositories/settings.js";
 
 function notifyEmbyRefresh() {
   try {
-    const s = readSettings();
+    const s = readAppSettings();
     if (!s.emby?.url || !s.emby?.apiKey) return;
     const url = `${s.emby.url.replace(/\/$/, "")}/Library/Refresh?api_key=${encodeURIComponent(s.emby.apiKey)}`;
     axios.post(url).catch(() => {});
@@ -156,7 +154,7 @@ export default async function (fastify: FastifyInstance) {
     if (accountType === "115") {
       if (!accountInfo.cookie) return reply.code(500).send({ message: `Missing cookie for 115 account: ${account}` });
       try {
-        const idRes = await fs_dir_getid(originPath, { accountInfo });
+        const idRes = await fsDirGetId(originPath, { accountInfo });
         const data = await exportDirParse({ exportFileIds: (idRes as any).id, targetPid: 0, layerLimit: 0, deleteAfter: true, timeoutMs: 300000, checkIntervalMs: 1000, accountInfo });
         tree = buildTree(data as any);
       } catch (error) {
@@ -216,7 +214,7 @@ export default async function (fastify: FastifyInstance) {
       if ((log.filePath && log.percent === 100) || log.done || log.error) addLogToTaskExecution(executionHistory.id, line);
     };
 
-    const settings = readSettings();
+    const settings = readAppSettings();
     const strmExts = (settings.strmExtensions || []).map((e: string) => e.toLowerCase());
     const dlExts = (settings.downloadExtensions || []).map((e: string) => e.toLowerCase());
 

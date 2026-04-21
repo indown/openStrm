@@ -7,6 +7,16 @@
 **/tasks.json
 **/config.json
 **/settings.json
+
+# SQLite database + WAL/SHM sidecars
+**/openstrm.db
+**/openstrm.db-journal
+**/openstrm.db-wal
+**/openstrm.db-shm
+
+# JSON-to-SQLite migration backups
+**/*.json.migrated
+
 cache
 p115client/
 

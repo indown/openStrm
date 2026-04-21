@@ -1,50 +1,30 @@
 import fp from "fastify-plugin";
-import fs from "node:fs";
-import path from "node:path";
 import type { AppSettings, AccountInfo, TaskDefinition } from "@openstrm/shared";
 
 import { CONFIG_DIR } from "../paths.js";
+import { readAuthConfig } from "../db/repositories/auth.js";
+import { listAccounts, writeAccounts } from "../db/repositories/accounts.js";
+import { listTasks, writeTasks } from "../db/repositories/tasks.js";
+import { readAppSettings, writeAppSettings } from "../db/repositories/settings.js";
 
-function readJsonFile<T>(filePath: string, fallback: T): T {
-  try {
-    if (!fs.existsSync(filePath)) return fallback;
-    const raw = fs.readFileSync(filePath, "utf-8");
-    return JSON.parse(raw || JSON.stringify(fallback));
-  } catch {
-    return fallback;
-  }
-}
+export const configPlugin = fp(
+  async (fastify) => {
+    fastify.decorate("configDir", CONFIG_DIR);
 
-function writeJsonFile(filePath: string, data: unknown): void {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const tmp = filePath + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");
-  fs.renameSync(tmp, filePath);
-}
+    fastify.decorate("readConfig", () => readAuthConfig());
 
-export const configPlugin = fp(async (fastify) => {
-  const configDir = CONFIG_DIR;
+    fastify.decorate("readAccounts", () => listAccounts());
+    fastify.decorate("writeAccounts", (data: AccountInfo[]) => writeAccounts(data));
 
-  const filePaths = {
-    config: path.join(configDir, "config.json"),
-    account: path.join(configDir, "account.json"),
-    tasks: path.join(configDir, "tasks.json"),
-    settings: path.join(configDir, "settings.json"),
-  };
+    fastify.decorate("readTasks", () => listTasks());
+    fastify.decorate("writeTasks", (data: TaskDefinition[]) => writeTasks(data));
 
-  fastify.decorate("configDir", configDir);
+    fastify.decorate("readSettings", () => readAppSettings());
+    fastify.decorate("writeSettings", (data: AppSettings) => writeAppSettings(data));
+  },
+  { name: "config" },
+);
 
-  fastify.decorate("readConfig", () => readJsonFile<Record<string, unknown>>(filePaths.config, {}));
-  fastify.decorate("readAccounts", () => readJsonFile<AccountInfo[]>(filePaths.account, []));
-  fastify.decorate("writeAccounts", (data: AccountInfo[]) => writeJsonFile(filePaths.account, data));
-  fastify.decorate("readTasks", () => readJsonFile<TaskDefinition[]>(filePaths.tasks, []));
-  fastify.decorate("writeTasks", (data: TaskDefinition[]) => writeJsonFile(filePaths.tasks, data));
-  fastify.decorate("readSettings", () => readJsonFile<AppSettings>(filePaths.settings, {} as AppSettings));
-  fastify.decorate("writeSettings", (data: AppSettings) => writeJsonFile(filePaths.settings, data));
-}, { name: "config" });
-
-// Type augmentation for Fastify
 declare module "fastify" {
   interface FastifyInstance {
     configDir: string;
