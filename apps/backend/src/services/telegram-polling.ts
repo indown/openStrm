@@ -112,16 +112,13 @@ export async function startPolling(): Promise<boolean> {
 }
 
 export function stopPolling(): boolean {
-  if (!isPollingActive) {
-    console.log("Polling not running");
-    return false;
-  }
+  if (!isPollingActive) return false;
 
   if (pollingInterval) {
     clearInterval(pollingInterval);
     pollingInterval = null;
   }
-  
+
   isPollingActive = false;
   console.log("Telegram polling stopped");
   return true;
