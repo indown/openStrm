@@ -18,6 +18,18 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(400).send({ code: 400, message: "No 115 account configured" });
     }
 
+    let shareCode: string = body.shareCode || body.share_code || "";
+    let receiveCode: string = body.receiveCode || body.receive_code || "";
+    if (!shareCode && typeof body.url === "string" && body.url.trim()) {
+      try {
+        const parsed = shareExtractPayload(body.url);
+        shareCode = parsed.share_code;
+        if (!receiveCode) receiveCode = parsed.receive_code;
+      } catch {
+        return reply.code(400).send({ code: 400, message: "Invalid share url" });
+      }
+    }
+
     switch (action) {
       case "parse": {
         const { url } = body;
@@ -26,15 +38,11 @@ export default async function (fastify: FastifyInstance) {
         return { code: 200, data: result };
       }
       case "info": {
-        const shareCode = body.shareCode || body.share_code;
-        const receiveCode = body.receiveCode || body.receive_code || "";
         if (!shareCode) return reply.code(400).send({ code: 400, message: "shareCode is required" });
         const data = await getShareData(account115, shareCode, receiveCode);
         return { code: 200, data };
       }
       case "list": {
-        const shareCode = body.shareCode || body.share_code;
-        const receiveCode = body.receiveCode || body.receive_code || "";
         const cid = body.cid || 0;
         const limit = body.limit || 32;
         const offset = body.offset || 0;
@@ -43,16 +51,12 @@ export default async function (fastify: FastifyInstance) {
         return { code: 200, data: list };
       }
       case "download_url": {
-        const shareCode = body.shareCode || body.share_code;
-        const receiveCode = body.receiveCode || body.receive_code || "";
         const fileId = body.fileId;
         if (!shareCode || !fileId) return reply.code(400).send({ code: 400, message: "shareCode and fileId are required" });
         const url = await getShareDownloadUrl(account115, shareCode, receiveCode, fileId);
         return { code: 200, data: { url } };
       }
       case "receive": {
-        const shareCode = body.shareCode || body.share_code;
-        const receiveCode = body.receiveCode || body.receive_code || "";
         const fileIds = body.fileIds;
         const toPid = body.toPid || 0;
         if (!shareCode || !fileIds) return reply.code(400).send({ code: 400, message: "shareCode and fileIds are required" });
