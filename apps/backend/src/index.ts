@@ -13,6 +13,7 @@ import { authPlugin } from "./plugins/auth.js";
 import { cachePlugin } from "./plugins/cache.js";
 import { taskManagerPlugin } from "./plugins/task-manager.js";
 import { cronPlugin } from "./plugins/cron.js";
+import { stopPolling } from "./services/telegram-polling.js";
 
 // Auth routes
 import authLoginRoute from "./routes/auth/login.js";
@@ -49,6 +50,7 @@ const app = Fastify({
   logger: {
     level: process.env.LOG_LEVEL || "info",
   },
+  forceCloseConnections: true,
 });
 
 // Global plugins
@@ -109,6 +111,7 @@ import proxyPlugin from "./routes/proxy/index.js";
 
 const proxyApp = Fastify({
   logger: { level: process.env.LOG_LEVEL || "info" },
+  forceCloseConnections: true,
 });
 await proxyApp.register(proxyPlugin);
 
@@ -130,8 +133,18 @@ try {
 }
 
 // Graceful shutdown for tsx watch / SIGTERM
+let shuttingDown = false;
 async function shutdown() {
-  await Promise.allSettled([app.close(), proxyApp.close()]);
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 1500));
+  const closeAll = Promise.allSettled([app.close(), proxyApp.close()]).then(() => {});
+
+  await Promise.race([closeAll, timeout]);
+
+  try { stopPolling(); } catch { /* ignore */ }
+
   process.exit(0);
 }
 process.on("SIGTERM", shutdown);
