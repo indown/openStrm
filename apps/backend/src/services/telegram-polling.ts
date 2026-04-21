@@ -1,16 +1,10 @@
 // Telegram 轮询管理器
 import { createTelegramBot } from "./telegram.js";
 import { readSettings } from "./cloud-115/settings-reader.js";
-import fs from "node:fs";
-import path from "node:path";
-import { CONFIG_DIR } from "../paths.js";
+import { listTasks } from "../db/repositories/tasks.js";
 
 function readTasks(): any[] {
-  try {
-    const f = path.join(CONFIG_DIR, "tasks.json");
-    if (!fs.existsSync(f)) return [];
-    return JSON.parse(fs.readFileSync(f, "utf-8"));
-  } catch { return []; }
+  return listTasks();
 }
 
 function isTelegramUserAllowed(userId: number): boolean {

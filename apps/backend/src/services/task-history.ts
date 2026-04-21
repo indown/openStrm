@@ -1,32 +1,13 @@
-import fs from "node:fs";
-import path from "node:path";
 import type { TaskExecutionHistory } from "@openstrm/shared";
-import { LOGS_DIR } from "../paths.js";
-const historyFile = path.join(LOGS_DIR, "task-history.json");
-
-if (!fs.existsSync(LOGS_DIR)) {
-  fs.mkdirSync(LOGS_DIR, { recursive: true });
-}
+import * as repo from "../db/repositories/task-history.js";
 
 export function readTaskHistory(): TaskExecutionHistory[] {
-  try {
-    if (!fs.existsSync(historyFile)) return [];
-    return JSON.parse(fs.readFileSync(historyFile, "utf-8"));
-  } catch {
-    return [];
-  }
-}
-
-export function saveTaskHistory(history: TaskExecutionHistory[]): void {
-  const limited = history.slice(-1000);
-  const tmp = historyFile + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(limited, null, 2), "utf-8");
-  fs.renameSync(tmp, historyFile);
+  return repo.getAll();
 }
 
 export function createTaskExecution(
   taskId: string,
-  taskInfo: { account: string; originPath: string; targetPath: string; removeExtraFiles?: boolean }
+  taskInfo: { account: string; originPath: string; targetPath: string; removeExtraFiles?: boolean },
 ): TaskExecutionHistory {
   const execution: TaskExecutionHistory = {
     id: `${taskId}_${Date.now()}`,
@@ -42,73 +23,43 @@ export function createTaskExecution(
       removeExtraFiles: taskInfo.removeExtraFiles || false,
     },
   };
-
-  const all = readTaskHistory();
-  all.push(execution);
-  saveTaskHistory(all);
+  repo.insert(execution);
   return execution;
 }
 
 export function updateTaskExecution(executionId: string, updates: Partial<TaskExecutionHistory>): void {
-  const all = readTaskHistory();
-  const idx = all.findIndex((h) => h.id === executionId);
-  if (idx !== -1) {
-    all[idx] = { ...all[idx], ...updates };
-    saveTaskHistory(all);
-  }
+  repo.update(executionId, updates);
 }
 
 export function addLogToTaskExecution(executionId: string, log: string): void {
-  const all = readTaskHistory();
-  const idx = all.findIndex((h) => h.id === executionId);
-  if (idx !== -1) {
-    all[idx].logs.push(log);
-    if (all[idx].logs.length > 5000) {
-      all[idx].logs = all[idx].logs.slice(-3000);
-    }
-    saveTaskHistory(all);
-  }
+  repo.appendLog(executionId, log);
 }
 
 export function completeTaskExecution(
   executionId: string,
   status: "completed" | "failed" | "cancelled",
-  summary?: Partial<TaskExecutionHistory["summary"]>
+  summary?: Partial<TaskExecutionHistory["summary"]>,
 ): void {
-  const all = readTaskHistory();
-  const idx = all.findIndex((h) => h.id === executionId);
-  if (idx !== -1) {
-    all[idx] = {
-      ...all[idx],
-      status,
-      endTime: Date.now(),
-      summary: { ...all[idx].summary, ...summary },
-    };
-    saveTaskHistory(all);
-  }
+  repo.complete(executionId, status, summary);
 }
 
 export function getTaskHistory(taskId: string): TaskExecutionHistory[] {
-  return readTaskHistory()
-    .filter((h) => h.taskId === taskId)
-    .sort((a, b) => b.startTime - a.startTime);
+  return repo.getByTaskId(taskId);
 }
 
 export function getAllTaskHistory(): TaskExecutionHistory[] {
-  return readTaskHistory().sort((a, b) => b.startTime - a.startTime);
+  return repo.getAll();
 }
 
 export function deleteTaskExecution(executionId: string): void {
-  const all = readTaskHistory();
-  saveTaskHistory(all.filter((h) => h.id !== executionId));
+  repo.remove(executionId);
 }
 
 export function deleteAllHistory(): void {
-  saveTaskHistory([]);
+  repo.removeAll();
 }
 
 export function cleanupOldHistory(): void {
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const all = readTaskHistory();
-  saveTaskHistory(all.filter((h) => h.startTime > thirtyDaysAgo));
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  repo.cleanupOlderThan(cutoff);
 }

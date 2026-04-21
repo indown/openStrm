@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { fs_files } from "../../services/cloud-115/client.js";
+import { fsFiles } from "../../services/cloud-115/client.js";
 
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/115/files", { preHandler: [fastify.authenticate] }, async (request, reply) => {
@@ -19,7 +19,7 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(400).send({ code: 400, message: "115 account cookie is required" });
     }
 
-    const data = await fs_files(cid, { accountInfo });
+    const data = await fsFiles(cid, { accountInfo });
     return { code: 200, data: (data as any).data };
   });
 }

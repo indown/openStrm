@@ -7,10 +7,11 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "@openstrm/shared": "workspace:*",
     "@fastify/autoload": "^6.3.1",
     "@fastify/compress": "^8.3.1",
     "@fastify/cors": "^11.2.0",
@@ -18,9 +19,12 @@
     "@fastify/reply-from": "^12.6.1",
     "@fastify/static": "^9.1.0",
     "@fastify/websocket": "^11.2.0",
+    "@openstrm/shared": "workspace:*",
     "axios": "^1.11.0",
+    "better-sqlite3": "^11.5.0",
     "bottleneck": "^2.19.5",
     "cron": "^4.3.3",
+    "drizzle-orm": "^0.45.2",
     "fastify": "^5.2.1",
     "fastify-plugin": "^5.0.1",
     "jose": "^6.1.0",
@@ -31,7 +35,9 @@
     "zod": "^4.1.5"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

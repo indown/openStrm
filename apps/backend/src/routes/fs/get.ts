@@ -1,12 +1,12 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { get_id_to_path, getDownloadUrlWeb } from "../../services/cloud-115/client.js";
+import { getIdToPath, getDownloadUrlWeb } from "../../services/cloud-115/client.js";
 
 export default async function (fastify: FastifyInstance) {
   // Internal token auth for Alist-compatible endpoint
   const verifyInternalToken = async (request: FastifyRequest, reply: FastifyReply) => {
     const authHeader = request.headers.authorization || "";
     const settings = fastify.readSettings();
-    const internalToken = settings.internalToken || process.env.ALIST_API_TOKEN || "";
+    const internalToken = settings.internalToken || "";
     if (!internalToken || authHeader !== internalToken) {
       reply.code(401).send({ code: 401, message: "unauthorized" });
     }
@@ -41,7 +41,7 @@ export default async function (fastify: FastifyInstance) {
     const settings = fastify.readSettings();
     const userAgent = settings["user-agent"] || undefined;
 
-    const pickcode = await get_id_to_path({ path: actualPath, userAgent, accountInfo: account });
+    const pickcode = await getIdToPath({ path: actualPath, userAgent, accountInfo: account });
     if (!pickcode) {
       return reply.code(404).send({ code: 404, message: "file not found" });
     }

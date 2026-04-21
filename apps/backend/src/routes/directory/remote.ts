@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { fs_dir_getid, fs_files } from "../../services/cloud-115/client.js";
+import { fsDirGetId, fsFiles } from "../../services/cloud-115/client.js";
 
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/directory/remote/list", { preHandler: [fastify.authenticate] }, async (request, reply) => {
@@ -21,7 +21,7 @@ export default async function (fastify: FastifyInstance) {
     let cid = 0;
     if (path) {
       try {
-        const dirResp = await fs_dir_getid(path, { userAgent, accountInfo });
+        const dirResp = await fsDirGetId(path, { userAgent, accountInfo });
         cid = (dirResp as any).id;
       } catch {
         return { code: 200, message: "success", data: [] };
@@ -29,7 +29,7 @@ export default async function (fastify: FastifyInstance) {
     }
 
     try {
-      const filesResponse = await fs_files(cid, { userAgent, accountInfo, limit: 1000, offset: 0 });
+      const filesResponse = await fsFiles(cid, { userAgent, accountInfo, limit: 1000, offset: 0 });
       const items: any[] = (filesResponse as any).data || [];
       const nodes = items
         .filter((item) => !item.sha || item.sha === "" || item.sha === null)

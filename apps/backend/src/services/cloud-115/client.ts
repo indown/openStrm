@@ -157,7 +157,7 @@ export async function exportDirParse(options) {
   }
 }
 // 从路径获取对应的 115 文件/目录 ID - 简化版本
-export async function get_id_to_path(options: {
+export async function getIdToPath(options: {
   path: string;
   userAgent?: string;
   accountInfo?: AccountInfo;
@@ -171,7 +171,7 @@ export async function get_id_to_path(options: {
   if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
   if (!path) throw new Error('path is required');
 
-  console.log(`[get_id_to_path] Looking for file: ${path}`);
+  console.log(`[getIdToPath] Looking for file: ${path}`);
 
   // 解析路径，例如 "a/b/c.mkv" -> ["a", "b", "c.mkv"]
   const pathParts = path.split('/').filter(p => p);
@@ -182,12 +182,12 @@ export async function get_id_to_path(options: {
 
   // 如果是单层路径，直接查找
   if (pathParts.length === 1) {
-    console.log(`[get_id_to_path] Searching in root directory for: ${pathParts[0]}`);
-    const files = await fs_files(0, { userAgent, accountInfo });
+    console.log(`[getIdToPath] Searching in root directory for: ${pathParts[0]}`);
+    const files = await fsFiles(0, { userAgent, accountInfo });
     
     for (const file of files.data || []) {
       if (file.n === pathParts[0]) {
-        console.log(`[get_id_to_path] Found file in root: ${pathParts[0]}, cid: ${file.cid}`);
+        console.log(`[getIdToPath] Found file in root: ${pathParts[0]}, cid: ${file.cid}`);
         return file.cid;
       }
     }
@@ -198,45 +198,45 @@ export async function get_id_to_path(options: {
   const dirPath = pathParts.slice(0, -1).join('/');
   const fileName = pathParts[pathParts.length - 1];
   
-  console.log(`[get_id_to_path] Searching in directory: ${dirPath} for file: ${fileName}`);
+  console.log(`[getIdToPath] Searching in directory: ${dirPath} for file: ${fileName}`);
   
-  // 使用 fs_dir_getid 获取目录 ID
+  // 使用 fsDirGetId 获取目录 ID
   try {
-    const dirResp = await fs_dir_getid(dirPath, { userAgent, accountInfo });
+    const dirResp = await fsDirGetId(dirPath, { userAgent, accountInfo });
     const dirId = dirResp.id;
     
     if (!dirId) {
       throw new Error(`Directory not found: ${dirPath}`);
     }
 
-    console.log(`[get_id_to_path] Directory ID for ${dirPath}: ${dirId}`);
+    console.log(`[getIdToPath] Directory ID for ${dirPath}: ${dirId}`);
 
     // 列出目录中的文件
-    const files = await fs_files(dirId, { userAgent, accountInfo });
-    console.log(`[get_id_to_path] Found ${files.data?.length || 0} files in directory ${dirPath}`);
+    const files = await fsFiles(dirId, { userAgent, accountInfo });
+    console.log(`[getIdToPath] Found ${files.data?.length || 0} files in directory ${dirPath}`);
     
     // 查找目标文件
     for (const file of files.data || []) {
       if (file.n === fileName) {
-        console.log(`[get_id_to_path] Found target file: ${fileName}, fid: ${file.fid}`);
+        console.log(`[getIdToPath] Found target file: ${fileName}, fid: ${file.fid}`);
         const pickcode = await getPickcodeToId(file.fid, { userAgent, accountInfo });
-        console.log(`[get_id_to_path] Successfully got pickcode for ${path}: ${pickcode}`);
+        console.log(`[getIdToPath] Successfully got pickcode for ${path}: ${pickcode}`);
         return pickcode;
       }
     }
     
     // 列出目录中的所有文件以便调试
     const fileNames = files.data?.map(f => f.n) || [];
-    console.log(`[get_id_to_path] Available files in ${dirPath}:`, fileNames);
+    console.log(`[getIdToPath] Available files in ${dirPath}:`, fileNames);
     throw new Error(`File not found: ${fileName} in directory: ${dirPath}. Available files: ${fileNames.join(', ')}`);
   } catch (error) {
-    console.error(`[get_id_to_path] Error getting directory ID for ${dirPath}:`, error);
+    console.error(`[getIdToPath] Error getting directory ID for ${dirPath}:`, error);
     throw error;
   }
 }
 
 // 通过路径获取目录 ID
-export async function fs_dir_getid(path: string, { userAgent, accountInfo }: { userAgent?: string; app?: string; accountInfo?: AccountInfo }) {
+export async function fsDirGetId(path: string, { userAgent, accountInfo }: { userAgent?: string; app?: string; accountInfo?: AccountInfo }) {
   if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
   
   // 生成缓存键
@@ -266,7 +266,7 @@ export async function fs_dir_getid(path: string, { userAgent, accountInfo }: { u
 }
 
 // 获取目录中的文件列表
-export async function fs_files(cid: number, { userAgent, limit = 1000, offset = 0, accountInfo }: { 
+export async function fsFiles(cid: number, { userAgent, limit = 1000, offset = 0, accountInfo }: { 
   userAgent?: string; 
   app?: string; 
   limit?: number; 

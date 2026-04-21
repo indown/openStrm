@@ -1,11 +1,16 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import compress from "@fastify/compress";
+import { initDb } from "./db/migrate.js";
+import { sqlite } from "./db/client.js";
 
 // Prevent unhandled rejections from crashing the process
 process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);
 });
+
+// Apply DB migrations and seed from JSON on first run (before any plugin reads config)
+await initDb();
 
 // Core plugins
 import { configPlugin } from "./plugins/config.js";
@@ -144,6 +149,7 @@ async function shutdown() {
   await Promise.race([closeAll, timeout]);
 
   try { stopPolling(); } catch { /* ignore */ }
+  try { sqlite.close(); } catch { /* ignore */ }
 
   process.exit(0);
 }

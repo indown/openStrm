@@ -38,9 +38,6 @@ COPY --from=frontend-builder /app/apps/frontend/.next/standalone ./frontend
 COPY --from=frontend-builder /app/apps/frontend/.next/static ./frontend/.next/static
 COPY --from=frontend-builder /app/apps/frontend/public ./frontend/public
 
-# Copy default config
-COPY .config /app/.config
-
 # Entrypoint
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
