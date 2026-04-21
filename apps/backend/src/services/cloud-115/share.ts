@@ -116,14 +116,14 @@ export async function getShareData(
   return data;
 }
 
-/** 列分享目录（分页），返回标准化后的列表 */
+/** 列分享目录（分页），返回标准化后的列表及总数 */
 export async function getShareDirList(
   accountInfo: AccountInfo,
   shareCode: string,
   receiveCode: string,
   cid: number | string,
   opts?: { limit?: number; offset?: number; userAgent?: string }
-): Promise<ShareAttr[]> {
+): Promise<{ list: ShareAttr[]; count: number }> {
   const limit = opts?.limit ?? 32;
   const offset = opts?.offset ?? 0;
   const resp = await shareSnap(
@@ -132,10 +132,12 @@ export async function getShareDirList(
     { userAgent: opts?.userAgent }
   );
   checkShareResponse(resp as { state?: boolean; errno?: number });
-  const list = (resp as { list?: unknown[]; data?: { list?: unknown[] } }).list
-    ?? (resp as { data?: { list?: unknown[] } }).data?.list
-    ?? [];
-  return list.map((item) => normalizeShareAttr(item as Record<string, unknown>));
+  const raw = resp as { list?: unknown[]; count?: number; data?: { list?: unknown[]; count?: number } };
+  const rawList = raw.list ?? raw.data?.list ?? [];
+  const rawCount = raw.count ?? raw.data?.count;
+  const list = rawList.map((item) => normalizeShareAttr(item as Record<string, unknown>));
+  const count = typeof rawCount === "number" ? rawCount : list.length;
+  return { list, count };
 }
 
 /** 获取分享内文件/目录的下载链接（仅文件有直链） */
@@ -188,8 +190,8 @@ export class P115ShareFileSystem {
     return getShareData(this.accountInfo, this.shareCode, this.receiveCode, opts);
   }
 
-  /** 列目录，返回标准化条目数组 */
-  async iterdir(cid: number, opts?: { limit?: number; offset?: number; userAgent?: string }): Promise<ShareAttr[]> {
+  /** 列目录，返回标准化条目数组及总数 */
+  async iterdir(cid: number, opts?: { limit?: number; offset?: number; userAgent?: string }): Promise<{ list: ShareAttr[]; count: number }> {
     return getShareDirList(this.accountInfo, this.shareCode, this.receiveCode, cid, opts);
   }
 

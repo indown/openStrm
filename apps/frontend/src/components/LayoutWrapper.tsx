@@ -26,6 +26,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   const [shareDetailOpen, setShareDetailOpen] = useState(false);
   const [shareInfo, setShareInfo] = useState<Record<string, unknown> | null>(null);
   const [shareFileList, setShareFileList] = useState<ShareFileItem[]>([]);
+  const [shareFileCount, setShareFileCount] = useState(0);
   const [shareLoading, setShareLoading] = useState(false);
 
   if (pathname === "/login") {
@@ -55,7 +56,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
           action: "info",
           url,
         }),
-        axiosInstance.post<{ code: number; data?: ShareFileItem[] }>("/api/115/share", {
+        axiosInstance.post<{ code: number; data?: { list: ShareFileItem[]; count: number } }>("/api/115/share", {
           action: "list",
           url,
           cid: 0,
@@ -66,7 +67,8 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
         return;
       }
       setShareInfo(infoRes.data.data ?? null);
-      setShareFileList(listRes.data.data ?? []);
+      setShareFileList(listRes.data.data?.list ?? []);
+      setShareFileCount(listRes.data.data?.count ?? 0);
       setShareDetailOpen(true);
     } catch (err: unknown) {
       const msg =
@@ -129,6 +131,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
         onOpenChange={setShareDetailOpen}
         shareInfo={shareInfo}
         fileList={shareFileList}
+        fileCount={shareFileCount}
         shareLink={shareLink}
         loading={shareLoading}
       />
