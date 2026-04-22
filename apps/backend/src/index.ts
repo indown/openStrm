@@ -40,6 +40,10 @@ import taskCronRoute from "./routes/task/cron.js";
 import cloudFilesRoute from "./routes/cloud/files.js";
 import cloudShareRoute from "./routes/cloud/share.js";
 
+// Library routes
+import libraryRoute from "./routes/library/index.js";
+import libraryTmdbRoute from "./routes/library/tmdb.js";
+
 // Directory routes
 import directoryLocalRoute from "./routes/directory/local.js";
 import directoryRemoteRoute from "./routes/directory/remote.js";
@@ -88,6 +92,10 @@ await app.register(taskCronRoute);
 // Cloud storage routes
 await app.register(cloudFilesRoute);
 await app.register(cloudShareRoute);
+
+// Library routes
+await app.register(libraryRoute);
+await app.register(libraryTmdbRoute);
 
 // Directory routes
 await app.register(directoryLocalRoute);

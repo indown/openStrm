@@ -17,4 +17,8 @@ export type AppSettings = {
     webhookUrl?: string;
     allowedUsers?: number[];
   };
+  tmdb?: {
+    apiKey?: string;
+    language?: string;
+  };
 } & Record<string, unknown>;

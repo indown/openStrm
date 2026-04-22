@@ -13,6 +13,7 @@ type Settings = {
   downloadExtensions?: string[];
   mediaMountPath?: string[];
   emby?: { url?: string; apiKey?: string };
+  tmdb?: { apiKey?: string; language?: string };
   download?: {
     linkMaxPerSecond?: number;
     linkMaxConcurrent?: number;
@@ -261,6 +262,43 @@ export default function SettingsPage() {
                 })
               }
               placeholder="xxxxxxxxxxxxxxxx"
+            />
+          </div>
+        </div>
+      </section>
+
+      <Separator />
+
+      <section className="space-y-4">
+        <h2 className="text-base font-medium">TMDB</h2>
+        <p className="text-sm text-muted-foreground">
+          配置后，在影库「加入影库」对话框中可通过 TMDB 搜索自动填充标题与封面。
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label>TMDB API Key (v4 Bearer Token)</Label>
+            <Input
+              value={data.tmdb?.apiKey || ""}
+              onChange={(e) =>
+                setData({
+                  ...data,
+                  tmdb: { ...(data.tmdb || {}), apiKey: e.target.value },
+                })
+              }
+              placeholder="eyJhbGciOiJIUzI1NiJ9..."
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>默认语言</Label>
+            <Input
+              value={data.tmdb?.language || ""}
+              onChange={(e) =>
+                setData({
+                  ...data,
+                  tmdb: { ...(data.tmdb || {}), language: e.target.value },
+                })
+              }
+              placeholder="zh-CN"
             />
           </div>
         </div>
