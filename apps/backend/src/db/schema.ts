@@ -47,7 +47,29 @@ export const taskHistory = sqliteTable(
   }),
 );
 
+export const mediaLibrary = sqliteTable(
+  "media_library",
+  {
+    id: text("id").primaryKey(),
+    shareUrl: text("share_url").notNull(),
+    shareCode: text("share_code").notNull(),
+    receiveCode: text("receive_code").notNull().default(""),
+    title: text("title").notNull().default(""),
+    fileCount: integer("file_count").notNull().default(0),
+    coverUrl: text("cover_url").notNull().default(""),
+    tags: text("tags").notNull().default("[]"),
+    notes: text("notes").notNull().default(""),
+    createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+    updatedAt: integer("updated_at").notNull().default(sql`(unixepoch())`),
+  },
+  (t) => ({
+    shareCodeIdx: index("media_library_share_code_idx").on(t.shareCode),
+    updatedAtIdx: index("media_library_updated_at_idx").on(t.updatedAt),
+  }),
+);
+
 export type SettingsRow = typeof settings.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;
 export type TaskHistoryRow = typeof taskHistory.$inferSelect;
+export type MediaLibraryRow = typeof mediaLibrary.$inferSelect;

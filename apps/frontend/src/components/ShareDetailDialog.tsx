@@ -17,13 +17,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { File, ChevronRight, FolderOpen, Download, ChevronLeft, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { File, ChevronRight, FolderOpen, Download, ChevronLeft, ChevronsLeft, ChevronsRight, BookmarkPlus } from "lucide-react";
 import axiosInstance from "@/lib/axios";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DirectoryPickerDialog } from "@/components/DirectoryPickerDialog";
 import { SaveToDriveDialog, type SaveToTaskChoice } from "@/components/SaveToDriveDialog";
+import { AddToLibraryDialog, type AddToLibraryInitial } from "@/components/AddToLibraryDialog";
 
 export interface ShareFileItem {
   id: number;
@@ -78,6 +79,7 @@ export function ShareDetailDialog({
   const [saving, setSaving] = useState(false);
   const [showDirPicker, setShowDirPicker] = useState(false);
   const [showSaveToTask, setShowSaveToTask] = useState(false);
+  const [showAddToLibrary, setShowAddToLibrary] = useState(false);
 
   const shareInfoData = shareInfo?.share_info as Record<string, unknown> | undefined;
   const title = (shareInfoData?.name ?? shareInfoData?.share_name ?? "115 分享") as string;
@@ -247,10 +249,25 @@ export function ShareDetailDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          {createTime && (
-            <DialogDescription>创建时间：{createTime}</DialogDescription>
-          )}
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <DialogTitle className="truncate">{title}</DialogTitle>
+              {createTime && (
+                <DialogDescription>创建时间：{createTime}</DialogDescription>
+              )}
+            </div>
+            {shareLink.trim() && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowAddToLibrary(true)}
+                className="shrink-0 mr-6"
+              >
+                <BookmarkPlus className="h-4 w-4 mr-1" />
+                加入影库
+              </Button>
+            )}
+          </div>
         </DialogHeader>
         {/* 面包屑 */}
         <div className="flex items-center gap-1 text-sm text-muted-foreground flex-wrap">
@@ -404,6 +421,30 @@ export function ShareDetailDialog({
         onConfirm={handleTaskSaveChoice}
         selectedCount={selectedItems.size}
       />
+      <AddToLibraryDialog
+        open={showAddToLibrary}
+        onOpenChange={setShowAddToLibrary}
+        initial={buildLibraryInitial(shareLink, shareInfo, initialFileCount)}
+        onSaved={() => setShowAddToLibrary(false)}
+      />
     </Dialog>
   );
+}
+
+function buildLibraryInitial(
+  shareLink: string,
+  shareInfo: Record<string, unknown> | null,
+  fileCount: number,
+): AddToLibraryInitial | null {
+  const url = shareLink.trim();
+  if (!url) return null;
+  const info = (shareInfo?.share_info ?? {}) as Record<string, unknown>;
+  const title = (info.share_title ?? info.name ?? "") as string;
+  return {
+    shareUrl: url,
+    title: title || "",
+    coverUrl: "",
+    tags: [],
+    notes: fileCount ? `共 ${fileCount} 项` : "",
+  };
 }

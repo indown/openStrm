@@ -11,3 +11,4 @@ export type {
   CacheConfig,
   ProxyConfig,
 } from "./proxy.js";
+export type { MediaLibraryEntry } from "./media-library.js";
