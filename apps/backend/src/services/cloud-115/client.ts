@@ -266,7 +266,7 @@ export async function fsDirGetId(path: string, { userAgent, accountInfo }: { use
 }
 
 // 获取目录中的文件列表
-export async function fsFiles(cid: number, { userAgent, limit = 1000, offset = 0, accountInfo }: { 
+export async function fsFiles(cid: number | string, { userAgent, limit = 1000, offset = 0, accountInfo }: { 
   userAgent?: string; 
   app?: string; 
   limit?: number; 
@@ -276,7 +276,7 @@ export async function fsFiles(cid: number, { userAgent, limit = 1000, offset = 0
   if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
   
   // 生成缓存键
-  const cacheKey = `files:${cid}:${limit}:${offset}:${accountInfo.cookie.substring(0, 20)}`;
+  const cacheKey = `files:${String(cid)}:${limit}:${offset}:${accountInfo.cookie.substring(0, 20)}`;
   
   // 尝试从缓存获取
   const cached = filesListCache.get(cacheKey);

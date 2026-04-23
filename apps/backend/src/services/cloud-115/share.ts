@@ -50,24 +50,43 @@ export function shareExtractPayload(link: string): { share_code: string; receive
 
 /** 分享项属性（目录或文件） */
 export interface ShareAttr {
-  id: number;
+  /** 分享内文件/目录 id，可能超出 JS 安全整数，接口为字符串时原样保留 */
+  id: number | string;
   name: string;
   is_dir: boolean;
-  parent_id: number;
+  parent_id: number | string;
   size?: number;
   sha1?: string;
   /** 原始接口字段名可能为 n/fn, fid/cid, fc 等 */
   [k: string]: unknown;
 }
 
+/** 将分享接口里的 id 转为 number 或 string，避免大整型被 Number() 截断 */
+function normalizeShareId(raw: unknown): number | string {
+  if (raw == null) return 0;
+  if (typeof raw === "bigint") return raw.toString();
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    if (t === "" || t === "0") return 0;
+    if (!/^-?\d+$/.test(t)) return t;
+    const n = Number(t);
+    return Number.isSafeInteger(n) ? n : t;
+  }
+  if (typeof raw === "number") {
+    if (Number.isSafeInteger(raw)) return raw;
+    return String(raw);
+  }
+  return String(raw);
+}
+
 function normalizeShareAttr(item: Record<string, unknown>): ShareAttr {
   if ("n" in item && typeof item.n === "string") {
     const isDir = !("fid" in item);
     return {
-      id: isDir ? Number(item.cid) : Number(item.fid),
+      id: normalizeShareId(isDir ? item.cid : item.fid),
       name: item.n as string,
       is_dir: isDir,
-      parent_id: Number(item.pid ?? item.cid ?? 0),
+      parent_id: normalizeShareId(item.pid ?? item.cid ?? 0),
       size: item.s != null ? Number(item.s) : undefined,
       sha1: item.sha1 as string | undefined,
       ...item,
@@ -76,8 +95,8 @@ function normalizeShareAttr(item: Record<string, unknown>): ShareAttr {
   if ("file_name" in item || "fn" in item) {
     const name = (item.file_name ?? item.fn) as string;
     const isDir = String(item.file_category ?? item.fc ?? "1") === "0";
-    const id = Number(item.file_id ?? item.fid);
-    const pid = Number(item.parent_id ?? item.pid ?? item.cid ?? 0);
+    const id = normalizeShareId(item.file_id ?? item.fid);
+    const pid = normalizeShareId(item.parent_id ?? item.pid ?? item.cid ?? 0);
     return {
       id,
       name,
@@ -140,6 +159,48 @@ export async function getShareDirList(
   return { list, count };
 }
 
+/**
+ * 按影库 sharePath 在分享侧逐级列目录，得到用于 receive 的 file_id（无 shareRootCid 时的兜底）。
+ */
+export async function resolveLibraryEntryShareReceiveIds(
+  accountInfo: AccountInfo,
+  shareCode: string,
+  receiveCode: string,
+  sharePath: string,
+  rawName: string,
+  opts?: { userAgent?: string }
+): Promise<Array<number | string>> {
+  const trimmed = (sharePath || "").replace(/^\/+/, "");
+  const segments = trimmed.split("/").filter(Boolean);
+  let cid: number | string = 0;
+
+  const listOne = (parent: number | string) =>
+    getShareDirList(accountInfo, shareCode, receiveCode, parent, {
+      limit: 1000,
+      offset: 0,
+      userAgent: opts?.userAgent,
+    });
+
+  if (segments.length === 0) {
+    const { list } = await listOne(0);
+    const hit = list.find((it) => it.is_dir && it.name === rawName);
+    if (!hit) {
+      throw new Error(`在分享根目录未找到「${rawName}」，请检查提取码或分享是否仍有效`);
+    }
+    return [hit.id];
+  }
+
+  for (const seg of segments) {
+    const { list } = await listOne(cid);
+    const hit = list.find((it) => it.is_dir && it.name === seg);
+    if (!hit) {
+      throw new Error(`在分享中未找到路径段「${seg}」`);
+    }
+    cid = hit.id;
+  }
+  return [cid];
+}
+
 /** 获取分享内文件/目录的下载链接（仅文件有直链） */
 export async function getShareDownloadUrl(
   accountInfo: AccountInfo,
@@ -191,7 +252,7 @@ export class P115ShareFileSystem {
   }
 
   /** 列目录，返回标准化条目数组及总数 */
-  async iterdir(cid: number, opts?: { limit?: number; offset?: number; userAgent?: string }): Promise<{ list: ShareAttr[]; count: number }> {
+  async iterdir(cid: number | string, opts?: { limit?: number; offset?: number; userAgent?: string }): Promise<{ list: ShareAttr[]; count: number }> {
     return getShareDirList(this.accountInfo, this.shareCode, this.receiveCode, cid, opts);
   }
 

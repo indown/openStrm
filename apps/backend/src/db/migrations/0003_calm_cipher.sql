@@ -1,0 +1,1 @@
+ALTER TABLE `media_library` ADD `share_receive_ids` text DEFAULT '[]' NOT NULL;

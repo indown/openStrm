@@ -13,10 +13,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Search, Film } from "lucide-react";
+import { Search, Film, RefreshCw } from "lucide-react";
 import axiosInstance from "@/lib/axios";
 import { toast } from "sonner";
-import type { MediaLibraryEntry } from "@openstrm/shared";
+import type { MediaLibraryEntry, ScrapeStatus } from "@openstrm/shared";
 
 export interface AddToLibraryInitial {
   id?: string;
@@ -25,6 +25,7 @@ export interface AddToLibraryInitial {
   coverUrl?: string;
   tags?: string[];
   notes?: string;
+  scrapeStatus?: ScrapeStatus;
 }
 
 interface AddToLibraryDialogProps {
@@ -32,7 +33,13 @@ interface AddToLibraryDialogProps {
   onOpenChange: (open: boolean) => void;
   initial: AddToLibraryInitial | null;
   onSaved: (entry: MediaLibraryEntry) => void;
+  onBulkSaved?: () => void;
 }
+
+export type AddResponse =
+  | { mode: "single"; entry: MediaLibraryEntry }
+  | { mode: "split"; inserted: number; skipped: number }
+  | { mode: "subdir"; entry: MediaLibraryEntry };
 
 interface TmdbSearchResult {
   id: number;
@@ -51,7 +58,7 @@ function splitTags(raw: string): string[] {
     .filter((v, i, arr) => arr.indexOf(v) === i);
 }
 
-export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: AddToLibraryDialogProps) {
+export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved, onBulkSaved }: AddToLibraryDialogProps) {
   const [title, setTitle] = useState("");
   const [coverUrl, setCoverUrl] = useState("");
   const [tagsInput, setTagsInput] = useState("");
@@ -62,6 +69,7 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
   const [tmdbQuery, setTmdbQuery] = useState("");
   const [tmdbLoading, setTmdbLoading] = useState(false);
   const [tmdbResults, setTmdbResults] = useState<TmdbSearchResult[]>([]);
+  const [rescraping, setRescraping] = useState(false);
 
   const isEdit = Boolean(initial?.id);
 
@@ -125,6 +133,31 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
     if (item.posterUrl) setCoverUrl(item.posterUrl);
   };
 
+  const handleRescrape = async () => {
+    if (!initial?.id) return;
+    if (!tmdbEnabled) {
+      toast.error("TMDB 未配置，请先在设置中填入 API Key");
+      return;
+    }
+    setRescraping(true);
+    try {
+      const res = await axiosInstance.post<{ code: number; data?: { id: string; status: string }; message?: string }>(
+        `/api/library/${initial.id}/scrape`,
+      );
+      if (res.data.code !== 200) {
+        toast.error(res.data.message || "触发重新刮削失败");
+        return;
+      }
+      toast.success("已加入刮削队列，稍后刷新查看");
+      onOpenChange(false);
+    } catch (err) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(msg || "触发重新刮削失败");
+    } finally {
+      setRescraping(false);
+    }
+  };
+
   const handleConfirm = async () => {
     if (!initial) return;
     setSaving(true);
@@ -136,15 +169,30 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
         tags: splitTags(tagsInput),
         notes: notes.trim(),
       };
-      let res;
       if (isEdit && initial.id) {
-        res = await axiosInstance.put<MediaLibraryEntry>(`/api/library/${initial.id}`, payload);
-      } else {
-        res = await axiosInstance.post<MediaLibraryEntry>("/api/library", payload);
+        const res = await axiosInstance.put<MediaLibraryEntry>(`/api/library/${initial.id}`, payload);
+        onSaved(res.data);
+        toast.success("已更新");
+        onOpenChange(false);
+        return;
       }
-      onSaved(res.data);
-      toast.success(isEdit ? "已更新" : "已加入影库");
-      onOpenChange(false);
+      const res = await axiosInstance.post<AddResponse>("/api/library", payload);
+      if (res.data.mode === "split") {
+        const { inserted, skipped } = res.data;
+        if (inserted === 0 && skipped > 0) {
+          toast.info(`全部 ${skipped} 条已在库`);
+        } else if (skipped > 0) {
+          toast.success(`已自动拆分为 ${inserted} 条，后台刮削中（跳过 ${skipped} 条已在库）`);
+        } else {
+          toast.success(`已自动拆分为 ${inserted} 条，后台刮削中`);
+        }
+        onBulkSaved?.();
+        onOpenChange(false);
+      } else {
+        onSaved(res.data.entry);
+        toast.success("已加入影库");
+        onOpenChange(false);
+      }
     } catch (err) {
       const anyErr = err as { response?: { status?: number; data?: { message?: string; data?: MediaLibraryEntry } } };
       if (anyErr.response?.status === 409) {
@@ -251,13 +299,29 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
           </div>
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
-            取消
-          </Button>
-          <Button onClick={handleConfirm} disabled={saving || !initial}>
-            {saving ? "保存中..." : isEdit ? "保存修改" : "加入影库"}
-          </Button>
+        <DialogFooter className="flex-col sm:flex-row sm:justify-between gap-2">
+          {isEdit ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRescrape}
+              disabled={rescraping || saving || !tmdbEnabled}
+              title={tmdbEnabled ? "触发 TMDB 重新刮削" : "TMDB 未配置，请先去设置页填入 API Key"}
+            >
+              <RefreshCw className={`h-4 w-4 mr-1 ${rescraping ? "animate-spin" : ""}`} />
+              重新刮削
+            </Button>
+          ) : (
+            <span />
+          )}
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+              取消
+            </Button>
+            <Button onClick={handleConfirm} disabled={saving || !initial}>
+              {saving ? "保存中..." : isEdit ? "保存修改" : "加入影库"}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

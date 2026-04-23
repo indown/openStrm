@@ -1,0 +1,1 @@
+ALTER TABLE `media_library` DROP COLUMN `share_receive_ids`;

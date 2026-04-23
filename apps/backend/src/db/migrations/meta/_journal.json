@@ -15,6 +15,34 @@
       "when": 1776800687005,
       "tag": "0001_yielding_warbird",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1776878975777,
+      "tag": "0002_awesome_hobgoblin",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1776892000000,
+      "tag": "0003_calm_cipher",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1776972766792,
+      "tag": "0004_eminent_solo",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1776975564505,
+      "tag": "0005_fine_black_bolt",
+      "breakpoints": true
     }
   ]
 }
