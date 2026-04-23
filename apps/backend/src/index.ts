@@ -43,6 +43,10 @@ import cloudShareRoute from "./routes/cloud/share.js";
 // Library routes
 import libraryRoute from "./routes/library/index.js";
 import libraryTmdbRoute from "./routes/library/tmdb.js";
+import libraryScanRoute from "./routes/library/scan.js";
+import libraryBulkRoute from "./routes/library/bulk.js";
+import librarySaveToTaskRoute from "./routes/library/save-to-task.js";
+import { start as startScrapeWorker } from "./services/library/scrape-worker.js";
 
 // Directory routes
 import directoryLocalRoute from "./routes/directory/local.js";
@@ -96,6 +100,9 @@ await app.register(cloudShareRoute);
 // Library routes
 await app.register(libraryRoute);
 await app.register(libraryTmdbRoute);
+await app.register(libraryScanRoute);
+await app.register(libraryBulkRoute);
+await app.register(librarySaveToTaskRoute);
 
 // Directory routes
 await app.register(directoryLocalRoute);
@@ -140,6 +147,7 @@ try {
   ]);
   app.log.info(`API server running on http://${HOST}:${API_PORT}`);
   app.log.info(`Emby proxy running on http://${HOST}:${PROXY_PORT}`);
+  try { startScrapeWorker(); } catch (err) { app.log.error({ err }, "scrape-worker start failed"); }
 } catch (err) {
   app.log.error(err);
   process.exit(1);

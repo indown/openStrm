@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import {
   Dialog,
@@ -13,21 +13,29 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Film, Edit, Trash2, Search, FileText } from "lucide-react";
+import { Film, Edit, Trash2, Search, FileText, Loader2, AlertCircle, CloudUpload } from "lucide-react";
+import { useRouter } from "next/navigation";
 import axiosInstance from "@/lib/axios";
 import { toast } from "sonner";
 import type { MediaLibraryEntry } from "@openstrm/shared";
 import { ShareDetailDialog, type ShareFileItem } from "@/components/ShareDetailDialog";
 import { AddToLibraryDialog, type AddToLibraryInitial } from "@/components/AddToLibraryDialog";
+import { SaveToDriveDialog, type SaveToTaskChoice } from "@/components/SaveToDriveDialog";
 
 export default function LibraryPage() {
+  const router = useRouter();
   const [entries, setEntries] = useState<MediaLibraryEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const [editing, setEditing] = useState<AddToLibraryInitial | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<MediaLibraryEntry | null>(null);
+
+  const [saveToTaskEntry, setSaveToTaskEntry] = useState<MediaLibraryEntry | null>(null);
+  const [saveToTaskOpen, setSaveToTaskOpen] = useState(false);
+  const [savingToTask, setSavingToTask] = useState(false);
 
   const [shareDetailOpen, setShareDetailOpen] = useState(false);
   const [shareInfo, setShareInfo] = useState<Record<string, unknown> | null>(null);
@@ -35,6 +43,8 @@ export default function LibraryPage() {
   const [shareFileCount, setShareFileCount] = useState(0);
   const [shareLink, setShareLink] = useState("");
   const [shareLoading, setShareLoading] = useState(false);
+  const [shareStartCid, setShareStartCid] = useState<string | number | undefined>(undefined);
+  const [shareStartCrumbs, setShareStartCrumbs] = useState<{ id: string; name: string }[] | undefined>(undefined);
 
   const fetchEntries = async () => {
     setLoading(true);
@@ -52,15 +62,80 @@ export default function LibraryPage() {
     fetchEntries();
   }, []);
 
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const inField =
+        tag === "INPUT" || tag === "TEXTAREA" || (target?.isContentEditable ?? false);
+      if (e.key === "/" && !inField) {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      } else if (e.key === "Escape" && document.activeElement === searchRef.current) {
+        setQuery("");
+        searchRef.current?.blur();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const hasPending = entries.some((e) => e.scrapeStatus === "pending");
+  const entriesRef = useRef(entries);
+  useEffect(() => {
+    entriesRef.current = entries;
+  });
+  useEffect(() => {
+    if (!hasPending) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await axiosInstance.get<{
+          code: number;
+          data?: { pendingIds: string[]; pendingCount: number };
+        }>("/api/library/scrape-status");
+        if (cancelled) return;
+        const currentPending = new Set(
+          entriesRef.current.filter((e) => e.scrapeStatus === "pending").map((e) => e.id),
+        );
+        const serverPending = new Set(res.data.data?.pendingIds ?? []);
+        let changed = currentPending.size !== serverPending.size;
+        if (!changed) {
+          for (const id of currentPending) {
+            if (!serverPending.has(id)) {
+              changed = true;
+              break;
+            }
+          }
+        }
+        if (changed) fetchEntries();
+      } catch {
+        // transient; ignore
+      }
+    };
+    const interval = setInterval(tick, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [hasPending]);
+
   const filtered = query.trim()
     ? entries.filter((e) => {
         const q = query.trim().toLowerCase();
-        return (
-          e.title.toLowerCase().includes(q) ||
-          e.shareCode.toLowerCase().includes(q) ||
-          e.notes.toLowerCase().includes(q) ||
-          e.tags.some((t) => t.toLowerCase().includes(q))
-        );
+        const bag = [
+          e.title,
+          e.rawName,
+          e.sharePath,
+          e.notes,
+          e.year,
+          e.shareCode,
+          ...(e.tags ?? []),
+        ]
+          .filter(Boolean)
+          .map((s) => String(s).toLowerCase());
+        return bag.some((v) => v.includes(q));
       })
     : entries;
 
@@ -71,6 +146,24 @@ export default function LibraryPage() {
     setShareInfo(null);
     setShareFileList([]);
     setShareFileCount(0);
+    if (entry.shareRootCid && entry.shareRootCid !== "0") {
+      setShareStartCid(entry.shareRootCid);
+      const segments = (entry.sharePath || "")
+        .replace(/^\/+/, "")
+        .split("/")
+        .filter(Boolean);
+      const crumbs =
+        segments.length > 0
+          ? segments.map((name, i) => ({
+              id: i === segments.length - 1 ? entry.shareRootCid : "",
+              name,
+            }))
+          : [{ id: entry.shareRootCid, name: entry.title || entry.rawName || "子目录" }];
+      setShareStartCrumbs(crumbs);
+    } else {
+      setShareStartCid(undefined);
+      setShareStartCrumbs(undefined);
+    }
     try {
       const [infoRes, listRes] = await Promise.all([
         axiosInstance.post<{ code: number; data?: Record<string, unknown> }>("/api/115/share", {
@@ -108,6 +201,7 @@ export default function LibraryPage() {
       coverUrl: entry.coverUrl,
       tags: entry.tags,
       notes: entry.notes,
+      scrapeStatus: entry.scrapeStatus,
     });
     setEditorOpen(true);
   };
@@ -122,6 +216,47 @@ export default function LibraryPage() {
       toast.error("删除失败");
     } finally {
       setDeleteTarget(null);
+    }
+  };
+
+  const openSaveToTask = (entry: MediaLibraryEntry) => {
+    setSaveToTaskEntry(entry);
+    setSaveToTaskOpen(true);
+  };
+
+  const handleSaveToTaskChoice = async (choice: SaveToTaskChoice) => {
+    if (!saveToTaskEntry) return;
+    setSaveToTaskOpen(false);
+    setSavingToTask(true);
+    try {
+      const res = await axiosInstance.post<{ code: number; data?: Record<string, unknown>; message?: string }>(
+        `/api/library/${saveToTaskEntry.id}/save-to-task`,
+        { taskId: choice.taskId, subPath: choice.subPath, mode: choice.mode },
+      );
+      if (res.data.code !== 200) {
+        toast.error(res.data.message || "保存失败");
+        return;
+      }
+      const data = res.data.data ?? {};
+      if (data.mode === "async" && data.taskId) {
+        const asyncTaskId = data.taskId as string;
+        toast.success("已触发后台同步", {
+          action: {
+            label: "查看进度",
+            onClick: () => router.push(`/log/${asyncTaskId}`),
+          },
+        });
+      } else if (typeof data.generatedCount === "number") {
+        toast.success(`保存成功，生成 ${data.generatedCount} 个 strm（跳过 ${data.skippedCount ?? 0} 个）`);
+      } else {
+        toast.success("保存成功");
+      }
+    } catch (err) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(msg || "保存失败");
+    } finally {
+      setSavingToTask(false);
+      setSaveToTaskEntry(null);
     }
   };
 
@@ -144,7 +279,8 @@ export default function LibraryPage() {
         <div className="flex items-center gap-2 min-w-[240px]">
           <Search className="h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="搜索标题、标签、备注…"
+            ref={searchRef}
+            placeholder="搜索标题、原名、路径、标签、备注、年份…  按 / 聚焦"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="h-8 text-sm"
@@ -157,7 +293,7 @@ export default function LibraryPage() {
       ) : filtered.length === 0 ? (
         <div className="text-muted-foreground p-8 text-center border rounded-md">
           {entries.length === 0
-            ? "影库为空，从分享详情中点击「加入影库」开始收藏。"
+            ? "影库为空，从分享详情中点击「加入影库」或「批量入库」开始收藏。"
             : "没有匹配的结果。"}
         </div>
       ) : (
@@ -166,8 +302,10 @@ export default function LibraryPage() {
             <LibraryCard
               key={entry.id}
               entry={entry}
+              savingToTask={savingToTask && saveToTaskEntry?.id === entry.id}
               onOpen={() => openEntry(entry)}
               onEdit={() => openEditor(entry)}
+              onSaveToTask={() => openSaveToTask(entry)}
               onDelete={() => setDeleteTarget(entry)}
             />
           ))}
@@ -179,6 +317,7 @@ export default function LibraryPage() {
         onOpenChange={setEditorOpen}
         initial={editing}
         onSaved={handleSaved}
+        onBulkSaved={fetchEntries}
       />
 
       <ShareDetailDialog
@@ -189,6 +328,18 @@ export default function LibraryPage() {
         fileCount={shareFileCount}
         shareLink={shareLink}
         loading={shareLoading}
+        startCid={shareStartCid}
+        startCrumbs={shareStartCrumbs}
+      />
+
+      <SaveToDriveDialog
+        open={saveToTaskOpen}
+        onOpenChange={(open) => {
+          setSaveToTaskOpen(open);
+          if (!open && !savingToTask) setSaveToTaskEntry(null);
+        }}
+        onConfirm={handleSaveToTaskChoice}
+        selectedCount={1}
       />
 
       <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
@@ -211,13 +362,18 @@ export default function LibraryPage() {
 
 interface LibraryCardProps {
   entry: MediaLibraryEntry;
+  savingToTask: boolean;
   onOpen: () => void;
   onEdit: () => void;
+  onSaveToTask: () => void;
   onDelete: () => void;
 }
 
-function LibraryCard({ entry, onOpen, onEdit, onDelete }: LibraryCardProps) {
-  const label = entry.title || entry.shareCode;
+function LibraryCard({ entry, savingToTask, onOpen, onEdit, onSaveToTask, onDelete }: LibraryCardProps) {
+  const label = entry.title || entry.rawName || entry.shareCode;
+  const pathLabel = entry.sharePath ? entry.sharePath.replace(/^\//, "") : "整个分享";
+  const pending = entry.scrapeStatus === "pending";
+  const failed = entry.scrapeStatus === "failed";
 
   return (
     <div className="group relative rounded-lg border bg-card overflow-hidden flex flex-col hover:shadow-md transition-shadow">
@@ -241,8 +397,28 @@ function LibraryCard({ entry, onOpen, onEdit, onDelete }: LibraryCardProps) {
             <Film className="h-10 w-10" />
           </div>
         )}
-        {entry.fileCount > 0 && (
+        {pending && (
+          <div className="absolute top-2 left-2 bg-background/80 rounded px-1.5 py-0.5 flex items-center gap-1 text-[10px]">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            刮削中
+          </div>
+        )}
+        {failed && (
+          <div className="absolute top-2 left-2 bg-red-100 text-red-700 rounded px-1.5 py-0.5 flex items-center gap-1 text-[10px]">
+            <AlertCircle className="h-3 w-3" />
+            未匹配
+          </div>
+        )}
+        {entry.year && (
           <Badge variant="secondary" className="absolute top-2 right-2 text-[10px]">
+            {entry.year}
+          </Badge>
+        )}
+        {entry.fileCount > 0 && (
+          <Badge
+            variant="secondary"
+            className="absolute bottom-2 right-2 text-[10px]"
+          >
             <FileText className="h-3 w-3 mr-1" />
             {entry.fileCount}
           </Badge>
@@ -261,6 +437,9 @@ function LibraryCard({ entry, onOpen, onEdit, onDelete }: LibraryCardProps) {
         >
           {label}
         </button>
+        <div className="text-[11px] text-muted-foreground truncate" title={pathLabel}>
+          {pathLabel}
+        </div>
         {entry.tags.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {entry.tags.slice(0, 4).map((tag) => (
@@ -271,6 +450,20 @@ function LibraryCard({ entry, onOpen, onEdit, onDelete }: LibraryCardProps) {
           </div>
         )}
         <div className="mt-auto flex items-center justify-end gap-1 pt-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0"
+            onClick={onSaveToTask}
+            disabled={savingToTask}
+            title="保存到任务目录并生成 strm"
+          >
+            {savingToTask ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <CloudUpload className="h-3.5 w-3.5" />
+            )}
+          </Button>
           <Button
             variant="ghost"
             size="sm"

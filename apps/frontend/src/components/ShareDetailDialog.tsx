@@ -17,14 +17,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { File, ChevronRight, FolderOpen, Download, ChevronLeft, ChevronsLeft, ChevronsRight, BookmarkPlus } from "lucide-react";
+import { File, ChevronRight, FolderOpen, Download, ChevronLeft, ChevronsLeft, ChevronsRight, BookmarkPlus, Layers } from "lucide-react";
 import axiosInstance from "@/lib/axios";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DirectoryPickerDialog } from "@/components/DirectoryPickerDialog";
 import { SaveToDriveDialog, type SaveToTaskChoice } from "@/components/SaveToDriveDialog";
-import { AddToLibraryDialog, type AddToLibraryInitial } from "@/components/AddToLibraryDialog";
+import type { AddResponse } from "@/components/AddToLibraryDialog";
+import { BulkScanLibraryDialog } from "@/components/BulkScanLibraryDialog";
 
 export interface ShareFileItem {
   id: number;
@@ -48,6 +49,8 @@ interface ShareDetailDialogProps {
   fileCount: number;
   shareLink: string;
   loading?: boolean;
+  startCid?: string | number;
+  startCrumbs?: BreadcrumbItem[];
 }
 
 const PAGE_SIZE = 32;
@@ -68,6 +71,8 @@ export function ShareDetailDialog({
   fileCount: initialFileCount,
   shareLink,
   loading: initialLoading = false,
+  startCid,
+  startCrumbs,
 }: ShareDetailDialogProps) {
   const router = useRouter();
   const [breadcrumb, setBreadcrumb] = useState<BreadcrumbItem[]>([{ id: "0", name: "根目录" }]);
@@ -79,7 +84,8 @@ export function ShareDetailDialog({
   const [saving, setSaving] = useState(false);
   const [showDirPicker, setShowDirPicker] = useState(false);
   const [showSaveToTask, setShowSaveToTask] = useState(false);
-  const [showAddToLibrary, setShowAddToLibrary] = useState(false);
+  const [addingToLibrary, setAddingToLibrary] = useState(false);
+  const [showBulkScan, setShowBulkScan] = useState(false);
 
   const shareInfoData = shareInfo?.share_info as Record<string, unknown> | undefined;
   const title = (shareInfoData?.name ?? shareInfoData?.share_name ?? "115 分享") as string;
@@ -92,14 +98,22 @@ export function ShareDetailDialog({
 
   // 弹框打开时用根目录列表初始化；关闭时重置面包屑和列表
   useEffect(() => {
-    if (open) {
+    if (!open) return;
+    setSelectedItems(new Map());
+    setPage(1);
+    const startCidStr = startCid != null ? String(startCid) : "";
+    if (startCidStr && startCidStr !== "0" && startCrumbs && startCrumbs.length > 0) {
+      setBreadcrumb([{ id: "0", name: "根目录" }, ...startCrumbs]);
+      setCurrentList([]);
+      setTotalCount(0);
+      fetchList(startCidStr, 1);
+    } else {
       setBreadcrumb([{ id: "0", name: "根目录" }]);
       setCurrentList(initialFileList);
       setTotalCount(initialFileCount);
-      setPage(1);
-      setSelectedItems(new Map());
     }
-  }, [open, initialFileList, initialFileCount]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialFileList, initialFileCount, startCid, startCrumbs?.map((c) => c.name).join("/")]);
 
   const fetchList = async (cid: string, nextPage: number) => {
     if (!shareLink.trim()) return;
@@ -139,6 +153,7 @@ export function ShareDetailDialog({
   const handleBreadcrumbClick = (index: number) => {
     if (index === breadcrumb.length - 1) return;
     const item = breadcrumb[index];
+    if (!item.id) return;
     setBreadcrumb((prev) => prev.slice(0, index + 1));
     fetchList(item.id, 1);
   };
@@ -219,6 +234,96 @@ export function ShareDetailDialog({
     }
   };
 
+  const handleAddToLibrary = async () => {
+    const url = shareLink.trim();
+    if (!url) return;
+    setAddingToLibrary(true);
+    try {
+      const selectedDirs: Array<{ cid: string; name: string }> = [];
+      for (const [id, v] of selectedItems.entries()) {
+        if (!v.isDir) continue;
+        const t = id.trim();
+        if (t && t !== "0") selectedDirs.push({ cid: t, name: v.name });
+      }
+
+      // 情况 1：勾选了子目录 — 每个子目录作为一条子目录条目入库
+      if (selectedDirs.length > 0) {
+        const parentSegments = breadcrumb.slice(1).map((b) => b.name);
+        const results = await Promise.allSettled(
+          selectedDirs.map((d) =>
+            axiosInstance.post<AddResponse>("/api/library", {
+              shareUrl: url,
+              cid: d.cid,
+              rawName: d.name,
+              sharePath: [...parentSegments, d.name].join("/"),
+            }),
+          ),
+        );
+        let ok = 0;
+        let dup = 0;
+        let fail = 0;
+        for (const r of results) {
+          if (r.status === "fulfilled") {
+            ok += 1;
+          } else {
+            const status = (r.reason as { response?: { status?: number } })?.response?.status;
+            if (status === 409) dup += 1;
+            else fail += 1;
+          }
+        }
+        const parts: string[] = [];
+        if (ok > 0) parts.push(`新增 ${ok} 条`);
+        if (dup > 0) parts.push(`${dup} 条已在库`);
+        if (fail > 0) parts.push(`${fail} 条失败`);
+        const msg = parts.join("，");
+        if (ok > 0) {
+          toast.success(`${msg}，后台刮削中`);
+          setSelectedItems(new Map());
+        } else if (fail === 0) {
+          toast.info(msg);
+          setSelectedItems(new Map());
+        } else {
+          toast.error(msg);
+        }
+        return;
+      }
+
+      // 情况 2：按面包屑当前层级（根目录 → 后端自动判断合集/单片；子目录 → 入这一条）
+      const atRoot = breadcrumb.length <= 1;
+      const current = breadcrumb[breadcrumb.length - 1];
+      const body: Record<string, unknown> = { shareUrl: url };
+      if (!atRoot) {
+        body.cid = current.id;
+        body.rawName = current.name;
+        body.sharePath = breadcrumb.slice(1).map((b) => b.name).join("/");
+        body.fileCount = totalCount;
+      }
+      const res = await axiosInstance.post<AddResponse>("/api/library", body);
+      const data = res.data;
+      if (data.mode === "split") {
+        const { inserted, skipped } = data;
+        if (inserted === 0 && skipped > 0) {
+          toast.info(`全部 ${skipped} 条已在库`);
+        } else if (skipped > 0) {
+          toast.success(`已自动拆分为 ${inserted} 条，后台刮削中（跳过 ${skipped} 条已在库）`);
+        } else {
+          toast.success(`已自动拆分为 ${inserted} 条，后台刮削中`);
+        }
+      } else {
+        toast.success(`已加入影库：${data.entry.title || data.entry.rawName || data.entry.shareCode}`);
+      }
+    } catch (err) {
+      const anyErr = err as { response?: { status?: number; data?: { message?: string } } };
+      if (anyErr.response?.status === 409) {
+        toast.error(anyErr.response.data?.message || "该内容已在影库中");
+      } else {
+        toast.error(anyErr.response?.data?.message || "加入影库失败");
+      }
+    } finally {
+      setAddingToLibrary(false);
+    }
+  };
+
   const handleDirSelected = async (cid: number) => {
     setSaving(true);
     try {
@@ -244,6 +349,7 @@ export function ShareDetailDialog({
 
   const displayList = open ? currentList : [];
   const isLoading = initialLoading || loading;
+  const selectedDirCount = Array.from(selectedItems.values()).filter((v) => v.isDir).length;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -257,33 +363,59 @@ export function ShareDetailDialog({
               )}
             </div>
             {shareLink.trim() && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setShowAddToLibrary(true)}
-                className="shrink-0 mr-6"
-              >
-                <BookmarkPlus className="h-4 w-4 mr-1" />
-                加入影库
-              </Button>
+              <div className="flex items-center gap-2 shrink-0 mr-6">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowBulkScan(true)}
+                >
+                  <Layers className="h-4 w-4 mr-1" />
+                  批量入库
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleAddToLibrary}
+                  disabled={addingToLibrary}
+                  title={
+                    selectedDirCount > 0
+                      ? `加入选中的 ${selectedDirCount} 个文件夹`
+                      : breadcrumb.length > 1
+                        ? `加入「${breadcrumb[breadcrumb.length - 1].name}」`
+                        : "自动判断合集/单片并入库"
+                  }
+                >
+                  <BookmarkPlus className="h-4 w-4 mr-1" />
+                  {addingToLibrary
+                    ? "加入中..."
+                    : selectedDirCount > 0
+                      ? `加入影库（${selectedDirCount}）`
+                      : "加入影库"}
+                </Button>
+              </div>
             )}
           </div>
         </DialogHeader>
         {/* 面包屑 */}
         <div className="flex items-center gap-1 text-sm text-muted-foreground flex-wrap">
-          {breadcrumb.map((item, index) => (
-            <span key={item.id} className="flex items-center gap-1">
-              {index > 0 && <ChevronRight className="h-4 w-4 shrink-0" />}
-              <button
-                type="button"
-                onClick={() => handleBreadcrumbClick(index)}
-                className={`hover:text-foreground truncate max-w-[120px] ${index === breadcrumb.length - 1 ? "font-medium text-foreground cursor-default" : "underline cursor-pointer"}`}
-                title={item.name}
-              >
-                {item.name}
-              </button>
-            </span>
-          ))}
+          {breadcrumb.map((item, index) => {
+            const isLast = index === breadcrumb.length - 1;
+            const isClickable = !isLast && Boolean(item.id);
+            return (
+              <span key={`${index}-${item.name}`} className="flex items-center gap-1">
+                {index > 0 && <ChevronRight className="h-4 w-4 shrink-0" />}
+                <button
+                  type="button"
+                  onClick={() => handleBreadcrumbClick(index)}
+                  disabled={!isClickable}
+                  className={`hover:text-foreground truncate max-w-[120px] ${isLast ? "font-medium text-foreground cursor-default" : isClickable ? "underline cursor-pointer" : "cursor-default"}`}
+                  title={item.name}
+                >
+                  {item.name}
+                </button>
+              </span>
+            );
+          })}
         </div>
         <div className="flex-1 overflow-auto border rounded-md min-h-0">
           {isLoading ? (
@@ -421,30 +553,12 @@ export function ShareDetailDialog({
         onConfirm={handleTaskSaveChoice}
         selectedCount={selectedItems.size}
       />
-      <AddToLibraryDialog
-        open={showAddToLibrary}
-        onOpenChange={setShowAddToLibrary}
-        initial={buildLibraryInitial(shareLink, shareInfo, initialFileCount)}
-        onSaved={() => setShowAddToLibrary(false)}
+      <BulkScanLibraryDialog
+        open={showBulkScan}
+        onOpenChange={setShowBulkScan}
+        shareUrl={shareLink.trim()}
+        onSubmitted={() => setShowBulkScan(false)}
       />
     </Dialog>
   );
-}
-
-function buildLibraryInitial(
-  shareLink: string,
-  shareInfo: Record<string, unknown> | null,
-  fileCount: number,
-): AddToLibraryInitial | null {
-  const url = shareLink.trim();
-  if (!url) return null;
-  const info = (shareInfo?.share_info ?? {}) as Record<string, unknown>;
-  const title = (info.share_title ?? info.name ?? "") as string;
-  return {
-    shareUrl: url,
-    title: title || "",
-    coverUrl: "",
-    tags: [],
-    notes: fileCount ? `共 ${fileCount} 项` : "",
-  };
 }

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
@@ -54,17 +54,27 @@ export const mediaLibrary = sqliteTable(
     shareUrl: text("share_url").notNull(),
     shareCode: text("share_code").notNull(),
     receiveCode: text("receive_code").notNull().default(""),
+    sharePath: text("share_path").notNull().default(""),
+    shareRootCid: text("share_root_cid").notNull().default(""),
+    rawName: text("raw_name").notNull().default(""),
     title: text("title").notNull().default(""),
     fileCount: integer("file_count").notNull().default(0),
     coverUrl: text("cover_url").notNull().default(""),
     tags: text("tags").notNull().default("[]"),
     notes: text("notes").notNull().default(""),
+    mediaType: text("media_type").notNull().default("unknown"),
+    tmdbId: integer("tmdb_id"),
+    year: text("year").notNull().default(""),
+    overview: text("overview").notNull().default(""),
+    scrapeStatus: text("scrape_status").notNull().default("done"),
     createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
     updatedAt: integer("updated_at").notNull().default(sql`(unixepoch())`),
   },
   (t) => ({
     shareCodeIdx: index("media_library_share_code_idx").on(t.shareCode),
+    shareCodePathUniq: uniqueIndex("media_library_share_code_path_uniq").on(t.shareCode, t.sharePath),
     updatedAtIdx: index("media_library_updated_at_idx").on(t.updatedAt),
+    scrapeStatusIdx: index("media_library_scrape_status_idx").on(t.scrapeStatus),
   }),
 );
 
