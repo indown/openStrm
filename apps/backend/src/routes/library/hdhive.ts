@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { searchMulti, type TmdbSearchResult } from "../../services/tmdb.js";
 import {
   getResourcesByTmdbId,
+  unlockResource,
   type HdhiveMediaType,
   type HdhiveResource,
 } from "../../services/hdhive.js";
@@ -122,6 +123,46 @@ export default async function (fastify: FastifyInstance) {
           total,
         },
       };
+    },
+  );
+
+  fastify.post(
+    "/api/library/hdhive/unlock",
+    { preHandler: [fastify.authenticate] },
+    async (request, reply) => {
+      const body = (request.body ?? {}) as { slug?: unknown };
+      const slug = typeof body.slug === "string" ? body.slug.trim() : "";
+      if (!slug) {
+        return reply.code(400).send({ code: 400, message: "slug 不能为空" });
+      }
+
+      const settings = fastify.readSettings();
+      const hdhiveKey = settings.hdhive?.apiKey?.trim();
+      if (!hdhiveKey) {
+        return reply
+          .code(400)
+          .send({ code: 400, message: "HDHive 未配置 API Key，请先到「设置」填入 X-API-Key" });
+      }
+
+      try {
+        const data = await unlockResource(slug, {
+          apiKey: hdhiveKey,
+          baseUrl: settings.hdhive?.baseUrl?.trim(),
+        });
+        return { code: 200, data };
+      } catch (err) {
+        const e = err as Error & {
+          status?: number;
+          code?: string | number;
+          retryAfterSeconds?: number;
+        };
+        const status = e.status && e.status >= 400 ? e.status : 502;
+        return reply.code(status).send({
+          code: e.code ?? status,
+          message: e.message || "HDHive 解锁失败",
+          retry_after_seconds: e.retryAfterSeconds,
+        });
+      }
     },
   );
 }

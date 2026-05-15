@@ -11,7 +11,19 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Loader2, Film, Tv, Lock, CheckCircle2 } from "lucide-react";
+import {
+  Loader2,
+  Film,
+  Tv,
+  Lock,
+  CheckCircle2,
+  Unlock,
+  Copy,
+  ExternalLink,
+  ArrowRightCircle,
+} from "lucide-react";
+import axiosInstance from "@/lib/axios";
+import { toast } from "sonner";
 
 export interface HdhiveTmdbItem {
   id: number;
@@ -37,6 +49,13 @@ export interface HdhiveResourceItem {
   remark?: string | null;
 }
 
+export interface HdhiveUnlockResult {
+  url: string;
+  access_code: string;
+  full_url: string;
+  already_owned: boolean;
+}
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -48,6 +67,7 @@ interface Props {
   total: number;
   errorMessage?: string | null;
   onPickAlternative: (item: HdhiveTmdbItem) => void;
+  onPan115Unlocked?: (fullUrl: string, res: HdhiveResourceItem) => void;
 }
 
 function MediaTypeBadge({ type }: { type: "movie" | "tv" }) {
@@ -68,8 +88,40 @@ function panTypeOf(resource: HdhiveResourceItem): string {
   return raw || UNKNOWN_PAN_TYPE;
 }
 
-function ResourceCard({ res }: { res: HdhiveResourceItem }) {
+function is115(panType: string | null | undefined): boolean {
+  if (!panType) return false;
+  return /115/i.test(panType);
+}
+
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast.success("已复制");
+  } catch {
+    toast.error("复制失败");
+  }
+}
+
+interface ResourceCardProps {
+  res: HdhiveResourceItem;
+  unlocking: boolean;
+  unlockResult: HdhiveUnlockResult | null;
+  onUnlock: () => void;
+  onOpenIn115?: (fullUrl: string) => void;
+}
+
+function ResourceCard({
+  res,
+  unlocking,
+  unlockResult,
+  onUnlock,
+  onOpenIn115,
+}: ResourceCardProps) {
   const remark = (res.remark ?? "").toString().trim();
+  const pan115 = is115(res.pan_type);
+  const hasUrl = Boolean(unlockResult?.full_url || unlockResult?.url);
+  const fullUrl = unlockResult?.full_url || unlockResult?.url || "";
+
   return (
     <div className="break-inside-avoid mb-3 border rounded-md p-3 flex flex-col gap-1.5 bg-card hover:bg-muted/40 transition-colors">
       <div className="flex items-center gap-2 flex-wrap">
@@ -79,7 +131,7 @@ function ResourceCard({ res }: { res: HdhiveResourceItem }) {
         {res.share_size && (
           <Badge variant="outline" className="text-[10px]">{res.share_size}</Badge>
         )}
-        {res.is_unlocked ? (
+        {res.is_unlocked || unlockResult?.already_owned ? (
           <Badge className="bg-green-100 text-green-700 hover:bg-green-100 text-[10px] gap-1">
             <CheckCircle2 className="h-3 w-3" />
             已解锁
@@ -112,6 +164,87 @@ function ResourceCard({ res }: { res: HdhiveResourceItem }) {
           <span key={`st-${t}`} className="px-1.5 py-0.5 rounded bg-muted">{t}</span>
         ))}
       </div>
+
+      {hasUrl ? (
+        <div className="mt-1 rounded border bg-muted/40 p-2 flex flex-col gap-1 text-xs">
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground shrink-0">链接</span>
+            <span className="font-mono truncate flex-1" title={fullUrl}>{fullUrl}</span>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 w-6 p-0"
+              onClick={() => copyText(fullUrl)}
+              title="复制完整链接"
+            >
+              <Copy className="h-3 w-3" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 w-6 p-0"
+              onClick={() => window.open(fullUrl, "_blank", "noopener,noreferrer")}
+              title="在新标签打开"
+            >
+              <ExternalLink className="h-3 w-3" />
+            </Button>
+          </div>
+          {unlockResult?.access_code && (
+            <div className="flex items-center gap-1">
+              <span className="text-muted-foreground shrink-0">访问码</span>
+              <span className="font-mono">{unlockResult.access_code}</span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 w-6 p-0"
+                onClick={() => copyText(unlockResult.access_code)}
+                title="复制访问码"
+              >
+                <Copy className="h-3 w-3" />
+              </Button>
+            </div>
+          )}
+          {pan115 && onOpenIn115 && (
+            <div className="pt-1">
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-7 text-xs gap-1"
+                onClick={() => onOpenIn115(fullUrl)}
+              >
+                <ArrowRightCircle className="h-3 w-3" />
+                在 115 分享中查看
+              </Button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="pt-1">
+          <Button
+            size="sm"
+            variant="default"
+            className="h-7 text-xs gap-1"
+            onClick={onUnlock}
+            disabled={unlocking}
+          >
+            {unlocking ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin" />
+                解锁中...
+              </>
+            ) : (
+              <>
+                <Unlock className="h-3 w-3" />
+                {res.is_unlocked
+                  ? "查看链接"
+                  : res.unlock_points && res.unlock_points > 0
+                  ? `解锁 (${res.unlock_points} 积分)`
+                  : "解锁"}
+              </>
+            )}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -127,6 +260,7 @@ export function HdhiveSearchDialog({
   total,
   errorMessage,
   onPickAlternative,
+  onPan115Unlocked,
 }: Props) {
   const panTypes = useMemo(() => {
     const seen = new Set<string>();
@@ -166,10 +300,63 @@ export function HdhiveSearchDialog({
     });
   }, [resources, panTypes, showAllTab]);
 
+  const [unlockingSlugs, setUnlockingSlugs] = useState<Set<string>>(new Set());
+  const [unlockResults, setUnlockResults] = useState<Map<string, HdhiveUnlockResult>>(new Map());
+
+  useEffect(() => {
+    setUnlockingSlugs(new Set());
+    setUnlockResults(new Map());
+  }, [resources]);
+
   const filteredResources = useMemo(() => {
     if (activeTab === ALL_TAB) return resources;
     return resources.filter((r) => panTypeOf(r) === activeTab);
   }, [resources, activeTab]);
+
+  const handleUnlock = async (res: HdhiveResourceItem) => {
+    if (unlockingSlugs.has(res.slug)) return;
+    setUnlockingSlugs((prev) => {
+      const next = new Set(prev);
+      next.add(res.slug);
+      return next;
+    });
+    try {
+      const resp = await axiosInstance.post<{
+        code: number;
+        message?: string;
+        data?: HdhiveUnlockResult;
+      }>("/api/library/hdhive/unlock", { slug: res.slug });
+      if (resp.data.code !== 200 || !resp.data.data) {
+        toast.error(resp.data.message || "解锁失败");
+        return;
+      }
+      const result = resp.data.data;
+      setUnlockResults((prev) => {
+        const next = new Map(prev);
+        next.set(res.slug, result);
+        return next;
+      });
+      if (result.already_owned) {
+        toast.success("已解锁，已为你拉取链接");
+      } else {
+        toast.success("解锁成功");
+      }
+      const fullUrl = result.full_url || result.url;
+      if (is115(res.pan_type) && fullUrl && onPan115Unlocked) {
+        onPan115Unlocked(fullUrl, res);
+      }
+    } catch (err) {
+      const apiErr = err as { response?: { data?: { message?: string } }; message?: string };
+      const msg = apiErr.response?.data?.message || apiErr.message || "解锁失败";
+      toast.error(msg);
+    } finally {
+      setUnlockingSlugs((prev) => {
+        const next = new Set(prev);
+        next.delete(res.slug);
+        return next;
+      });
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -285,7 +472,18 @@ export function HdhiveSearchDialog({
                   ) : (
                     <div className="columns-1 sm:columns-2 lg:columns-3 gap-3">
                       {filteredResources.map((res) => (
-                        <ResourceCard key={res.slug} res={res} />
+                        <ResourceCard
+                          key={res.slug}
+                          res={res}
+                          unlocking={unlockingSlugs.has(res.slug)}
+                          unlockResult={unlockResults.get(res.slug) ?? null}
+                          onUnlock={() => handleUnlock(res)}
+                          onOpenIn115={
+                            onPan115Unlocked
+                              ? (fullUrl) => onPan115Unlocked(fullUrl, res)
+                              : undefined
+                          }
+                        />
                       ))}
                     </div>
                   )}
