@@ -36,13 +36,14 @@ function resolveBaseUrl(baseUrl: string | undefined): string {
   return (v || DEFAULT_BASE_URL).replace(/\/+$/, "");
 }
 
-export async function getResourcesByTmdbId(
-  type: HdhiveMediaType,
-  tmdbId: number | string,
-  opts: RequestOptions,
-): Promise<HdhiveResourcesResponse> {
-  const base = resolveBaseUrl(opts.baseUrl);
-  const url = `${base}/api/open/resources/${type}/${encodeURIComponent(String(tmdbId))}`;
+export interface HdhiveUnlockResult {
+  url: string;
+  access_code: string;
+  full_url: string;
+  already_owned: boolean;
+}
+
+function buildHeaders(opts: RequestOptions): Record<string, string> {
   const headers: Record<string, string> = {
     "X-API-Key": opts.apiKey,
     Accept: "application/json",
@@ -50,9 +51,45 @@ export async function getResourcesByTmdbId(
   if (opts.userAccessToken) {
     headers.Authorization = `Bearer ${opts.userAccessToken}`;
   }
+  return headers;
+}
+
+function makeHdhiveError(
+  resp: { status: number; data?: unknown; headers?: Record<string, unknown> },
+): Error & { status?: number; code?: string | number; retryAfterSeconds?: number } {
+  const data = (resp.data ?? {}) as Record<string, unknown>;
+  const code = (data.code as string | number | undefined) ?? resp.status;
+  const message =
+    (data.message as string | undefined) ||
+    (data.description as string | undefined) ||
+    `HDHive request failed (${resp.status})`;
+  const err = new Error(typeof message === "string" ? message : String(message)) as Error & {
+    status?: number;
+    code?: string | number;
+    retryAfterSeconds?: number;
+  };
+  err.status = resp.status;
+  err.code = code;
+  const retryRaw =
+    (data.retry_after_seconds as number | string | undefined) ??
+    (resp.headers?.["retry-after"] as number | string | undefined);
+  if (retryRaw != null) {
+    const n = Number(retryRaw);
+    if (!Number.isNaN(n)) err.retryAfterSeconds = n;
+  }
+  return err;
+}
+
+export async function getResourcesByTmdbId(
+  type: HdhiveMediaType,
+  tmdbId: number | string,
+  opts: RequestOptions,
+): Promise<HdhiveResourcesResponse> {
+  const base = resolveBaseUrl(opts.baseUrl);
+  const url = `${base}/api/open/resources/${type}/${encodeURIComponent(String(tmdbId))}`;
 
   const resp = await axios.get(url, {
-    headers,
+    headers: buildHeaders(opts),
     timeout: opts.timeout ?? 15000,
     validateStatus: () => true,
   });
@@ -66,16 +103,35 @@ export async function getResourcesByTmdbId(
     return { resources: items, total };
   }
 
-  const code = resp.data?.code ?? resp.status;
-  const message = resp.data?.message ?? resp.data?.description ?? `HDHive request failed (${resp.status})`;
-  const err = new Error(typeof message === "string" ? message : String(message)) as Error & {
-    status?: number;
-    code?: string | number;
-    retryAfterSeconds?: number;
-  };
-  err.status = resp.status;
-  err.code = code;
-  const retry = resp.data?.retry_after_seconds ?? resp.headers?.["retry-after"];
-  if (retry != null) err.retryAfterSeconds = Number(retry) || undefined;
-  throw err;
+  throw makeHdhiveError(resp);
+}
+
+export async function unlockResource(
+  slug: string,
+  opts: RequestOptions,
+): Promise<HdhiveUnlockResult> {
+  const base = resolveBaseUrl(opts.baseUrl);
+  const url = `${base}/api/open/resources/unlock`;
+
+  const resp = await axios.post(
+    url,
+    { slug },
+    {
+      headers: { ...buildHeaders(opts), "Content-Type": "application/json" },
+      timeout: opts.timeout ?? 20000,
+      validateStatus: () => true,
+    },
+  );
+
+  if (resp.status === 200 && resp.data?.success !== false) {
+    const data = (resp.data?.data ?? {}) as Partial<HdhiveUnlockResult>;
+    return {
+      url: typeof data.url === "string" ? data.url : "",
+      access_code: typeof data.access_code === "string" ? data.access_code : "",
+      full_url: typeof data.full_url === "string" ? data.full_url : (data.url as string) || "",
+      already_owned: Boolean(data.already_owned),
+    };
+  }
+
+  throw makeHdhiveError(resp);
 }

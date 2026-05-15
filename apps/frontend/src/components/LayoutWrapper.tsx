@@ -126,8 +126,8 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     }
   };
 
-  const fetchShareDetail = async () => {
-    const url = shareLink.trim();
+  const fetchShareDetail = async (overrideUrl?: string) => {
+    const url = (overrideUrl ?? shareLink).trim();
     if (!url) {
       toast.error("请输入 115 分享链接");
       return;
@@ -164,6 +164,14 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     }
   };
 
+  const handle115UnlockedFromHdhive = (fullUrl: string) => {
+    const url = (fullUrl || "").trim();
+    if (!url) return;
+    setShareLink(url);
+    setHdhiveOpen(false);
+    void fetchShareDetail(url);
+  };
+
   return (
     <>
       <SidebarProvider>
@@ -180,7 +188,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
                   onKeyDown={(e) => e.key === "Enter" && fetchShareDetail()}
                   className="h-8 text-sm"
                 />
-                <Button size="sm" onClick={fetchShareDetail} disabled={shareLoading}>
+                <Button size="sm" onClick={() => fetchShareDetail()} disabled={shareLoading}>
                   {shareLoading ? "加载中..." : "查看"}
                 </Button>
               </div>
@@ -248,6 +256,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
         onPickAlternative={(item) =>
           runHdhiveSearch({ tmdbId: item.id, mediaType: item.mediaType })
         }
+        onPan115Unlocked={handle115UnlockedFromHdhive}
       />
     </>
   );
