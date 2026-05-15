@@ -14,6 +14,7 @@ type Settings = {
   mediaMountPath?: string[];
   emby?: { url?: string; apiKey?: string };
   tmdb?: { apiKey?: string; language?: string };
+  hdhive?: { apiKey?: string; baseUrl?: string };
   download?: {
     linkMaxPerSecond?: number;
     linkMaxConcurrent?: number;
@@ -299,6 +300,43 @@ export default function SettingsPage() {
                 })
               }
               placeholder="zh-CN"
+            />
+          </div>
+        </div>
+      </section>
+
+      <Separator />
+
+      <section className="space-y-4">
+        <h2 className="text-base font-medium">HDHive OpenAPI</h2>
+        <p className="text-sm text-muted-foreground">
+          配置后，可在顶部搜索框搜索影视并查询 HDHive 的可用资源（基于 TMDB ID）。
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label>HDHive API Key (X-API-Key)</Label>
+            <Input
+              value={data.hdhive?.apiKey || ""}
+              onChange={(e) =>
+                setData({
+                  ...data,
+                  hdhive: { ...(data.hdhive || {}), apiKey: e.target.value },
+                })
+              }
+              placeholder="个人 API Key 或应用 Secret"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Base URL (可选)</Label>
+            <Input
+              value={data.hdhive?.baseUrl || ""}
+              onChange={(e) =>
+                setData({
+                  ...data,
+                  hdhive: { ...(data.hdhive || {}), baseUrl: e.target.value },
+                })
+              }
+              placeholder="https://hdhive.com"
             />
           </div>
         </div>

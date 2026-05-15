@@ -4,7 +4,7 @@ import { useState } from "react";
 import { usePathname } from "next/navigation";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
-import { Settings, Github, Share2 } from "lucide-react";
+import { Settings, Github, Share2, Search } from "lucide-react";
 import axiosInstance, { clearToken } from "@/lib/axios";
 import {
   Menubar,
@@ -17,6 +17,11 @@ import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ShareDetailDialog, type ShareFileItem } from "@/components/ShareDetailDialog";
+import {
+  HdhiveSearchDialog,
+  type HdhiveTmdbItem,
+  type HdhiveResourceItem,
+} from "@/components/HdhiveSearchDialog";
 import { toast } from "sonner";
 
 export default function LayoutWrapper({ children }: { children: React.ReactNode }) {
@@ -28,6 +33,15 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   const [shareFileList, setShareFileList] = useState<ShareFileItem[]>([]);
   const [shareFileCount, setShareFileCount] = useState(0);
   const [shareLoading, setShareLoading] = useState(false);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [hdhiveOpen, setHdhiveOpen] = useState(false);
+  const [hdhiveLoading, setHdhiveLoading] = useState(false);
+  const [hdhiveTmdb, setHdhiveTmdb] = useState<HdhiveTmdbItem | null>(null);
+  const [hdhiveAlternatives, setHdhiveAlternatives] = useState<HdhiveTmdbItem[]>([]);
+  const [hdhiveResources, setHdhiveResources] = useState<HdhiveResourceItem[]>([]);
+  const [hdhiveTotal, setHdhiveTotal] = useState(0);
+  const [hdhiveError, setHdhiveError] = useState<string | null>(null);
 
   if (pathname === "/login") {
     return <>{children}</>; // 登录页不显示导航等
@@ -41,6 +55,75 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     }
     clearToken(); // 清除本地token
     router.push("/login"); // 退出后跳转到登录页
+  };
+
+  const runHdhiveSearch = async (
+    options: { query?: string; tmdbId?: number; mediaType?: "movie" | "tv" } = {},
+  ) => {
+    const queryFromOptions = options.query?.trim();
+    const queryFromState = searchQuery.trim();
+    const queryToUse = queryFromOptions ?? queryFromState;
+    const hasExplicit = Boolean(options.tmdbId && options.mediaType);
+    if (!queryToUse && !hasExplicit) {
+      toast.error("请输入要搜索的影视名称");
+      return;
+    }
+
+    setHdhiveOpen(true);
+    setHdhiveLoading(true);
+    setHdhiveError(null);
+    setHdhiveTmdb(null);
+    setHdhiveAlternatives([]);
+    setHdhiveResources([]);
+    setHdhiveTotal(0);
+
+    try {
+      const body: Record<string, unknown> = {};
+      if (hasExplicit) {
+        body.tmdbId = options.tmdbId;
+        body.mediaType = options.mediaType;
+      } else {
+        body.query = queryToUse;
+      }
+      const res = await axiosInstance.post<{
+        code: number;
+        message?: string;
+        data?: {
+          tmdb: HdhiveTmdbItem | null;
+          alternatives: HdhiveTmdbItem[];
+          resources: HdhiveResourceItem[];
+          total: number;
+        };
+      }>("/api/library/hdhive/search", body);
+      if (res.data.code !== 200) {
+        setHdhiveError(res.data.message || "搜索失败");
+        return;
+      }
+      const data = res.data.data;
+      setHdhiveTmdb(data?.tmdb ?? null);
+      setHdhiveAlternatives(data?.alternatives ?? []);
+      setHdhiveResources(data?.resources ?? []);
+      setHdhiveTotal(data?.total ?? 0);
+    } catch (err) {
+      const apiErr = err as {
+        response?: { data?: { message?: string; data?: unknown } };
+        message?: string;
+      };
+      const message = apiErr.response?.data?.message || apiErr.message || "搜索失败";
+      setHdhiveError(message);
+      const fallback = apiErr.response?.data?.data as
+        | {
+            tmdb: HdhiveTmdbItem | null;
+            alternatives: HdhiveTmdbItem[];
+          }
+        | undefined;
+      if (fallback) {
+        setHdhiveTmdb(fallback.tmdb ?? null);
+        setHdhiveAlternatives(fallback.alternatives ?? []);
+      }
+    } finally {
+      setHdhiveLoading(false);
+    }
   };
 
   const fetchShareDetail = async () => {
@@ -101,6 +184,23 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
                   {shareLoading ? "加载中..." : "查看"}
                 </Button>
               </div>
+              <div className="flex items-center gap-2 flex-1 min-w-[200px] max-w-md">
+                <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <Input
+                  placeholder="搜索影视资源（TMDB → HDHive）"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && runHdhiveSearch()}
+                  className="h-8 text-sm"
+                />
+                <Button
+                  size="sm"
+                  onClick={() => runHdhiveSearch()}
+                  disabled={hdhiveLoading}
+                >
+                  {hdhiveLoading ? "搜索中..." : "搜索"}
+                </Button>
+              </div>
               <div className="ml-auto flex items-center gap-1">
                 <a
                   href="https://github.com/indown/OpenStrm"
@@ -134,6 +234,20 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
         fileCount={shareFileCount}
         shareLink={shareLink}
         loading={shareLoading}
+      />
+      <HdhiveSearchDialog
+        open={hdhiveOpen}
+        onOpenChange={setHdhiveOpen}
+        loading={hdhiveLoading}
+        query={searchQuery}
+        tmdb={hdhiveTmdb}
+        alternatives={hdhiveAlternatives}
+        resources={hdhiveResources}
+        total={hdhiveTotal}
+        errorMessage={hdhiveError}
+        onPickAlternative={(item) =>
+          runHdhiveSearch({ tmdbId: item.id, mediaType: item.mediaType })
+        }
       />
     </>
   );

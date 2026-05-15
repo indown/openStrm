@@ -43,7 +43,7 @@ import cloudShareRoute from "./routes/cloud/share.js";
 // Library routes
 import libraryRoute from "./routes/library/index.js";
 import libraryTmdbRoute from "./routes/library/tmdb.js";
-import libraryScanRoute from "./routes/library/scan.js";
+import libraryHdhiveRoute from "./routes/library/hdhive.js";
 import libraryBulkRoute from "./routes/library/bulk.js";
 import librarySaveToTaskRoute from "./routes/library/save-to-task.js";
 import { start as startScrapeWorker } from "./services/library/scrape-worker.js";
@@ -100,7 +100,7 @@ await app.register(cloudShareRoute);
 // Library routes
 await app.register(libraryRoute);
 await app.register(libraryTmdbRoute);
-await app.register(libraryScanRoute);
+await app.register(libraryHdhiveRoute);
 await app.register(libraryBulkRoute);
 await app.register(librarySaveToTaskRoute);
 

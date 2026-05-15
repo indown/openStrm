@@ -33,12 +33,10 @@ interface AddToLibraryDialogProps {
   onOpenChange: (open: boolean) => void;
   initial: AddToLibraryInitial | null;
   onSaved: (entry: MediaLibraryEntry) => void;
-  onBulkSaved?: () => void;
 }
 
 export type AddResponse =
   | { mode: "single"; entry: MediaLibraryEntry }
-  | { mode: "split"; inserted: number; skipped: number }
   | { mode: "subdir"; entry: MediaLibraryEntry };
 
 interface TmdbSearchResult {
@@ -58,7 +56,7 @@ function splitTags(raw: string): string[] {
     .filter((v, i, arr) => arr.indexOf(v) === i);
 }
 
-export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved, onBulkSaved }: AddToLibraryDialogProps) {
+export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: AddToLibraryDialogProps) {
   const [title, setTitle] = useState("");
   const [coverUrl, setCoverUrl] = useState("");
   const [tagsInput, setTagsInput] = useState("");
@@ -177,22 +175,9 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved, onBul
         return;
       }
       const res = await axiosInstance.post<AddResponse>("/api/library", payload);
-      if (res.data.mode === "split") {
-        const { inserted, skipped } = res.data;
-        if (inserted === 0 && skipped > 0) {
-          toast.info(`全部 ${skipped} 条已在库`);
-        } else if (skipped > 0) {
-          toast.success(`已自动拆分为 ${inserted} 条，后台刮削中（跳过 ${skipped} 条已在库）`);
-        } else {
-          toast.success(`已自动拆分为 ${inserted} 条，后台刮削中`);
-        }
-        onBulkSaved?.();
-        onOpenChange(false);
-      } else {
-        onSaved(res.data.entry);
-        toast.success("已加入影库");
-        onOpenChange(false);
-      }
+      onSaved(res.data.entry);
+      toast.success("已加入影库");
+      onOpenChange(false);
     } catch (err) {
       const anyErr = err as { response?: { status?: number; data?: { message?: string; data?: MediaLibraryEntry } } };
       if (anyErr.response?.status === 409) {

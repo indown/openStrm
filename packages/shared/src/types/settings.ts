@@ -21,4 +21,8 @@ export type AppSettings = {
     apiKey?: string;
     language?: string;
   };
+  hdhive?: {
+    apiKey?: string;
+    baseUrl?: string;
+  };
 } & Record<string, unknown>;

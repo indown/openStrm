@@ -17,7 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { File, ChevronRight, FolderOpen, Download, ChevronLeft, ChevronsLeft, ChevronsRight, BookmarkPlus, Layers } from "lucide-react";
+import { File, ChevronRight, FolderOpen, Download, ChevronLeft, ChevronsLeft, ChevronsRight, BookmarkPlus } from "lucide-react";
 import axiosInstance from "@/lib/axios";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { DirectoryPickerDialog } from "@/components/DirectoryPickerDialog";
 import { SaveToDriveDialog, type SaveToTaskChoice } from "@/components/SaveToDriveDialog";
 import type { AddResponse } from "@/components/AddToLibraryDialog";
-import { BulkScanLibraryDialog } from "@/components/BulkScanLibraryDialog";
 
 export interface ShareFileItem {
   id: number;
@@ -85,7 +84,6 @@ export function ShareDetailDialog({
   const [showDirPicker, setShowDirPicker] = useState(false);
   const [showSaveToTask, setShowSaveToTask] = useState(false);
   const [addingToLibrary, setAddingToLibrary] = useState(false);
-  const [showBulkScan, setShowBulkScan] = useState(false);
 
   const shareInfoData = shareInfo?.share_info as Record<string, unknown> | undefined;
   const title = (shareInfoData?.name ?? shareInfoData?.share_name ?? "115 分享") as string;
@@ -300,18 +298,7 @@ export function ShareDetailDialog({
       }
       const res = await axiosInstance.post<AddResponse>("/api/library", body);
       const data = res.data;
-      if (data.mode === "split") {
-        const { inserted, skipped } = data;
-        if (inserted === 0 && skipped > 0) {
-          toast.info(`全部 ${skipped} 条已在库`);
-        } else if (skipped > 0) {
-          toast.success(`已自动拆分为 ${inserted} 条，后台刮削中（跳过 ${skipped} 条已在库）`);
-        } else {
-          toast.success(`已自动拆分为 ${inserted} 条，后台刮削中`);
-        }
-      } else {
-        toast.success(`已加入影库：${data.entry.title || data.entry.rawName || data.entry.shareCode}`);
-      }
+      toast.success(`已加入影库：${data.entry.title || data.entry.rawName || data.entry.shareCode}`);
     } catch (err) {
       const anyErr = err as { response?: { status?: number; data?: { message?: string } } };
       if (anyErr.response?.status === 409) {
@@ -364,14 +351,6 @@ export function ShareDetailDialog({
             </div>
             {shareLink.trim() && (
               <div className="flex items-center gap-2 shrink-0 mr-6">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setShowBulkScan(true)}
-                >
-                  <Layers className="h-4 w-4 mr-1" />
-                  批量入库
-                </Button>
                 <Button
                   size="sm"
                   variant="outline"
@@ -552,12 +531,6 @@ export function ShareDetailDialog({
         onOpenChange={setShowSaveToTask}
         onConfirm={handleTaskSaveChoice}
         selectedCount={selectedItems.size}
-      />
-      <BulkScanLibraryDialog
-        open={showBulkScan}
-        onOpenChange={setShowBulkScan}
-        shareUrl={shareLink.trim()}
-        onSubmitted={() => setShowBulkScan(false)}
       />
     </Dialog>
   );
