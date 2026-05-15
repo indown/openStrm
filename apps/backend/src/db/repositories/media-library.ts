@@ -80,34 +80,6 @@ export function insert(entry: MediaLibraryEntry): void {
   db.insert(mediaLibrary).values(toRow(entry)).run();
 }
 
-export function bulkInsert(entries: MediaLibraryEntry[]): {
-  inserted: number;
-  skipped: number;
-  insertedIds: string[];
-} {
-  if (entries.length === 0) return { inserted: 0, skipped: 0, insertedIds: [] };
-  let inserted = 0;
-  let skipped = 0;
-  const insertedIds: string[] = [];
-  db.transaction((tx) => {
-    for (const entry of entries) {
-      const dupe = tx
-        .select({ id: mediaLibrary.id })
-        .from(mediaLibrary)
-        .where(and(eq(mediaLibrary.shareCode, entry.shareCode), eq(mediaLibrary.sharePath, entry.sharePath ?? "")))
-        .get();
-      if (dupe) {
-        skipped += 1;
-        continue;
-      }
-      tx.insert(mediaLibrary).values(toRow(entry)).run();
-      inserted += 1;
-      insertedIds.push(entry.id);
-    }
-  });
-  return { inserted, skipped, insertedIds };
-}
-
 export function update(id: string, updates: Partial<MediaLibraryEntry>): MediaLibraryEntry | null {
   const row = db.select().from(mediaLibrary).where(eq(mediaLibrary.id, id)).get();
   if (!row) return null;

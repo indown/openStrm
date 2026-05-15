@@ -293,7 +293,7 @@ export default function LibraryPage() {
       ) : filtered.length === 0 ? (
         <div className="text-muted-foreground p-8 text-center border rounded-md">
           {entries.length === 0
-            ? "影库为空，从分享详情中点击「加入影库」或「批量入库」开始收藏。"
+            ? "影库为空，从分享详情中点击「加入影库」开始收藏。"
             : "没有匹配的结果。"}
         </div>
       ) : (
@@ -317,7 +317,6 @@ export default function LibraryPage() {
         onOpenChange={setEditorOpen}
         initial={editing}
         onSaved={handleSaved}
-        onBulkSaved={fetchEntries}
       />
 
       <ShareDetailDialog

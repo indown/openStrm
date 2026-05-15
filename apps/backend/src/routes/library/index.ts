@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { MediaLibraryEntry } from "@openstrm/shared";
 import {
-  bulkInsert,
   getAll,
   getById,
   getByShareCode,
@@ -11,8 +10,7 @@ import {
   update,
 } from "../../db/repositories/media-library.js";
 import { shareExtractPayload, getShareData } from "../../services/cloud-115/share.js";
-import { scanShare } from "../../services/library/scan.js";
-import { enqueue, enqueueOne } from "../../services/library/scrape-worker.js";
+import { enqueueOne } from "../../services/library/scrape-worker.js";
 import { normalizeTitle } from "../../services/media-title.js";
 import { randomId, sanitizeTags, shareRootCidForDb } from "./_util.js";
 
@@ -96,54 +94,7 @@ export default async function (fastify: FastifyInstance) {
     const accounts = fastify.readAccounts();
     const account115 = accounts.find((a) => a.accountType === "115") as any;
 
-    // 先扫一层顶层目录：>=2 子目录走合集拆分，否则走单片
-    let subdirCount = 0;
-    let scanCandidates: Awaited<ReturnType<typeof scanShare>>["candidates"] = [];
-    if (account115) {
-      try {
-        const scan = await scanShare({ accountInfo: account115, shareUrl, userAgent });
-        scanCandidates = scan.candidates;
-        subdirCount = scanCandidates.length;
-      } catch (err) {
-        fastify.log.warn({ err }, "[library] top-level scan failed, falling back to single mode");
-      }
-    }
-
-    // ==== 合集模式：>=2 子目录 ====
-    if (subdirCount >= 2) {
-      if (bodyTitle || bodyCoverUrl) {
-        fastify.log.info(
-          { subdirCount },
-          "[library] collection detected, ignoring client-supplied title/coverUrl",
-        );
-      }
-      const entries: MediaLibraryEntry[] = scanCandidates.map((c) => ({
-        id: randomId(),
-        shareUrl,
-        shareCode,
-        receiveCode,
-        sharePath: `/${c.rawName}`,
-        shareRootCid: shareRootCidForDb(c.cid),
-        rawName: c.rawName,
-        title: c.normalizedTitle || c.rawName,
-        fileCount: c.fileCount || 0,
-        coverUrl: "",
-        tags: bodyTags,
-        notes: bodyNotes,
-        mediaType: "unknown",
-        tmdbId: null,
-        year: c.year || "",
-        overview: "",
-        scrapeStatus: hasTmdb ? "pending" : "done",
-        createdAt: now,
-        updatedAt: now,
-      }));
-      const { inserted, skipped, insertedIds } = bulkInsert(entries);
-      if (hasTmdb && insertedIds.length > 0) enqueue(insertedIds);
-      return reply.code(201).send({ mode: "split", inserted, skipped });
-    }
-
-    // ==== 单片模式：≤1 子目录 ====
+    // ==== 单片模式 ====
     const existing = getByShareCode(shareCode);
     if (existing) {
       return reply.code(409).send({ code: 409, message: "该分享已在影库中", data: existing });
