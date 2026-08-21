@@ -78,8 +78,60 @@ export const mediaLibrary = sqliteTable(
   }),
 );
 
+/**
+ * 115 文件/目录 id → 绝对网盘路径 的缓存。
+ * 生活事件只带 parent_id，必须靠这张表把 cid 还原成路径，
+ * 同时也是 move / rename 事件定位「旧路径」的唯一依据。
+ * id 一律用 text 存：115 的 file_id 超过 JS 安全整数范围。
+ */
+export const pathCache = sqliteTable(
+  "path_cache",
+  {
+    fileId: text("file_id").primaryKey(),
+    parentId: text("parent_id").notNull().default("0"),
+    name: text("name").notNull().default(""),
+    path: text("path").notNull(),
+    isDir: integer("is_dir").notNull().default(1),
+    accountName: text("account_name").notNull().default(""),
+    updatedAt: integer("updated_at").notNull().default(sql`(unixepoch())`),
+  },
+  (t) => ({
+    pathIdx: index("path_cache_path_idx").on(t.path),
+    parentIdx: index("path_cache_parent_id_idx").on(t.parentId),
+  }),
+);
+
+/** 已拉取到的 115 生活事件，主键就是事件 id，重复拉取时幂等覆盖 */
+export const lifeEvents = sqliteTable(
+  "life_events",
+  {
+    id: text("id").primaryKey(),
+    accountName: text("account_name").notNull().default(""),
+    type: integer("type").notNull(),
+    fileId: text("file_id").notNull(),
+    parentId: text("parent_id").notNull().default("0"),
+    fileName: text("file_name").notNull().default(""),
+    fileCategory: integer("file_category").notNull().default(0),
+    fileSize: integer("file_size").notNull().default(0),
+    sha1: text("sha1").notNull().default(""),
+    pickCode: text("pick_code").notNull().default(""),
+    updateTime: integer("update_time").notNull().default(0),
+    createTime: integer("create_time").notNull().default(0),
+    status: text("status").notNull().default("pending"),
+    detail: text("detail").notNull().default(""),
+    handledAt: integer("handled_at"),
+  },
+  (t) => ({
+    fileIdIdx: index("life_events_file_id_idx").on(t.fileId),
+    updateTimeIdx: index("life_events_update_time_idx").on(t.updateTime),
+    typeIdx: index("life_events_type_idx").on(t.type),
+  }),
+);
+
 export type SettingsRow = typeof settings.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;
 export type TaskHistoryRow = typeof taskHistory.$inferSelect;
 export type MediaLibraryRow = typeof mediaLibrary.$inferSelect;
+export type PathCacheRow = typeof pathCache.$inferSelect;
+export type LifeEventRow = typeof lifeEvents.$inferSelect;

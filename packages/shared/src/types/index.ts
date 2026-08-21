@@ -1,4 +1,9 @@
-export type { AppSettings } from "./settings.js";
+export type {
+  AppSettings,
+  LifeMonitorSettings,
+  LifePullMode,
+  LifeEventMode,
+} from "./settings.js";
 export type { AccountInfo, Account115, AccountOpenlist } from "./account.js";
 export type {
   TaskDefinition,
