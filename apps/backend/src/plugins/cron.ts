@@ -18,14 +18,23 @@ export const cronPlugin = fp(async (fastify) => {
     const job = new CronJob(cronExpression, async () => {
       fastify.log.info(`[CRON] Triggering task ${taskId} (${cronExpression})`);
       try {
-        // Call the startTask logic via internal HTTP to reuse existing route handler
+        // 复用 startTask 路由，所以要带一个真能过 fastify.authenticate 的凭据。
+        // 这里现签一个 JWT——写死的假 token 过不了 verifyJwt，定时任务会静默 401。
+        const token = await fastify.signJwt({ username: "cron", taskId });
         const response = await fastify.inject({
           method: "POST",
-          url: "/api/task/start",
+          url: "/api/startTask",
           payload: { id: taskId },
-          headers: { authorization: `Bearer __internal__` },
+          headers: { authorization: `Bearer ${token}` },
         });
-        fastify.log.info(`[CRON] Task ${taskId} triggered, status: ${response.statusCode}`);
+        // 状态码不够看：startTask 成功时也可能是「无文件可下载」，失败原因都在 body 里
+        if (response.statusCode === 200) {
+          fastify.log.info(`[CRON] Task ${taskId} triggered: ${response.body}`);
+        } else {
+          fastify.log.error(
+            `[CRON] Task ${taskId} failed with ${response.statusCode}: ${response.body}`,
+          );
+        }
       } catch (err) {
         fastify.log.error(`[CRON] Failed to trigger task ${taskId}: ${err}`);
       }
@@ -94,7 +103,7 @@ export const cronPlugin = fp(async (fastify) => {
     }
     jobs.clear();
   });
-}, { name: "cron", dependencies: ["config"] });
+}, { name: "cron", dependencies: ["config", "auth"] });
 
 declare module "fastify" {
   interface FastifyInstance {
