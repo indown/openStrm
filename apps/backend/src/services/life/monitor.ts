@@ -36,6 +36,11 @@ import {
   type LifeEvent,
 } from "../cloud-115/life.js";
 import {
+  cancelEmbyRefresh,
+  flushEmbyRefresh,
+  scheduleEmbyRefresh,
+} from "../media-server.js";
+import {
   handleCreate,
   handleMove,
   handleNewFolder,
@@ -193,7 +198,7 @@ function dispatch(ctx: LifeContext, ev: LifeEvent): Promise<HandleResult> {
   if (RENAME_TYPES.has(type)) return handleRename(ctx, ev);
   if (REMOVE_TYPES.has(type)) return handleRemove(ctx, ev);
   if (NEW_FOLDER_TYPES.has(type)) return handleNewFolder(ctx, ev);
-  return Promise.resolve({ status: "skipped", detail: `未处理的事件类型 ${type}` });
+  return Promise.resolve({ status: "skipped" as const, detail: `未处理的事件类型 ${type}`, changed: false });
 }
 
 async function runOnce(account: Cloud115Account, signal: AbortSignal): Promise<void> {
@@ -249,6 +254,8 @@ async function runOnce(account: Cloud115Account, signal: AbortSignal): Promise<v
       markLifeEvent(id, res.status, res.detail);
       if (res.status === "done") {
         stats.handled++;
+        // 防抖攒着：生活事件一条一条来，逐条触发全库扫描会把 Emby 打瘫
+        if (res.changed) scheduleEmbyRefresh();
         log("info", `${name} ${res.detail}`);
       } else {
         stats.skipped++;
@@ -315,6 +322,7 @@ export async function startLifeMonitor(): Promise<{ ok: boolean; message: string
   accountName = account.name;
   cursor = initialCursor((cfg.pullMode as LifePullMode) ?? "latest");
   writeKv(CURSOR_KEY, cursor);
+  cancelEmbyRefresh();
   abort = new AbortController();
   running = true;
   startedAt = Date.now();
@@ -342,6 +350,8 @@ export async function startLifeMonitor(): Promise<{ ok: boolean; message: string
       }
     }
     writeKv(CURSOR_KEY, cursor);
+    // 文件已经落盘了，没理由把攒着的刷新丢掉
+    flushEmbyRefresh();
     running = false;
     log("info", "已退出生活事件监控");
   })();

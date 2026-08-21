@@ -61,11 +61,13 @@ async function main() {
     "/mnt/pan/tv/TestShow/ep1.mkv",
     "内容必须与全量任务一致",
   );
+  assert.equal(r.changed, true, "生成了文件就该触发媒体库刷新");
   pass++; console.log("  ok  上传事件生成 strm，内容与全量任务一致");
 
   // 2. 白名单外的扩展名不生成
   r = await handleCreate(ctx, ev({ file_id: "9002", file_name: "readme.txt" }));
   assert.equal(r.status, "skipped");
+  assert.equal(r.changed, false, "没落盘就不该惊动 Emby");
   assert.ok(!fs.existsSync(path.join(tvDir, "TestShow", "readme.strm")));
   pass++; console.log("  ok  非白名单扩展名跳过");
 
@@ -114,6 +116,13 @@ async function main() {
   assert.equal(r.status, "skipped");
   assert.ok(fs.existsSync(tvDir), "任务根目录必须还在");
   pass++; console.log("  ok  拒绝整任务根目录删除");
+
+  // 9. 新建目录只写缓存，不碰磁盘，不该触发媒体库刷新
+  const { handleNewFolder } = await import("./handlers.js");
+  r = await handleNewFolder(ctx, ev({ type: 17, file_category: 0, file_id: "4000", file_name: "NewDir" }));
+  assert.equal(r.status, "done");
+  assert.equal(r.changed, false, "只写缓存不该触发刷新");
+  pass++; console.log("  ok  新建目录事件不触发媒体库刷新");
 
   console.log(`\n${pass} passed`);
 }
