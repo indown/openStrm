@@ -18,7 +18,7 @@ import { authPlugin } from "./plugins/auth.js";
 import { cachePlugin } from "./plugins/cache.js";
 import { taskManagerPlugin } from "./plugins/task-manager.js";
 import { cronPlugin } from "./plugins/cron.js";
-import { stopPolling } from "./services/telegram-polling.js";
+import { setTaskStarter, stopPolling } from "./services/telegram-polling.js";
 
 // Auth routes
 import authLoginRoute from "./routes/auth/login.js";
@@ -159,6 +159,19 @@ try {
   app.log.info(`API server running on http://${HOST}:${API_PORT}`);
   app.log.info(`Emby proxy running on http://${HOST}:${PROXY_PORT}`);
   try { startScrapeWorker(); } catch (err) { app.log.error({ err }, "scrape-worker start failed"); }
+
+  // Telegram 按钮启动任务：走 inject + 现签 JWT，和 cron 同一套路
+  // （是否真的允许启动由 settings.telegram.allowTaskStart 决定，默认关）
+  setTaskStarter(async (taskId) => {
+    const token = await app.signJwt({ username: "telegram", taskId });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/startTask",
+      payload: { id: taskId },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return { ok: res.statusCode === 200, body: res.body };
+  });
 
   // 生活事件监控：配置里开着就跟随服务一起起来
   setLifeLogger({

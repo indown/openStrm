@@ -16,6 +16,21 @@ let pollingInterval: NodeJS.Timeout | null = null;
 let lastUpdateId = 0;
 let isPollingActive = false;
 
+/**
+ * 启动任务的执行器，由 index.ts 在服务起来后注入。
+ *
+ * 本模块不是 fastify 插件，拿不到 app.inject / app.signJwt，
+ * 所以用注入而不是在这里 fetch —— 之前那种 fetch 到 localhost:3000 的写法
+ * 既指错了端口（后端在 4000），又完全没带鉴权，实际从未成功过。
+ */
+export type TaskStarter = (taskId: string) => Promise<{ ok: boolean; body: string }>;
+
+let taskStarter: TaskStarter | null = null;
+
+export function setTaskStarter(fn: TaskStarter | null): void {
+  taskStarter = fn;
+}
+
 export async function startPolling(): Promise<boolean> {
   if (isPollingActive) {
     console.log("Polling already running");
@@ -344,6 +359,17 @@ async function handleCallbackQuery(bot: ReturnType<typeof createTelegramBot>, ca
   // 处理任务开始回调
   if (data && data.startsWith('start_task_')) {
     const taskId = data.replace('start_task_', '');
+    if (!readSettings().telegram?.allowTaskStart) {
+      await bot.sendMessage({
+        chat_id: chatId,
+        text: `⚠️ <b>任务启动未开启</b>\n\n` +
+              `从 Telegram 启动任务默认关闭。需要的话在设置里把 ` +
+              `<code>telegram.allowTaskStart</code> 打开。\n` +
+              `Task ID: <code>${taskId}</code>`,
+        parse_mode: 'HTML'
+      });
+      return;
+    }
     await handleTaskStartCallback(bot, chatId, taskId);
     return;
   }
@@ -439,15 +465,19 @@ async function handleTaskStartCallback(bot: ReturnType<typeof createTelegramBot>
 
     // 调用真正的 startTask API
     try {
-      const response = await fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/startTask`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ id: taskId })
-      });
+      if (!taskStarter) {
+        await bot.sendMessage({
+          chat_id: chatId,
+          text: `❌ <b>Task runner unavailable</b>\n\n` +
+                `后端尚未完成初始化，请稍后再试。`,
+          parse_mode: 'HTML'
+        });
+        return;
+      }
 
-      if (response.ok) {
+      const result = await taskStarter(taskId);
+
+      if (result.ok) {
         await bot.sendMessage({
           chat_id: chatId,
           text: `✅ <b>Task started successfully!</b>\n\n` +
@@ -458,11 +488,10 @@ async function handleTaskStartCallback(bot: ReturnType<typeof createTelegramBot>
           parse_mode: 'HTML'
         });
       } else {
-        const errorData = await response.text();
         await bot.sendMessage({
           chat_id: chatId,
           text: `❌ <b>Failed to start task</b>\n\n` +
-                `Error: ${errorData}\n` +
+                `Error: ${result.body}\n` +
                 `Task ID: <code>${taskId}</code>`,
           parse_mode: 'HTML'
         });
@@ -487,3 +516,6 @@ async function handleTaskStartCallback(bot: ReturnType<typeof createTelegramBot>
     });
   }
 }
+
+/** 仅供测试：回调分发是纯内部函数，暴露出来才能验证开关行为 */
+export const __test_handleCallbackQuery = handleCallbackQuery;
