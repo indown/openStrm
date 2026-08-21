@@ -1,3 +1,21 @@
+/** 冷启动时从哪里开始拉生活事件 */
+export type LifePullMode = "latest" | "all" | "last";
+
+/** 生活事件里需要落到本地的动作类型 */
+export type LifeEventMode = "create" | "move" | "rename" | "remove";
+
+export type LifeMonitorSettings = {
+  enabled?: boolean;
+  /** 要监控的 115 账号名，为空时取第一个 115 账号 */
+  account?: string;
+  /** latest=只处理启动之后的事件；all=全量补齐；last=从上次停止的游标继续 */
+  pullMode?: LifePullMode;
+  /** 两轮轮询之间的间隔秒数，默认 15 */
+  intervalSeconds?: number;
+  /** 允许的事件动作，默认全开 */
+  eventModes?: LifeEventMode[];
+};
+
 export type AppSettings = {
   "user-agent"?: string;
   internalToken?: string;
@@ -25,4 +43,6 @@ export type AppSettings = {
     apiKey?: string;
     baseUrl?: string;
   };
+  /** 115 生活事件监控（增量监测网盘文件变动） */
+  lifeMonitor?: LifeMonitorSettings;
 } & Record<string, unknown>;

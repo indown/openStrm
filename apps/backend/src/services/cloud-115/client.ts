@@ -374,7 +374,7 @@ async function exportDirResult(
     if (checkIntervalMs > 0) await sleep(checkIntervalMs);
   }
 }
-async function request115<T = unknown>(
+export async function request115<T = unknown>(
   url: string,
   options?: {
     method?: string;
@@ -385,6 +385,13 @@ async function request115<T = unknown>(
     ensureOk?: boolean;
     useCommonHeaders?: boolean;
     accountInfo?: AccountInfo;
+    /** 抛出原始 AxiosError 而不是响应体，调用方需要 HTTP 状态码时用（如 405 降级） */
+    rawError?: boolean;
+    /** 拿未经 JSON.parse 的原始响应文本，用于自行处理超出 JS 安全整数的 id */
+    rawText?: boolean;
+    /** 覆盖限流通道；默认 `${account}:normal` */
+    limiterChannel?: string;
+    maxConcurrent?: number;
   }
 ) {
   const {
@@ -396,6 +403,10 @@ async function request115<T = unknown>(
     ensureOk: shouldEnsureOk = false,
     useCommonHeaders = true,
     accountInfo,
+    rawError = false,
+    rawText = false,
+    limiterChannel = "normal",
+    maxConcurrent,
   } = options || {};
   const settings = readSettings();
   const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
@@ -422,7 +433,11 @@ async function request115<T = unknown>(
     };
     if (data !== undefined) config.data = data;
     if (responseType) config.responseType = responseType;
-    const accountKey = accountInfo?.name + ':' + 'normal';
+    if (rawText) {
+      config.responseType = "text";
+      config.transformResponse = [(d: unknown) => d];
+    }
+    const accountKey = accountInfo?.name + ':' + limiterChannel;
     const obs$ = enqueueForAccount(accountKey, () =>
       defer(() => new Observable<T>((observer) => {
         axios(config)
@@ -432,13 +447,13 @@ async function request115<T = unknown>(
           })
           .catch((err) => observer.error(err));
       })),
-      downloadConfig.linkMaxConcurrent || 2
+      maxConcurrent ?? downloadConfig.linkMaxConcurrent ?? 2
     );
     const respData = await firstValueFrom(obs$);
     if (shouldEnsureOk) ensureOk(respData as unknown as Record<string, unknown>);
     return respData;
   } catch (error) {
-    if (axios.isAxiosError(error) && error.response) {
+    if (!rawError && axios.isAxiosError(error) && error.response) {
       throw error.response.data;
     }
     throw error;

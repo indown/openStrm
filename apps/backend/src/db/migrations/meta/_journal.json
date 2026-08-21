@@ -43,6 +43,13 @@
       "when": 1776975564505,
       "tag": "0005_fine_black_bolt",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1787239004696,
+      "tag": "0006_ancient_doorman",
+      "breakpoints": true
     }
   ]
 }

@@ -55,6 +55,14 @@ import directoryRemoteRoute from "./routes/directory/remote.js";
 // Alist-compatible file system route
 import fsGetRoute from "./routes/fs/get.js";
 
+// 115 life-event monitor (incremental cloud-drive change detection)
+import lifeMonitorRoute from "./routes/life/index.js";
+import {
+  setLifeLogger,
+  startLifeMonitor,
+  stopLifeMonitor,
+} from "./services/life/monitor.js";
+
 // System routes
 import clearDirectoryRoute from "./routes/system/clear-directory.js";
 import clearRateLimitersRoute from "./routes/system/clear-rate-limiters.js";
@@ -111,6 +119,9 @@ await app.register(directoryRemoteRoute);
 // Alist-compatible route
 await app.register(fsGetRoute);
 
+// 115 life-event monitor
+await app.register(lifeMonitorRoute);
+
 // System routes
 await app.register(clearDirectoryRoute);
 await app.register(clearRateLimitersRoute);
@@ -148,6 +159,19 @@ try {
   app.log.info(`API server running on http://${HOST}:${API_PORT}`);
   app.log.info(`Emby proxy running on http://${HOST}:${PROXY_PORT}`);
   try { startScrapeWorker(); } catch (err) { app.log.error({ err }, "scrape-worker start failed"); }
+
+  // 生活事件监控：配置里开着就跟随服务一起起来
+  setLifeLogger({
+    info: (m) => app.log.info(m),
+    warn: (m) => app.log.warn(m),
+    error: (m) => app.log.error(m),
+    debug: (m) => app.log.debug(m),
+  });
+  if (app.readSettings().lifeMonitor?.enabled) {
+    startLifeMonitor()
+      .then((r) => (r.ok ? app.log.info(r.message) : app.log.warn(r.message)))
+      .catch((err) => app.log.error({ err }, "life monitor start failed"));
+  }
 } catch (err) {
   app.log.error(err);
   process.exit(1);
@@ -158,6 +182,8 @@ let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+
+  try { await stopLifeMonitor(); } catch { /* ignore */ }
 
   const timeout = new Promise<void>((resolve) => setTimeout(resolve, 1500));
   const closeAll = Promise.allSettled([app.close(), proxyApp.close()]).then(() => {});
