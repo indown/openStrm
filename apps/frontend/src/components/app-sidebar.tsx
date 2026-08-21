@@ -1,5 +1,5 @@
 "use client"
-import { Home, Inbox, Settings, Github, Bot, Users, History, Library } from "lucide-react";
+import { Home, Inbox, Settings, Github, Bot, Users, History, Library, Radar } from "lucide-react";
 import Image from "next/image";
 
 import {
@@ -36,6 +36,11 @@ const items = [
     title: "账户",
     url: "/account",
     icon: Inbox,
+  },
+  {
+    title: "网盘监控",
+    url: "/life",
+    icon: Radar,
   },
   {
     title: "设置",

@@ -38,6 +38,7 @@ import {
 import {
   cancelEmbyRefresh,
   flushEmbyRefresh,
+  getEmbyRefreshState,
   scheduleEmbyRefresh,
 } from "../media-server.js";
 import {
@@ -77,6 +78,7 @@ export interface MonitorStatus {
   lastError: string | null;
   stats: { rounds: number; events: number; handled: number; skipped: number; failed: number };
   db: { lifeEvents: number; pathCache: number };
+  embyRefresh: { configured: boolean; pendingCount: number; pendingSince: number | null };
   logs: string[];
 }
 
@@ -388,6 +390,7 @@ export function getLifeMonitorStatus(): MonitorStatus {
     lastError,
     stats: { ...stats },
     db: { lifeEvents: countLifeEvents(), pathCache: countPathCache() },
+    embyRefresh: getEmbyRefreshState(),
     logs: [...logs],
   };
 }
