@@ -36,10 +36,12 @@ export interface LifeContext {
 export interface HandleResult {
   status: "done" | "skipped" | "failed";
   detail: string;
+  /** 是否真的改动了本地文件——只有改动了才值得去打扰媒体服务器 */
+  changed: boolean;
 }
 
-const skipped = (detail: string): HandleResult => ({ status: "skipped", detail });
-const done = (detail: string): HandleResult => ({ status: "done", detail });
+const skipped = (detail: string): HandleResult => ({ status: "skipped", detail, changed: false });
+const done = (detail: string, changed = true): HandleResult => ({ status: "done", detail, changed });
 
 /* ----------------------------- 路径与扩展名 ----------------------------- */
 
@@ -309,7 +311,7 @@ export async function handleCreate(ctx: LifeContext, ev: LifeEvent): Promise<Han
 
   if (isDir) {
     const c = await materializeFolder(ctx, match, String(ev.file_id), panPath);
-    return done(`目录 ${panPath} → strm ${c.strm} / 下载 ${c.download}`);
+    return done(`目录 ${panPath} → strm ${c.strm} / 下载 ${c.download}`, c.strm + c.download > 0);
   }
 
   const kind = await materializeFile(ctx, match, match.relPath, panPath, ev.pick_code);
@@ -330,7 +332,7 @@ export async function handleNewFolder(ctx: LifeContext, ev: LifeEvent): Promise<
     isDir: true,
     accountName: ctx.accountInfo.name,
   });
-  return done(`记录目录 ${panPath}`);
+  return done(`记录目录 ${panPath}`, false);
 }
 
 /** 删除：22 */

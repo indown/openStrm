@@ -62,6 +62,7 @@ import {
   startLifeMonitor,
   stopLifeMonitor,
 } from "./services/life/monitor.js";
+import { flushEmbyRefresh, setMediaServerLogger } from "./services/media-server.js";
 
 // System routes
 import clearDirectoryRoute from "./routes/system/clear-directory.js";
@@ -173,6 +174,8 @@ try {
     return { ok: res.statusCode === 200, body: res.body };
   });
 
+  setMediaServerLogger((m) => app.log.info(`[媒体服务器] ${m}`));
+
   // 生活事件监控：配置里开着就跟随服务一起起来
   setLifeLogger({
     info: (m) => app.log.info(m),
@@ -197,6 +200,7 @@ async function shutdown() {
   shuttingDown = true;
 
   try { await stopLifeMonitor(); } catch { /* ignore */ }
+  try { flushEmbyRefresh(); } catch { /* ignore */ }
 
   const timeout = new Promise<void>((resolve) => setTimeout(resolve, 1500));
   const closeAll = Promise.allSettled([app.close(), proxyApp.close()]).then(() => {});

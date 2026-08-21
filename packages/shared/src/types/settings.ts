@@ -14,6 +14,10 @@ export type LifeMonitorSettings = {
   intervalSeconds?: number;
   /** 允许的事件动作，默认全开 */
   eventModes?: LifeEventMode[];
+  /** 本地文件变更后，安静多少秒才通知 Emby 刷新，默认 30 */
+  mediaServerRefreshDelay?: number;
+  /** 从第一次变更算起最多等多少秒，防止事件不断把刷新饿死，默认 300 */
+  mediaServerRefreshMaxWait?: number;
 };
 
 export type AppSettings = {

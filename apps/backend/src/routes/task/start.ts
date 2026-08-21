@@ -56,15 +56,7 @@ function removeExtraFiles(extraLocally: string[], saveDir: string) {
 }
 
 import { readAppSettings } from "../../db/repositories/settings.js";
-
-function notifyEmbyRefresh() {
-  try {
-    const s = readAppSettings();
-    if (!s.emby?.url || !s.emby?.apiKey) return;
-    const url = `${s.emby.url.replace(/\/$/, "")}/Library/Refresh?api_key=${encodeURIComponent(s.emby.apiKey)}`;
-    axios.post(url).catch(() => {});
-  } catch {}
-}
+import { refreshEmbyNow } from "../../services/media-server.js";
 
 async function getOpenlistTreeData(baseUrl: string, token: string, originPath: string): Promise<TreeNode[]> {
   const allPaths: string[] = [];
@@ -209,7 +201,7 @@ export default async function (fastify: FastifyInstance) {
         pushLog({ done: true, overallPercent: "100.00" }); taskSubject.complete();
         sendTelegramNotification(`<b>Task ID:</b> ${id}\n<b>Files:</b> ${total}\n<b>Status:</b> Completed`, "complete");
         completeTaskExecution(executionHistory.id, "completed", { totalFiles: total, downloadedFiles: total });
-        notifyEmbyRefresh(); delete fastify.downloadTasks[id];
+        refreshEmbyNow("全量任务完成"); delete fastify.downloadTasks[id];
       },
       error: (err) => {
         pushLog({ error: err.message });
