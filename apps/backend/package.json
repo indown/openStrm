@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio",
-    "test": "tsx src/services/life/life.test.ts && tsx src/services/life/handlers.itest.ts"
+    "test": "tsx src/services/life/life.test.ts && tsx src/services/life/handlers.itest.ts && tsx src/services/telegram-polling.itest.ts"
   },
   "dependencies": {
     "@fastify/autoload": "^6.3.1",
