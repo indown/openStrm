@@ -82,7 +82,7 @@ const BIG_INT_DIGITS = 16;
  * 用扫描而不是正则：正则要么漏掉数组里的元素，要么会误伤字符串内容里
  * 恰好长得像数字的片段（文件名完全可能出现），扫描时跟踪引号状态才是准的。
  */
-export function parseJsonBigIntSafe<T>(text: string): T {
+export function parseJsonBigIntSafe<T>(text: string, context = ""): T {
   let out = "";
   let inString = false;
   let i = 0;
@@ -110,14 +110,33 @@ export function parseJsonBigIntSafe<T>(text: string): T {
       continue;
     }
 
-    if (ch >= "0" && ch <= "9") {
+    // 必须整段消费一个完整的 JSON number，不能只吃连续数字：
+    // 只吃数字的话，0.9007199254740993000 会被当成「短整数 0」加「长整数 9007...」，
+    // 于是给小数部分加上引号，得到 0."9007..." 这种非法 JSON；
+    // 负数同理会变成 -"1234..."。
+    if (ch === "-" || (ch >= "0" && ch <= "9")) {
       let j = i;
+      if (text[j] === "-") j++;
+      const intStart = j;
       while (j < text.length && text[j] >= "0" && text[j] <= "9") j++;
-      const digits = text.slice(i, j);
-      // 只处理纯整数：后面跟着 . 或 e 说明是浮点/科学计数，原样放过
-      const next = text[j];
-      const isPlainInt = next !== "." && next !== "e" && next !== "E";
-      out += digits.length >= BIG_INT_DIGITS && isPlainInt ? `"${digits}"` : digits;
+      const intDigits = text.slice(intStart, j);
+
+      let isPlainInt = true;
+      if (text[j] === ".") {
+        isPlainInt = false;
+        j++;
+        while (j < text.length && text[j] >= "0" && text[j] <= "9") j++;
+      }
+      if (text[j] === "e" || text[j] === "E") {
+        isPlainInt = false;
+        j++;
+        if (text[j] === "+" || text[j] === "-") j++;
+        while (j < text.length && text[j] >= "0" && text[j] <= "9") j++;
+      }
+
+      const token = text.slice(i, j);
+      // 只有「纯整数且长到 JS 存不下」才转成字符串，浮点/科学计数原样放过
+      out += isPlainInt && intDigits.length >= BIG_INT_DIGITS ? `"${token}"` : token;
       i = j;
       continue;
     }
@@ -126,7 +145,15 @@ export function parseJsonBigIntSafe<T>(text: string): T {
     i++;
   }
 
-  return JSON.parse(out) as T;
+  try {
+    return JSON.parse(out) as T;
+  } catch (err) {
+    // 光报 "Unterminated fractional number" 没法定位是哪个接口，带上来源和片段
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `解析 115 响应失败${context ? `（${context}）` : ""}：${msg}；原始片段 ${text.slice(0, 300)}`,
+    );
+  }
 }
 
 function httpStatusOf(err: unknown): number | undefined {
@@ -199,7 +226,7 @@ async function fetchBehaviorDetail(
     rawText: true,
     limiterChannel: "life",
   });
-  return parseJsonBigIntSafe<BehaviorDetailResp>(text);
+  return parseJsonBigIntSafe<BehaviorDetailResp>(text, `behavior/detail app=${app}`);
 }
 
 /** 事件是否已经落在游标之前（列表是倒序的，命中即可整轮停止） */
@@ -314,7 +341,7 @@ export async function fetchAncestors(
     state?: boolean;
     errno?: number;
     path?: Array<{ cid: string | number; pid: string | number; name: string }>;
-  }>(text);
+  }>(text, `files 祖先链 cid=${cid}`);
   if (!resp?.path || !Array.isArray(resp.path)) return null;
   return resp.path.map((p) => ({
     cid: String(p.cid),
@@ -360,7 +387,7 @@ export async function listDir(
     state?: boolean;
     count?: number | string;
     data?: Array<Record<string, unknown>>;
-  }>(text);
+  }>(text, `files 列目录 cid=${cid} offset=${offset}`);
   const rows = resp?.data ?? [];
   const entries: DirEntry[] = rows.map((r) => {
     // 目录项只有 cid/pid，文件项有 fid/cid（cid 此时是父目录）

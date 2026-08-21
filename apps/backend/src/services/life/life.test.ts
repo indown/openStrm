@@ -40,6 +40,28 @@ t("字符串里的转义引号不破坏扫描", () => {
   assert.equal(o.n, 'a"b');
   assert.equal(o.file_id, "3040163688862324736");
 });
+t("小数的小数部分很长时不被误当成大整数（会产生非法 JSON）", () => {
+  // 真实事故：只吃连续数字的扫描器会把小数部分单独加引号，
+  // 得到 0."9007199254740993000"，JSON.parse 报 Unterminated fractional number
+  const o = parseJsonBigIntSafe<any>('{"a":0.9007199254740993000,"file_id":3040163688862324736}');
+  assert.equal(o.a, 0.9007199254740993);
+  assert.equal(o.file_id, "3040163688862324736");
+});
+t("负的长整数整体加引号，而不是留下 -\"123\"", () => {
+  const o = parseJsonBigIntSafe<any>('{"a":-3040163688862324736}');
+  assert.equal(o.a, "-3040163688862324736");
+});
+t("科学计数法原样保留", () => {
+  const o = parseJsonBigIntSafe<any>('{"a":1.5e+20,"b":-2E-8}');
+  assert.equal(o.a, 1.5e20);
+  assert.equal(o.b, -2e-8);
+});
+t("长整数后紧跟小数不受影响", () => {
+  const o = parseJsonBigIntSafe<any>('{"a":3040163688862324736,"b":1.25,"c":-7}');
+  assert.equal(o.a, "3040163688862324736");
+  assert.equal(o.b, 1.25);
+  assert.equal(o.c, -7);
+});
 t("浮点与短整数原样保留为数字", () => {
   const o = parseJsonBigIntSafe<any>('{"a":1.5,"b":123,"c":1e3,"d":0}');
   assert.equal(o.a, 1.5); assert.equal(o.b, 123); assert.equal(o.c, 1000); assert.equal(o.d, 0);
