@@ -152,13 +152,18 @@ export async function resolveEmbyPath(
   embyPath: string,
   userAgent?: string,
 ): Promise<ResolveResult> {
-  const list = accounts115();
-  if (list.length === 0) return { ok: false, reason: "no-account" };
-
+  /**
+   * 先判挂载点再判账号。反过来的话，没配 115 账号时每次播本地文件
+   * 都会记一条 no-account 的 warn——而"这个路径不归我们管"才是实情，
+   * 跟有没有账号无关。
+   */
   const decoded = collapseSlashes(safeDecode(embyPath));
   const mountPaths = readSettingsSafe().mediaMountPath ?? [];
   const stripped = stripMountPath(decoded, mountPaths);
   if (!stripped) return { ok: false, reason: "not-mounted" };
+
+  const list = accounts115();
+  if (list.length === 0) return { ok: false, reason: "no-account" };
 
   const byTaskName = accountNameByTask(stripped.mount, stripped.rest, listTasks());
   if (byTaskName) {
