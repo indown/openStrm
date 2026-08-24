@@ -1,0 +1,90 @@
+/**
+ * Emby 代理进程入口。
+ *
+ * 独立于 API 进程运行：管理端崩了、strm 生成任务把事件循环占满，都不该影响播放。
+ * nginx 时代这层本来就是独立进程，V2 把它塞进 API 进程是个退步，这里改回来。
+ *
+ * 只读 DB，迁移由 API 进程负责。
+ */
+import Fastify from "fastify";
+import { sqlite } from "./db/client.js";
+import { readAppSettings } from "./db/repositories/settings.js";
+import proxyPlugin from "./routes/proxy/index.js";
+
+const PROXY_PORT = Number(process.env.PROXY_PORT) || 8091;
+const HOST = process.env.BACKEND_HOST || "0.0.0.0";
+
+const app = Fastify({
+  logger: { level: process.env.LOG_LEVEL || "info" },
+  forceCloseConnections: true,
+  /**
+   * Fastify 默认把 requestTimeout 设成 0，连 Node 自带的 300s 也一并关掉了，
+   * 直接对外暴露时没有慢速请求防护。这里把 Node 的默认值补回来。
+   *
+   * 不设 connectionTimeout：它是 socket 空闲超时，对升级后的 websocket 同样生效，
+   * Emby 的长连会被掐断（nginx 那边对应的是 proxy_read_timeout 1h）。
+   */
+  requestTimeout: 300_000,
+});
+
+/**
+ * 等 API 进程把迁移跑完。
+ *
+ * 只有首次启动会真的等；DB 已存在时第一次读就成功。
+ * 等不到也照常启动——降级成纯反代，至少 Emby 还能用。
+ */
+async function waitForDb(timeoutMs = 60_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      readAppSettings();
+      return true;
+    } catch {
+      if (Date.now() > deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+}
+
+// 代理层任何未捕获的异常都不该带走整个进程——播放中断的代价比一次错误请求大得多
+process.on("unhandledRejection", (err) => {
+  app.log.error({ err }, "unhandledRejection");
+});
+process.on("uncaughtException", (err) => {
+  app.log.error({ err }, "uncaughtException");
+});
+
+const dbReady = await waitForDb();
+if (!dbReady) {
+  app.log.warn("等待数据库超时，降级为纯反代启动");
+}
+
+await app.register(proxyPlugin);
+
+try {
+  await app.listen({ port: PROXY_PORT, host: HOST });
+  app.log.info(`Emby 代理已启动 http://${HOST}:${PROXY_PORT}`);
+} catch (err) {
+  app.log.error(err);
+  process.exit(1);
+}
+
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 1500));
+  await Promise.race([app.close(), timeout]);
+
+  try {
+    sqlite.close();
+  } catch {
+    /* ignore */
+  }
+  process.exit(0);
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+
+export default app;

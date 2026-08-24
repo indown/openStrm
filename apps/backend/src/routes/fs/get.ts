@@ -1,5 +1,13 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { getIdToPath, getDownloadUrlWeb } from "../../services/cloud-115/client.js";
+import { resolveAlistPath } from "../../services/resolve/direct-link.js";
+
+/** 解析失败的原因映射成对外的状态码，保持原有契约不变 */
+const FAILURE_RESPONSE = {
+  "no-account": { code: 404, message: "no 115 account configured" },
+  "not-mounted": { code: 404, message: "file not found" },
+  "not-found": { code: 404, message: "file not found" },
+  "no-url": { code: 500, message: "failed to get download url" },
+} as const;
 
 export default async function (fastify: FastifyInstance) {
   // Internal token auth for Alist-compatible endpoint
@@ -18,40 +26,21 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(400).send({ code: 400, message: "path is required" });
     }
 
-    const decodedPath = decodeURIComponent(path);
-    const accounts = fastify.readAccounts();
-    const accounts115 = accounts.filter((a) => a.accountType === "115");
-    if (accounts115.length === 0) {
-      return reply.code(404).send({ code: 404, message: "no 115 account configured" });
+    // 这条接口是给 CD2/OpenList 回源用的，UA 用配置里的那个
+    const userAgent = fastify.readSettings()["user-agent"] as string | undefined;
+    const resolved = await resolveAlistPath(path, userAgent);
+
+    if (!resolved.ok) {
+      const { code, message } =
+        FAILURE_RESPONSE[resolved.reason] ?? { code: 500, message: "failed to resolve path" };
+      return reply.code(code).send({ code, message });
     }
 
-    let account = accounts115.find((a) => decodedPath.includes(`/${a.name}/`));
-    let actualPath = decodedPath;
-
-    if (!account) {
-      account = accounts115[0];
-    } else {
-      const pattern = `/${account.name}/`;
-      const idx = decodedPath.indexOf(pattern);
-      if (idx !== -1) {
-        actualPath = decodedPath.substring(idx + pattern.length);
-      }
-    }
-
-    const settings = fastify.readSettings();
-    const userAgent = settings["user-agent"] || undefined;
-
-    const pickcode = await getIdToPath({ path: actualPath, userAgent, accountInfo: account });
-    if (!pickcode) {
-      return reply.code(404).send({ code: 404, message: "file not found" });
-    }
-
-    const rawUrl = await getDownloadUrlWeb(pickcode, { userAgent, accountInfo: account });
-    if (!rawUrl) {
-      return reply.code(500).send({ code: 500, message: "failed to get download url" });
-    }
-
-    const fileName = decodedPath.split("/").pop() || "";
-    return { code: 200, message: "success", data: { raw_url: rawUrl, name: fileName, provider: "115" } };
+    const fileName = resolved.panPath.split("/").pop() || "";
+    return {
+      code: 200,
+      message: "success",
+      data: { raw_url: resolved.url, name: fileName, provider: "115" },
+    };
   });
 }
