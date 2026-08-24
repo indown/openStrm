@@ -1,56 +1,81 @@
 /**
  * PlaybackInfo 改写。
  *
- * Emby 认为 strm 指向的是"远端"资源，默认会把 SupportsDirectPlay 判成 false，
- * 客户端于是去要转码流——转码流不走我们的 302，全部字节又回到 Node 身上。
- * 所以命中挂载点的媒体源要显式标成可直连，并把 DirectStreamUrl 指回本代理，
- * 让客户端最终落到 /Videos/{id}/stream 上吃到 302。
+ * Emby 认为 strm 指向的是"远端"资源，默认把 SupportsDirectPlay/DirectStream 判成 false
+ * 并给出 TranscodingUrl，客户端于是去要转码流——转码流不走 302，全部字节又回到 Node 身上。
+ * 所以命中挂载点的媒体源要标成可直连、关掉转码，并把 DirectStreamUrl 指回本代理。
  *
- * 对应 nginx 时代 redirect-core.js 的 transferPlaybackInfo / modifyDirectPlaySupports /
- * modifyDirectStreamUrl。
+ * 行为对齐 nginx 版本的 modifyDirectPlayInfo / modifyDirectStreamUrl
+ * （见 git show main:emby2Alist/nginx/conf.d/emby.js）。
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { EmbyMediaSource } from "../../services/emby/api.js";
 import { embyUpstream } from "../../services/emby/api.js";
-import { readAppSettings } from "../../db/repositories/settings.js";
+import { readSettingsSafe } from "../../services/settings-safe.js";
 import { safeDecode, stripMountPath } from "../../services/resolve/direct-link.js";
-import { applyForwardedHeaders, toEmby } from "./upstream.js";
-
-const UPSTREAM_TIMEOUT_MS = 15_000;
+import { fetchUpstream, relayResponse, toEmby } from "./upstream.js";
 
 /** 这个媒体源是不是我们生成的 strm（落在某个 mediaMountPath 下面） */
 function isOurs(source: EmbyMediaSource): boolean {
   if (!source.Path) return false;
-  const mountPaths = readAppSettings().mediaMountPath ?? [];
+  const mountPaths = readSettingsSafe().mediaMountPath ?? [];
   return stripMountPath(safeDecode(source.Path).replace(/\/{2,}/g, "/"), mountPaths) !== null;
 }
 
 /**
  * 把 DirectStreamUrl 指向本代理的 stream 路径。
- * 保留原来的查询串（api_key / MediaSourceId 都在里面，少一个客户端就播不了）。
+ *
+ * 路径里必须用**条目 id**，不能用 MediaSource.Id——Emby 4.9 的 MediaSource.Id 长
+ * `mediasource_11` 这样，而 Emby 自己给的 DirectStreamUrl 是 `/videos/11/stream`。
+ * 查询串沿用上游的，但要去掉 TranscodeReasons 并补上 Static=true，
+ * 否则客户端会以为这是个转码流。nginx 版本就是这么拼的。
  */
-function rewriteDirectStreamUrl(source: EmbyMediaSource, itemId: string): void {
+function rewriteDirectStreamUrl(
+  source: EmbyMediaSource,
+  itemId: string,
+  requestQuery: Record<string, unknown>,
+): void {
   const container = source.Container || "mp4";
   const original = typeof source.DirectStreamUrl === "string" ? source.DirectStreamUrl : "";
   const queryIndex = original.indexOf("?");
-  const query = queryIndex >= 0 ? original.slice(queryIndex) : "";
-  const id = source.Id || itemId;
-  source.DirectStreamUrl = encodeURI(`/emby/Videos/${id}/stream.${container}${query}`);
+
+  const params = new URLSearchParams(queryIndex >= 0 ? original.slice(queryIndex + 1) : "");
+  params.delete("TranscodeReasons");
+
+  // 上游没给 DirectStreamUrl 时（部分条目就是没有），从请求本身补齐必要参数
+  if (!params.has("api_key")) {
+    const key = requestQuery["api_key"] ?? requestQuery["X-Emby-Token"];
+    if (typeof key === "string" && key) params.set("api_key", key);
+  }
+  if (!params.has("MediaSourceId") && source.Id) params.set("MediaSourceId", source.Id);
+  params.set("Static", "true");
+
+  source.DirectStreamUrl = `/emby/Videos/${itemId}/stream.${container}?${params.toString()}`;
 }
 
-export function rewritePlaybackInfo(body: Record<string, unknown>, itemId: string): boolean {
+export function rewritePlaybackInfo(
+  body: Record<string, unknown>,
+  itemId: string,
+  requestQuery: Record<string, unknown> = {},
+): boolean {
   const sources = body.MediaSources;
   if (!Array.isArray(sources)) return false;
 
   let touched = false;
   for (const source of sources as EmbyMediaSource[]) {
     if (!isOurs(source)) continue;
-    // 直播流不做直连改写
-    if (source.IsInfiniteStream) continue;
+    if (source.IsInfiniteStream) continue; // 直播流不做直连改写
 
     source.SupportsDirectPlay = true;
     source.SupportsDirectStream = true;
-    rewriteDirectStreamUrl(source, itemId);
+    /**
+     * 转码必须关掉。留着的话限码率的客户端会判定超标、转而去要 TranscodingUrl，
+     * 那条路不走 302，字节全程过 Node。nginx 版本在转码均衡关闭时同样置 false。
+     */
+    source.SupportsTranscoding = false;
+    delete source.TranscodingUrl;
+
+    rewriteDirectStreamUrl(source, itemId, requestQuery);
     touched = true;
   }
   return touched;
@@ -60,52 +85,63 @@ async function handlePlaybackInfo(request: FastifyRequest, reply: FastifyReply) 
   const params = request.params as Record<string, string>;
   const itemId = params.id;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  let upstream: Awaited<ReturnType<typeof fetchUpstream>> | undefined;
   try {
-    // 自己回源拿 body 才能改写。转发头和 catch-all 用同一套，避免行为分叉。
-    const headers = applyForwardedHeaders(request, {
-      ...(request.headers as Record<string, string | string[] | undefined>),
-    });
-    delete headers["content-length"];
-    delete headers["accept-encoding"]; // 让上游别压缩，省一次解压
+    upstream = await fetchUpstream(request);
 
-    const hasBody = request.method !== "GET" && request.method !== "HEAD";
-    const upstream = await fetch(`${embyUpstream()}${request.url}`, {
-      method: request.method,
-      headers: headers as Record<string, string>,
-      body: hasBody && request.body ? JSON.stringify(request.body) : undefined,
-      signal: controller.signal,
-    });
-
-    if (!upstream.ok) {
-      request.log.warn({ itemId, status: upstream.status }, "PlaybackInfo 回源异常，透传");
-      const text = await upstream.text();
-      return reply.code(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    if (!upstream.res.ok) {
+      request.log.warn({ itemId, status: upstream.res.status }, "PlaybackInfo 回源异常，透传");
+      return relayResponse(reply, upstream.res, await upstream.res.arrayBuffer());
     }
 
-    const body = (await upstream.json()) as Record<string, unknown>;
-    const touched = rewritePlaybackInfo(body, itemId);
+    const raw = await upstream.res.text();
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      // 不是 JSON 就原样透传，别把响应吞掉
+      return relayResponse(reply, upstream.res, raw);
+    }
+
+    const touched = rewritePlaybackInfo(
+      body,
+      itemId,
+      (request.query ?? {}) as Record<string, unknown>,
+    );
     if (touched) request.log.info({ itemId }, "PlaybackInfo 已改写为直连");
 
-    return reply.type("application/json;charset=utf-8").send(JSON.stringify(body));
+    return relayResponse(reply, upstream.res, JSON.stringify(body), {
+      "content-type": "application/json;charset=utf-8",
+    });
   } catch (err) {
     request.log.error({ err, itemId }, "PlaybackInfo 改写失败，回源");
     return toEmby(request, reply);
   } finally {
-    clearTimeout(timer);
+    upstream?.done();
   }
 }
 
 export default async function playbackInfoRoutes(fastify: FastifyInstance) {
-  // PlaybackInfo 是 POST 带 JSON body，也有客户端用 GET
+  /**
+   * 这些路由不在 @fastify/http-proxy 的封装作用域里，拿不到它注册的透传解析器，
+   * Fastify 默认的 JSON 解析器会先把空 body 判成 400、把表单 content-type 判成 415，
+   * handler 根本轮不到——"失败一律回源"的保证也就失效了。
+   * 这里自己装一个原样收下的解析器。
+   */
+  const keepRaw = (_req: unknown, body: Buffer, done: (e: Error | null, b: Buffer) => void) =>
+    done(null, body);
+  fastify.addContentTypeParser("*", { parseAs: "buffer" }, keepRaw as never);
+  fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, keepRaw as never);
+
   for (const prefix of ["", "/emby"]) {
     for (const items of ["Items", "items"]) {
-      fastify.route({
-        method: ["GET", "POST"],
-        url: `${prefix}/${items}/:id/PlaybackInfo`,
-        handler: handlePlaybackInfo,
-      });
+      for (const action of ["PlaybackInfo", "playbackinfo"]) {
+        fastify.route({
+          method: ["GET", "POST"],
+          url: `${prefix}/${items}/:id/${action}`,
+          handler: handlePlaybackInfo,
+        });
+      }
     }
   }
 }

@@ -12,7 +12,7 @@
 import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
 import { listAccounts } from "../../db/repositories/accounts.js";
 import { listTasks } from "../../db/repositories/tasks.js";
-import { readAppSettings } from "../../db/repositories/settings.js";
+import { readSettingsSafe } from "../settings-safe.js";
 import { getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
 
 type Account115 = Extract<AccountInfo, { accountType: "115" }>;
@@ -89,14 +89,18 @@ export function accountNameByTask(
   rest: string,
   tasks: TaskDefinition[],
 ): string | null {
+  // 取最长（最具体）的 originPath，和 services/life/handlers.ts 的 matchTask 保持一致。
+  // 取第一个命中的话，/tv 和 /tv/anime 两个任务并存时会按任务顺序选错盘。
+  let best: { account: string; length: number } | null = null;
   for (const t of tasks) {
     if (!t.strmPrefix || trimTrailing(t.strmPrefix) !== mount) continue;
     const origin = trimTrailing(collapseSlashes(`/${t.originPath ?? ""}`));
     // originPath 为空或就是根，说明整个挂载点都是这个任务的
-    if (!origin || origin === "/") return t.account;
-    if (rest === origin || rest.startsWith(`${origin}/`)) return t.account;
+    const matched = !origin || origin === "/" || rest === origin || rest.startsWith(`${origin}/`);
+    if (!matched) continue;
+    if (!best || origin.length > best.length) best = { account: t.account, length: origin.length };
   }
-  return null;
+  return best?.account ?? null;
 }
 
 /** Alist 约定：路径里带账号名，形如 `/{账号名}/{115 路径}` */
@@ -152,13 +156,20 @@ export async function resolveEmbyPath(
   if (list.length === 0) return { ok: false, reason: "no-account" };
 
   const decoded = collapseSlashes(safeDecode(embyPath));
-  const mountPaths = readAppSettings().mediaMountPath ?? [];
+  const mountPaths = readSettingsSafe().mediaMountPath ?? [];
   const stripped = stripMountPath(decoded, mountPaths);
   if (!stripped) return { ok: false, reason: "not-mounted" };
 
   const byTaskName = accountNameByTask(stripped.mount, stripped.rest, listTasks());
-  const taskAccount = byTaskName ? list.find((a) => a.name === byTaskName) : undefined;
-  if (taskAccount) {
+  if (byTaskName) {
+    const taskAccount = list.find((a) => a.name === byTaskName);
+    /**
+     * 认出了归属任务，就只认它的账号。
+     * 找不到（账号被改名/删了，或本来就不是 115 账号）时必须报错，
+     * 绝不能落到"第一个 115 账号"——各盘目录结构往往是镜像的，
+     * 那样会 302 到另一部同名影片，而且一声不吭。
+     */
+    if (!taskAccount) return { ok: false, reason: "no-account" };
     return toDirectUrl(taskAccount, stripped.rest, userAgent);
   }
 

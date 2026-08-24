@@ -6,7 +6,7 @@
  *
  * 配置读取沿用 services/media-server.ts 的范式：每次现读，改了地址不用重启。
  */
-import { readAppSettings } from "../../db/repositories/settings.js";
+import { readSettingsSafe } from "../settings-safe.js";
 
 export type EmbyMediaSource = {
   Id?: string;
@@ -31,12 +31,12 @@ const LOOKUP_TIMEOUT_MS = 10_000;
 
 /** Emby 上游地址。默认值和 catch-all 保持一致（docker 网关上的 Emby） */
 export function embyUpstream(): string {
-  const url = readAppSettings().emby?.url || "http://172.17.0.1:8096";
+  const url = readSettingsSafe().emby?.url || "http://172.17.0.1:8096";
   return url.replace(/\/+$/, "");
 }
 
 export function configuredApiKey(): string {
-  return readAppSettings().emby?.apiKey || "";
+  return readSettingsSafe().emby?.apiKey || "";
 }
 
 /**
