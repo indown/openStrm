@@ -7,7 +7,6 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   # 两个架构各用原生 runner 分别构建，再合并成多架构 manifest——
@@ -41,13 +40,22 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      # 镜像名必须全小写，而 github.repository 可能带大写（本仓库就是 openStrm）。
+      # metadata-action 会自己转小写，但 push-by-digest 和 imagetools 用的是原始值。
+      - name: Resolve image name
+        id: image
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          echo "name=${REGISTRY}/$(echo "$REPO" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}
 
@@ -87,11 +95,20 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      # 镜像名必须全小写，而 github.repository 可能带大写（本仓库就是 openStrm）。
+      # metadata-action 会自己转小写，但 push-by-digest 和 imagetools 用的是原始值。
+      - name: Resolve image name
+        id: image
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          echo "name=${REGISTRY}/$(echo "$REPO" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=semver,pattern=v{{version}}
             type=raw,value=latest
@@ -101,12 +118,12 @@ jobs:
         run: |
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< '${{ steps.meta.outputs.json }}') \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+            $(printf '${{ steps.image.outputs.name }}@sha256:%s ' *)
 
       - name: Verify manifest
         run: |
           docker buildx imagetools inspect \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+            ${{ steps.image.outputs.name }}:${{ steps.meta.outputs.version }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
