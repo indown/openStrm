@@ -77,7 +77,7 @@ async function fetchJson(url: string, timeoutMs = LOOKUP_TIMEOUT_MS): Promise<un
  * 查同步任务项对应的文件路径（客户端"下载到设备"走的 SyncService 接口）。
  *
  * 这条不能用 /Items?Ids= 查：JobItem 的 id 是同步任务项的 id，不是条目 id，
- * 真正的路径在 OutputPath 上。nginx 版本同样是单独取 /Sync/JobItems 再自己找。
+ * 真正的路径在 OutputPath 上。
  */
 export async function getSyncJobItemPath(
   jobItemId: string,

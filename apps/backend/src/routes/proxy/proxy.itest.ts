@@ -41,8 +41,8 @@ const PAN_FILE = `${MOUNT}/tv/Show/ep1.mkv`;
 const LOCAL_FILE = "/media/local/movie.mkv";
 /**
  * 真实形态的 115 直链：文件名已经是转义过的，签名里带 `+` 和 `=`。
- * 这条链接必须**原样**出现在 Location 里——nginx 版本就是原样透传的。
- * 一旦对它再做一次 encodeURI，`%` 会变成 `%25`，CDN 直接 403。
+ * 必须**原样**出现在 Location 里：再做一次 encodeURI 的话
+ * `%` 会变成 `%25`，CDN 直接 403。
  */
 const DIRECT_URL =
   "https://cdn-qn.115.com/lab/%E4%B8%AD%E6%96%87%E5%90%8D.mkv?t=1&u=a%2Bb&sign=xY%3D%3D";
@@ -306,7 +306,7 @@ try {
     sniffer.close();
   });
 
-  console.log("回归：A/B 对照发现的问题");
+  console.log("回源与改写的边界情况");
 
   await t("非 ASCII 直链才转义，且只转非 ASCII 部分", async () => {
     reset();
@@ -323,7 +323,7 @@ try {
   });
 
   await t("PlaybackInfo 接受空 body 和表单 content-type", async () => {
-    // nginx 版本对这些一律透传；默认 JSON 解析器会先判 400/415，handler 根本轮不到
+    // 默认 JSON 解析器会先判 400/415，handler 根本轮不到
     for (const ct of ["application/json", "application/x-www-form-urlencoded", "text/plain"]) {
       const res = await app.inject({
         method: "POST",

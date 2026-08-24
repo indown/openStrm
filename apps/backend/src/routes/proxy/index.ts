@@ -6,9 +6,7 @@ import systemInfoRoutes from "./system-info.js";
 import catchAllProxy from "./catch-all.js";
 
 /**
- * Emby 代理层，替代原来的 nginx/njs emby2Alist。
- *
- * 职责就两件：
+ * Emby 代理层。职责就两件：
  * - 播放请求换成 115 直链后 302 给客户端，媒体字节不经过本进程
  * - 其余请求原样回源 Emby
  *

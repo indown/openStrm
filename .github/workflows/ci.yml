@@ -1,7 +1,5 @@
 name: CI
 
-# v2 重构期间踩过的坑（302 层从未接线、entrypoint 丢了 token 注入、
-# 镜像从未构建成功）任何一条都能被下面这两个 job 拦住，所以分支推送就跑。
 on:
   push:
     branches: [main, v2]
@@ -51,8 +49,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      # 只构不推，只 amd64：这里要的是"能不能构建出来"，
-      # 多架构留给 release。构建产物本身用下一步实跑验证。
+      # 只构不推、只 amd64；多架构留给 release
       - name: Build image
         uses: docker/build-push-action@v6
         with:
@@ -64,13 +61,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 之前的镜像"能构建但跑不起来"——后端依赖是断链、前端入口路径不对，
-      # 只构建是发现不了的，必须真起一次。
-      # 之前的镜像"能构建但跑不起来"——后端依赖是断链、前端入口路径不对，
-      # 只构建是发现不了的，必须真起一次。
-      #
-      # 判据是"服务在不在应答"，不是"进程名对不对"：Next.js 会设置
-      # process.title，Linux 上这会覆写 argv，按路径 pgrep 是找不到的。
+      # 构建成功不代表能跑，必须真起一次。
+      # 判据是服务在不在应答，不是进程名：Next.js 会设置 process.title，
+      # Linux 上这会覆写 argv，按路径 pgrep 找不到。
       - name: Smoke test
         run: |
           set -u
@@ -109,7 +102,7 @@ jobs:
           docker exec smoke sh -c 'ls /app/backend/dist/db/migrations/*.sql >/dev/null' \
             || { echo "::error::镜像里没有迁移文件"; exit 1; }
 
-          # 启动日志里不该有模块解析失败——之前正是这样静默坏掉的
+          # 启动日志里不该有模块解析失败
           if docker logs smoke 2>&1 | grep -q "Cannot find package\|Cannot find module"; then
             echo "::error::启动日志出现模块解析失败"
             exit 1

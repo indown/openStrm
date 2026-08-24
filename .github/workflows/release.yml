@@ -10,11 +10,10 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # 两个架构各用原生 runner 分别构建，再合并成一个多架构 manifest。
-  # 原来是单 job 用 QEMU 模拟 arm64，next build 在模拟下慢得多。
+  # 两个架构各用原生 runner 分别构建，再合并成多架构 manifest——
+  # QEMU 模拟下 next build 慢得多。
   #
-  # 各自按 digest 推送、把 digest 存成 artifact，由 merge 作业统一打标签。
-  # 不用 job outputs 传 digest：矩阵作业的 outputs 会互相覆盖，拿不到两个值。
+  # digest 走 artifact 传给 merge 作业：矩阵作业的 outputs 会互相覆盖。
   build:
     name: Build ${{ matrix.suffix }}
     runs-on: ${{ matrix.runner }}

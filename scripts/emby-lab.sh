@@ -6,9 +6,8 @@
 #   ./scripts/emby-lab.sh main    额外起 main 分支的 nginx/njs 栈，用于 A/B 对照
 #   ./scripts/emby-lab.sh down    全部清理
 #
-# 为什么需要它：代理层踩过的坑几乎都跟真 Emby 的响应形状有关
-# （MediaSource.Id 的 mediasource_ 前缀、strm 条目的 Container、
-# PlaybackInfo 默认给 TranscodingUrl），假 Emby 验不出来。
+# 真 Emby 的响应形状（MediaSource.Id 的 mediasource_ 前缀、strm 条目的
+# Container、PlaybackInfo 默认给 TranscodingUrl）假 Emby 验不出来。
 set -euo pipefail
 
 LAB="${LAB_DIR:-/tmp/openstrm-emby-lab}"

@@ -2,8 +2,7 @@
  * 302 直链重定向——整个代理层存在的理由。
  *
  * 命中的请求不再由 Node 转发媒体字节，而是回一个 115 直链让客户端自己去取。
- * 任何一步出问题都回源 Emby（对应 nginx 时代的 fallbackUseOriginal），
- * 宁可走中转也不能让播放直接失败。
+ * 任何一步出问题都回源 Emby：宁可走中转，也不能让播放直接失败。
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { LRUCache } from "lru-cache";
@@ -18,7 +17,6 @@ import { toEmby } from "./upstream.js";
  *
  * 没有它的话，客户端每拖一次进度条都要重新走「查 Emby → 查 115 目录 → 换直链」，
  * 起播和 seek 都会明显卡顿。115 的直链和 UA 绑定，所以 UA 必须进 key。
- * 15 分钟对齐 nginx 时代 routeL1Dict 的 timeout。
  */
 const linkCache = new LRUCache<string, string>({ max: 2000, ttl: 15 * 60 * 1000 });
 
@@ -68,8 +66,8 @@ function actionOf(rest: string): string {
  *
  * 但**不能**用 encodeURI 兜底：它会把 `%` 转成 `%25`。115 返回的直链本来就是
  * 转义过的（中文文件名、签名里的 `+` 和 `=`），再过一遍 encodeURI 就成了
- * `%25E4%25B8%25AD`，CDN 直接 403。nginx 版本是原样透传的，这里保持一致：
- * 纯 ASCII 原样返回，只有混进非 ASCII 时才逐字符转义。
+ * `%25E4%25B8%25AD`，CDN 直接 403。
+ * 所以纯 ASCII 原样返回，只有混进非 ASCII 时才逐字符转义。
  */
 function safeLocation(url: string): string {
   // eslint-disable-next-line no-control-regex
@@ -161,7 +159,7 @@ async function handleRedirect(request: FastifyRequest, reply: FastifyReply) {
 
 /**
  * 客户端"下载到设备"（SyncService）走的路径。
- * nginx 版本同样 302，不做的话整个离线下载的字节都从 Node 过。
+ * 不 302 的话，整个离线下载的字节都从 Node 过。
  */
 async function handleSyncDownload(request: FastifyRequest, reply: FastifyReply) {
   const params = request.params as Record<string, string>;
