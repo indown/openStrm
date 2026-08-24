@@ -23,10 +23,8 @@ setTaskStarter(async (taskId) => { started.push(taskId); return { ok: true, body
 const baseline = readAppSettings();
 
 /**
- * 自己造一条任务再跑。
- * 原来是 `listTasks()[0]?.id ?? "task-1"`，空库时退回一个并不存在的 id，
- * 而 handler 找不到任务只会回 "Task not found"，用例必挂——
- * 等于这个测试只能在"库里恰好有任务"的机器上通过，CI 里跑不了。
+ * 自己造一条任务再跑：handler 找不到任务只会回 "Task not found"，
+ * 空库时用例必挂。
  */
 const existing = listTasks();
 if (existing.length === 0) {

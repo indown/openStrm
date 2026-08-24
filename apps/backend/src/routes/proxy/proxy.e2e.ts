@@ -1,10 +1,9 @@
 /**
  * 代理层的真机验收：跑在**真的 Emby** 前面，而不是桩。
  *
- * 离线的 proxy.itest.ts 用假 Emby，覆盖不到真实响应的形状——
- * 比如 Emby 4.9 的 MediaSource.Id 长 `mediasource_11` 这样、
- * strm 条目的 Container 是 `strm` 而不是视频容器、PlaybackInfo 默认给 TranscodingUrl。
- * 这些都是实际踩到过的坑，只有真 Emby 能验。
+ * 离线的 proxy.itest.ts 用假 Emby，覆盖不到真实响应的形状：
+ * Emby 4.9 的 MediaSource.Id 长 `mediasource_11` 这样、strm 条目的
+ * Container 是 `strm` 而不是视频容器、PlaybackInfo 默认给 TranscodingUrl。
  *
  * 可选地和 main 分支的 nginx/njs 栈做逐项对照，确认 Node 取代 nginx 之后功能没退化。
  *

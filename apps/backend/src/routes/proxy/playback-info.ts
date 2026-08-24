@@ -4,9 +4,6 @@
  * Emby 认为 strm 指向的是"远端"资源，默认把 SupportsDirectPlay/DirectStream 判成 false
  * 并给出 TranscodingUrl，客户端于是去要转码流——转码流不走 302，全部字节又回到 Node 身上。
  * 所以命中挂载点的媒体源要标成可直连、关掉转码，并把 DirectStreamUrl 指回本代理。
- *
- * 行为对齐 nginx 版本的 modifyDirectPlayInfo / modifyDirectStreamUrl
- * （见 git show main:emby2Alist/nginx/conf.d/emby.js）。
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { EmbyMediaSource } from "../../services/emby/api.js";
@@ -28,7 +25,7 @@ function isOurs(source: EmbyMediaSource): boolean {
  * 路径里必须用**条目 id**，不能用 MediaSource.Id——Emby 4.9 的 MediaSource.Id 长
  * `mediasource_11` 这样，而 Emby 自己给的 DirectStreamUrl 是 `/videos/11/stream`。
  * 查询串沿用上游的，但要去掉 TranscodeReasons 并补上 Static=true，
- * 否则客户端会以为这是个转码流。nginx 版本就是这么拼的。
+ * 否则客户端会以为这是个转码流。
  */
 function rewriteDirectStreamUrl(
   source: EmbyMediaSource,
@@ -70,7 +67,7 @@ export function rewritePlaybackInfo(
     source.SupportsDirectStream = true;
     /**
      * 转码必须关掉。留着的话限码率的客户端会判定超标、转而去要 TranscodingUrl，
-     * 那条路不走 302，字节全程过 Node。nginx 版本在转码均衡关闭时同样置 false。
+     * 那条路不走 302，字节全程过 Node。
      */
     source.SupportsTranscoding = false;
     delete source.TranscodingUrl;

@@ -16,15 +16,8 @@ function firstForwarded(value: string | string[] | undefined): string | undefine
 }
 
 /**
- * 补齐转发头。
- *
- * nginx 时代由 includes/proxy-header.conf 设置 Host / X-Real-IP / X-Forwarded-For，
- * reply-from 一个都不发，而且会把 Host 强制改成上游的 host。不修的话 Emby 会把
- * 所有客户端都记成容器 IP，外部地址也会拼错。
- */
-/**
  * 逐跳头。undici 见到这些会直接抛异常（"invalid keep-alive header" 等），
- * 拦截路由和 catch-all 都会因此 500——nginx 那边是正常处理的，属于回归。
+ * 不剥的话拦截路由和 catch-all 都会 500。
  * RFC 7230 6.1 本来就要求代理不转发这些。
  */
 const HOP_BY_HOP = new Set([
@@ -55,6 +48,12 @@ export function stripHopByHop(headers: Headers): Headers {
   return headers;
 }
 
+/**
+ * 补齐转发头。
+ *
+ * reply-from 不发 X-Forwarded-For，而且会把 Host 强制改成上游的。
+ * 不补的话 Emby 会把所有客户端都记成容器 IP，外部地址也会拼错。
+ */
 export function applyForwardedHeaders(request: FastifyRequest, headers: Headers): Headers {
   const incoming = request.headers;
   const priorChain = incoming["x-forwarded-for"];
@@ -62,8 +61,8 @@ export function applyForwardedHeaders(request: FastifyRequest, headers: Headers)
 
   headers["x-forwarded-for"] = prior ? `${prior}, ${request.ip}` : request.ip;
   /**
-   * X-Real-IP 取真实对端，不取客户端自报的转发链——nginx 用的是 $remote_addr。
-   * 取链条第一跳的话，任何人直接发一个 X-Forwarded-For 就能让 Emby 记录、
+   * X-Real-IP 取真实对端，不能取客户端自报的转发链：
+   * 取链条第一跳的话，任何人发一个 X-Forwarded-For 就能让 Emby 的记录、
    * 封禁、地域判断全部认错人。
    */
   headers["x-real-ip"] = request.ip;

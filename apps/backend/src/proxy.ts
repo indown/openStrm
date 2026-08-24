@@ -2,7 +2,6 @@
  * Emby 代理进程入口。
  *
  * 独立于 API 进程运行：管理端崩了、strm 生成任务把事件循环占满，都不该影响播放。
- * nginx 时代这层本来就是独立进程，V2 把它塞进 API 进程是个退步，这里改回来。
  *
  * 只读 DB，迁移由 API 进程负责。
  */
@@ -22,7 +21,7 @@ const app = Fastify({
    * 直接对外暴露时没有慢速请求防护。这里把 Node 的默认值补回来。
    *
    * 不设 connectionTimeout：它是 socket 空闲超时，对升级后的 websocket 同样生效，
-   * Emby 的长连会被掐断（nginx 那边对应的是 proxy_read_timeout 1h）。
+   * Emby 的长连会被掐断。
    */
   requestTimeout: 300_000,
 });

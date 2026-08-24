@@ -4,8 +4,7 @@ import { embyUpstream } from "../../services/emby/api.js";
 import { applyForwardedHeaders } from "./upstream.js";
 
 /**
- * 兜底反代到 Emby，替代 nginx 的默认 proxy_pass。
- * 必须最后注册，让拦截路由优先。
+ * 兜底反代到 Emby。必须最后注册，让拦截路由优先。
  */
 export default async function catchAllProxy(fastify: FastifyInstance) {
   await fastify.register(httpProxy, {
