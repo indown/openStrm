@@ -81,7 +81,7 @@ docker run -d \
   -p 8091:8091 \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/config:/app/config \
-  -v $(pwd)/emby2Alist/nginx/log:/var/log/nginx \
+  -v $(pwd)/logs:/app/logs \
   indown/openstrm:latest
 ```
 
@@ -92,7 +92,7 @@ docker run -d \
 **目录挂载说明**：
 - `./data`: 存储应用数据
 - `./config`: 存储配置文件
-- `./emby2Alist/nginx/log`: Nginx 日志目录
+- `./logs`: 应用日志目录
 
 ### 生产环境部署
 

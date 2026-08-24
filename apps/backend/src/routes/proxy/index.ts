@@ -1,37 +1,27 @@
 import type { FastifyInstance } from "fastify";
 import replyFrom from "@fastify/reply-from";
-import { configPlugin } from "../../plugins/config.js";
+import redirectRoutes from "./redirect.js";
+import playbackInfoRoutes from "./playback-info.js";
+import systemInfoRoutes from "./system-info.js";
 import catchAllProxy from "./catch-all.js";
 
 /**
- * Emby proxy plugin - replaces the entire nginx/njs emby2Alist layer.
+ * Emby 代理层，替代原来的 nginx/njs emby2Alist。
  *
- * The njs source files have been copied to services/proxy/ with:
- * - Import paths fixed to the new structure
- * - ngx.* calls shimmed via ngx-shim.js (LRUCache + native fetch)
+ * 职责就两件：
+ * - 播放请求换成 115 直链后 302 给客户端，媒体字节不经过本进程
+ * - 其余请求原样回源 Emby
  *
- * Route registration order matters: specific routes BEFORE catch-all.
+ * 所有拦截逻辑失败时都回源，绝不让播放因为代理出错而直接失败。
  */
 export default async function proxyPlugin(fastify: FastifyInstance) {
-  // Register config plugin so we can read settings
-  await fastify.register(configPlugin);
+  // 不设 base：设了之后 undici 会把 origin 固定成注册时的地址，
+  // 每请求的 getUpstream 就白给了。地址一律由 upstream.ts 现读。
+  await fastify.register(replyFrom);
 
-  const settings = fastify.readSettings();
-  const embyUrl = settings.emby?.url || "http://172.17.0.1:8096";
-
-  // Register reply-from for programmatic proxying (used by intercepting routes)
-  await fastify.register(replyFrom, {
-    base: embyUrl,
-  });
-
-  // TODO: Register intercepting routes here as they are ported:
-  // - /emby/videos/:id/stream → redirect.ts (redirect2Pan)
-  // - /emby/Items/:id/PlaybackInfo → playback-info.ts
-  // - /emby/Users/:uid/Items → items-filter.ts
-  // - /emby/system/info → system-info.ts
-  // - /emby/videos/:id/live, /master → live.ts
-  // - etc.
-
-  // Catch-all proxy (MUST be last)
+  // 注册顺序：具体路由在前，catch-all 最后
+  await fastify.register(redirectRoutes);
+  await fastify.register(playbackInfoRoutes);
+  await fastify.register(systemInfoRoutes);
   await fastify.register(catchAllProxy);
 }

@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:proxy": "tsx watch src/proxy.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:proxy": "node dist/proxy.js",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio",
-    "test": "tsx src/services/life/life.test.ts && tsx src/services/life/handlers.itest.ts && tsx src/services/media-server.itest.ts && tsx src/services/telegram-polling.itest.ts"
+    "test": "tsx src/services/life/life.test.ts && tsx src/services/resolve/direct-link.test.ts && tsx src/services/life/handlers.itest.ts && tsx src/services/media-server.itest.ts && tsx src/services/telegram-polling.itest.ts && tsx src/routes/proxy/proxy.itest.ts"
   },
   "dependencies": {
     "@fastify/autoload": "^6.3.1",

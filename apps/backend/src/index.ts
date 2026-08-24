@@ -138,27 +138,14 @@ await app.register(telegramSendRoute);
 await app.register(telegramUsersRoute);
 await app.register(telegramPollingRoute);
 
-// Emby proxy server (separate port, replaces nginx/njs emby2Alist)
-import proxyPlugin from "./routes/proxy/index.js";
-
-const proxyApp = Fastify({
-  logger: { level: process.env.LOG_LEVEL || "info" },
-  forceCloseConnections: true,
-});
-await proxyApp.register(proxyPlugin);
-
-// Start both servers
+// Emby 代理跑在独立进程里（src/proxy.ts）：
+// 管理端崩溃或 strm 任务占满事件循环时，播放不受影响。
 const API_PORT = Number(process.env.BACKEND_PORT) || 4000;
-const PROXY_PORT = Number(process.env.PROXY_PORT) || 8091;
 const HOST = process.env.BACKEND_HOST || "0.0.0.0";
 
 try {
-  await Promise.all([
-    app.listen({ port: API_PORT, host: HOST }),
-    proxyApp.listen({ port: PROXY_PORT, host: HOST }),
-  ]);
+  await app.listen({ port: API_PORT, host: HOST });
   app.log.info(`API server running on http://${HOST}:${API_PORT}`);
-  app.log.info(`Emby proxy running on http://${HOST}:${PROXY_PORT}`);
   try { startScrapeWorker(); } catch (err) { app.log.error({ err }, "scrape-worker start failed"); }
 
   // Telegram 按钮启动任务：走 inject + 现签 JWT，和 cron 同一套路
@@ -203,7 +190,7 @@ async function shutdown() {
   try { flushEmbyRefresh(); } catch { /* ignore */ }
 
   const timeout = new Promise<void>((resolve) => setTimeout(resolve, 1500));
-  const closeAll = Promise.allSettled([app.close(), proxyApp.close()]).then(() => {});
+  const closeAll = app.close();
 
   await Promise.race([closeAll, timeout]);
 
@@ -215,5 +202,4 @@ async function shutdown() {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
-export { proxyApp };
 export default app;
