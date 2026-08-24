@@ -74,6 +74,30 @@ async function fetchJson(url: string, timeoutMs = LOOKUP_TIMEOUT_MS): Promise<un
 }
 
 /**
+ * 查同步任务项对应的文件路径（客户端"下载到设备"走的 SyncService 接口）。
+ *
+ * 这条不能用 /Items?Ids= 查：JobItem 的 id 是同步任务项的 id，不是条目 id，
+ * 真正的路径在 OutputPath 上。nginx 版本同样是单独取 /Sync/JobItems 再自己找。
+ */
+export async function getSyncJobItemPath(
+  jobItemId: string,
+  opts: { apiKey?: string } = {},
+): Promise<EmbyItemLookup | null> {
+  const apiKey = opts.apiKey || configuredApiKey();
+  const url = `${embyUpstream()}/Sync/JobItems?api_key=${encodeURIComponent(apiKey)}`;
+
+  const body = (await fetchJson(url)) as { Items?: Array<Record<string, unknown>> } | null;
+  const item = body?.Items?.find((o) => String(o.Id) === String(jobItemId));
+  if (!item) return null;
+
+  return {
+    path: typeof item.OutputPath === "string" ? item.OutputPath : "",
+    itemName: typeof item.ItemName === "string" ? item.ItemName : "",
+    mediaSource: null,
+  };
+}
+
+/**
  * 查条目的媒体源路径。
  *
  * 带了 mediaSourceId 就按它查（多版本影片时 itemId 指向的是主条目，

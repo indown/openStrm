@@ -14,6 +14,17 @@ import { readAppSettings, writeAppSettings } from "../../db/repositories/setting
 import proxyPlugin from "./index.js";
 import { clearLinkCache, setLinkResolver } from "./redirect.js";
 import { swapPorts, swapUrlPort } from "./system-info.js";
+import { resetConfigRevisionMemo } from "../../services/config-revision.js";
+
+/**
+ * 这些用例会写 settings 表。没指定 CONFIG_DIR 就会写到开发者真实的库上，
+ * 把 Emby 地址改成一个测试用的死端口——直接拒绝跑。
+ */
+if (!process.env.CONFIG_DIR) {
+  console.error("拒绝在默认 CONFIG_DIR 上运行：请显式指定 CONFIG_DIR / DATA_DIR 到临时目录");
+  process.exit(2);
+}
+
 
 // 指向临时 CONFIG_DIR 时库还是空的，自己把迁移跑起来
 await initDb();
@@ -42,6 +53,11 @@ const UNICODE_URL = "https://cdn.115.com/直链?t=1";
 const emby = http.createServer((req, res) => {
   const url = req.url ?? "";
 
+  if (url.includes("/Sync/JobItems")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ Items: [{ Id: "job-1", ItemName: "Show", OutputPath: PAN_FILE }] }));
+    return;
+  }
   if (url.includes("/Items?Ids=")) {
     const id = new URL(url, "http://x").searchParams.get("Ids");
     // item-local 指向本地文件，其余都指向挂载点里的 strm
@@ -359,6 +375,30 @@ try {
     assert.equal(swapUrlPort("http://192.168.0.80:80", 80, 8091), "http://192.168.0.80:8091");
     assert.equal(swapUrlPort("https://host:8920", 8096, 8091), "https://host:8920", "端口不匹配就别动");
     assert.equal(swapUrlPort("not-a-url", 8096, 8091), "not-a-url");
+  });
+
+  await t("Sync/JobItems 下载走 302（main 默认也 302）", async () => {
+    reset();
+    const res = await app.inject({ method: "GET", url: "/emby/Sync/JobItems/job-1/File?api_key=k" });
+    assert.equal(res.statusCode, 302, "离线下载不 302 的话整个文件都从 Node 过");
+    assert.equal(res.headers.location, DIRECT_URL);
+  });
+
+  await t("改配置后旧缓存自动失效（跨进程）", async () => {
+    reset();
+    const a = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv", headers: { "user-agent": "UA-1" } });
+    assert.equal(a.statusCode, 302);
+    assert.equal(resolveCalls, 1);
+
+    // 改一次配置：updated_at 变了，configRevision 跟着变，key 就对不上了
+    const now = readAppSettings();
+    writeAppSettings({ ...now, mediaMountPath: [MOUNT, "/mnt/another"] });
+    resetConfigRevisionMemo();
+
+    await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv", headers: { "user-agent": "UA-1" } });
+    assert.equal(resolveCalls, 2, "配置变了还命中旧缓存，说明失效没生效");
+    writeAppSettings(now);
+    resetConfigRevisionMemo();
   });
 
   console.log(`\n${pass} passed`);
