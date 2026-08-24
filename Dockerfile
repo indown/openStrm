@@ -1,8 +1,9 @@
 # ========== Stage 1: Install dependencies ==========
 FROM node:22-alpine AS deps
 RUN corepack enable pnpm
-# better-sqlite3 是原生模块，alpine 用 musl，官方预编译产物对不上，要从源码编译。
-# 只装在构建阶段，最终镜像不带这些。
+# better-sqlite3 是原生模块。musl 的 amd64/arm64 都有官方预编译产物，
+# 正常情况下 prebuild-install 直接拉下来用；留着工具链只是为了拉不到时
+# 能退回 node-gyp 源码编译而不是硬失败。只在构建阶段，最终镜像不带。
 RUN apk add --no-cache python3 make g++
 WORKDIR /app
 # tsconfig.base.json 必须一起进来：各包的 tsconfig 都 extends 它，缺了 tsc 直接报 TS5083
