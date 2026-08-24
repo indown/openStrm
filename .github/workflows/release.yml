@@ -16,7 +16,7 @@ jobs:
   # 各自按 digest 推送、把 digest 存成 artifact，由 merge 作业统一打标签。
   # 不用 job outputs 传 digest：矩阵作业的 outputs 会互相覆盖，拿不到两个值。
   build:
-    name: 构建 ${{ matrix.suffix }}
+    name: Build ${{ matrix.suffix }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -42,7 +42,7 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: 构建并按 digest 推送
+      - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -52,7 +52,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}
 
-      - name: 存下 digest
+      - name: Export digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
@@ -67,7 +67,7 @@ jobs:
           retention-days: 1
 
   merge:
-    name: 合并 manifest 并发布
+    name: Merge manifest and release
     runs-on: ubuntu-latest
     needs: build
     permissions:
@@ -88,7 +88,7 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: 提取元数据
+      - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -97,19 +97,19 @@ jobs:
             type=semver,pattern=v{{version}}
             type=raw,value=latest
 
-      - name: 合并多架构 manifest
+      - name: Create multi-arch manifest
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< '${{ steps.meta.outputs.json }}') \
             $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
-      - name: 校验 manifest
+      - name: Verify manifest
         run: |
           docker buildx imagetools inspect \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
 
-      - name: 创建 GitHub Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}

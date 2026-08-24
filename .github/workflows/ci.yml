@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   check:
-    name: 类型检查与测试
+    name: Typecheck and tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,14 +29,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # shared 是 workspace 依赖，后端的 tsc 要先有它的 d.ts
-      - name: 构建 shared
+      - name: Build shared package
         run: pnpm build:shared
 
       - run: pnpm typecheck
 
       # 用例会写 settings 表，必须指到临时目录——
       # 不给 CONFIG_DIR 的话代理那两个 suite 会直接拒绝运行
-      - name: 单元与集成测试
+      - name: Unit and integration tests
         working-directory: apps/backend
         env:
           CONFIG_DIR: ${{ runner.temp }}/openstrm-config
@@ -44,7 +44,7 @@ jobs:
         run: pnpm test
 
   docker:
-    name: 镜像构建
+    name: Docker image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
 
       # 只构不推，只 amd64：这里要的是"能不能构建出来"，
       # 多架构留给 release。构建产物本身用下一步实跑验证。
-      - name: 构建镜像
+      - name: Build image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -66,31 +66,56 @@ jobs:
 
       # 之前的镜像"能构建但跑不起来"——后端依赖是断链、前端入口路径不对，
       # 只构建是发现不了的，必须真起一次。
-      - name: 冒烟测试
+      # 之前的镜像"能构建但跑不起来"——后端依赖是断链、前端入口路径不对，
+      # 只构建是发现不了的，必须真起一次。
+      #
+      # 判据是"服务在不在应答"，不是"进程名对不对"：Next.js 会设置
+      # process.title，Linux 上这会覆写 argv，按路径 pgrep 是找不到的。
+      - name: Smoke test
         run: |
-          docker run -d --name smoke -p 3000:3000 -p 8091:8091 openstrm:ci
+          set -u
+          docker run -d --name smoke \
+            -p 3000:3000 -p 4000:4000 -p 8091:8091 openstrm:ci
+
+          # 端口有响应即算存活。curl 连不上时自己就会打印 000，
+          # 这里的 || true 只用来吞掉它的非零退出码（run 默认带 -e），
+          # 不能再 echo 一个 000——那样输出会变成 000000，判据就永远为真了。
+          probe() {
+            curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null || true
+          }
+
           for i in $(seq 1 30); do
-            if curl -sf -o /dev/null http://127.0.0.1:3000/; then ok=1; break; fi
+            [ "$(probe http://127.0.0.1:3000/)" = "200" ] && { ready=1; break; }
             sleep 2
           done
+
           echo "--- 容器日志 ---"
           docker logs smoke 2>&1 | tail -30
-          if [ "${ok:-0}" != "1" ]; then
-            echo "::error::前端未在 60 秒内就绪"
-            exit 1
-          fi
-          # 三个进程都得在：backend / proxy / frontend
-          for proc in /app/backend/dist/index.js \
-                      /app/backend/dist/proxy.js \
-                      /app/frontend/apps/frontend/server.js; do
-            docker exec smoke pgrep -f "$proc" >/dev/null \
-              || { echo "::error::进程缺失 $proc"; exit 1; }
+
+          [ "${ready:-0}" = "1" ] || { echo "::error::前端未在 60 秒内就绪"; exit 1; }
+          echo "  前端 :3000 -> 200"
+
+          # API 和代理只要求"在监听"：没配 Emby 时代理回源失败是正常的，
+          # 返回 500 也说明进程活着，只有 000 才是没起来
+          for svc in "API :4000 http://127.0.0.1:4000/" \
+                     "代理 :8091 http://127.0.0.1:8091/System/Info/Public"; do
+            set -- $svc
+            code=$(probe "$3")
+            [ "$code" != "000" ] || { echo "::error::$1 $2 无响应"; exit 1; }
+            echo "  $1 $2 -> $code"
           done
+
           # 迁移文件必须进了镜像，否则容器起来面对的是空库
           docker exec smoke sh -c 'ls /app/backend/dist/db/migrations/*.sql >/dev/null' \
             || { echo "::error::镜像里没有迁移文件"; exit 1; }
+
+          # 启动日志里不该有模块解析失败——之前正是这样静默坏掉的
+          if docker logs smoke 2>&1 | grep -q "Cannot find package\|Cannot find module"; then
+            echo "::error::启动日志出现模块解析失败"
+            exit 1
+          fi
           echo "冒烟测试通过"
 
-      - name: 清理
+      - name: Clean up
         if: always()
         run: docker rm -f smoke || true
