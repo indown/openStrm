@@ -1,0 +1,96 @@
+name: CI
+
+# v2 重构期间踩过的坑（302 层从未接线、entrypoint 丢了 token 注入、
+# 镜像从未构建成功）任何一条都能被下面这两个 job 拦住，所以分支推送就跑。
+on:
+  push:
+    branches: [main, v2]
+  pull_request:
+    branches: [main, v2]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 类型检查与测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # shared 是 workspace 依赖，后端的 tsc 要先有它的 d.ts
+      - name: 构建 shared
+        run: pnpm build:shared
+
+      - run: pnpm typecheck
+
+      # 用例会写 settings 表，必须指到临时目录——
+      # 不给 CONFIG_DIR 的话代理那两个 suite 会直接拒绝运行
+      - name: 单元与集成测试
+        working-directory: apps/backend
+        env:
+          CONFIG_DIR: ${{ runner.temp }}/openstrm-config
+          DATA_DIR: ${{ runner.temp }}/openstrm-data
+        run: pnpm test
+
+  docker:
+    name: 镜像构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # 只构不推，只 amd64：这里要的是"能不能构建出来"，
+      # 多架构留给 release。构建产物本身用下一步实跑验证。
+      - name: 构建镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: openstrm:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 之前的镜像"能构建但跑不起来"——后端依赖是断链、前端入口路径不对，
+      # 只构建是发现不了的，必须真起一次。
+      - name: 冒烟测试
+        run: |
+          docker run -d --name smoke -p 3000:3000 -p 8091:8091 openstrm:ci
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:3000/; then ok=1; break; fi
+            sleep 2
+          done
+          echo "--- 容器日志 ---"
+          docker logs smoke 2>&1 | tail -30
+          if [ "${ok:-0}" != "1" ]; then
+            echo "::error::前端未在 60 秒内就绪"
+            exit 1
+          fi
+          # 三个进程都得在：backend / proxy / frontend
+          for proc in /app/backend/dist/index.js \
+                      /app/backend/dist/proxy.js \
+                      /app/frontend/apps/frontend/server.js; do
+            docker exec smoke pgrep -f "$proc" >/dev/null \
+              || { echo "::error::进程缺失 $proc"; exit 1; }
+          done
+          # 迁移文件必须进了镜像，否则容器起来面对的是空库
+          docker exec smoke sh -c 'ls /app/backend/dist/db/migrations/*.sql >/dev/null' \
+            || { echo "::error::镜像里没有迁移文件"; exit 1; }
+          echo "冒烟测试通过"
+
+      - name: 清理
+        if: always()
+        run: docker rm -f smoke || true

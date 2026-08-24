@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { setTaskStarter, __test_handleCallbackQuery } from "./telegram-polling.js";
 import { readAppSettings, writeAppSettings } from "../db/repositories/settings.js";
-import { listTasks } from "../db/repositories/tasks.js";
+import { listTasks, writeTasks } from "../db/repositories/tasks.js";
 
 const sent: string[] = [];
 const bot = {
@@ -21,7 +21,25 @@ let started: string[] = [];
 setTaskStarter(async (taskId) => { started.push(taskId); return { ok: true, body: "{}" }; });
 
 const baseline = readAppSettings();
-const taskId = listTasks()[0]?.id ?? "task-1";
+
+/**
+ * 自己造一条任务再跑。
+ * 原来是 `listTasks()[0]?.id ?? "task-1"`，空库时退回一个并不存在的 id，
+ * 而 handler 找不到任务只会回 "Task not found"，用例必挂——
+ * 等于这个测试只能在"库里恰好有任务"的机器上通过，CI 里跑不了。
+ */
+const existing = listTasks();
+if (existing.length === 0) {
+  writeTasks([
+    {
+      id: "itest-task",
+      account: "itest",
+      originPath: "/tv",
+      targetPath: "/data/tv",
+    },
+  ]);
+}
+const taskId = listTasks()[0].id;
 const callback = { id: "q1", data: `start_task_${taskId}`, message: { chat: { id: 123 } } };
 
 function withAllowTaskStart(allow: boolean) {
