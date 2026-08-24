@@ -9,15 +9,16 @@ mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOGS_DIR"
 # 三个进程各跑各的：代理和管理端隔离，管理端崩了不影响播放。
 # 任一进程退出就让容器整体退出，交给 restart 策略拉起来。
 echo "Starting backend..."
-node /app/backend/index.js &
+node /app/backend/dist/index.js &
 backend_pid=$!
 
 echo "Starting Emby proxy..."
-node /app/backend/proxy.js &
+node /app/backend/dist/proxy.js &
 proxy_pid=$!
 
 echo "Starting frontend..."
-PORT=3000 node /app/frontend/server.js &
+# monorepo 的 standalone 产物是嵌套的，入口在 apps/frontend/ 下
+PORT=3000 node /app/frontend/apps/frontend/server.js &
 frontend_pid=$!
 
 terminate() {
