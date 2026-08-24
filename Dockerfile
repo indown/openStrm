@@ -26,6 +26,21 @@ RUN pnpm --filter @openstrm/backend build
 # 会得到一堆断链（表现为 Cannot find package 'fastify'）。
 # pnpm deploy 产出的是自包含的真实依赖树，把 workspace 依赖也一并注入。
 RUN pnpm deploy --filter @openstrm/backend --prod /deploy/backend
+# 部署产物瘦身。都是运行期用不到的东西：
+# - @types/*：纯类型包，被 drizzle-orm 的可选 peer 拖进来的
+# - better-sqlite3 的 deps/src/obj：只需要编译好的 .node 二进制
+# - .d.ts 和 .map：类型声明和 sourcemap 运行时不会被读
+WORKDIR /deploy/backend
+RUN rm -rf node_modules/.pnpm/@types+* node_modules/@types && \
+    find node_modules/.pnpm -type d \( -path '*better-sqlite3*/deps' \
+        -o -path '*better-sqlite3*/src' \
+        -o -path '*better-sqlite3*/build/Release/obj*' \
+        -o -path '*better-sqlite3*/build/deps' \) -prune -exec rm -rf {} + && \
+    find node_modules -name '*.d.ts' -delete && \
+    find node_modules -name '*.d.cts' -delete && \
+    find node_modules -name '*.d.mts' -delete && \
+    find node_modules -name '*.map' -delete && \
+    test -f node_modules/better-sqlite3/build/Release/better_sqlite3.node
 
 # ========== Stage 4: Build frontend ==========
 FROM shared-builder AS frontend-builder

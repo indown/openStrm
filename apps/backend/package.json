@@ -2,6 +2,9 @@
   "name": "@openstrm/backend",
   "version": "2.0.0",
   "private": true,
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -17,13 +20,10 @@
     "test:e2e": "tsx src/routes/proxy/proxy.e2e.ts"
   },
   "dependencies": {
-    "@fastify/autoload": "^6.3.1",
     "@fastify/compress": "^8.3.1",
     "@fastify/cors": "^11.2.0",
     "@fastify/http-proxy": "^11.4.3",
     "@fastify/reply-from": "^12.6.1",
-    "@fastify/static": "^9.1.0",
-    "@fastify/websocket": "^11.2.0",
     "@openstrm/shared": "workspace:*",
     "axios": "^1.11.0",
     "better-sqlite3": "^11.5.0",
@@ -34,10 +34,7 @@
     "fastify-plugin": "^5.0.1",
     "jose": "^6.1.0",
     "lru-cache": "^11.0.2",
-    "pino": "^9.6.0",
-    "rxjs": "^7.8.2",
-    "uuid": "^12.0.0",
-    "zod": "^4.1.5"
+    "rxjs": "^7.8.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
