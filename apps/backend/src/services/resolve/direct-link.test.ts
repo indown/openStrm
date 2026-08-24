@@ -100,4 +100,23 @@ t("originPath 为空表示整个挂载点都归这个任务", () => {
   assert.equal(accountNameByTask("/mnt/all", "/anything/a.mkv", whole), "整盘");
 });
 
+t("同一挂载点下取最长匹配的 originPath", () => {
+  // /tv 和 /tv/anime 两个任务并存时，anime 下的文件必须归小号——
+  // 取第一个命中的话会随任务顺序选错盘，而 life/handlers.ts 的 matchTask 是最长匹配
+  const both: TaskDefinition[] = [
+    { id: "a", account: "主号", originPath: "/tv", targetPath: "/d1", strmPrefix: "/mnt/pan" },
+    { id: "b", account: "小号", originPath: "/tv/anime", targetPath: "/d2", strmPrefix: "/mnt/pan" },
+  ];
+  assert.equal(accountNameByTask("/mnt/pan", "/tv/anime/ep1.mkv", both), "小号");
+  assert.equal(accountNameByTask("/mnt/pan", "/tv/other/ep1.mkv", both), "主号");
+});
+
+t("任务顺序颠倒也取最长匹配", () => {
+  const reversed: TaskDefinition[] = [
+    { id: "b", account: "小号", originPath: "/tv/anime", targetPath: "/d2", strmPrefix: "/mnt/pan" },
+    { id: "a", account: "主号", originPath: "/tv", targetPath: "/d1", strmPrefix: "/mnt/pan" },
+  ];
+  assert.equal(accountNameByTask("/mnt/pan", "/tv/anime/ep1.mkv", reversed), "小号");
+});
+
 console.log(`\n${pass} passed`);

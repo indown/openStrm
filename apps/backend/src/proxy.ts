@@ -56,6 +56,8 @@ process.on("uncaughtException", (err) => {
 
 const dbReady = await waitForDb();
 if (!dbReady) {
+  // 代理侧的配置读取都走 readSettingsSafe，库不可用时退化成
+  // "转发到默认 Emby 地址"的纯反代，而不是每个请求 500
   app.log.warn("等待数据库超时，降级为纯反代启动");
 }
 

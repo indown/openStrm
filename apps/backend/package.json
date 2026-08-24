@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio",
-    "test": "tsx src/services/life/life.test.ts && tsx src/services/resolve/direct-link.test.ts && tsx src/services/life/handlers.itest.ts && tsx src/services/media-server.itest.ts && tsx src/services/telegram-polling.itest.ts && tsx src/routes/proxy/proxy.itest.ts"
+    "test": "tsx src/services/life/life.test.ts && tsx src/services/resolve/direct-link.test.ts && tsx src/services/life/handlers.itest.ts && tsx src/services/media-server.itest.ts && tsx src/services/telegram-polling.itest.ts && tsx src/routes/proxy/proxy.itest.ts",
+    "test:e2e": "tsx src/routes/proxy/proxy.e2e.ts"
   },
   "dependencies": {
     "@fastify/autoload": "^6.3.1",

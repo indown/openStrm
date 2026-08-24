@@ -62,12 +62,17 @@ function actionOf(rest: string): string {
 }
 
 /**
- * Location 头只能放 ASCII。115 正常返回的直链本来就是转义过的，
- * 但只要有一次不是，setHeader 就会抛 ERR_INVALID_CHAR。
- * encodeURI 对已转义的 URL 是幂等的，兜一道很便宜。
+ * Location 头只能放 ASCII，非 ASCII 会让 setHeader 抛 ERR_INVALID_CHAR。
+ *
+ * 但**不能**用 encodeURI 兜底：它会把 `%` 转成 `%25`。115 返回的直链本来就是
+ * 转义过的（中文文件名、签名里的 `+` 和 `=`），再过一遍 encodeURI 就成了
+ * `%25E4%25B8%25AD`，CDN 直接 403。nginx 版本是原样透传的，这里保持一致：
+ * 纯 ASCII 原样返回，只有混进非 ASCII 时才逐字符转义。
  */
 function safeLocation(url: string): string {
-  return encodeURI(url);
+  // eslint-disable-next-line no-control-regex
+  if (!/[^\x00-\x7F]/.test(url)) return url;
+  return url.replace(/[^\x00-\x7F]/g, (c) => encodeURIComponent(c));
 }
 
 async function handleRedirect(request: FastifyRequest, reply: FastifyReply) {
