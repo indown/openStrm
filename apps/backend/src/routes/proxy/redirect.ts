@@ -7,7 +7,9 @@
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { LRUCache } from "lru-cache";
-import { getItemMediaSource, pickApiKey } from "../../services/emby/api.js";
+import type { EmbyItemLookup } from "../../services/emby/api.js";
+import { getItemMediaSource, getSyncJobItemPath, pickApiKey } from "../../services/emby/api.js";
+import { configRevision } from "../../services/config-revision.js";
 import { resolveEmbyPath } from "../../services/resolve/direct-link.js";
 import { toEmby } from "./upstream.js";
 
@@ -75,19 +77,25 @@ function safeLocation(url: string): string {
   return url.replace(/[^\x00-\x7F]/g, (c) => encodeURIComponent(c));
 }
 
-async function handleRedirect(request: FastifyRequest, reply: FastifyReply) {
-  const params = request.params as Record<string, string>;
-  const itemId = params.id;
-  const rest = params["*"] ?? "";
+/** 查路径的方式：普通条目走 /Items，同步任务项走 /Sync/JobItems */
+type PathLookup = (
+  id: string,
+  opts: { mediaSourceId?: string; apiKey?: string },
+) => Promise<EmbyItemLookup | null>;
 
-  // HEAD 是客户端在探测，让 Emby 自己答，别为了一次探测去换直链
-  if (request.method === "HEAD") return toEmby(request, reply);
-  if (!REDIRECTABLE.has(actionOf(rest))) return toEmby(request, reply);
-  if (!itemId) return toEmby(request, reply);
-
+async function redirectWithLookup(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  itemId: string,
+  lookup: PathLookup,
+) {
   const mediaSourceId = queryValue(request.query, "MediaSourceId", "mediaSourceId");
   const userAgent = request.headers["user-agent"];
-  const cacheKey = `${itemId}:${mediaSourceId ?? ""}:${userAgent ?? ""}`;
+  /**
+   * key 里带配置版本：改了账号或挂载点之后旧条目自然失效。
+   * 代理是独立进程，收不到 API 进程的失效通知，只能这样跨进程对齐。
+   */
+  const cacheKey = `${configRevision()}:${itemId}:${mediaSourceId ?? ""}:${userAgent ?? ""}`;
 
   const cached = linkCache.get(cacheKey);
   if (cached) {
@@ -99,7 +107,7 @@ async function handleRedirect(request: FastifyRequest, reply: FastifyReply) {
   // catch 里的回源会带着这个坏头去发流，兜底也跟着崩。
   let target: string;
   try {
-    const item = await getItemMediaSource(itemId, {
+    const item = await lookup(itemId, {
       mediaSourceId,
       apiKey: pickApiKey(request.query as Record<string, unknown>),
     });
@@ -136,6 +144,36 @@ async function handleRedirect(request: FastifyRequest, reply: FastifyReply) {
   return reply.redirect(target, 302);
 }
 
+async function handleRedirect(request: FastifyRequest, reply: FastifyReply) {
+  const params = request.params as Record<string, string>;
+  const itemId = params.id;
+  const rest = params["*"] ?? "";
+
+  // HEAD 是客户端在探测，让 Emby 自己答，别为了一次探测去换直链
+  if (request.method === "HEAD") return toEmby(request, reply);
+  if (!REDIRECTABLE.has(actionOf(rest))) return toEmby(request, reply);
+  if (!itemId) return toEmby(request, reply);
+
+  return redirectWithLookup(request, reply, itemId, (id, opts) =>
+    getItemMediaSource(id, opts),
+  );
+}
+
+/**
+ * 客户端"下载到设备"（SyncService）走的路径。
+ * nginx 版本同样 302，不做的话整个离线下载的字节都从 Node 过。
+ */
+async function handleSyncDownload(request: FastifyRequest, reply: FastifyReply) {
+  const params = request.params as Record<string, string>;
+  const jobItemId = params.id;
+  if (request.method === "HEAD") return toEmby(request, reply);
+  if (!jobItemId) return toEmby(request, reply);
+
+  return redirectWithLookup(request, reply, jobItemId, (id, opts) =>
+    getSyncJobItemPath(id, { apiKey: opts.apiKey }),
+  );
+}
+
 export default async function redirectRoutes(fastify: FastifyInstance) {
   const routes: string[] = [];
 
@@ -151,6 +189,19 @@ export default async function redirectRoutes(fastify: FastifyInstance) {
     for (const variant of caseVariants("items")) {
       for (const action of caseVariants("download")) {
         routes.push(`${prefix}/${variant}/:id/${action}`);
+      }
+    }
+  }
+
+  // 同步下载单独一条：id 是同步任务项 id，查法和普通条目不一样
+  for (const prefix of PREFIXES) {
+    for (const sync of caseVariants("sync")) {
+      for (const file of caseVariants("file")) {
+        fastify.route({
+          method: ["GET", "HEAD"],
+          url: `${prefix}/${sync}/JobItems/:id/${file}`,
+          handler: handleSyncDownload,
+        });
       }
     }
   }

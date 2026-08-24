@@ -18,7 +18,8 @@ NGINX_PORT="${NGINX_PORT:-8091}"
 MOUNT="${MOUNT:-/mnt/pan}"
 # Docker Desktop 里容器看宿主机的地址
 HOST_IP="${HOST_IP:-192.168.65.254}"
-# 桩返回的直链：文件名已转义、签名带 + 和 =，和 115 真实返回同形态
+# 桩返回的直链：文件名已转义、签名带 + 和 =，和 115 真实返回同形态。
+# 里面不含单引号，下面直接嵌进生成的 JS 单引号串（别用 ${VAR@Q}，macOS 的 bash 3.2 不支持）
 RAW_LINK='https://cdn-qn.115.com/lab/%E4%B8%AD%E6%96%87%E5%90%8D.mkv?t=1&u=a%2Bb&sign=xY%3D%3D'
 
 PLATFORM="${PLATFORM:---platform linux/amd64}"
@@ -39,7 +40,7 @@ media_fixtures() {
 start_stub() {
   cat > "$LAB/stub-fs-get.cjs" <<EOF
 const http = require("http");
-const RAW = ${RAW_LINK@Q};
+const RAW = '$RAW_LINK';
 http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
@@ -177,7 +178,7 @@ PY
     nginx:1.27.1 >/dev/null
   sleep 3
   echo "export MAIN_PROXY=http://127.0.0.1:$NGINX_PORT" >> "$LAB/env.sh"
-  log "main 的 nginx 栈已起在 :$NGINX_PORT，MAIN_PROXY 已加进 env.sh"
+  log "main 的 nginx 栈已起在 :${NGINX_PORT}，MAIN_PROXY 已加进 env.sh"
 }
 
 down() {

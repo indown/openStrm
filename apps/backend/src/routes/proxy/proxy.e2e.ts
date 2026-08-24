@@ -23,6 +23,16 @@ import { readAppSettings, writeAppSettings } from "../../db/repositories/setting
 import proxyPlugin from "./index.js";
 import { clearLinkCache, setLinkResolver } from "./redirect.js";
 
+/**
+ * 这些用例会写 settings 表。没指定 CONFIG_DIR 就会写到开发者真实的库上，
+ * 把 Emby 地址改成一个测试用的死端口——直接拒绝跑。
+ */
+if (!process.env.CONFIG_DIR) {
+  console.error("拒绝在默认 CONFIG_DIR 上运行：请显式指定 CONFIG_DIR / DATA_DIR 到临时目录");
+  process.exit(2);
+}
+
+
 const need = (name: string): string => {
   const v = process.env[name];
   if (!v) {

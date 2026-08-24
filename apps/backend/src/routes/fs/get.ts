@@ -27,7 +27,9 @@ export default async function (fastify: FastifyInstance) {
     }
 
     // 这条接口是给 CD2/OpenList 回源用的，UA 用配置里的那个
-    const userAgent = fastify.readSettings()["user-agent"] as string | undefined;
+    // 设置里清空了就当没配，交给 115 client 用默认 UA——
+    // 原样发一个空 User-Agent 会被 115 拒掉
+    const userAgent = (fastify.readSettings()["user-agent"] as string) || undefined;
     const resolved = await resolveAlistPath(path, userAgent);
 
     if (!resolved.ok) {
