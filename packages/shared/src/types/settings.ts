@@ -40,8 +40,7 @@ export type AppSettings = {
     allowedUsers?: number[];
     /**
      * 是否允许从 Telegram 按钮直接启动同步任务。
-     * 默认关闭：这条链路此前因为请求地址和鉴权都是错的而从未真正生效过，
-     * 修好之后需要显式开启，避免一次升级就让它悄悄开始跑任务。
+     * 默认关闭：按钮一按就会真的跑任务，属于有副作用的动作，需要显式开启。
      */
     allowTaskStart?: boolean;
   };

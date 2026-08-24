@@ -20,8 +20,7 @@ let isPollingActive = false;
  * 启动任务的执行器，由 index.ts 在服务起来后注入。
  *
  * 本模块不是 fastify 插件，拿不到 app.inject / app.signJwt，
- * 所以用注入而不是在这里 fetch —— 之前那种 fetch 到 localhost:3000 的写法
- * 既指错了端口（后端在 4000），又完全没带鉴权，实际从未成功过。
+ * 所以只能由外部注入，不能在这里自己发请求——那样既要写死端口，也没法签 JWT。
  */
 export type TaskStarter = (taskId: string) => Promise<{ ok: boolean; body: string }>;
 
