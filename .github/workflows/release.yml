@@ -104,6 +104,8 @@ jobs:
         run: |
           echo "name=${REGISTRY}/$(echo "$REPO" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
+      # latest 只跟正式版走：预发布标签（v2.0.0-rc.1 这种带连字符的）
+      # 只推自己的版本号，免得尝鲜版把 latest 的用户一起带走。
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -111,7 +113,7 @@ jobs:
           images: ${{ steps.image.outputs.name }}
           tags: |
             type=semver,pattern=v{{version}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
@@ -131,5 +133,6 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           draft: false
-          prerelease: false
+          # 和上面的 latest 判据保持一致：带连字符的就是预发布
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
