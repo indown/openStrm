@@ -32,6 +32,13 @@ export type AppSettings = {
   emby?: {
     url?: string;
     apiKey?: string;
+    /**
+     * 请求不带任何 Emby 凭据时，是否仍用配置里的管理员 key 去解析并 302。
+     *
+     * 默认关闭：开着等于任何能访问代理端口的人都能拿到媒体直链，无需登录 Emby。
+     * 只有那种连请求头里都不带令牌的客户端才需要打开，代价是放弃这道校验。
+     */
+    allowAnonymousRedirect?: boolean;
   };
   telegram?: {
     botToken?: string;

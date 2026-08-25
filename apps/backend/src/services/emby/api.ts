@@ -39,14 +39,53 @@ export function configuredApiKey(): string {
   return readSettingsSafe().emby?.apiKey || "";
 }
 
+type IncomingHeaders = Record<string, string | string[] | undefined>;
+
+function firstValue(value: string | string[] | undefined): string {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return typeof raw === "string" ? raw : "";
+}
+
+/** Emby 的认证头把令牌裹在 `MediaBrowser Client="..", Token="xxx"` 里 */
+function tokenFromAuthHeader(value: string | string[] | undefined): string {
+  const raw = firstValue(value);
+  if (!raw) return "";
+  return /Token="?([^",\s]+)"?/i.exec(raw)?.[1] ?? "";
+}
+
 /**
- * 客户端自己带的 key 优先，兜底用配置里的管理员 key。
- * 老的 Emby TV 客户端不带 key，只能靠配置里的那个。
+ * 客户端自己带的 Emby 令牌，取不到返回空串。
+ *
+ * query 和请求头都要看：Emby 生成的 DirectStreamUrl 把令牌放在 query，
+ * 而客户端自己发起的请求普遍放在头里。只看 query 会把一大批带了凭据的
+ * 客户端误判成匿名。
  */
-export function pickApiKey(query: Record<string, unknown> | undefined): string {
+export function clientApiKey(
+  query: Record<string, unknown> | undefined,
+  headers: IncomingHeaders | undefined,
+): string {
   const q = query ?? {};
   const fromQuery = q["X-Emby-Token"] ?? q["api_key"] ?? q["ApiKey"];
-  return typeof fromQuery === "string" && fromQuery ? fromQuery : configuredApiKey();
+  if (typeof fromQuery === "string" && fromQuery) return fromQuery;
+
+  const h = headers ?? {};
+  for (const name of ["x-emby-token", "x-mediabrowser-token"]) {
+    const raw = firstValue(h[name]);
+    if (raw) return raw;
+  }
+  for (const name of ["authorization", "x-emby-authorization"]) {
+    const token = tokenFromAuthHeader(h[name]);
+    if (token) return token;
+  }
+  return "";
+}
+
+/** 客户端自己带的 key 优先，兜底用配置里的管理员 key。 */
+export function pickApiKey(
+  query: Record<string, unknown> | undefined,
+  headers?: IncomingHeaders,
+): string {
+  return clientApiKey(query, headers) || configuredApiKey();
 }
 
 /**
