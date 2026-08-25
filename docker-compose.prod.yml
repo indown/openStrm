@@ -1,17 +1,24 @@
-version: "3.9"
 services:
   openstrm:
     image: indown/openstrm:latest
     container_name: openstrm
     ports:
-      - "3000:3000"   # nginx 代理 -> Next.js (前端界面)
-      - "8091:8091"   # nginx 代理 -> emby (emby 客户端使用此端口)
+      - "3000:3000"   # Next.js 管理界面
+      - "8091:8091"   # Emby 302 代理（Emby 客户端连这个端口）
+      # - "4000:4000" # Fastify API，默认不对外；前端通过 rewrites 访问
     environment:
       - NODE_ENV=production
+      # JWT_SECRET 不用设：首次启动会随机生成并存进 config/openstrm.db。
+      # 只有需要轮换密钥、或多个副本共享同一份登录令牌时才手动指定。
+      # - JWT_SECRET=
+      # 排查「播放没走 302」时把级别调到 debug
+      # - LOG_LEVEL=debug
     volumes:
-      - ./strmData:/app/data     # strm下载目录
-      - ./config:/app/config
-      - ./emby2Alist/nginx/log:/var/log/nginx
+      # 这里是 ./strmData 而不是 ./data，和 docker-compose.yml、Readme 不一致。
+      # 保持原样是因为已有部署的 strm 文件都在这个目录下，改掉会指向一个空目录。
+      - ./strmData:/app/data     # 生成的 strm 文件
+      - ./config:/app/config     # openstrm.db：账号、设置、任务、登录凭据
+      - ./logs:/app/logs         # 应用日志
     restart: unless-stopped
     logging:
       driver: "json-file"

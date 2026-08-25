@@ -53,17 +53,21 @@ docker-compose up -d
 
 ### 手动构建
 
+需要 **Node.js 24** 和 **pnpm 9**。仓库是 pnpm workspace，用 npm 装不出正确的依赖树。
+
 ```bash
-# 克隆项目
 git clone https://github.com/indown/OpenStrm.git
 cd OpenStrm
 
-# 安装依赖
-cd frontend
-npm install
+# pnpm 版本由 package.json 的 packageManager 字段锁定，corepack 会自动取对应版本
+corepack enable pnpm
+pnpm install
 
-# 启动服务
-npm run dev
+# backend 的 tsc 依赖 shared 包的类型声明，要先构建
+pnpm build:shared
+
+# 同时启动 backend(4000) / Emby 代理(8091) / 前端(3000)
+pnpm dev
 ```
 
 ### Docker 镜像
@@ -103,31 +107,80 @@ docker-compose -f docker-compose.prod.yml up -d
 
 ## 🔧 配置说明
 
-### 默认登录信息
+### 首次登录
 
-首次启动后，使用以下默认账号登录：
+默认账号 `admin` / `admin`。
 
-```json
-{
-    "username": "admin",
-    "password": "admin"
-}
-```
+**首次登录会强制要求修改密码**——在改掉之前，除修改密码本身以外的接口一律返回 403。
 
-⚠️ **安全提示**: 请在生产环境中及时修改默认密码！  
-📝 **修改方法**: 编辑 `config/config.json` 文件中的 `username` 和 `password` 字段。
+密码经 scrypt 哈希后存进 `config/openstrm.db`，不再以明文保存，因此**无法通过编辑文件修改**。忘记密码目前只能删掉 `config/openstrm.db` 重新初始化（账号、设置、任务会一并丢失）。
+
+> 从旧版本升级上来的实例，原先的明文密码仍然可以登录，并在登录成功时自动转成哈希存储，不需要做任何操作。
+
+### 环境变量
+
+全部可选，不设也能正常运行。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `JWT_SECRET` | 首次启动随机生成并持久化 | 登录令牌的签名密钥。只有在需要轮换密钥、或多个副本共享同一份登录状态时才手动指定；改动会让所有已登录会话立即失效 |
+| `LOG_LEVEL` | `info` | 排查「播放没走 302」时设为 `debug` |
+| `CONFIG_DIR` / `DATA_DIR` / `LOGS_DIR` | `/app/config`、`/app/data`、`/app/logs` | 容器内路径，一般不用改 |
 
 ### 数据目录
 
-- `./data/`: 存储应用数据
-- `./config/`: 存储配置文件
+- `./config/`: `openstrm.db` —— 账号、设置、同步任务全在这里
+- `./data/`: 生成的 `.strm` 文件
+- `./logs/`: 应用日志
 
-**配置项说明**:
-- `user-agent`: 用于115 API请求的User-Agent字符串，可以根据需要修改
-- `strmExtensions`: 需要转换为.strm文件的扩展名数组，默认为[".mp4", ".mkv", ".avi", ".iso", ".mov", ".rmvb", ".webm", ".flv", ".m3u8", ".mp3", ".flac", ".ogg", ".m4a", ".wav", ".opus", ".wma"]，会自动转换为小写
-- `downloadExtensions`: 需要直接下载的文件扩展名数组，默认为[".srt", ".ass", ".sub", ".nfo", ".jpg", ".png"]，会自动转换为小写
-- `emby.url`: Emby媒体服务器地址
-- `emby.apiKey`: Emby API密钥
+> v2 起配置存放在 SQLite，不再有 `config.json`。旧版的 `config.json` 不会被自动导入，需要在界面里重新配置。
+
+### 应用设置
+
+以下在管理界面里改：
+
+- `user-agent`: 115 API 请求使用的 User-Agent
+- `strmExtensions`: 需要转成 `.strm` 的扩展名，会自动转小写
+- `downloadExtensions`: 直接下载的文件扩展名，会自动转小写
+- `emby.url`: Emby 服务器地址
+- `emby.apiKey`: Emby API 密钥
+
+### 匿名 302 开关
+
+`emby.allowAnonymousRedirect`，默认 **关闭**，界面上没有对应入口。
+
+关闭时，不携带任何 Emby 凭据（query 和请求头里都没有令牌）的请求不会被解析成 115 直链，而是原样回源交给 Emby 自己裁决。打开则恢复旧行为——用服务端配置的管理员 API Key 去解析，这意味着**任何能访问 8091 端口的人，报一个条目 id 就能拿到你的媒体直链**，无需登录 Emby。
+
+绝大多数播放器都会带令牌，不需要打开。只有确认播放器一个令牌都不发时才考虑：
+
+```bash
+docker exec -w /app/backend openstrm node -e '
+const D = require("better-sqlite3");
+const db = new D("/app/config/openstrm.db");
+db.pragma("busy_timeout = 5000");
+const emby = JSON.parse(db.prepare("select value from settings where key = ?").get("app.emby").value);
+emby.allowAnonymousRedirect = true;
+db.prepare("update settings set value = ? where key = ?").run(JSON.stringify(emby), "app.emby");
+console.log("已设置:", emby);
+'
+```
+
+配置是每个请求现读的，改完立即生效，不用重启。
+
+### 确认 302 是否生效
+
+```bash
+docker logs -f openstrm 2>&1 | grep -E "直链|直连|回源|凭据"
+```
+
+要看到**两行**才算真的走了直连：
+
+```
+{"itemId":"72340","msg":"PlaybackInfo 已改写为直连"}
+{"itemId":"72340","account":"主号","msg":"302 到 115 直链"}
+```
+
+只有第一行说明客户端没走到重定向，字节仍在经由本服务中转。最硬的判据是播放时看 `docker stats`——真走了 302，容器网络流量应该基本不动。
 
 ## 📄 许可证
 
