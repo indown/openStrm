@@ -23,13 +23,13 @@ export default function LoginPage() {
   const onSubmit = async (values: LoginForm) => {
     try {
       const response = await axiosInstance.post("/api/auth/login", values);
-      const { token } = response.data;
-      
+      const { token, mustChangePassword } = response.data;
+
       // 存储token
       setToken(token);
-      
-      // 跳转到首页
-      router.push("/");
+
+      // 还在用默认密码的话，先去改密码——其余接口在那之前都会被后端拒绝
+      router.push(mustChangePassword ? "/change-password" : "/");
     } catch {
       alert("登录失败，请检查用户名或密码");
     }

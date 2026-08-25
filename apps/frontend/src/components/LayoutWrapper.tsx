@@ -43,8 +43,9 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   const [hdhiveTotal, setHdhiveTotal] = useState(0);
   const [hdhiveError, setHdhiveError] = useState<string | null>(null);
 
-  if (pathname === "/login") {
-    return <>{children}</>; // 登录页不显示导航等
+  // 登录页和强制改密码页都不显示导航等
+  if (pathname === "/login" || pathname === "/change-password") {
+    return <>{children}</>;
   }
 
   const logout = async () => {
