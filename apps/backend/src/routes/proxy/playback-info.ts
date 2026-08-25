@@ -7,7 +7,7 @@
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { EmbyMediaSource } from "../../services/emby/api.js";
-import { embyUpstream } from "../../services/emby/api.js";
+import { clientApiKey, embyUpstream } from "../../services/emby/api.js";
 import { readSettingsSafe } from "../../services/settings-safe.js";
 import { safeDecode, stripMountPath } from "../../services/resolve/direct-link.js";
 import { fetchUpstream, relayResponse, toEmby } from "./upstream.js";
@@ -31,6 +31,7 @@ function rewriteDirectStreamUrl(
   source: EmbyMediaSource,
   itemId: string,
   requestQuery: Record<string, unknown>,
+  requestHeaders: Record<string, string | string[] | undefined>,
 ): void {
   const container = source.Container || "mp4";
   const original = typeof source.DirectStreamUrl === "string" ? source.DirectStreamUrl : "";
@@ -39,10 +40,12 @@ function rewriteDirectStreamUrl(
   const params = new URLSearchParams(queryIndex >= 0 ? original.slice(queryIndex + 1) : "");
   params.delete("TranscodeReasons");
 
-  // 上游没给 DirectStreamUrl 时（部分条目就是没有），从请求本身补齐必要参数
+  // 上游没给 DirectStreamUrl 时（部分条目就是没有），从请求本身补齐必要参数。
+  // 令牌要连请求头一起找：客户端多半放在头里，只翻 query 会补不上，
+  // 客户端拿着没有 api_key 的地址回来就会被 302 那边的凭据闸门挡下。
   if (!params.has("api_key")) {
-    const key = requestQuery["api_key"] ?? requestQuery["X-Emby-Token"];
-    if (typeof key === "string" && key) params.set("api_key", key);
+    const key = clientApiKey(requestQuery, requestHeaders);
+    if (key) params.set("api_key", key);
   }
   if (!params.has("MediaSourceId") && source.Id) params.set("MediaSourceId", source.Id);
   params.set("Static", "true");
@@ -54,6 +57,7 @@ export function rewritePlaybackInfo(
   body: Record<string, unknown>,
   itemId: string,
   requestQuery: Record<string, unknown> = {},
+  requestHeaders: Record<string, string | string[] | undefined> = {},
 ): boolean {
   const sources = body.MediaSources;
   if (!Array.isArray(sources)) return false;
@@ -72,7 +76,7 @@ export function rewritePlaybackInfo(
     source.SupportsTranscoding = false;
     delete source.TranscodingUrl;
 
-    rewriteDirectStreamUrl(source, itemId, requestQuery);
+    rewriteDirectStreamUrl(source, itemId, requestQuery, requestHeaders);
     touched = true;
   }
   return touched;
@@ -104,6 +108,7 @@ async function handlePlaybackInfo(request: FastifyRequest, reply: FastifyReply) 
       body,
       itemId,
       (request.query ?? {}) as Record<string, unknown>,
+      request.headers,
     );
     if (touched) request.log.info({ itemId }, "PlaybackInfo 已改写为直连");
 

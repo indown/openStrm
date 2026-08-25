@@ -7,7 +7,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { LRUCache } from "lru-cache";
 import type { EmbyItemLookup } from "../../services/emby/api.js";
-import { getItemMediaSource, getSyncJobItemPath, pickApiKey } from "../../services/emby/api.js";
+import { clientApiKey, getItemMediaSource, getSyncJobItemPath } from "../../services/emby/api.js";
+import { readSettingsSafe } from "../../services/settings-safe.js";
 import { configRevision } from "../../services/config-revision.js";
 import { resolveEmbyPath } from "../../services/resolve/direct-link.js";
 import { toEmby } from "./upstream.js";
@@ -89,6 +90,21 @@ async function redirectWithLookup(
 ) {
   const mediaSourceId = queryValue(request.query, "MediaSourceId", "mediaSourceId");
   const userAgent = request.headers["user-agent"];
+
+  /**
+   * 没有客户端凭据就不往下走，而且必须在查缓存之前拦——否则匿名请求能白拿
+   * 别人解析好的缓存直链。
+   *
+   * 不带凭据时不能回落到配置里的管理员 key：那等于任何能访问代理端口的人
+   * 报一个条目 id 就拿到 115 直链，完全绕过 Emby 的登录。透传交给 Emby 自己
+   * 裁决——upstream 原样转发请求头，靠头认证的客户端照样能播，只是不走 302。
+   */
+  const apiKey = clientApiKey(request.query as Record<string, unknown>, request.headers);
+  if (!apiKey && !readSettingsSafe().emby?.allowAnonymousRedirect) {
+    request.log.debug({ itemId }, "请求未携带 Emby 凭据，透传回源");
+    return toEmby(request, reply);
+  }
+
   /**
    * key 里带配置版本：改了账号或挂载点之后旧条目自然失效。
    * 代理是独立进程，收不到 API 进程的失效通知，只能这样跨进程对齐。
@@ -105,10 +121,7 @@ async function redirectWithLookup(
   // catch 里的回源会带着这个坏头去发流，兜底也跟着崩。
   let target: string;
   try {
-    const item = await lookup(itemId, {
-      mediaSourceId,
-      apiKey: pickApiKey(request.query as Record<string, unknown>),
-    });
+    const item = await lookup(itemId, { mediaSourceId, apiKey });
     if (!item?.path) {
       request.log.info({ itemId }, "Emby 未返回路径，回源");
       return toEmby(request, reply);

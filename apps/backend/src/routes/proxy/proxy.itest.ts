@@ -138,48 +138,107 @@ try {
 
   await t("不带 /emby 前缀也命中", async () => {
     reset();
-    const res = await app.inject({ method: "GET", url: "/Videos/item-1/original.mkv" });
+    const res = await app.inject({ method: "GET", url: "/Videos/item-1/original.mkv?api_key=k" });
     assert.equal(res.statusCode, 302);
   });
 
   await t("Audio universal 命中", async () => {
     reset();
-    const res = await app.inject({ method: "GET", url: "/emby/Audio/item-1/universal" });
+    const res = await app.inject({ method: "GET", url: "/emby/Audio/item-1/universal?api_key=k" });
     assert.equal(res.statusCode, 302);
   });
 
   await t("Items Download 命中", async () => {
     reset();
-    const res = await app.inject({ method: "GET", url: "/emby/Items/item-1/Download" });
+    const res = await app.inject({ method: "GET", url: "/emby/Items/item-1/Download?api_key=k" });
     assert.equal(res.statusCode, 302);
+  });
+
+  console.log("凭据闸门");
+
+  await t("不带任何凭据不 302，透传给 Emby 自己裁决", async () => {
+    reset();
+    const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv" });
+    assert.equal(res.statusCode, 200, "匿名请求不能换到直链");
+    assert.equal(res.body, "upstream-ok");
+    assert.equal(resolveCalls, 0, "连解析都不该发生——别拿管理员身份替匿名者查");
+  });
+
+  await t("令牌放在请求头里同样算已认证", async () => {
+    for (const headers of [
+      { "x-emby-token": "k" },
+      { "x-mediabrowser-token": "k" },
+      { authorization: 'MediaBrowser Client="Infuse", Token="k"' },
+      { "x-emby-authorization": 'MediaBrowser Token="k", Device="tv"' },
+    ]) {
+      reset();
+      const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv", headers });
+      assert.equal(res.statusCode, 302, `${JSON.stringify(headers)} 应当被认作已认证`);
+    }
+  });
+
+  await t("匿名请求拿不到别人已解析好的缓存直链", async () => {
+    reset();
+    const warm = await app.inject({
+      method: "GET",
+      url: "/emby/Videos/item-1/stream.mkv?api_key=k",
+      headers: { "user-agent": "UA-1" },
+    });
+    assert.equal(warm.statusCode, 302);
+
+    // cacheKey 只由配置版本 + 条目 + UA 决定，和凭据无关。
+    // 闸门要是排在缓存查询之后，这一条就会拿到上面那个直链。
+    const anon = await app.inject({
+      method: "GET",
+      url: "/emby/Videos/item-1/stream.mkv",
+      headers: { "user-agent": "UA-1" },
+    });
+    assert.equal(anon.statusCode, 200, "闸门必须排在缓存查询之前");
+  });
+
+  await t("显式打开 allowAnonymousRedirect 后匿名也 302", async () => {
+    reset();
+    const current = readAppSettings();
+    writeAppSettings({
+      ...current,
+      emby: { ...(current.emby ?? {}), allowAnonymousRedirect: true },
+    });
+    resetConfigRevisionMemo();
+    try {
+      const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv" });
+      assert.equal(res.statusCode, 302, "开关是给不带凭据的老客户端留的后路，打开就该恢复旧行为");
+    } finally {
+      writeAppSettings(current);
+      resetConfigRevisionMemo();
+    }
   });
 
   console.log("回源兜底");
 
   await t("HEAD 探测直接回源，不去换直链", async () => {
     reset();
-    const res = await app.inject({ method: "HEAD", url: "/emby/Videos/item-1/stream.mkv" });
+    const res = await app.inject({ method: "HEAD", url: "/emby/Videos/item-1/stream.mkv?api_key=k" });
     assert.equal(res.statusCode, 200);
     assert.equal(resolveCalls, 0, "HEAD 不该触发直链解析");
   });
 
   await t("本地文件不被 302，老老实实回源", async () => {
     reset();
-    const res = await app.inject({ method: "GET", url: "/emby/Videos/item-local/stream.mkv" });
+    const res = await app.inject({ method: "GET", url: "/emby/Videos/item-local/stream.mkv?api_key=k" });
     assert.equal(res.statusCode, 200);
     assert.equal(res.body, "upstream-ok");
   });
 
   await t("master/live 之类不在白名单的动作回源", async () => {
     reset();
-    const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/master.m3u8" });
+    const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/master.m3u8?api_key=k" });
     assert.equal(res.statusCode, 200);
     assert.equal(resolveCalls, 0);
   });
 
   await t("字幕请求穿过通配路由回源", async () => {
     reset();
-    const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/Subtitles/0/Stream.srt" });
+    const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/Subtitles/0/Stream.srt?api_key=k" });
     assert.equal(res.statusCode, 200);
     assert.equal(res.body, "upstream-ok");
   });
@@ -189,7 +248,7 @@ try {
     setLinkResolver(async () => {
       throw new Error("115 挂了");
     });
-    const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv" });
+    const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k" });
     assert.equal(res.statusCode, 200);
     assert.equal(res.body, "upstream-ok");
     // 复原
@@ -205,8 +264,8 @@ try {
 
   await t("同一条目重复请求只解析一次", async () => {
     reset();
-    const a = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv", headers: { "user-agent": "UA-1" } });
-    const b = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv", headers: { "user-agent": "UA-1" } });
+    const a = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-1" } });
+    const b = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-1" } });
     assert.equal(a.statusCode, 302);
     assert.equal(b.statusCode, 302);
     assert.equal(resolveCalls, 1, "第二次该走缓存");
@@ -214,8 +273,8 @@ try {
 
   await t("UA 不同要重新解析——115 直链和 UA 绑定", async () => {
     reset();
-    await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv", headers: { "user-agent": "UA-1" } });
-    await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv", headers: { "user-agent": "UA-2" } });
+    await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-1" } });
+    await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-2" } });
     assert.equal(resolveCalls, 2);
   });
 
@@ -311,7 +370,7 @@ try {
   await t("非 ASCII 直链才转义，且只转非 ASCII 部分", async () => {
     reset();
     setLinkResolver(async () => ({ ok: true, url: UNICODE_URL, accountName: "主号", panPath: "/x" }));
-    const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv" });
+    const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k" });
     assert.equal(res.statusCode, 302);
     assert.equal(res.headers.location, "https://cdn.115.com/%E7%9B%B4%E9%93%BE?t=1");
     setLinkResolver(async (embyPath) => {
@@ -353,6 +412,24 @@ try {
     assert.ok(!/TranscodeReasons/.test(pan.DirectStreamUrl), "不该残留 TranscodeReasons");
   });
 
+  await t("头里认证的客户端：PlaybackInfo 给出的地址能过闸门", async () => {
+    reset();
+    // Infuse / SenPlayer 这类客户端把令牌放在头里。上游若没给出带 api_key 的
+    // DirectStreamUrl，重写时必须从头里补上，否则客户端拿着一个匿名地址回来，
+    // 会被凭据闸门挡下——表现就是"能刷出媒体库但点播放不走直连"。
+    const info = await app.inject({
+      method: "POST",
+      url: "/emby/Items/item-1/PlaybackInfo",
+      payload: {},
+      headers: { authorization: 'MediaBrowser Client="Infuse", Token="k"' },
+    });
+    const pan = JSON.parse(info.body).MediaSources.find((s: { Id: string }) => s.Id === "ms-pan");
+    assert.match(pan.DirectStreamUrl, /api_key=k/, "令牌要从请求头补进 DirectStreamUrl");
+
+    const play = await app.inject({ method: "GET", url: pan.DirectStreamUrl });
+    assert.equal(play.statusCode, 302, "照着 PlaybackInfo 给的地址请求，应当直接 302");
+  });
+
   await t("逐跳头不再把请求打成 500", async () => {
     for (const headers of [{ "keep-alive": "timeout=5" }, { expect: "100-continue" }]) {
       const a = await app.inject({ method: "GET", url: "/emby/System/Info", headers });
@@ -386,7 +463,7 @@ try {
 
   await t("改配置后旧缓存自动失效（跨进程）", async () => {
     reset();
-    const a = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv", headers: { "user-agent": "UA-1" } });
+    const a = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-1" } });
     assert.equal(a.statusCode, 302);
     assert.equal(resolveCalls, 1);
 
@@ -395,7 +472,7 @@ try {
     writeAppSettings({ ...now, mediaMountPath: [MOUNT, "/mnt/another"] });
     resetConfigRevisionMemo();
 
-    await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv", headers: { "user-agent": "UA-1" } });
+    await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-1" } });
     assert.equal(resolveCalls, 2, "配置变了还命中旧缓存，说明失效没生效");
     writeAppSettings(now);
     resetConfigRevisionMemo();
