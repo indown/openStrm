@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 
 import { DEFAULT_AUTH } from "../../db/defaults.js";
 import { writeAuthPassword } from "../../db/repositories/auth.js";
+import { verifyPassword } from "../../services/password.js";
 
 const MIN_LENGTH = 8;
 
@@ -21,7 +22,8 @@ export default async function (fastify: FastifyInstance) {
       };
 
       const config = fastify.readConfig();
-      if (currentPassword !== config.password) {
+      const stored = typeof config.password === "string" ? config.password : "";
+      if (!(await verifyPassword(currentPassword ?? "", stored))) {
         return reply.code(401).send({ error: "当前密码不正确" });
       }
       if (typeof newPassword !== "string" || newPassword.length < MIN_LENGTH) {
@@ -35,7 +37,7 @@ export default async function (fastify: FastifyInstance) {
         return reply.code(400).send({ error: "新密码不能与当前密码相同" });
       }
 
-      writeAuthPassword(newPassword);
+      await writeAuthPassword(newPassword);
       fastify.log.info("[auth] 密码已更新");
       return { message: "密码修改成功" };
     },

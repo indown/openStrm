@@ -7,5 +7,5 @@ const MIGRATIONS_DIR = path.resolve(new URL(".", import.meta.url).pathname, "mig
 
 export async function initDb(): Promise<void> {
   migrate(db, { migrationsFolder: MIGRATIONS_DIR });
-  seedIfEmpty();
+  await seedIfEmpty();
 }
