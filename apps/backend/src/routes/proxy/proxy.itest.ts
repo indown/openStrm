@@ -291,7 +291,7 @@ try {
     assert.equal(pan.SupportsDirectPlay, true);
     assert.equal(pan.SupportsDirectStream, true);
     // 路径段是条目 id，不是 MediaSource.Id——真 Emby 的 MediaSource.Id 长 mediasource_11 这样
-    assert.match(pan.DirectStreamUrl, /^\/emby\/Videos\/item-1\/stream\.mkv\?/, "应指回本代理");
+    assert.match(pan.DirectStreamUrl, /^\/Videos\/item-1\/stream\.mkv\?/, "应指回本代理，且不带 /emby 前缀");
     assert.match(pan.DirectStreamUrl, /api_key=k/, "查询串要保留，丢了客户端就没法鉴权");
 
     assert.equal(local.SupportsDirectPlay, false, "本地源不该被改");
@@ -407,7 +407,7 @@ try {
     const res = await app.inject({ method: "POST", url: "/emby/Items/item-1/PlaybackInfo", payload: {} });
     const pan = JSON.parse(res.body).MediaSources.find((s: { Id: string }) => s.Id === "ms-pan");
     // 路径段必须是条目 id，不能是 MediaSource.Id（真 Emby 里长 mediasource_11 这样）
-    assert.match(pan.DirectStreamUrl, /^\/emby\/Videos\/item-1\/stream\./);
+    assert.match(pan.DirectStreamUrl, /^\/Videos\/item-1\/stream\./);
     assert.match(pan.DirectStreamUrl, /Static=true/);
     assert.ok(!/TranscodeReasons/.test(pan.DirectStreamUrl), "不该残留 TranscodeReasons");
   });
@@ -428,6 +428,30 @@ try {
 
     const play = await app.inject({ method: "GET", url: pan.DirectStreamUrl });
     assert.equal(play.statusCode, 302, "照着 PlaybackInfo 给的地址请求，应当直接 302");
+  });
+
+  await t("DirectStreamUrl 不带 /emby 前缀——base 带路径的客户端才不会拼出两层", async () => {
+    reset();
+    const info = await app.inject({
+      method: "POST",
+      url: "/emby/Items/item-1/PlaybackInfo",
+      payload: {},
+      headers: { authorization: 'MediaBrowser Token="k"' },
+    });
+    const pan = JSON.parse(info.body).MediaSources.find((s: { Id: string }) => s.Id === "ms-pan");
+    assert.ok(
+      !pan.DirectStreamUrl.startsWith("/emby/"),
+      "Emby 自己给的地址就不带前缀，客户端会拿它去拼 base——加了就变成 /emby/emby/...",
+    );
+
+    // 代理挂在根上：客户端原样请求
+    const atRoot = await app.inject({ method: "GET", url: pan.DirectStreamUrl });
+    assert.equal(atRoot.statusCode, 302, "根路径部署应当命中");
+
+    // 客户端 base 是 https://host/emby：它会把 /emby 拼在前面
+    reset();
+    const underEmby = await app.inject({ method: "GET", url: `/emby${pan.DirectStreamUrl}` });
+    assert.equal(underEmby.statusCode, 302, "base 带 /emby 的部署同样要命中，否则全程中转");
   });
 
   await t("逐跳头不再把请求打成 500", async () => {
