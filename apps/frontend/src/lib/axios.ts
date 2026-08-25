@@ -54,6 +54,16 @@ axiosInstance.interceptors.response.use(
         window.location.href = '/login';
       }
     }
+    // 默认密码没改之前，后端会挡下改密码以外的全部接口。
+    // 在这里兜住，任何页面误入都会被拉回改密码页。
+    if (
+      error.response?.status === 403 &&
+      error.response?.data?.code === 'PASSWORD_CHANGE_REQUIRED' &&
+      typeof window !== 'undefined' &&
+      window.location.pathname !== '/change-password'
+    ) {
+      window.location.href = '/change-password';
+    }
     return Promise.reject(error);
   }
 );

@@ -23,6 +23,7 @@ import { setTaskStarter, stopPolling } from "./services/telegram-polling.js";
 // Auth routes
 import authLoginRoute from "./routes/auth/login.js";
 import authLogoutRoute from "./routes/auth/logout.js";
+import authPasswordRoute from "./routes/auth/password.js";
 
 // CRUD routes
 import accountRoute from "./routes/account/index.js";
@@ -89,6 +90,7 @@ await app.register(cronPlugin);
 // Auth routes
 await app.register(authLoginRoute);
 await app.register(authLogoutRoute);
+await app.register(authPasswordRoute);
 
 // CRUD routes
 await app.register(accountRoute);
