@@ -1,5 +1,5 @@
 # ========== Stage 1: Install dependencies ==========
-FROM node:22-alpine AS deps
+FROM node:24-alpine AS deps
 RUN corepack enable pnpm
 # better-sqlite3 是原生模块。musl 的 amd64/arm64 都有官方预编译产物，
 # 正常情况下 prebuild-install 直接拉下来用；留着工具链只是为了拉不到时
@@ -48,7 +48,7 @@ COPY apps/frontend apps/frontend
 RUN pnpm --filter @openstrm/frontend build
 
 # ========== Stage 5: Production image ==========
-FROM node:22-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 
 # 后端：自包含，入口在 backend/dist/
