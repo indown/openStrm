@@ -101,7 +101,9 @@ async function redirectWithLookup(
    */
   const apiKey = clientApiKey(request.query as Record<string, unknown>, request.headers);
   if (!apiKey && !readSettingsSafe().emby?.allowAnonymousRedirect) {
-    request.log.debug({ itemId }, "请求未携带 Emby 凭据，透传回源");
+    // info 而不是 debug：正常部署里匿名请求不该出现，而这条不打出来的话，
+    // 「媒体库能刷出来、播放却不走直连」在默认日志级别下完全无从查起
+    request.log.info({ itemId }, "请求未携带 Emby 凭据，不解析直链，透传回源");
     return toEmby(request, reply);
   }
 
