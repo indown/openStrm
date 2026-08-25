@@ -3,6 +3,7 @@ import { eq, like, sql } from "drizzle-orm";
 import { db } from "../client.js";
 import { settings } from "../schema.js";
 import { DEFAULT_AUTH } from "../defaults.js";
+import { hashPassword, isHashed } from "../../services/password.js";
 
 const AUTH_PREFIX = "auth.";
 
@@ -58,19 +59,37 @@ export function resolveJwtSecret(): string {
   return stored;
 }
 
-/** 口令还是仓库里公开的那个默认值时，这个实例等同于没有认证。 */
-export function isUsingDefaultPassword(): boolean {
-  return readAuthConfig().password === DEFAULT_AUTH.password;
-}
-
-export function writeAuthPassword(next: string): void {
-  const key = `${AUTH_PREFIX}password`;
-  const value = JSON.stringify(next);
+function upsert(key: string, value: unknown): void {
+  const encoded = JSON.stringify(value);
   db.insert(settings)
-    .values({ key, value })
+    .values({ key, value: encoded })
     .onConflictDoUpdate({
       target: settings.key,
-      set: { value, updatedAt: sql`(unixepoch())` },
+      set: { value: encoded, updatedAt: sql`(unixepoch())` },
     })
     .run();
+}
+
+/**
+ * 口令还是仓库里公开的那个默认值时，这个实例等同于没有认证。
+ *
+ * 这个判断挂在每个受保护请求的 authenticate 上，所以**绝不能跑 KDF**——
+ * 口令已经是哈希，没法当场比对，只能读写入时一并记下的标记。
+ * 升级前的库里还是明文，那种直接比就行，同样不花什么代价。
+ */
+export function isUsingDefaultPassword(): boolean {
+  const config = readAuthConfig();
+  const stored = typeof config.password === "string" ? config.password : "";
+  if (!isHashed(stored)) return stored === DEFAULT_AUTH.password;
+  return config.mustChangePassword === true;
+}
+
+/** 传明文。哈希是这里做的，调用方没有机会忘记。 */
+export async function writeAuthPassword(plain: string): Promise<void> {
+  const hash = await hashPassword(plain);
+  // 标记和口令必须一起落，否则两者会各自漂移
+  db.transaction(() => {
+    upsert(`${AUTH_PREFIX}password`, hash);
+    upsert(`${AUTH_PREFIX}mustChangePassword`, plain === DEFAULT_AUTH.password);
+  });
 }
