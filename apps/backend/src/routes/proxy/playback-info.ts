@@ -24,6 +24,11 @@ function isOurs(source: EmbyMediaSource): boolean {
  *
  * 路径里必须用**条目 id**，不能用 MediaSource.Id——Emby 4.9 的 MediaSource.Id 长
  * `mediasource_11` 这样，而 Emby 自己给的 DirectStreamUrl 是 `/videos/11/stream`。
+ *
+ * 也**不能**带 `/emby` 前缀。Emby 自己就不带，客户端会拿它去拼自己的 base；
+ * base 本身带路径时（`https://host/emby`）加了前缀就拼成 `/emby/emby/Videos/...`，
+ * 两层前缀匹配不上任何拦截路由，请求落进通配透传——表现是能播但全程中转。
+ * 不带前缀则两种部署都命中：PREFIXES 里那个空串就是为根路径部署准备的。
  * 查询串沿用上游的，但要去掉 TranscodeReasons 并补上 Static=true，
  * 否则客户端会以为这是个转码流。
  */
@@ -50,7 +55,7 @@ function rewriteDirectStreamUrl(
   if (!params.has("MediaSourceId") && source.Id) params.set("MediaSourceId", source.Id);
   params.set("Static", "true");
 
-  source.DirectStreamUrl = `/emby/Videos/${itemId}/stream.${container}?${params.toString()}`;
+  source.DirectStreamUrl = `/Videos/${itemId}/stream.${container}?${params.toString()}`;
 }
 
 export function rewritePlaybackInfo(
