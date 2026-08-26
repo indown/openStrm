@@ -104,16 +104,23 @@ jobs:
         run: |
           echo "name=${REGISTRY}/$(echo "$REPO" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      # latest 只跟正式版走：预发布标签（v2.0.0-rc.1 这种带连字符的）
-      # 只推自己的版本号，免得尝鲜版把 latest 的用户一起带走。
+      # v 前缀必须交给 flavor：type=semver 碰上预发布版本会丢掉 pattern，
+      # 改用写死的 {{version}}，v2.0.0-rc.7 于是被推成了 2.0.0-rc.7。
+      # flavor 的 prefix 是在那之后才拼上去的，两种标签都保得住 v；
+      # latest 默认不吃 prefix，也不会变成 vlatest。
+      #
+      # latest 只跟正式版走：latest=auto 认得预发布版本，自己就不会动 latest，
+      # 免得尝鲜版把 latest 的用户一起带走。
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ steps.image.outputs.name }}
+          flavor: |
+            latest=auto
+            prefix=v
           tags: |
-            type=semver,pattern=v{{version}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=semver,pattern={{version}}
 
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
@@ -133,6 +140,6 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           draft: false
-          # 和上面的 latest 判据保持一致：带连字符的就是预发布
+          # 判据和上面的 latest=auto 一致：带连字符的就是预发布
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
