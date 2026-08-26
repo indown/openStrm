@@ -23,3 +23,7 @@ p115client/
 # Build outputs
 **/dist
 apps/frontend/.next
+
+# Compose 会自动加载同级的 .env，JWT_SECRET 之类容易被放进去
+.env
+.env.local

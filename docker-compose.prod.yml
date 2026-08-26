@@ -14,9 +14,7 @@ services:
       # 排查「播放没走 302」时把级别调到 debug
       # - LOG_LEVEL=debug
     volumes:
-      # 这里是 ./strmData 而不是 ./data，和 docker-compose.yml、Readme 不一致。
-      # 保持原样是因为已有部署的 strm 文件都在这个目录下，改掉会指向一个空目录。
-      - ./strmData:/app/data     # 生成的 strm 文件
+      - ./data:/app/data         # 生成的 strm 文件
       - ./config:/app/config     # openstrm.db：账号、设置、任务、登录凭据
       - ./logs:/app/logs         # 应用日志
     restart: unless-stopped
