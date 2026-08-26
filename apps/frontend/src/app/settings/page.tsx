@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import axiosInstance from "@/lib/axios";
 
@@ -12,7 +13,7 @@ type Settings = {
   strmExtensions?: string[];
   downloadExtensions?: string[];
   mediaMountPath?: string[];
-  emby?: { url?: string; apiKey?: string };
+  emby?: { url?: string; apiKey?: string; allowAnonymousRedirect?: boolean };
   tmdb?: { apiKey?: string; language?: string };
   hdhive?: { apiKey?: string; baseUrl?: string };
   download?: {
@@ -266,6 +267,27 @@ export default function SettingsPage() {
             />
           </div>
         </div>
+        <label className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
+          <Checkbox
+            checked={data.emby?.allowAnonymousRedirect === true}
+            onCheckedChange={(v) =>
+              setData({
+                ...data,
+                emby: { ...(data.emby || {}), allowAnonymousRedirect: v === true },
+              })
+            }
+            className="mt-0.5"
+          />
+          <span>
+            <span className="text-sm font-medium">允许未认证的请求换取直链</span>
+            <span className="block text-xs text-muted-foreground">
+              默认关闭。开启后，不带任何 Emby 令牌的请求也会用上面这个 API Key
+              去解析直链——意味着任何能访问代理端口的人，报一个条目 id
+              就能拿到你的媒体直链，无需登录 Emby。绝大多数播放器都会带令牌，
+              只有确认播放器一个令牌都不发、且播放确实不走直连时才需要开启。
+            </span>
+          </span>
+        </label>
       </section>
 
       <Separator />
