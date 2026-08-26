@@ -1,10 +1,9 @@
 /**
  * 115 直链解析。
  *
- * 两个调用方向，路径约定不一样：
- * - Emby 302 路由：拿到的是 strm 文件里写的路径，形如 `${strmPrefix}/${originPath}/${相对路径}`，
- *   需要先剥掉挂载前缀，再反查任务表确定是哪个账号的盘。
- * - /api/fs/get（Alist 兼容接口，CD2/OpenList 回源在用）：拿到的是 `/{账号名}/{115 路径}`。
+ * 调用方是 Emby 302 路由：拿到的是 strm 文件里写的路径，形如
+ * `${strmPrefix}/${originPath}/${相对路径}`，需要先剥掉挂载前缀，
+ * 再反查任务表确定是哪个账号的盘。
  *
  * 直链和请求时用的 UA 是绑定的，所以 UA 必须由调用方传进来——
  * 302 场景要用客户端自己的 UA，否则客户端拿着这条链接去下会被 115 拒掉。
@@ -183,19 +182,3 @@ export async function resolveEmbyPath(
   return toDirectUrl(matched?.account ?? list[0], matched?.panPath ?? stripped.rest, userAgent);
 }
 
-/**
- * Alist 兼容接口用的解析：路径形如 `/{账号名}/{115 路径}`，认不出账号名就用第一个 115 账号。
- * 保持 /api/fs/get 原有行为，CD2/OpenList 回源依赖它。
- */
-export async function resolveAlistPath(
-  alistPath: string,
-  userAgent?: string,
-): Promise<ResolveResult> {
-  const list = accounts115();
-  if (list.length === 0) return { ok: false, reason: "no-account" };
-
-  const decoded = safeDecode(alistPath);
-  const matched = splitByAccountName(decoded, list);
-
-  return toDirectUrl(matched?.account ?? list[0], matched?.panPath ?? decoded, userAgent);
-}
