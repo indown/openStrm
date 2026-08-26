@@ -53,8 +53,6 @@ import { start as startScrapeWorker } from "./services/library/scrape-worker.js"
 import directoryLocalRoute from "./routes/directory/local.js";
 import directoryRemoteRoute from "./routes/directory/remote.js";
 
-// Alist-compatible file system route
-import fsGetRoute from "./routes/fs/get.js";
 
 // 115 life-event monitor (incremental cloud-drive change detection)
 import lifeMonitorRoute from "./routes/life/index.js";
@@ -120,7 +118,6 @@ await app.register(directoryLocalRoute);
 await app.register(directoryRemoteRoute);
 
 // Alist-compatible route
-await app.register(fsGetRoute);
 
 // 115 life-event monitor
 await app.register(lifeMonitorRoute);

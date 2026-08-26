@@ -22,7 +22,6 @@ export type LifeMonitorSettings = {
 
 export type AppSettings = {
   "user-agent"?: string;
-  internalToken?: string;
   strmExtensions?: string[];
   downloadExtensions?: string[];
   linkMaxPerSecond?: number;
