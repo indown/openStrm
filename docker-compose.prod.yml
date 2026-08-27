@@ -15,8 +15,7 @@ services:
       # - LOG_LEVEL=debug
     volumes:
       - ./data:/app/data         # 生成的 strm 文件
-      - ./config:/app/config     # openstrm.db：账号、设置、任务、登录凭据
-      - ./logs:/app/logs         # 应用日志
+      - ./config:/app/config     # openstrm.db：账号、设置、任务、执行历史、登录凭据
     restart: unless-stopped
     logging:
       driver: "json-file"
