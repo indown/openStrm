@@ -46,13 +46,24 @@ export const cronPlugin = fp(async (fastify) => {
     }
   }
 
-  /** 按任务定义同步：有 cron 表达式的排上，没有的摘掉。任务增删改后必须调一次 */
+  /**
+   * 按任务定义同步：有 cron 表达式的排上，没有的摘掉。任务增删改后必须调一次。
+   *
+   * 单个任务的表达式解析失败只跳过它自己：路由层虽然已经校验，但库里可能有校验之前
+   * 存下的旧数据，而这个函数在 onReady 里跑——这里抛出去等于整个 API 起不来。
+   */
   function syncFromConfig() {
     const scheduled = new Set<string>();
     for (const task of listTasks()) {
-      if (task.cronExpression) {
+      if (!task.cronExpression) continue;
+      try {
         scheduleTask(task.id, task.cronExpression);
         scheduled.add(task.id);
+      } catch (err) {
+        fastify.log.error(
+          { err, taskId: task.id, cronExpression: task.cronExpression },
+          "[CRON] cron 表达式无法解析，该任务未排程",
+        );
       }
     }
     for (const [taskId] of jobs) {
