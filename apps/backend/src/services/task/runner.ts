@@ -27,7 +27,7 @@ import {
   updateTaskExecution,
 } from "../task-history.js";
 import { refreshEmbyNow } from "../media-server.js";
-import { extOf, extSet, localNameFor } from "../strm/naming.js";
+import { extOf, extSet } from "../strm/naming.js";
 import { sendTelegramNotification } from "../telegram.js";
 import {
   getRunningTask,
@@ -37,6 +37,7 @@ import {
   type DownloadProgress,
   type RunningTask,
 } from "./registry.js";
+import { flattenTree, planSync } from "./plan.js";
 import { buildTree, collectFilesAndTopEmptyDirs, type TreeNode } from "./tree.js";
 
 export interface StartTaskResult {
@@ -219,22 +220,13 @@ export async function startTask(taskId: string): Promise<StartTaskResult> {
   const strmExts = extSet(settings.strmExtensions);
   const dlExts = extSet(settings.downloadExtensions);
 
-  const remoteEntries: string[] = [];
-  for (const node of loaded.tree) {
-    if (node.children?.length) remoteEntries.push(...collectFilesAndTopEmptyDirs(node.children));
-    else if (/\.[a-z0-9]+$/i.test(node.name)) remoteEntries.push(node.name);
-  }
-
-  /**
-   * 和本地对照时，strm 类条目在本地叫 .strm，下载类和目录保持原名。
-   * 以前这里写死了 mp4/mp3/mkv：其余 strm 扩展名每次都被同时判成"缺失"和"多余"，
-   * 开着 removeExtraFiles 就先删再重建，关着也永远报不出 "no files to download"。
-   */
-  const expectedLocal = new Set(remoteEntries.map((p) => localNameFor(p, strmExts)));
-  const localEntries = new Set(collectFilesAndTopEmptyDirs(getLocalTree(saveDir)));
-  const actionable = remoteEntries.filter((p) => strmExts.has(extOf(p)) || dlExts.has(extOf(p)));
-  const missingLocally = actionable.filter((p) => !localEntries.has(localNameFor(p, strmExts)));
-  const extraLocally = [...localEntries].filter((p) => !expectedLocal.has(p));
+  // 对照规则在 plan.ts，有单测钉着；这里只负责把两边的清单喂进去
+  const { missing: missingLocally, extra: extraLocally } = planSync(
+    flattenTree(loaded.tree),
+    collectFilesAndTopEmptyDirs(getLocalTree(saveDir)),
+    strmExts,
+    dlExts,
+  );
 
   if (task.removeExtraFiles) removeExtraFiles(extraLocally, saveDir);
   if (missingLocally.length === 0) return { status: 200, body: { message: "no files to download" } };
