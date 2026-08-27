@@ -21,6 +21,6 @@ export default async function (fastify: FastifyInstance) {
     if (!(accountInfo as any).cookie) throw new HttpError(400, "115 account cookie is required");
 
     const data = await fsFiles(cid, { accountInfo });
-    return { code: 200, data: (data as any).data };
+    return (data as any).data ?? [];
   });
 }

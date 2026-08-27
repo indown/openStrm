@@ -17,7 +17,7 @@ export default async function (fastify: FastifyInstance) {
 
     try {
       const results = await searchMulti(apiKey, query, language || settings.tmdb?.language || "zh-CN");
-      return { code: 200, data: results };
+      return results;
     } catch (err) {
       throw new HttpError(502, err instanceof Error ? err.message : "TMDB 搜索失败");
     }

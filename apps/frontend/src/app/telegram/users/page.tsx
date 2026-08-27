@@ -10,7 +10,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Users, Plus, Trash2, CheckCircle, XCircle, AlertCircle, UserPlus } from "lucide-react";
-import axiosInstance from "@/lib/axios";
+import axiosInstance, { apiErrorMessage } from "@/lib/axios";
 
 interface TelegramUser {
   id: number;
@@ -36,8 +36,8 @@ export default function TelegramUsersPage() {
       setLoading(true);
       const response = await axiosInstance.get('/api/telegram/users');
       setUsers(response.data.users || []);
-    } catch (error: any) {
-      setError(error.response?.data?.message || 'Failed to load users');
+    } catch (error) {
+      setError(apiErrorMessage(error, 'Failed to load users'));
     } finally {
       setLoading(false);
     }
@@ -70,8 +70,8 @@ export default function TelegramUsersPage() {
         setAddDialogOpen(false);
         await loadUsers();
       }
-    } catch (error: any) {
-      setError(error.response?.data?.message || 'Failed to add user');
+    } catch (error) {
+      setError(apiErrorMessage(error, 'Failed to add user'));
     } finally {
       setLoading(false);
     }
@@ -91,8 +91,8 @@ export default function TelegramUsersPage() {
       setDeleteDialogOpen(false);
       setUserToDelete(null);
       await loadUsers();
-    } catch (error: any) {
-      setError(error.response?.data?.message || 'Failed to remove user');
+    } catch (error) {
+      setError(apiErrorMessage(error, 'Failed to remove user'));
     } finally {
       setLoading(false);
     }
@@ -283,7 +283,7 @@ export default function TelegramUsersPage() {
             <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
               <li>Open Telegram Web (web.telegram.org)</li>
               <li>Open the chat with the user</li>
-              <li>Look at the URL - the number after "user" is the user ID</li>
+              <li>Look at the URL - the number after &quot;user&quot; is the user ID</li>
             </ol>
           </div>
         </CardContent>

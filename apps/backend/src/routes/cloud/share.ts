@@ -38,7 +38,7 @@ const bodySchema = z.looseObject({
 });
 
 export default async function (fastify: FastifyInstance) {
-  fastify.post("/api/115/share", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  fastify.post("/api/115/share", { preHandler: [fastify.authenticate] }, async (request) => {
     const body = parse(bodySchema, request.body);
     const { action } = body;
 
@@ -61,12 +61,11 @@ export default async function (fastify: FastifyInstance) {
     switch (action) {
       case "parse": {
         if (!body.url) throw new HttpError(400, "url is required");
-        return { code: 200, data: shareExtractPayload(body.url) };
+        return shareExtractPayload(body.url);
       }
       case "info": {
         if (!shareCode) throw new HttpError(400, "shareCode is required");
-        const data = await getShareData(account115, shareCode, receiveCode);
-        return { code: 200, data };
+        return getShareData(account115, shareCode, receiveCode);
       }
       case "list": {
         const cid = body.cid || 0;
@@ -74,12 +73,12 @@ export default async function (fastify: FastifyInstance) {
         const offset = body.offset || 0;
         if (!shareCode) throw new HttpError(400, "shareCode is required");
         const { list, count } = await getShareDirList(account115, shareCode, receiveCode, cid, { limit, offset });
-        return { code: 200, data: { list, count, limit, offset } };
+        return { list, count, limit, offset };
       }
       case "download_url": {
         if (!shareCode || !body.fileId) throw new HttpError(400, "shareCode and fileId are required");
         const url = await getShareDownloadUrl(account115, shareCode, receiveCode, body.fileId);
-        return { code: 200, data: { url } };
+        return { url };
       }
       case "receive": {
         const fileIds = body.fileIds;
@@ -103,13 +102,11 @@ export default async function (fastify: FastifyInstance) {
             mode,
             settings: readAppSettings(),
           });
-          if (result.mode === "sync") return { code: 200, data: { strmGenerated: true, ...result } };
-          if ("error" in result) return reply.code(200).send({ code: 200, data: { strmGenerated: false, ...result } });
-          return { code: 200, data: { strmGenerated: true, ...result } };
+          // async 模式下引擎拒绝启动时仍是 200：转存已经成功，只是没排上后台同步
+          return { strmGenerated: !("error" in result), ...result };
         }
 
-        const result = await receiveToMyDrive(account115, shareCode, receiveCode, fileIds, body.toPid ?? 0);
-        return { code: 200, data: result };
+        return receiveToMyDrive(account115, shareCode, receiveCode, fileIds, body.toPid ?? 0);
       }
     }
   });

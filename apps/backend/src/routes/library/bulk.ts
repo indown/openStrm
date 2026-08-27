@@ -13,13 +13,10 @@ export default async function (fastify: FastifyInstance) {
     const pending = getPending();
     const s = workerStatus();
     return {
-      code: 200,
-      data: {
-        pendingIds: pending.map((e) => e.id),
-        pendingCount: pending.length,
-        active: s.active,
-        queued: s.queued,
-      },
+      pendingIds: pending.map((e) => e.id),
+      pendingCount: pending.length,
+      active: s.active,
+      queued: s.queued,
     };
   });
 
@@ -30,6 +27,6 @@ export default async function (fastify: FastifyInstance) {
 
     setScrapeStatus(id, "pending");
     enqueueOne(id);
-    return { code: 200, data: { id, status: "pending" } };
+    return { id, status: "pending" };
   });
 }

@@ -117,22 +117,15 @@ export function ShareDetailDialog({
     if (!shareLink.trim()) return;
     setLoading(true);
     try {
-      const res = await axiosInstance.post<{
-        code: number;
-        data?: { list: ShareFileItem[]; count: number };
-      }>("/api/115/share", {
+      const res = await axiosInstance.post<{ list: ShareFileItem[]; count: number }>("/api/115/share", {
         action: "list",
         url: shareLink.trim(),
         cid,
         limit: PAGE_SIZE,
         offset: (nextPage - 1) * PAGE_SIZE,
       });
-      if (res.data.code !== 200) {
-        toast.error("加载目录失败");
-        return;
-      }
-      setCurrentList(res.data.data?.list ?? []);
-      setTotalCount(res.data.data?.count ?? 0);
+      setCurrentList(res.data.list ?? []);
+      setTotalCount(res.data.count ?? 0);
       setPage(nextPage);
     } catch {
       toast.error("加载目录失败");
@@ -205,8 +198,8 @@ export function ShareDetailDialog({
         mode: choice.mode,
         selectedItems: items,
       });
-      if (res.data.code === 200) {
-        const data = res.data.data || {};
+      {
+        const data = res.data || {};
         if (data.mode === "async" && data.taskId) {
           const asyncTaskId = data.taskId as string;
           toast.success("已触发后台同步", {
@@ -221,8 +214,6 @@ export function ShareDetailDialog({
           toast.success("保存成功");
         }
         setSelectedItems(new Map());
-      } else {
-        toast.error(res.data.message || "保存失败");
       }
     } catch (err) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -320,12 +311,8 @@ export function ShareDetailDialog({
         fileIds: Array.from(selectedItems.keys()),
         toPid: String(cid),
       });
-      if (res.data.code === 200) {
-        toast.success("保存成功");
-        setSelectedItems(new Map());
-      } else {
-        toast.error(res.data.message || "保存失败");
-      }
+      toast.success("保存成功");
+      setSelectedItems(new Map());
     } catch (err) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(msg || "保存失败");

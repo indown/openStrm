@@ -1,5 +1,5 @@
 "use client"
-import { Home, Inbox, Settings, Github, Bot, Users, History, Library, Radar } from "lucide-react";
+import { Home, Inbox, Settings, Github, Bot, History, Library, Radar } from "lucide-react";
 import Image from "next/image";
 
 import {
@@ -54,19 +54,6 @@ const items = [
   },
 ];
 
-// Telegram menu items.
-const telegramItems = [
-  {
-    title: "Bot Config",
-    url: "/telegram",
-    icon: Bot,
-  },
-  {
-    title: "Users",
-    url: "/telegram/users",
-    icon: Users,
-  },
-];
 
 export function AppSidebar() {
   const pathname = usePathname();

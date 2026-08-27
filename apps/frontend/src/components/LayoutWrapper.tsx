@@ -87,20 +87,12 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
         body.query = queryToUse;
       }
       const res = await axiosInstance.post<{
-        code: number;
-        message?: string;
-        data?: {
-          tmdb: HdhiveTmdbItem | null;
-          alternatives: HdhiveTmdbItem[];
-          resources: HdhiveResourceItem[];
-          total: number;
-        };
+        tmdb: HdhiveTmdbItem | null;
+        alternatives: HdhiveTmdbItem[];
+        resources: HdhiveResourceItem[];
+        total: number;
       }>("/api/library/hdhive/search", body);
-      if (res.data.code !== 200) {
-        setHdhiveError(res.data.message || "搜索失败");
-        return;
-      }
-      const data = res.data.data;
+      const data = res.data;
       setHdhiveTmdb(data?.tmdb ?? null);
       setHdhiveAlternatives(data?.alternatives ?? []);
       setHdhiveResources(data?.resources ?? []);
@@ -136,23 +128,19 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     setShareLoading(true);
     try {
       const [infoRes, listRes] = await Promise.all([
-        axiosInstance.post<{ code: number; data?: Record<string, unknown> }>("/api/115/share", {
+        axiosInstance.post<Record<string, unknown>>("/api/115/share", {
           action: "info",
           url,
         }),
-        axiosInstance.post<{ code: number; data?: { list: ShareFileItem[]; count: number } }>("/api/115/share", {
+        axiosInstance.post<{ list: ShareFileItem[]; count: number }>("/api/115/share", {
           action: "list",
           url,
           cid: 0,
         }),
       ]);
-      if (infoRes.data.code !== 200 || listRes.data.code !== 200) {
-        toast.error(infoRes.data.code !== 200 ? "获取分享信息失败" : "获取文件列表失败");
-        return;
-      }
-      setShareInfo(infoRes.data.data ?? null);
-      setShareFileList(listRes.data.data?.list ?? []);
-      setShareFileCount(listRes.data.data?.count ?? 0);
+      setShareInfo(infoRes.data ?? null);
+      setShareFileList(listRes.data.list ?? []);
+      setShareFileCount(listRes.data.count ?? 0);
       setShareDetailOpen(true);
     } catch (err: unknown) {
       const msg =

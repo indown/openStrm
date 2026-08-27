@@ -83,6 +83,6 @@ export default async function (fastify: FastifyInstance) {
       mode,
       settings,
     });
-    return { code: 200, data: result };
+    return result;
   });
 }

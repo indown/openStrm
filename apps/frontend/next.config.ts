@@ -10,9 +10,6 @@ const nextConfig: NextConfig = {
   output: isExport ? "export" : undefined,
   // 静态导出没有图片优化服务
   images: { unoptimized: true },
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   ...(isExport
     ? {}
     : {

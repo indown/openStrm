@@ -68,4 +68,14 @@ axiosInstance.interceptors.response.use(
   }
 );
 
+/** 从 axios 错误里取后端的错误体（统一的 `{ message, ...extra }` 壳） */
+export function apiErrorBody(err: unknown): { message?: string; details?: string; code?: string } {
+  const data = (err as { response?: { data?: unknown } } | null)?.response?.data;
+  return data && typeof data === "object" ? (data as { message?: string; details?: string; code?: string }) : {};
+}
+
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  return apiErrorBody(err).message || fallback;
+}
+
 export default axiosInstance;

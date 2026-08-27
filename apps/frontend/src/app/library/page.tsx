@@ -91,15 +91,14 @@ export default function LibraryPage() {
     let cancelled = false;
     const tick = async () => {
       try {
-        const res = await axiosInstance.get<{
-          code: number;
-          data?: { pendingIds: string[]; pendingCount: number };
-        }>("/api/library/scrape-status");
+        const res = await axiosInstance.get<{ pendingIds: string[]; pendingCount: number }>(
+          "/api/library/scrape-status",
+        );
         if (cancelled) return;
         const currentPending = new Set(
           entriesRef.current.filter((e) => e.scrapeStatus === "pending").map((e) => e.id),
         );
-        const serverPending = new Set(res.data.data?.pendingIds ?? []);
+        const serverPending = new Set(res.data.pendingIds ?? []);
         let changed = currentPending.size !== serverPending.size;
         if (!changed) {
           for (const id of currentPending) {
@@ -166,24 +165,19 @@ export default function LibraryPage() {
     }
     try {
       const [infoRes, listRes] = await Promise.all([
-        axiosInstance.post<{ code: number; data?: Record<string, unknown> }>("/api/115/share", {
+        axiosInstance.post<Record<string, unknown>>("/api/115/share", {
           action: "info",
           url: entry.shareUrl,
         }),
-        axiosInstance.post<{ code: number; data?: { list: ShareFileItem[]; count: number } }>("/api/115/share", {
+        axiosInstance.post<{ list: ShareFileItem[]; count: number }>("/api/115/share", {
           action: "list",
           url: entry.shareUrl,
           cid: 0,
         }),
       ]);
-      if (infoRes.data.code !== 200 || listRes.data.code !== 200) {
-        toast.error(infoRes.data.code !== 200 ? "获取分享信息失败" : "获取文件列表失败");
-        setShareDetailOpen(false);
-        return;
-      }
-      setShareInfo(infoRes.data.data ?? null);
-      setShareFileList(listRes.data.data?.list ?? []);
-      setShareFileCount(listRes.data.data?.count ?? 0);
+      setShareInfo(infoRes.data ?? null);
+      setShareFileList(listRes.data.list ?? []);
+      setShareFileCount(listRes.data.count ?? 0);
     } catch (err) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(msg || "打开分享失败");
@@ -229,15 +223,11 @@ export default function LibraryPage() {
     setSaveToTaskOpen(false);
     setSavingToTask(true);
     try {
-      const res = await axiosInstance.post<{ code: number; data?: Record<string, unknown>; message?: string }>(
+      const res = await axiosInstance.post<Record<string, unknown>>(
         `/api/library/${saveToTaskEntry.id}/save-to-task`,
         { taskId: choice.taskId, subPath: choice.subPath, mode: choice.mode },
       );
-      if (res.data.code !== 200) {
-        toast.error(res.data.message || "保存失败");
-        return;
-      }
-      const data = res.data.data ?? {};
+      const data = res.data ?? {};
       if (data.mode === "async" && data.taskId) {
         const asyncTaskId = data.taskId as string;
         toast.success("已触发后台同步", {

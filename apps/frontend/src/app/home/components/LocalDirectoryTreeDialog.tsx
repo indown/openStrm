@@ -51,12 +51,7 @@ export function LocalDirectoryTreeDialog({
           basePath,
         });
 
-        if (response.data.code === 200) {
-          setTree(response.data.data || []);
-        } else {
-          console.error("Failed to load directory tree:", response.data.message);
-          setTree([]);
-        }
+        setTree(response.data || []);
       } catch (error) {
         console.error("Error loading directory tree:", error);
         setTree([]);
@@ -96,8 +91,8 @@ export function LocalDirectoryTreeDialog({
             basePath: currentPath,
           });
 
-          if (response.data.code === 200) {
-            const children = response.data.data || [];
+          {
+            const children = response.data || [];
             const updatedTree = updateTreeNode(tree, node.id, {
               ...node,
               children: children,

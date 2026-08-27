@@ -34,7 +34,7 @@ function hdhiveError(err: unknown, fallback: string, data?: unknown): HttpError 
 }
 
 export default async function (fastify: FastifyInstance) {
-  fastify.post("/api/library/hdhive/search", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  fastify.post("/api/library/hdhive/search", { preHandler: [fastify.authenticate] }, async (request) => {
     const body = parse(searchSchema, request.body);
     const settings = readAppSettings();
 
@@ -72,7 +72,7 @@ export default async function (fastify: FastifyInstance) {
       }
       const candidates = tmdbResults.filter((r) => r.mediaType === "movie" || r.mediaType === "tv");
       if (candidates.length === 0) {
-        return reply.code(200).send({ code: 200, data: { tmdb: null, alternatives: [], resources: [], total: 0 } });
+        return { tmdb: null, alternatives: [], resources: [], total: 0 };
       }
       selected = candidates[0];
       alternatives = candidates.slice(1);
@@ -92,7 +92,7 @@ export default async function (fastify: FastifyInstance) {
       throw hdhiveError(err, "HDHive 调用失败", { tmdb: selected, alternatives, resources: [], total: 0 });
     }
 
-    return { code: 200, data: { tmdb: selected, alternatives, resources, total } };
+    return { tmdb: selected, alternatives, resources, total };
   });
 
   fastify.post("/api/library/hdhive/unlock", { preHandler: [fastify.authenticate] }, async (request) => {
@@ -104,7 +104,7 @@ export default async function (fastify: FastifyInstance) {
 
     try {
       const data = await unlockResource(slug, { apiKey: hdhiveKey, baseUrl: settings.hdhive?.baseUrl?.trim() });
-      return { code: 200, data };
+      return data;
     } catch (err) {
       throw hdhiveError(err, "HDHive 解锁失败");
     }
