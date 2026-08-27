@@ -515,7 +515,7 @@ export default function Home() {
           <p className="mt-2 text-gray-600">点击上方按钮创建你的第一个任务</p>
         </div>
       ) : (
-        <DataTable columns={columns} data={data} />
+        <DataTable columns={columns} data={data} getRowId={(t) => t.id} />
       )}
     </div>
   );

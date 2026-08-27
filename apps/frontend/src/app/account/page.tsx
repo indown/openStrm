@@ -239,7 +239,7 @@ export default function AccountPage() {
           <p className="mt-2 text-gray-600">点击上方按钮添加你的第一个账户</p>
         </div>
       ) : (
-        <DataTable columns={columns} data={data} />
+        <DataTable columns={columns} data={data} getRowId={(a) => a.name} />
       )}
     </div>
   );
