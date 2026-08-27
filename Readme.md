@@ -109,6 +109,8 @@ docker-compose -f docker-compose.prod.yml up -d
 生成的 strm 文件落在 `./data`，与上面的 Docker 用法一致。
 
 > **从 v2.0.0 之前升级**：旧的 `docker-compose.prod.yml` 用的是 `./strmData`。换用新文件前先 `mv strmData data`，否则容器会对着一个空目录，Emby 那边的媒体库也会跟着空掉。
+>
+> v1 的 302 层是 nginx + emby2Alist，那套 `constant.js` 里的自定义配置（`mediaPathMapping`、`routeRule`、`clientSelfAlistRule` 等）**不会被继承**：v2 的代理只认「任务开了 302 的 strmPrefix 直接对应 115 目录」这一种映射。挂载结构就是一个前缀对一个目录、用主流客户端播放的话不受影响；改过那些规则的，升级后对应的客户端或目录会不走直链（日志里只有 `not-mounted`），需要反馈具体场景再补。
 
 ## 🔧 配置说明
 
