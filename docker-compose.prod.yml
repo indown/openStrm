@@ -7,6 +7,8 @@ services:
       - "8091:8091"   # Emby 302 代理（Emby 客户端连这个端口）
     environment:
       - NODE_ENV=production
+      # 定时任务按这个时区解释 cron 表达式。不设的话容器是 UTC，`0 3 * * *` 会在北京时间 11:00 跑
+      - TZ=Asia/Shanghai
       # JWT_SECRET 不用设：首次启动会随机生成并存进 config/openstrm.db。
       # 只有需要轮换密钥、或多个副本共享同一份登录令牌时才手动指定。
       # - JWT_SECRET=
