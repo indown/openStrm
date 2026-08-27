@@ -111,6 +111,12 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
         });
 
         
+        if (response.status === 404) {
+          // 后端对没在跑的任务直接 404；以前会把事件流头写出去然后一直挂着
+          setConnectionStatus("任务未运行");
+          setTaskStatus("未运行");
+          return;
+        }
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -142,16 +148,9 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
               if (dataStr.trim()) {
                 try {
                   const data: Progress = JSON.parse(dataStr);
-                  
-                  if (data.error) {
-                    // 没有任务的情况
-                    setLogs([]);
-                    setOverall("0");
-                    setConnectionStatus("任务不存在");
-                    setTaskStatus("不存在");
-                    return;
-                  }
-                  
+                  // {error} 是某个文件失败的记录（每个失败的 strm/下载都会发一条），任务还在跑，
+                  // 照常当一行显示；"任务不存在"由上面的 404 分支处理
+
                   // 检查任务是否完成
                   if (data.cancelled) {
                     setTaskStatus("已取消");
@@ -164,7 +163,8 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
                   }
                   
                   setLogs((prev) => {
-                    const idx = prev.findIndex((log) => log.filePath === data.filePath);
+                    // 只有带文件路径的进度才合并到同一行；{done} / {error} 这种没有路径的各自成行
+                    const idx = data.filePath ? prev.findIndex((log) => log.filePath === data.filePath) : -1;
                     if (idx !== -1) {
                       const updated = [...prev];
                       updated[idx] = { ...updated[idx], ...data };

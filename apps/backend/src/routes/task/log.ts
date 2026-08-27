@@ -11,9 +11,11 @@ export default async function (fastify: FastifyInstance) {
     const { taskId } = parse(paramsSchema, request.params, "params");
     const task = getRunningTask(taskId);
 
+    // 没在跑就直接 404：以前 SSE 分支会把响应头写出去然后一直挂着，前端永远显示"已连接"
+    if (!task) throw new HttpError(404, "Task is not running");
+
     const accept = request.headers.accept || "";
     if (!accept.includes("text/event-stream")) {
-      if (!task) throw new HttpError(404, "Task not found");
       return { message: "Task found", taskId };
     }
 
@@ -25,17 +27,15 @@ export default async function (fastify: FastifyInstance) {
     });
 
     // 先补发已经产生的日志，再订阅实时进度
-    if (task) {
-      for (const line of task.logs) reply.raw.write(`data: ${line}\n\n`);
-    }
-    const subscription = task?.subject.subscribe({
+    for (const line of task.logs) reply.raw.write(`data: ${line}\n\n`);
+    const subscription = task.subject.subscribe({
       next: (data) => reply.raw.write(`data: ${JSON.stringify(data)}\n\n`),
       error: () => reply.raw.end(),
       complete: () => reply.raw.end(),
     });
 
     request.raw.on("close", () => {
-      subscription?.unsubscribe();
+      subscription.unsubscribe();
       reply.raw.end();
     });
   });
