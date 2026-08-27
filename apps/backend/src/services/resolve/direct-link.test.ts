@@ -3,20 +3,13 @@
  *
  * 这层出错的表现是"能播但播错文件"或"整库都不 302"，比崩溃更难查，
  * 所以边界情况都钉在这里：
- *   npx tsx src/services/resolve/direct-link.test.ts
+ *   pnpm test:file src/services/resolve/direct-link.test.ts
  */
 import assert from "node:assert/strict";
+import { test as t } from "node:test";
 import type { TaskDefinition } from "@openstrm/shared";
 import { accountNameByTask, safeDecode, stripMountPath } from "./direct-link.js";
-
-let pass = 0;
-const t = (name: string, fn: () => void) => {
-  fn();
-  pass++;
-  console.log("  ok  " + name);
-};
-
-console.log("stripMountPath");
+// ---- stripMountPath ----
 t("剥掉挂载前缀，剩下的就是盘内路径", () => {
   const r = stripMountPath("/mnt/pan/tv/Show/ep1.mkv", ["/mnt/pan"]);
   assert.deepEqual(r, { mount: "/mnt/pan", rest: "/tv/Show/ep1.mkv" });
@@ -51,8 +44,7 @@ t("前缀相同但不是目录边界，不算命中", () => {
 t("挂载点没配时返回 null", () => {
   assert.equal(stripMountPath("/mnt/pan/a.mkv", []), null);
 });
-
-console.log("safeDecode");
+// ---- safeDecode ----
 t("还原 encodeURI 过的中文路径", () => {
   assert.equal(safeDecode("/mnt/pan/%E7%94%B5%E5%BD%B1/a.mkv"), "/mnt/pan/电影/a.mkv");
 });
@@ -60,8 +52,7 @@ t("还原 encodeURI 过的中文路径", () => {
 t("解不开的百分号原样返回，不抛异常", () => {
   assert.equal(safeDecode("/mnt/pan/100%/a.mkv"), "/mnt/pan/100%/a.mkv");
 });
-
-console.log("accountNameByTask");
+// ---- accountNameByTask ----
 const tasks: TaskDefinition[] = [
   { id: "1", account: "主号", originPath: "/tv", targetPath: "/data/tv", strmPrefix: "/mnt/pan" },
   { id: "2", account: "小号", originPath: "movie", targetPath: "/data/movie", strmPrefix: "/mnt/pan" },
@@ -118,5 +109,3 @@ t("任务顺序颠倒也取最长匹配", () => {
   ];
   assert.equal(accountNameByTask("/mnt/pan", "/tv/anime/ep1.mkv", reversed), "小号");
 });
-
-console.log(`\n${pass} passed`);

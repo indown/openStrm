@@ -28,8 +28,8 @@ jobs:
 
       - run: pnpm typecheck
 
-      # 用例会写 settings 表，必须指到临时目录——
-      # 不给 CONFIG_DIR 的话代理那两个 suite 会直接拒绝运行
+      # 用例会改写 settings 表、在 DATA_DIR 里建删目录，必须指到临时目录——
+      # src/test/setup.ts 见不到这两个变量会直接拒绝运行
       - name: Unit and integration tests
         working-directory: apps/backend
         env:
