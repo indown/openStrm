@@ -131,6 +131,7 @@ docker-compose -f docker-compose.prod.yml up -d
 | `JWT_SECRET` | 首次启动随机生成并持久化 | 登录令牌的签名密钥。只有在需要轮换密钥、或多个副本共享同一份登录状态时才手动指定；改动会让所有已登录会话立即失效 |
 | `LOG_LEVEL` | `info` | 排查「播放没走 302」时设为 `debug` |
 | `CONFIG_DIR` / `DATA_DIR` | `/app/config`、`/app/data` | 容器内路径，一般不用改 |
+| `TRUST_PROXY` | 关 | 放在 nginx/Caddy 之类反代后面时设为 `true`，登录限流和日志里的客户端 IP 才会取 `X-Forwarded-For` |
 
 ### 数据目录
 
