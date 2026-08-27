@@ -1,4 +1,6 @@
 
+import fs from "node:fs";
+import path from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import compress from "@fastify/compress";
@@ -7,6 +9,7 @@ import { sqlite } from "./db/client.js";
 import { readAppSettings } from "./db/repositories/settings.js";
 import { logger } from "./lib/logger.js";
 import { registerErrorHandling } from "./plugins/error-handler.js";
+import staticSitePlugin from "./plugins/static-site.js";
 
 // Prevent unhandled rejections from crashing the process
 process.on("unhandledRejection", (err) => {
@@ -135,8 +138,20 @@ await app.register(telegramSendRoute);
 await app.register(telegramUsersRoute);
 await app.register(telegramPollingRoute);
 
+// 生产镜像里由这个进程托管管理界面（FRONTEND_DIR 指向前端的静态导出）；
+// 开发时不设，next dev 自己在 3000 上跑
+const frontendDir = process.env.FRONTEND_DIR;
+if (frontendDir) {
+  if (fs.existsSync(path.join(frontendDir, "index.html"))) {
+    await app.register(staticSitePlugin, { root: path.resolve(frontendDir) });
+  } else {
+    app.log.warn(`FRONTEND_DIR=${frontendDir} 下没有 index.html，管理界面不可用`);
+  }
+}
+
 // Emby 代理跑在独立进程里（src/proxy.ts）：
 // 管理端崩溃或 strm 任务占满事件循环时，播放不受影响。
+// 端口：开发默认 4000（next dev 占着 3000）；容器里 entrypoint 设成 3000，界面和 API 同一个口
 const API_PORT = Number(process.env.BACKEND_PORT) || 4000;
 const HOST = process.env.BACKEND_HOST || "0.0.0.0";
 

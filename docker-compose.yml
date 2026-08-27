@@ -4,9 +4,8 @@ services:
     image: indown/openstrm:latest
     container_name: openstrm
     ports:
-      - "3000:3000"   # Next.js frontend (管理界面)
-      - "8091:8091"   # Fastify Emby proxy (emby 客户端使用此端口)
-      # - "4000:4000" # Fastify API (可选暴露，前端通过 rewrites 访问)
+      - "3000:3000"   # 管理界面 + API
+      - "8091:8091"   # Emby 302 代理（Emby 客户端连这个端口）
     environment:
       - NODE_ENV=production
     volumes:

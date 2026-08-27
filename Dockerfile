@@ -40,6 +40,7 @@ RUN rm -rf node_modules/.pnpm/@types+* node_modules/@types && \
     test -f node_modules/better-sqlite3/build/Release/better_sqlite3.node
 
 # ========== Stage 3: Build frontend ==========
+# 生产构建是纯静态导出（apps/frontend/out），由后端进程托管，镜像里没有 Next 的服务进程
 FROM deps AS frontend-builder
 COPY packages/shared packages/shared
 COPY apps/frontend apps/frontend
@@ -52,21 +53,16 @@ WORKDIR /app
 # 后端：自包含，入口在 backend/dist/
 COPY --from=backend-builder /deploy/backend ./backend
 
-# 前端：monorepo 下 Next.js 的 standalone 产物是嵌套的，
-# server.js 在 standalone/apps/frontend/ 而不是根部，static 和 public 也要跟着放进去，
-# 否则 Next 起不来或者静态资源 404。
-COPY --from=frontend-builder /app/apps/frontend/.next/standalone ./frontend
-COPY --from=frontend-builder /app/apps/frontend/.next/static ./frontend/apps/frontend/.next/static
-COPY --from=frontend-builder /app/apps/frontend/public ./frontend/apps/frontend/public
+# 前端：静态文件，entrypoint 用 FRONTEND_DIR 指给后端
+COPY --from=frontend-builder /app/apps/frontend/out ./frontend
 
 # Entrypoint
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# 3000 前端 / 4000 API（默认不对外）/ 8091 Emby 代理
-EXPOSE 3000 4000 8091
+# 3000 管理界面 + API / 8091 Emby 代理
+EXPOSE 3000 8091
 
 ENV NODE_ENV=production
-ENV HOSTNAME=0.0.0.0
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

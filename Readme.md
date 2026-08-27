@@ -67,7 +67,8 @@ cd OpenStrm
 corepack enable pnpm
 pnpm install
 
-# 同时启动 backend(4000) / Emby 代理(8091) / 前端(3000)
+# 同时启动 backend(4000) / Emby 代理(8091) / 前端 next dev(3000)
+# 生产镜像里没有 Next 服务进程：前端是静态导出，由 backend 在 3000 上一并托管
 pnpm dev
 ```
 
@@ -90,7 +91,7 @@ docker run -d \
 ```
 
 **端口说明**：
-- `3000`: 前端管理界面
+- `3000`: 管理界面和 API（同一个进程）
 - `8091`: Emby 302 代理端口（Emby 客户端使用此端口连接）
 
 **目录挂载说明**：

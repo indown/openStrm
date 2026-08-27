@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useEffect, useState, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import axiosInstance from "@/lib/axios";
 
 interface Progress {
@@ -15,17 +16,28 @@ interface Progress {
   message?: string;
 }
 
-export default function DownloadProgressPage({
-  params,
-  searchParams,
-}: {
-  params: { taskId: string };
-  searchParams?: { executionId?: string };
-}) {
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-expect-error
-  const { taskId } = React.use(params);
-  const executionId = searchParams?.executionId;
+/**
+ * 静态导出没有运行时的动态路由段，任务 id 和执行记录 id 都走查询串：
+ * /log?taskId=…&executionId=…
+ * useSearchParams 在静态渲染时必须包在 Suspense 里，否则 next build 直接报错。
+ */
+export default function LogPage() {
+  return (
+    <React.Suspense fallback={<div style={{ padding: 24, color: "#6b7280" }}>加载中...</div>}>
+      <LogRouter />
+    </React.Suspense>
+  );
+}
+
+function LogRouter() {
+  const search = useSearchParams();
+  const taskId = search.get("taskId") ?? "";
+  const executionId = search.get("executionId") ?? undefined;
+  if (!taskId) return <div style={{ padding: 24, color: "#6b7280" }}>缺少 taskId 参数</div>;
+  return <DownloadProgress taskId={taskId} executionId={executionId} />;
+}
+
+function DownloadProgress({ taskId, executionId }: { taskId: string; executionId?: string }) {
   const [logs, setLogs] = useState<Progress[]>([]);
   const [overall, setOverall] = useState<string>("0");
   const [connectionStatus, setConnectionStatus] = useState<string>("连接中...");
@@ -65,8 +77,9 @@ export default function DownloadProgressPage({
         // 计算总体进度 - 查找最后一个有overallPercent的日志
         let finalOverallPercent = "0";
         for (let i = parsedLogs.length - 1; i >= 0; i--) {
-          if (parsedLogs[i]?.overallPercent) {
-            finalOverallPercent = parsedLogs[i].overallPercent;
+          const pct = parsedLogs[i]?.overallPercent;
+          if (pct) {
+            finalOverallPercent = pct;
             break;
           }
         }

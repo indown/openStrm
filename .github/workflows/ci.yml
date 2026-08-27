@@ -57,14 +57,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 构建成功不代表能跑，必须真起一次。
-      # 判据是服务在不在应答，不是进程名：Next.js 会设置 process.title，
-      # Linux 上这会覆写 argv，按路径 pgrep 找不到。
+      # 构建成功不代表能跑，必须真起一次。判据是服务在不在应答，不是进程名。
       - name: Smoke test
         run: |
           set -u
           docker run -d --name smoke \
-            -p 3000:3000 -p 4000:4000 -p 8091:8091 openstrm:ci
+            -p 3000:3000 -p 8091:8091 openstrm:ci
 
           # 端口有响应即算存活。curl 连不上时自己就会打印 000，
           # 这里的 || true 只用来吞掉它的非零退出码（run 默认带 -e），
@@ -81,18 +79,20 @@ jobs:
           echo "--- 容器日志 ---"
           docker logs smoke 2>&1 | tail -30
 
-          [ "${ready:-0}" = "1" ] || { echo "::error::前端未在 60 秒内就绪"; exit 1; }
-          echo "  前端 :3000 -> 200"
+          [ "${ready:-0}" = "1" ] || { echo "::error::管理界面未在 60 秒内就绪"; exit 1; }
+          echo "  管理界面 :3000/ -> 200"
 
-          # API 和代理只要求"在监听"：没配 Emby 时代理回源失败是正常的，
+          # 界面和 API 在同一个进程、同一个端口上：未登录访问设置接口必须是 401，
+          # 是 401 说明路由、鉴权和错误壳都活着
+          code=$(probe http://127.0.0.1:3000/api/settings)
+          [ "$code" = "401" ] || { echo "::error::API :3000/api/settings 期望 401，实际 $code"; exit 1; }
+          echo "  API :3000/api/settings -> 401"
+
+          # 代理只要求"在监听"：没配 Emby 时回源失败是正常的，
           # 返回 500 也说明进程活着，只有 000 才是没起来
-          for svc in "API :4000 http://127.0.0.1:4000/" \
-                     "代理 :8091 http://127.0.0.1:8091/System/Info/Public"; do
-            set -- $svc
-            code=$(probe "$3")
-            [ "$code" != "000" ] || { echo "::error::$1 $2 无响应"; exit 1; }
-            echo "  $1 $2 -> $code"
-          done
+          code=$(probe http://127.0.0.1:8091/System/Info/Public)
+          [ "$code" != "000" ] || { echo "::error::代理 :8091 无响应"; exit 1; }
+          echo "  代理 :8091 -> $code"
 
           # 迁移文件必须进了镜像，否则容器起来面对的是空库
           docker exec smoke sh -c 'ls /app/backend/dist/db/migrations/*.sql >/dev/null' \

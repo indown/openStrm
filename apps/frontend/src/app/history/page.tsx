@@ -131,7 +131,7 @@ export default function TaskHistoryPage() {
 
   const viewLogs = (execution: TaskExecutionHistory) => {
     // 跳转到日志查看页面
-    window.open(`/log/${execution.taskId}?executionId=${execution.id}`, "_blank");
+    window.open(`/log?taskId=${encodeURIComponent(execution.taskId)}&executionId=${encodeURIComponent(execution.id)}`, "_blank");
   };
 
   if (loading) {
