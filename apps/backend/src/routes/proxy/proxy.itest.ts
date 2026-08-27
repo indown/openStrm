@@ -11,6 +11,7 @@ import { after, test } from "node:test";
 import http from "node:http";
 import Fastify from "fastify";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
+import { deleteTask, insertTask } from "../../db/repositories/tasks.js";
 import proxyPlugin from "./index.js";
 import { clearLinkCache, setLinkResolver } from "./redirect.js";
 import { swapPorts, swapUrlPort } from "./system-info.js";
@@ -270,6 +271,27 @@ test("挂载点里的媒体源被标成可直连，本地源不动", async () =>
     assert.match(pan.DirectStreamUrl, /api_key=k/, "查询串要保留，丢了客户端就没法鉴权");
 
     assert.equal(local.SupportsDirectPlay, false, "本地源不该被改");
+  });
+
+test("只在任务上开了 302、没手填 mediaMountPath：PlaybackInfo 同样改写", async () => {
+    const now = readAppSettings();
+    replaceAppSettings({ ...now, mediaMountPath: [] });
+    try {
+      const before = await app.inject({ method: "POST", url: "/emby/Items/item-1/PlaybackInfo", payload: {} });
+      const untouched = JSON.parse(before.body).MediaSources.find((s: { Id: string }) => s.Id === "ms-pan");
+      assert.equal(untouched.SupportsDirectPlay, false, "没有任何挂载前缀时不该改写");
+
+      insertTask({ id: "pi-302", account: "主号", originPath: "/tv", targetPath: "tv", strmPrefix: MOUNT, enable302: true });
+      const after302 = await app.inject({ method: "POST", url: "/emby/Items/item-1/PlaybackInfo", payload: {} });
+      assert.equal(after302.statusCode, 200);
+      const pan = JSON.parse(after302.body).MediaSources.find((s: { Id: string }) => s.Id === "ms-pan");
+      assert.equal(pan.SupportsDirectPlay, true, "302 的挂载点从任务现算，PlaybackInfo 不能只看手填的 mediaMountPath");
+      assert.equal(pan.SupportsTranscoding, false);
+      assert.match(pan.DirectStreamUrl, /^\/Videos\/item-1\/stream\.mkv\?/);
+    } finally {
+      deleteTask("pi-302");
+      replaceAppSettings(now);
+    }
   });
 // ---- System/Info 端口改写 ----
 

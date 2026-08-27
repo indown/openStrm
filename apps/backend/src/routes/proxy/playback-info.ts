@@ -8,14 +8,16 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { EmbyMediaSource } from "../../services/emby/api.js";
 import { clientApiKey } from "../../services/emby/api.js";
-import { readSettingsSafe } from "../../services/settings-safe.js";
-import { safeDecode, stripMountPath } from "../../services/resolve/direct-link.js";
+import { currentMountPaths, safeDecode, stripMountPath } from "../../services/resolve/direct-link.js";
 import { fetchUpstream, relayResponse, toEmby } from "./upstream.js";
 
-/** 这个媒体源是不是我们生成的 strm（落在某个 mediaMountPath 下面） */
-function isOurs(source: EmbyMediaSource): boolean {
+/**
+ * 这个媒体源是不是我们生成的 strm——落在某个挂载前缀下面。
+ * 前缀必须和 302 那条路（resolveEmbyPath）用同一份：手填的 mediaMountPath ∪ 开了 302 的任务，
+ * 只看前者的话，按 v2 的方式只在任务上开 302 的用户，PlaybackInfo 不会被改写，客户端走转码。
+ */
+function isOurs(source: EmbyMediaSource, mountPaths: string[]): boolean {
   if (!source.Path) return false;
-  const mountPaths = readSettingsSafe().mediaMountPath ?? [];
   return stripMountPath(safeDecode(source.Path).replace(/\/{2,}/g, "/"), mountPaths) !== null;
 }
 
@@ -61,6 +63,7 @@ function rewriteDirectStreamUrl(
 export function rewritePlaybackInfo(
   body: Record<string, unknown>,
   itemId: string,
+  mountPaths: string[],
   requestQuery: Record<string, unknown> = {},
   requestHeaders: Record<string, string | string[] | undefined> = {},
 ): boolean {
@@ -69,7 +72,7 @@ export function rewritePlaybackInfo(
 
   let touched = false;
   for (const source of sources as EmbyMediaSource[]) {
-    if (!isOurs(source)) continue;
+    if (!isOurs(source, mountPaths)) continue;
     if (source.IsInfiniteStream) continue; // 直播流不做直连改写
 
     source.SupportsDirectPlay = true;
@@ -109,9 +112,11 @@ async function handlePlaybackInfo(request: FastifyRequest, reply: FastifyReply) 
       return relayResponse(reply, upstream.res, raw);
     }
 
+    // 每个请求算一次，别在每个媒体源上都去读一遍库
     const touched = rewritePlaybackInfo(
       body,
       itemId,
+      currentMountPaths(),
       (request.query ?? {}) as Record<string, unknown>,
       request.headers,
     );
