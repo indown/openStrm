@@ -3,10 +3,19 @@
  * schema 产出的形状对不上类型，这里就编译不过。
  */
 import { z } from "zod";
+import { validateCronExpression } from "cron";
 import type { AppSettings, LifeMonitorSettings, TaskDefinition } from "@openstrm/shared";
 
 /** 115 的 id 超过 JS 安全整数，前端有的地方传字符串、有的传数字 */
 export const cidSchema = z.union([z.string(), z.number()]);
+
+/**
+ * 空串表示不定时（前端清空字段时就发空串）；其余必须能被 cron 解析。
+ * 不在这里拦住的话，坏表达式会被存进库，之后每次启动排程都在 new CronJob 上炸。
+ */
+export const cronExpressionSchema = z
+  .string()
+  .refine((v) => v === "" || validateCronExpression(v).valid, { message: "invalid cron expression" });
 
 export const taskInputSchema = z.looseObject({
   account: z.string().min(1),
@@ -17,7 +26,7 @@ export const taskInputSchema = z.looseObject({
   removeExtraFiles: z.boolean().optional(),
   enablePathEncoding: z.boolean().optional(),
   enable302: z.boolean().optional(),
-  cronExpression: z.string().optional(),
+  cronExpression: cronExpressionSchema.optional(),
 }) satisfies z.ZodType<Omit<TaskDefinition, "id">>;
 
 export const taskPatchSchema = taskInputSchema.partial().extend({ id: z.string().min(1) });

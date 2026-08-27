@@ -19,7 +19,7 @@ import settingsRoute from "./settings/index.js";
 import { DEFAULT_AUTH } from "../db/defaults.js";
 import { writeAuthPassword } from "../db/repositories/auth.js";
 import { readAppSettings, replaceAppSettings } from "../db/repositories/settings.js";
-import { listTasks, replaceTasks } from "../db/repositories/tasks.js";
+import { deleteTask, insertTask, listTasks, replaceTasks } from "../db/repositories/tasks.js";
 import { listAccounts, replaceAccounts } from "../db/repositories/accounts.js";
 
 let app: FastifyInstance;
@@ -110,6 +110,43 @@ test("DELETE /api/task：删掉后再删 404", async () => {
   assert.equal((await call("DELETE", `/api/task?id=${taskId}`)).statusCode, 200);
   assert.equal((await call("DELETE", `/api/task?id=${taskId}`)).statusCode, 404);
   assert.equal(listTasks().length, 0);
+});
+
+test("POST/PUT /api/task：cron 表达式不合法 → 400，不会被存进库", async () => {
+  const res = await call("POST", "/api/task", {
+    account: "acc",
+    originPath: "/tv",
+    targetPath: "tv",
+    cronExpression: "every day at 3am",
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json().code, "VALIDATION");
+  assert.match(res.json().message, /^cronExpression/);
+  assert.equal(listTasks().length, 0, "校验失败的任务不能落库");
+
+  const created = await call("POST", "/api/task", { account: "acc", originPath: "/tv", targetPath: "tv" });
+  assert.equal(created.statusCode, 201);
+  const bad = await call("PUT", "/api/task", { id: created.json().id, cronExpression: "61 * * * *" });
+  assert.equal(bad.statusCode, 400);
+  assert.equal(listTasks()[0]?.cronExpression, undefined, "PUT 校验失败不能改掉库里的值");
+  await call("DELETE", `/api/task?id=${created.json().id}`);
+});
+
+test("库里已有解析不了的表达式：启动不炸，其余任务照常排程", async () => {
+  // 绕过路由校验，模拟校验上线前存下的脏数据
+  insertTask({ id: "bad-cron", account: "acc", originPath: "/a", targetPath: "a", cronExpression: "not a cron" });
+  insertTask({ id: "good-cron", account: "acc", originPath: "/b", targetPath: "b", cronExpression: "0 0 1 1 *" });
+
+  const boot = Fastify();
+  await boot.register(cronPlugin);
+  await boot.ready(); // onReady 里的 syncFromConfig 以前会在这里抛出来
+  const jobs = boot.cron.listJobs().map((j) => j.taskId);
+  assert.ok(jobs.includes("good-cron"), "好的表达式要排上");
+  assert.ok(!jobs.includes("bad-cron"), "坏的只跳过自己");
+  await boot.close();
+
+  deleteTask("bad-cron");
+  deleteTask("good-cron");
 });
 
 // ---- 账号 ----
