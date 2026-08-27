@@ -105,16 +105,9 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
     }
     setTmdbLoading(true);
     try {
-      const res = await axiosInstance.post<{ code: number; data?: TmdbSearchResult[]; message?: string }>(
-        "/api/library/tmdb/search",
-        { query: q },
-      );
-      if (res.data.code !== 200) {
-        toast.error(res.data.message || "TMDB 搜索失败");
-        return;
-      }
-      setTmdbResults(res.data.data ?? []);
-      if ((res.data.data ?? []).length === 0) {
+      const res = await axiosInstance.post<TmdbSearchResult[]>("/api/library/tmdb/search", { query: q });
+      setTmdbResults(res.data ?? []);
+      if ((res.data ?? []).length === 0) {
         toast.info("没有找到相关结果");
       }
     } catch (err) {
@@ -139,13 +132,7 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
     }
     setRescraping(true);
     try {
-      const res = await axiosInstance.post<{ code: number; data?: { id: string; status: string }; message?: string }>(
-        `/api/library/${initial.id}/scrape`,
-      );
-      if (res.data.code !== 200) {
-        toast.error(res.data.message || "触发重新刮削失败");
-        return;
-      }
+      await axiosInstance.post<{ id: string; status: string }>(`/api/library/${initial.id}/scrape`);
       toast.success("已加入刮削队列，稍后刷新查看");
       onOpenChange(false);
     } catch (err) {

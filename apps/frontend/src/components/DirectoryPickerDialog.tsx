@@ -52,13 +52,8 @@ export function DirectoryPickerDialog({
   const fetchDirectories = async (cid: number) => {
     setLoading(true);
     try {
-      const res = await axiosInstance.post("/api/115/files", { cid });
-      if (res.data.code === 200) {
-        const dirs = (res.data.data || []).filter((item: DirectoryItem) => item.fc === 0);
-        setDirectories(dirs);
-      } else {
-        toast.error("加载目录失败");
-      }
+      const res = await axiosInstance.post<DirectoryItem[]>("/api/115/files", { cid });
+      setDirectories((res.data || []).filter((item) => item.fc === 0));
     } catch {
       toast.error("加载目录失败");
     } finally {

@@ -93,12 +93,12 @@ export function SaveToDriveDialog({
       : selectedTask.originPath;
     setSubdirLoading(true);
     axiosInstance
-      .post<{ code: number; data?: RemoteDir[] }>("/api/directory/remote/list", {
+      .post<RemoteDir[]>("/api/directory/remote/list", {
         account: selectedTask.account,
         path: fullPath,
       })
       .then((res) => {
-        setSubdirs(res.data?.data ?? []);
+        setSubdirs(res.data ?? []);
       })
       .catch(() => {
         setSubdirs([]);

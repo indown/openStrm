@@ -25,7 +25,7 @@ export default async function (fastify: FastifyInstance) {
         const dirResp = await fsDirGetId(path, { userAgent, accountInfo });
         cid = (dirResp as any).id;
       } catch {
-        return { code: 200, message: "success", data: [] };
+        return [];
       }
     }
 
@@ -35,9 +35,9 @@ export default async function (fastify: FastifyInstance) {
       const nodes = items
         .filter((item) => !item.sha || item.sha === "" || item.sha === null)
         .map((item) => ({ name: item.n, id: item.cid, isDir: true, hasChildren: true }));
-      return { code: 200, message: "success", data: nodes };
+      return nodes;
     } catch {
-      return { code: 200, message: "success", data: [] };
+      return [];
     }
   });
 }

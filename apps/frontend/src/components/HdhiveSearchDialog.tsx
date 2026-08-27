@@ -321,16 +321,8 @@ export function HdhiveSearchDialog({
       return next;
     });
     try {
-      const resp = await axiosInstance.post<{
-        code: number;
-        message?: string;
-        data?: HdhiveUnlockResult;
-      }>("/api/library/hdhive/unlock", { slug: res.slug });
-      if (resp.data.code !== 200 || !resp.data.data) {
-        toast.error(resp.data.message || "解锁失败");
-        return;
-      }
-      const result = resp.data.data;
+      const resp = await axiosInstance.post<HdhiveUnlockResult>("/api/library/hdhive/unlock", { slug: res.slug });
+      const result = resp.data;
       setUnlockResults((prev) => {
         const next = new Map(prev);
         next.set(res.slug, result);

@@ -54,7 +54,7 @@ export default function ClientAuthProvider({ children }: ClientAuthProviderProps
       
       console.log('ClientAuthProvider: Token valid, user authenticated');
       setIsAuthenticated(true);
-    } catch (error) {
+    } catch {
       console.log('ClientAuthProvider: Error parsing token, redirecting to login');
       localStorage.removeItem('auth-token');
       router.push('/login');

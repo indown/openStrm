@@ -5,12 +5,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
-import { Bot, Settings, Users, MessageSquare, CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square } from "lucide-react";
-import axiosInstance from "@/lib/axios";
+import { Bot, Settings, MessageSquare, CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square } from "lucide-react";
+import axiosInstance, { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 
 interface TelegramConfig {
   botToken?: string;
@@ -98,10 +97,10 @@ export default function TelegramPage() {
         // 重新加载完整信息以获取 webhook 信息
         await loadBotInfo();
       }
-    } catch (error: any) {
-      const errorMessage = error.response?.data?.message || 'Failed to configure bot';
-      const errorDetails = error.response?.data?.details || '';
-      setError(errorDetails ? `${errorMessage}: ${errorDetails}` : errorMessage);
+    } catch (error) {
+      const { message, details } = apiErrorBody(error);
+      const errorMessage = message || 'Failed to configure bot';
+      setError(details ? `${errorMessage}: ${details}` : errorMessage);
     } finally {
       setLoading(false);
     }
@@ -122,8 +121,8 @@ export default function TelegramPage() {
       setBotInfo(null);
       setWebhookInfo(null);
       setConfig({});
-    } catch (error: any) {
-      setError(error.response?.data?.message || 'Failed to remove bot configuration');
+    } catch (error) {
+      setError(apiErrorMessage(error, 'Failed to remove bot configuration'));
     } finally {
       setLoading(false);
     }
@@ -152,8 +151,8 @@ export default function TelegramPage() {
         setSuccess('Polling started successfully!');
         await checkPollingStatus();
       }
-    } catch (error: any) {
-      setError(error.response?.data?.message || 'Failed to start polling');
+    } catch (error) {
+      setError(apiErrorMessage(error, 'Failed to start polling'));
     } finally {
       setLoading(false);
     }
@@ -172,8 +171,8 @@ export default function TelegramPage() {
         setSuccess('Polling stopped successfully!');
         await checkPollingStatus();
       }
-    } catch (error: any) {
-      setError(error.response?.data?.message || 'Failed to stop polling');
+    } catch (error) {
+      setError(apiErrorMessage(error, 'Failed to stop polling'));
     } finally {
       setLoading(false);
     }
@@ -196,8 +195,8 @@ export default function TelegramPage() {
       });
 
       setSuccess('Test message sent successfully!');
-    } catch (error: any) {
-      setError(error.response?.data?.message || 'Failed to send test message');
+    } catch (error) {
+      setError(apiErrorMessage(error, 'Failed to send test message'));
     } finally {
       setLoading(false);
     }
@@ -383,7 +382,7 @@ export default function TelegramPage() {
             <span>Polling Control</span>
           </CardTitle>
           <CardDescription>
-            Control the bot's polling mode for receiving messages
+            Control the bot&apos;s polling mode for receiving messages
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

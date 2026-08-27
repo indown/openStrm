@@ -16,7 +16,7 @@ export default async function (fastify: FastifyInstance) {
     if (!targetPath) throw new HttpError(400, "Invalid path");
 
     if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
-      return { code: 200, message: "success", data: [] };
+      return [];
     }
 
     const nodes: { name: string; id: string; isDir: boolean; hasChildren?: boolean }[] = [];
@@ -35,6 +35,6 @@ export default async function (fastify: FastifyInstance) {
     }
 
     nodes.sort((a, b) => a.name.localeCompare(b.name));
-    return { code: 200, message: "success", data: nodes };
+    return nodes;
   });
 }
