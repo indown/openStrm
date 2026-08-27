@@ -69,7 +69,13 @@ import { flushEmbyRefresh } from "./services/media-server.js";
 import clearDirectoryRoute from "./routes/system/clear-directory.js";
 import clearRateLimitersRoute from "./routes/system/clear-rate-limiters.js";
 
-const app = Fastify({ loggerInstance: logger, forceCloseConnections: true });
+const app = Fastify({
+  loggerInstance: logger,
+  forceCloseConnections: true,
+  // 放在 nginx/Caddy 后面时设 TRUST_PROXY=true，request.ip 才取 X-Forwarded-For——
+  // 登录退避按 IP 分桶，不设的话所有人共用反代那一个桶
+  trustProxy: process.env.TRUST_PROXY === "true",
+});
 registerErrorHandling(app);
 
 // 上个进程退出时还在跑的任务已经没了，历史里不能永远挂着 running；顺手把 30 天前的记录清掉

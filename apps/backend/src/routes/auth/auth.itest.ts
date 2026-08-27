@@ -24,6 +24,7 @@ import {
   writeAuthPassword,
 } from "../../db/repositories/auth.js";
 import { isHashed } from "../../services/password.js";
+import { loginThrottle } from "../../services/login-throttle.js";
 import loginRoute from "./login.js";
 import passwordRoute from "./password.js";
 
@@ -205,6 +206,20 @@ test("存量库里的明文默认口令同样会被要求改密", async () => {
   assert.equal(isUsingDefaultPassword(), true, "明文分支要在不跑 KDF 的情况下认出默认口令");
   const res = await login(app, DEFAULT_AUTH.password);
   assert.equal(res.json().mustChangePassword, true);
+});
+
+// ---- 失败退避 ----
+
+test("连续猜错口令后 429，带 Retry-After；登录成功后解除", async () => {
+  loginThrottle.reset();
+  for (let i = 0; i < 5; i++) assert.equal((await login(app, "guess-" + i)).statusCode, 401);
+  // 走到这里时库里是上面用例伪造的明文默认口令，它就是当前的正确口令
+  const blocked = await login(app, DEFAULT_AUTH.password);
+  assert.equal(blocked.statusCode, 429, "锁定期内连正确口令也不比对");
+  assert.equal(blocked.json().code, "RATE_LIMITED");
+  assert.ok(Number(blocked.headers["retry-after"]) > 0);
+  loginThrottle.reset();
+  assert.equal((await login(app, DEFAULT_AUTH.password)).statusCode, 200, "解除后同一口令可登录");
 });
 
 // ---- 密钥 ----
