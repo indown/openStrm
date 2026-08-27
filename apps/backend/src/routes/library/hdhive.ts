@@ -6,6 +6,7 @@ import {
   type HdhiveMediaType,
   type HdhiveResource,
 } from "../../services/hdhive.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
 
 interface SearchBody {
   query?: string;
@@ -20,7 +21,7 @@ export default async function (fastify: FastifyInstance) {
     { preHandler: [fastify.authenticate] },
     async (request, reply) => {
       const body = (request.body ?? {}) as SearchBody;
-      const settings = fastify.readSettings();
+      const settings = readAppSettings();
 
       const hdhiveKey = settings.hdhive?.apiKey?.trim();
       if (!hdhiveKey) {
@@ -136,7 +137,7 @@ export default async function (fastify: FastifyInstance) {
         return reply.code(400).send({ code: 400, message: "slug 不能为空" });
       }
 
-      const settings = fastify.readSettings();
+      const settings = readAppSettings();
       const hdhiveKey = settings.hdhive?.apiKey?.trim();
       if (!hdhiveKey) {
         return reply

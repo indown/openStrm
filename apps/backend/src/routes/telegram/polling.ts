@@ -1,11 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { createTelegramBot } from "../../services/telegram.js";
 import { stopPolling, getPollingStatus, forceCleanup, safeStartPolling } from "../../services/telegram-polling.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
 
 export default async function (fastify: FastifyInstance) {
   // POST: start polling
   fastify.post("/api/telegram/polling", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const settings = fastify.readSettings();
+    const settings = readAppSettings();
     const telegram = settings.telegram;
     if (!telegram?.botToken) {
       return reply.code(400).send({ error: "Telegram not configured" });
@@ -20,7 +21,7 @@ export default async function (fastify: FastifyInstance) {
 
   // DELETE: stop polling
   fastify.delete("/api/telegram/polling", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const settings = fastify.readSettings();
+    const settings = readAppSettings();
     const telegram = settings.telegram;
     if (!telegram?.botToken) {
       return reply.code(400).send({ error: "Telegram not configured" });
@@ -38,7 +39,7 @@ export default async function (fastify: FastifyInstance) {
 
   // GET: polling status
   fastify.get("/api/telegram/polling", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const settings = fastify.readSettings();
+    const settings = readAppSettings();
     const telegram = settings.telegram;
     if (!telegram?.botToken) {
       return reply.code(400).send({ error: "Telegram not configured" });

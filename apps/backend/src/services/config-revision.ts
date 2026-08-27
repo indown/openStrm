@@ -30,7 +30,8 @@ function fingerprint(): string {
       .digest("base64url")
       .slice(0, 8),
   ]);
-  const tasks = listTasks().map((t) => [t.account, t.strmPrefix ?? "", t.originPath ?? ""]);
+  // enable302 决定这个任务的 strmPrefix 算不算挂载点，翻转它就该让旧直链失效
+  const tasks = listTasks().map((t) => [t.account, t.strmPrefix ?? "", t.originPath ?? "", t.enable302 ? 1 : 0]);
 
   return createHash("sha1")
     .update(JSON.stringify({ mount: settings.mediaMountPath ?? [], accounts, tasks }))

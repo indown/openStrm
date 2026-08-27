@@ -1,8 +1,10 @@
+
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import compress from "@fastify/compress";
 import { initDb } from "./db/migrate.js";
 import { sqlite } from "./db/client.js";
+import { readAppSettings } from "./db/repositories/settings.js";
 
 // Prevent unhandled rejections from crashing the process
 process.on("unhandledRejection", (err) => {
@@ -13,12 +15,10 @@ process.on("unhandledRejection", (err) => {
 await initDb();
 
 // Core plugins
-import { configPlugin } from "./plugins/config.js";
 import { authPlugin } from "./plugins/auth.js";
-import { cachePlugin } from "./plugins/cache.js";
-import { taskManagerPlugin } from "./plugins/task-manager.js";
 import { cronPlugin } from "./plugins/cron.js";
-import { setTaskStarter, stopPolling } from "./services/telegram-polling.js";
+import { stopPolling } from "./services/telegram-polling.js";
+import { cancelAllRunningTasks } from "./services/task/registry.js";
 
 // Auth routes
 import authLoginRoute from "./routes/auth/login.js";
@@ -79,10 +79,7 @@ await app.register(cors, { origin: true, credentials: true });
 await app.register(compress);
 
 // Core plugins (order matters)
-await app.register(configPlugin);
-await app.register(cachePlugin);
 await app.register(authPlugin);
-await app.register(taskManagerPlugin);
 await app.register(cronPlugin);
 
 // Auth routes
@@ -147,19 +144,6 @@ try {
   app.log.info(`API server running on http://${HOST}:${API_PORT}`);
   try { startScrapeWorker(); } catch (err) { app.log.error({ err }, "scrape-worker start failed"); }
 
-  // Telegram 按钮启动任务：走 inject + 现签 JWT，和 cron 同一套路
-  // （是否真的允许启动由 settings.telegram.allowTaskStart 决定，默认关）
-  setTaskStarter(async (taskId) => {
-    const token = await app.signJwt({ username: "telegram", taskId });
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/startTask",
-      payload: { id: taskId },
-      headers: { authorization: `Bearer ${token}` },
-    });
-    return { ok: res.statusCode === 200, body: res.body };
-  });
-
   setMediaServerLogger((m) => app.log.info(`[媒体服务器] ${m}`));
 
   // 生活事件监控：配置里开着就跟随服务一起起来
@@ -169,7 +153,7 @@ try {
     error: (m) => app.log.error(m),
     debug: (m) => app.log.debug(m),
   });
-  if (app.readSettings().lifeMonitor?.enabled) {
+  if (readAppSettings().lifeMonitor?.enabled) {
     startLifeMonitor()
       .then((r) => (r.ok ? app.log.info(r.message) : app.log.warn(r.message)))
       .catch((err) => app.log.error({ err }, "life monitor start failed"));
@@ -187,6 +171,7 @@ async function shutdown() {
 
   try { await stopLifeMonitor(); } catch { /* ignore */ }
   try { flushEmbyRefresh(); } catch { /* ignore */ }
+  try { cancelAllRunningTasks(); } catch { /* ignore */ }
 
   const timeout = new Promise<void>((resolve) => setTimeout(resolve, 1500));
   const closeAll = app.close();

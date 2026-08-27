@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { fsDirGetId, fsFiles } from "../../services/cloud-115/client.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
+import { listAccounts } from "../../db/repositories/accounts.js";
 
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/directory/remote/list", { preHandler: [fastify.authenticate] }, async (request, reply) => {
@@ -9,13 +11,13 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(400).send({ code: 400, message: "account is required" });
     }
 
-    const accounts = fastify.readAccounts();
+    const accounts = listAccounts();
     const accountInfo = accounts.find((a) => a.name === account);
     if (!accountInfo || accountInfo.accountType !== "115") {
       return reply.code(400).send({ code: 400, message: "only 115 accounts are supported" });
     }
 
-    const settings = fastify.readSettings();
+    const settings = readAppSettings();
     const userAgent = settings["user-agent"] || undefined;
 
     let cid = 0;

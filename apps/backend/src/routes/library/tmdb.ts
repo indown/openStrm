@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { searchMulti } from "../../services/tmdb.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
 
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/library/tmdb/search", { preHandler: [fastify.authenticate] }, async (request, reply) => {
@@ -9,7 +10,7 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(400).send({ code: 400, message: "query is required" });
     }
 
-    const settings = fastify.readSettings();
+    const settings = readAppSettings();
     const apiKey = settings.tmdb?.apiKey?.trim();
     if (!apiKey) {
       return reply.code(400).send({ code: 400, message: "TMDB 未配置 apiKey，请先在设置中填入" });

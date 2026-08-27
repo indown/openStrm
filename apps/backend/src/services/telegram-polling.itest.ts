@@ -8,8 +8,8 @@
  */
 import assert from "node:assert/strict";
 import { setTaskStarter, __test_handleCallbackQuery } from "./telegram-polling.js";
-import { readAppSettings, writeAppSettings } from "../db/repositories/settings.js";
-import { listTasks, writeTasks } from "../db/repositories/tasks.js";
+import { readAppSettings, replaceAppSettings } from "../db/repositories/settings.js";
+import { listTasks, replaceTasks } from "../db/repositories/tasks.js";
 
 const sent: string[] = [];
 const bot = {
@@ -28,7 +28,7 @@ const baseline = readAppSettings();
  */
 const existing = listTasks();
 if (existing.length === 0) {
-  writeTasks([
+  replaceTasks([
     {
       id: "itest-task",
       account: "itest",
@@ -41,7 +41,7 @@ const taskId = listTasks()[0].id;
 const callback = { id: "q1", data: `start_task_${taskId}`, message: { chat: { id: 123 } } };
 
 function withAllowTaskStart(allow: boolean) {
-  writeAppSettings({
+  replaceAppSettings({
     ...baseline,
     telegram: { ...(baseline.telegram ?? {}), allowTaskStart: allow },
   });
@@ -63,17 +63,18 @@ async function main() {
   assert.deepEqual(started, [taskId], "开启后应经 taskStarter 启动任务");
   pass++; console.log("  ok  显式开启后：经注入的 taskStarter 启动任务");
 
-  // 没注入执行器时也不能炸，更不能绕过去
-  setTaskStarter(null);
+  // 执行器报失败时要把原因回给用户，而不是当成功、也不是抛出去炸掉轮询
+  setTaskStarter(async () => ({ ok: false, body: JSON.stringify({ message: "boom" }) }));
   withAllowTaskStart(true);
   await __test_handleCallbackQuery(bot, callback);
   assert.equal(started.length, 0);
-  assert.match(sent.join("\n"), /Task runner unavailable/);
-  pass++; console.log("  ok  执行器未就绪时安全降级");
+  assert.match(sent.join("\n"), /Failed to start task[\s\S]*boom/);
+  pass++; console.log("  ok  执行器失败时把原因回给用户");
+  setTaskStarter(null);
 
   console.log(`\n${pass} passed`);
 }
 
 main()
-  .then(() => writeAppSettings(baseline))
-  .catch((err) => { writeAppSettings(baseline); console.error(err); process.exit(1); });
+  .then(() => replaceAppSettings(baseline))
+  .catch((err) => { replaceAppSettings(baseline); console.error(err); process.exit(1); });

@@ -12,13 +12,16 @@ import {
   SaveToTaskError,
 } from "../../services/library/save-to-task.js";
 import type { SelectedItem } from "../../services/strm/share-strm.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
+import { listAccounts } from "../../db/repositories/accounts.js";
+import { listTasks } from "../../db/repositories/tasks.js";
 
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/115/share", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const body = request.body as Record<string, any>;
     const { action } = body;
 
-    const accounts = fastify.readAccounts();
+    const accounts = listAccounts();
     const account115 = accounts.find((a) => a.accountType === "115") as any;
     if (!account115) {
       return reply.code(400).send({ code: 400, message: "No 115 account configured" });
@@ -73,7 +76,7 @@ export default async function (fastify: FastifyInstance) {
         if (!shareCode || !fileIds) return reply.code(400).send({ code: 400, message: "shareCode and fileIds are required" });
 
         if (taskId) {
-          const task = fastify.readTasks().find((t) => t.id === taskId);
+          const task = listTasks().find((t) => t.id === taskId);
           if (!task) return reply.code(400).send({ code: 400, message: `Task not found: ${taskId}` });
 
           let taskAccount;
@@ -96,9 +99,7 @@ export default async function (fastify: FastifyInstance) {
               selectedItems,
               subPath,
               mode,
-              settings: fastify.readSettings(),
-              fastify,
-              authHeader: request.headers.authorization ?? "",
+              settings: readAppSettings(),
             });
             if (result.mode === "sync") {
               return { code: 200, data: { strmGenerated: true, ...result } };

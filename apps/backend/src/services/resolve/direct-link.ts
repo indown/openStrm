@@ -8,7 +8,7 @@
  * 直链和请求时用的 UA 是绑定的，所以 UA 必须由调用方传进来——
  * 302 场景要用客户端自己的 UA，否则客户端拿着这条链接去下会被 115 拒掉。
  */
-import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
+import type { AccountInfo, AppSettings, TaskDefinition } from "@openstrm/shared";
 import { listAccounts } from "../../db/repositories/accounts.js";
 import { listTasks } from "../../db/repositories/tasks.js";
 import { readSettingsSafe } from "../settings-safe.js";
@@ -77,6 +77,21 @@ export function stripMountPath(
     if (path.startsWith(`${mount}/`)) return { mount, rest: path.slice(mount.length) };
   }
   return null;
+}
+
+/**
+ * 代理接管的挂载前缀 = 设置里手填的 mediaMountPath ∪ 开了 302 的任务的 strmPrefix。
+ *
+ * 任务那一半现算而不落库：以前是建任务时追加进 settings，删任务、关 302 都不会摘掉，
+ * 列表只增不减，早就删掉的前缀还在被代理接管。
+ */
+export function mountPathsFromTasks(tasks: TaskDefinition[]): string[] {
+  return tasks.filter((t) => t.enable302 && t.strmPrefix).map((t) => trimTrailing(t.strmPrefix!));
+}
+
+export function effectiveMountPaths(settings: AppSettings, tasks: TaskDefinition[]): string[] {
+  const manual = (settings.mediaMountPath ?? []).filter(Boolean).map(trimTrailing);
+  return [...new Set([...manual, ...mountPathsFromTasks(tasks)])];
 }
 
 /**
@@ -157,14 +172,14 @@ export async function resolveEmbyPath(
    * 跟有没有账号无关。
    */
   const decoded = collapseSlashes(safeDecode(embyPath));
-  const mountPaths = readSettingsSafe().mediaMountPath ?? [];
-  const stripped = stripMountPath(decoded, mountPaths);
+  const tasks = listTasks();
+  const stripped = stripMountPath(decoded, effectiveMountPaths(readSettingsSafe(), tasks));
   if (!stripped) return { ok: false, reason: "not-mounted" };
 
   const list = accounts115();
   if (list.length === 0) return { ok: false, reason: "no-account" };
 
-  const byTaskName = accountNameByTask(stripped.mount, stripped.rest, listTasks());
+  const byTaskName = accountNameByTask(stripped.mount, stripped.rest, tasks);
   if (byTaskName) {
     const taskAccount = list.find((a) => a.name === byTaskName);
     /**

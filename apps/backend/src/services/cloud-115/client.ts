@@ -3,7 +3,7 @@ import axios, { type AxiosRequestConfig } from "axios";
 import { defer, firstValueFrom, Observable } from "rxjs";
 import { encrypt, decrypt } from "./crypto.js";
 import { SimpleCache } from "./SimpleCache.js";
-import { readSettings } from "./settings-reader.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
 import { enqueueForAccount } from "../download/rate-limited.js";
 
 // 定义账户信息类型（导出供 115share 等模块使用）
@@ -408,7 +408,7 @@ export async function request115<T = unknown>(
     limiterChannel = "normal",
     maxConcurrent,
   } = options || {};
-  const settings = readSettings();
+  const settings = readAppSettings();
   const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
   // 从 accountInfo 中获取 cookie
   const cookie = accountInfo?.cookie || null;
@@ -738,7 +738,7 @@ export function sleep(ms) {
 
 function defaultUA() {
   // 从配置文件读取user-agent
-  const settings = readSettings();
+  const settings = readAppSettings();
   if (settings['user-agent']) {
     return settings['user-agent'];
   }

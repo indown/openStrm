@@ -1,11 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { createTelegramBot } from "../../services/telegram.js";
+import { deleteAppSetting, readAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
 
 export default async function (fastify: FastifyInstance) {
   // GET: bot info
   fastify.get("/api/telegram/bot", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const settings = fastify.readSettings();
-    const telegram = settings.telegram;
+    const telegram = readAppSetting("telegram");
     if (!telegram?.botToken) {
       return reply.code(400).send({ error: "Telegram not configured" });
     }
@@ -35,14 +35,14 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(400).send({ error: "Invalid bot token", details: (botInfo as any).description });
     }
 
-    const settings = fastify.readSettings();
-    settings.telegram = {
+    // 只覆盖这次给出的字段：allowedUsers / allowTaskStart 由别的接口维护，不能被这里重置
+    const current = readAppSetting("telegram") ?? {};
+    writeAppSetting("telegram", {
+      ...current,
       botToken,
-      chatId: chatId || settings.telegram?.chatId,
-      webhookUrl: webhookUrl || settings.telegram?.webhookUrl,
-      allowedUsers: settings.telegram?.allowedUsers,
-    };
-    fastify.writeSettings(settings);
+      chatId: chatId || current.chatId,
+      webhookUrl: webhookUrl || current.webhookUrl,
+    });
 
     if (webhookUrl) {
       try { await bot.setWebhook(webhookUrl); } catch { /* ignore */ }
@@ -53,15 +53,13 @@ export default async function (fastify: FastifyInstance) {
 
   // DELETE: remove bot config
   fastify.delete("/api/telegram/bot", { preHandler: [fastify.authenticate] }, async () => {
-    const settings = fastify.readSettings();
-    if (settings.telegram?.botToken) {
+    const current = readAppSetting("telegram");
+    if (current?.botToken) {
       try {
-        const bot = createTelegramBot(settings.telegram.botToken);
-        await bot.deleteWebhook();
+        await createTelegramBot(current.botToken).deleteWebhook();
       } catch { /* ignore */ }
     }
-    delete settings.telegram;
-    fastify.writeSettings(settings);
+    deleteAppSetting("telegram");
     return { success: true, message: "Telegram bot configuration removed" };
   });
 }

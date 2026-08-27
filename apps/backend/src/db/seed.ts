@@ -3,8 +3,9 @@ import { db } from "./client.js";
 import { settings } from "./schema.js";
 import { DEFAULT_AUTH, buildDefaultAppSettings } from "./defaults.js";
 import { hashPassword } from "../services/password.js";
+import { KEY } from "./keys.js";
 
-const SEEDED_MARKER_KEY = "__migrated_from_json__";
+const SEEDED_MARKER_KEY = KEY.seededMarker;
 
 export async function seedIfEmpty(): Promise<void> {
   const marker = db

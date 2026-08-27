@@ -8,6 +8,7 @@ import {
 } from "../../services/life/monitor.js";
 import { listRecentLifeEvents } from "../../db/repositories/life.js";
 import { BEHAVIOR_TYPE_TO_NAME } from "../../services/cloud-115/life.js";
+import { readAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
 
 export default async function (fastify: FastifyInstance) {
   /** 运行状态 + 统计 + 最近日志 */
@@ -19,10 +20,10 @@ export default async function (fastify: FastifyInstance) {
   fastify.post("/api/life/monitor", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const body = (request.body ?? {}) as { config?: LifeMonitorSettings };
     if (body.config) {
-      const settings = fastify.readSettings();
-      fastify.writeSettings({
-        ...settings,
-        lifeMonitor: { ...(settings.lifeMonitor ?? {}), ...body.config, enabled: true },
+      writeAppSetting("lifeMonitor", {
+        ...(readAppSetting("lifeMonitor") ?? {}),
+        ...body.config,
+        enabled: true,
       });
     }
     const res = await startLifeMonitor();
@@ -33,11 +34,7 @@ export default async function (fastify: FastifyInstance) {
   /** 停止监控 */
   fastify.delete("/api/life/monitor", { preHandler: [fastify.authenticate] }, async () => {
     const res = await stopLifeMonitor();
-    const settings = fastify.readSettings();
-    fastify.writeSettings({
-      ...settings,
-      lifeMonitor: { ...(settings.lifeMonitor ?? {}), enabled: false },
-    });
+    writeAppSetting("lifeMonitor", { ...(readAppSetting("lifeMonitor") ?? {}), enabled: false });
     return { success: res.ok, message: res.message };
   });
 

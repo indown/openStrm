@@ -19,7 +19,6 @@ if (!process.env.CONFIG_DIR) {
   process.exit(2);
 }
 
-import { configPlugin } from "../../plugins/config.js";
 import { authPlugin, PASSWORD_CHANGE_REQUIRED } from "../../plugins/auth.js";
 import { db } from "../../db/client.js";
 import { settings } from "../../db/schema.js";
@@ -38,7 +37,6 @@ const NEW_PASSWORD = "openstrm-itest-pw";
 
 async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify();
-  await app.register(configPlugin);
   await app.register(authPlugin);
   await app.register(loginRoute);
   await app.register(passwordRoute);

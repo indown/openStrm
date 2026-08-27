@@ -1,5 +1,5 @@
 import { searchMulti, searchMovie, searchTv, type TmdbSearchResult } from "../tmdb.js";
-import { readSettings } from "../cloud-115/settings-reader.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
 import {
   getById,
   getPending,
@@ -58,7 +58,7 @@ async function processOne(id: string) {
     if (!entry) return;
     if (entry.scrapeStatus !== "pending") return;
 
-    const settings = readSettings();
+    const settings = readAppSettings();
     const apiKey = settings.tmdb?.apiKey?.trim() || "";
     const language = settings.tmdb?.language || "zh-CN";
 

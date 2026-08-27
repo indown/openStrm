@@ -1,5 +1,6 @@
 // Telegram Bot API 集成
 import axios from "axios";
+import { readAppSettings } from "../db/repositories/settings.js";
 
 export interface TelegramConfig {
   botToken: string;
@@ -306,9 +307,7 @@ function formatFileSize(bytes: number): string {
 // 发送 Telegram 通知的公共方法
 export async function sendTelegramNotification(message: string, type: 'start' | 'complete' | 'error' = 'start') {
   try {
-    // 动态导入 readSettings 避免循环依赖
-    const { readSettings } = await import('./cloud-115/settings-reader.js');
-    const settings = readSettings();
+    const settings = readAppSettings();
     const telegram = settings.telegram;
     
     // 检查 Telegram 配置是否完整

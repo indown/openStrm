@@ -10,6 +10,9 @@ import {
   SaveToTaskError,
 } from "../../services/library/save-to-task.js";
 import type { SelectedItem } from "../../services/strm/share-strm.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
+import { listAccounts } from "../../db/repositories/accounts.js";
+import { listTasks } from "../../db/repositories/tasks.js";
 
 function normalizeSubPath(input: unknown): string {
   return typeof input === "string"
@@ -32,12 +35,12 @@ export default async function (fastify: FastifyInstance) {
       const mode: "sync" | "async" = body.mode === "async" ? "async" : "sync";
       if (!taskId) return reply.code(400).send({ code: 400, message: "taskId is required" });
 
-      const task = fastify.readTasks().find((t) => t.id === taskId);
+      const task = listTasks().find((t) => t.id === taskId);
       if (!task) return reply.code(400).send({ code: 400, message: `Task not found: ${taskId}` });
 
       let accountInfo;
       try {
-        accountInfo = resolveTaskAccount115(fastify.readAccounts(), task);
+        accountInfo = resolveTaskAccount115(listAccounts(), task);
       } catch (err) {
         if (err instanceof SaveToTaskError) {
           return reply.code(err.statusCode).send({ code: err.statusCode, message: err.message });
@@ -45,7 +48,7 @@ export default async function (fastify: FastifyInstance) {
         throw err;
       }
 
-      const settings = fastify.readSettings();
+      const settings = readAppSettings();
       const userAgent = typeof settings["user-agent"] === "string" ? settings["user-agent"] : undefined;
 
       let fileIds: Array<number | string>;
@@ -106,8 +109,6 @@ export default async function (fastify: FastifyInstance) {
           subPath,
           mode,
           settings,
-          fastify,
-          authHeader: request.headers.authorization ?? "",
         });
         return { code: 200, data: result };
       } catch (err) {

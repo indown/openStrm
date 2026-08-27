@@ -50,6 +50,13 @@
       "when": 1787239004696,
       "tag": "0006_ancient_doorman",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1787852876502,
+      "tag": "0007_drop_retired_settings",
+      "breakpoints": true
     }
   ]
 }

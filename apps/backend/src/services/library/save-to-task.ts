@@ -1,4 +1,3 @@
-import type { FastifyInstance } from "fastify";
 import type {
   Account115,
   AccountInfo as SharedAccountInfo,
@@ -9,6 +8,7 @@ import type { AccountInfo } from "../cloud-115/client.js";
 import { fsDirGetId } from "../cloud-115/client.js";
 import { receiveToMyDrive } from "../cloud-115/share.js";
 import { generateStrmForSelected, type SelectedItem } from "../strm/share-strm.js";
+import { startTask } from "../task/runner.js";
 
 export interface SaveSelectionOpts {
   task: TaskDefinition;
@@ -21,8 +21,6 @@ export interface SaveSelectionOpts {
   subPath: string;
   mode: "sync" | "async";
   settings: AppSettings;
-  fastify: FastifyInstance;
-  authHeader: string;
 }
 
 export type SaveSelectionResult =
@@ -43,7 +41,7 @@ export class SaveToTaskError extends Error {
 /**
  * 按 task 指定的 account 把 (shareCode, fileIds) 转存到 115，然后:
  *   sync  → 立即生成 strm
- *   async → 注入 /api/startTask 交给后台下载
+ *   async → 交给全量任务引擎在后台下载
  */
 export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<SaveSelectionResult> {
   const {
@@ -56,8 +54,6 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
     subPath,
     mode,
     settings,
-    fastify,
-    authHeader,
   } = opts;
 
   if (!task.targetPath || !task.strmPrefix) {
@@ -96,17 +92,10 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
     }
   }
 
-  const injectRes = await fastify.inject({
-    method: "POST",
-    url: "/api/startTask",
-    payload: { id: task.id },
-    headers: { authorization: authHeader },
-  });
-  const injectBody = injectRes.json() as { taskId?: string; message?: string };
-  if (injectRes.statusCode !== 200) {
-    return { mode: "async", error: injectBody };
-  }
-  return { mode: "async", taskId: injectBody.taskId, message: injectBody.message };
+  const result = await startTask(task.id);
+  if (result.status !== 200) return { mode: "async", error: result.body };
+  const body = result.body as { taskId?: string; message?: string };
+  return { mode: "async", taskId: body.taskId, message: body.message };
 }
 
 /**

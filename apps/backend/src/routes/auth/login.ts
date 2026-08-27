@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
 
-import { isUsingDefaultPassword, writeAuthPassword } from "../../db/repositories/auth.js";
+import { isUsingDefaultPassword, writeAuthPassword, readAuthConfig } from "../../db/repositories/auth.js";
 import { needsRehash, verifyPassword } from "../../services/password.js";
 
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/auth/login", async (request, reply) => {
     const { username, password } = request.body as { username: string; password: string };
 
-    const config = fastify.readConfig();
+    const config = readAuthConfig();
     const stored = typeof config.password === "string" ? config.password : "";
 
     if (username === config.username && (await verifyPassword(password, stored))) {

@@ -1,14 +1,15 @@
 // Telegram 轮询管理器
 import { createTelegramBot } from "./telegram.js";
-import { readSettings } from "./cloud-115/settings-reader.js";
+import { readAppSettings } from "../db/repositories/settings.js";
 import { listTasks } from "../db/repositories/tasks.js";
+import { startTask } from "./task/runner.js";
 
 function readTasks(): any[] {
   return listTasks();
 }
 
 function isTelegramUserAllowed(userId: number): boolean {
-  const settings = readSettings();
+  const settings = readAppSettings();
   return settings.telegram?.allowedUsers?.includes(userId) || false;
 }
 
@@ -16,18 +17,18 @@ let pollingInterval: NodeJS.Timeout | null = null;
 let lastUpdateId = 0;
 let isPollingActive = false;
 
-/**
- * 启动任务的执行器，由 index.ts 在服务起来后注入。
- *
- * 本模块不是 fastify 插件，拿不到 app.inject / app.signJwt，
- * 所以只能由外部注入，不能在这里自己发请求——那样既要写死端口，也没法签 JWT。
- */
+/** 启动任务的执行器。默认直接调 runner；测试可以换成桩，传 null 恢复默认 */
 export type TaskStarter = (taskId: string) => Promise<{ ok: boolean; body: string }>;
 
-let taskStarter: TaskStarter | null = null;
+const defaultTaskStarter: TaskStarter = async (taskId) => {
+  const result = await startTask(taskId);
+  return { ok: result.status === 200, body: JSON.stringify(result.body) };
+};
+
+let taskStarter: TaskStarter = defaultTaskStarter;
 
 export function setTaskStarter(fn: TaskStarter | null): void {
-  taskStarter = fn;
+  taskStarter = fn ?? defaultTaskStarter;
 }
 
 export async function startPolling(): Promise<boolean> {
@@ -37,7 +38,7 @@ export async function startPolling(): Promise<boolean> {
   }
 
   try {
-    const settings = readSettings();
+    const settings = readAppSettings();
     const telegram = settings.telegram;
     
     if (!telegram || !telegram.botToken) {
@@ -142,7 +143,7 @@ export function getPollingStatus(): { active: boolean; message: string } {
 // 强制清理 webhook 和轮询状态
 export async function forceCleanup(): Promise<boolean> {
   try {
-    const settings = readSettings();
+    const settings = readAppSettings();
     const telegram = settings.telegram;
     
     if (!telegram || !telegram.botToken) {
@@ -179,7 +180,7 @@ export async function forceCleanup(): Promise<boolean> {
 // 安全启动轮询（处理冲突）
 export async function safeStartPolling(): Promise<boolean> {
   try {
-    const settings = readSettings();
+    const settings = readAppSettings();
     const telegram = settings.telegram;
     
     if (!telegram || !telegram.botToken) {
@@ -317,7 +318,7 @@ async function handleCommand(bot: ReturnType<typeof createTelegramBot>, chatId: 
       break;
 
     case '/users':
-      const settings = readSettings();
+      const settings = readAppSettings();
       const users = settings.telegram?.allowedUsers || [];
       
       await bot.sendMessage({
@@ -358,7 +359,7 @@ async function handleCallbackQuery(bot: ReturnType<typeof createTelegramBot>, ca
   // 处理任务开始回调
   if (data && data.startsWith('start_task_')) {
     const taskId = data.replace('start_task_', '');
-    if (!readSettings().telegram?.allowTaskStart) {
+    if (!readAppSettings().telegram?.allowTaskStart) {
       await bot.sendMessage({
         chat_id: chatId,
         text: `⚠️ <b>任务启动未开启</b>\n\n` +
@@ -462,18 +463,7 @@ async function handleTaskStartCallback(bot: ReturnType<typeof createTelegramBot>
       parse_mode: 'HTML'
     });
 
-    // 调用真正的 startTask API
     try {
-      if (!taskStarter) {
-        await bot.sendMessage({
-          chat_id: chatId,
-          text: `❌ <b>Task runner unavailable</b>\n\n` +
-                `后端尚未完成初始化，请稍后再试。`,
-          parse_mode: 'HTML'
-        });
-        return;
-      }
-
       const result = await taskStarter(taskId);
 
       if (result.ok) {

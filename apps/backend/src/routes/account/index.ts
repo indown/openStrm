@@ -1,83 +1,55 @@
 import type { FastifyInstance } from "fastify";
+import type { AccountInfo } from "@openstrm/shared";
+import {
+  deleteAccount,
+  getAccount,
+  insertAccount,
+  listAccounts,
+  updateAccount,
+} from "../../db/repositories/accounts.js";
+
+function missingCredentials(body: Record<string, unknown>): string | null {
+  if (body.accountType === "115" && !body.cookie) return "cookie is required for 115 accounts";
+  if (body.accountType === "openlist" && (!body.account || !body.password || !body.url)) {
+    return "account, password, and url are required for openlist accounts";
+  }
+  return null;
+}
 
 export default async function (fastify: FastifyInstance) {
-  // GET: list all accounts
-  fastify.get("/api/account", { preHandler: [fastify.authenticate] }, async () => {
-    return fastify.readAccounts();
-  });
+  fastify.get("/api/account", { preHandler: [fastify.authenticate] }, async () => listAccounts());
 
-  // POST: create account
   fastify.post("/api/account", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const body = request.body as Record<string, unknown>;
+    const body = (request.body ?? {}) as Record<string, unknown>;
     const { accountType, name } = body;
-
-    if (!accountType || !name) {
+    if (!accountType || typeof name !== "string" || !name) {
       return reply.code(400).send({ error: "accountType and name are required" });
     }
+    const missing = missingCredentials(body);
+    if (missing) return reply.code(400).send({ error: missing });
+    if (getAccount(name)) return reply.code(400).send({ error: "Account name already exists" });
 
-    if (accountType === "115") {
-      if (!body.cookie) {
-        return reply.code(400).send({ error: "cookie is required for 115 accounts" });
-      }
-    } else if (accountType === "openlist") {
-      if (!body.account || !body.password || !body.url) {
-        return reply.code(400).send({ error: "account, password, and url are required for openlist accounts" });
-      }
-    }
-
-    const accounts = fastify.readAccounts();
-    if (accounts.find((a) => a.name === name)) {
-      return reply.code(400).send({ error: "Account name already exists" });
-    }
-
-    const newAccount = { ...body, accountType, name } as any;
-    accounts.push(newAccount);
-    fastify.writeAccounts(accounts);
-
-    return reply.code(201).send(newAccount);
+    const account = { ...body, accountType, name } as AccountInfo;
+    insertAccount(account);
+    return reply.code(201).send(account);
   });
 
-  // PUT: update account
   fastify.put("/api/account", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const body = request.body as Record<string, unknown>;
-    const { name, accountType } = body;
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const { name } = body;
+    if (typeof name !== "string" || !name) return reply.code(400).send({ error: "name is required" });
+    const missing = missingCredentials(body);
+    if (missing) return reply.code(400).send({ error: missing });
 
-    if (!name) {
-      return reply.code(400).send({ error: "name is required" });
-    }
-
-    if (accountType === "115" && !body.cookie) {
-      return reply.code(400).send({ error: "cookie is required for 115 accounts" });
-    }
-    if (accountType === "openlist" && (!body.account || !body.password || !body.url)) {
-      return reply.code(400).send({ error: "account, password, and url are required for openlist accounts" });
-    }
-
-    const accounts = fastify.readAccounts();
-    const idx = accounts.findIndex((a) => a.name === name);
-    if (idx === -1) {
-      return reply.code(404).send({ error: "Account not found" });
-    }
-
-    accounts[idx] = { ...accounts[idx], ...body } as any;
-    fastify.writeAccounts(accounts);
-    return accounts[idx];
+    const updated = updateAccount(name, body);
+    if (!updated) return reply.code(404).send({ error: "Account not found" });
+    return updated;
   });
 
-  // DELETE: delete account
   fastify.delete("/api/account", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const { name } = request.query as { name?: string };
-    if (!name) {
-      return reply.code(400).send({ error: "Missing name" });
-    }
-
-    const accounts = fastify.readAccounts();
-    const filtered = accounts.filter((a) => a.name !== name);
-    if (filtered.length === accounts.length) {
-      return reply.code(404).send({ error: "Account not found" });
-    }
-
-    fastify.writeAccounts(filtered);
+    if (!name) return reply.code(400).send({ error: "Missing name" });
+    if (!deleteAccount(name)) return reply.code(404).send({ error: "Account not found" });
     return { message: "Account deleted" };
   });
 }

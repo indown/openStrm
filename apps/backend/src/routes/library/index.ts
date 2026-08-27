@@ -13,6 +13,8 @@ import { shareExtractPayload, getShareData } from "../../services/cloud-115/shar
 import { enqueueOne } from "../../services/library/scrape-worker.js";
 import { normalizeTitle } from "../../services/media-title.js";
 import { randomId, sanitizeTags, shareRootCidForDb } from "./_util.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
+import { listAccounts } from "../../db/repositories/accounts.js";
 
 export default async function (fastify: FastifyInstance) {
   fastify.get("/api/library", { preHandler: [fastify.authenticate] }, async () => {
@@ -39,7 +41,7 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(400).send({ code: 400, message: "Cannot parse shareCode from url" });
     }
 
-    const settings = fastify.readSettings();
+    const settings = readAppSettings();
     const hasTmdb = Boolean(settings.tmdb?.apiKey?.trim());
     const userAgent = typeof settings["user-agent"] === "string" ? settings["user-agent"] : undefined;
     const bodyTitle = typeof body.title === "string" ? body.title.trim() : "";
@@ -91,7 +93,7 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(201).send({ mode: "subdir", entry });
     }
 
-    const accounts = fastify.readAccounts();
+    const accounts = listAccounts();
     const account115 = accounts.find((a) => a.accountType === "115") as any;
 
     // ==== 单片模式 ====
