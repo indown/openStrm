@@ -19,6 +19,7 @@ import { authPlugin } from "./plugins/auth.js";
 import { cronPlugin } from "./plugins/cron.js";
 import { stopPolling } from "./services/telegram-polling.js";
 import { cancelAllRunningTasks } from "./services/task/registry.js";
+import { cleanupOldHistory, reconcileInterruptedExecutions } from "./services/task-history.js";
 
 // Auth routes
 import authLoginRoute from "./routes/auth/login.js";
@@ -73,6 +74,12 @@ const app = Fastify({
   },
   forceCloseConnections: true,
 });
+
+// 上个进程退出时还在跑的任务已经没了，历史里不能永远挂着 running；顺手把 30 天前的记录清掉
+const interrupted = reconcileInterruptedExecutions();
+if (interrupted > 0) app.log.warn(`[history] ${interrupted} 条执行记录因进程重启被标为失败`);
+cleanupOldHistory();
+setInterval(cleanupOldHistory, 24 * 60 * 60 * 1000).unref();
 
 // Global plugins
 await app.register(cors, { origin: true, credentials: true });

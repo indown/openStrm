@@ -1,17 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import fs from "node:fs";
 import nodePath from "node:path";
-import { DATA_DIR } from "../../paths.js";
+import { resolveInDataDir } from "../../paths.js";
 
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/directory/local/list", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const { basePath = "" } = request.body as { basePath?: string };
 
-    const targetPath = basePath ? nodePath.join(DATA_DIR, basePath) : DATA_DIR;
-    const normalizedTarget = nodePath.normalize(targetPath);
-    if (!normalizedTarget.startsWith(nodePath.normalize(DATA_DIR))) {
-      return reply.code(400).send({ code: 400, message: "Invalid path" });
-    }
+    const targetPath = resolveInDataDir(basePath);
+    if (!targetPath) return reply.code(400).send({ code: 400, message: "Invalid path" });
 
     if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
       return { code: 200, message: "success", data: [] };

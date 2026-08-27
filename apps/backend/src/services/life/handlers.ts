@@ -22,7 +22,8 @@ import {
   resolveDirPath,
 } from "../cloud-115/path-resolver.js";
 import { dropSubtree, repathSubtree } from "../../db/repositories/life.js";
-import { DATA_DIR } from "../../paths.js";
+import { resolveInDataDir } from "../../paths.js";
+import { toStrmPath } from "../strm/naming.js";
 
 export interface LifeContext {
   accountInfo: AccountInfo;
@@ -67,7 +68,9 @@ export function matchTask(ctx: LifeContext, panPath: string): TaskMatch | null {
     else if (panPath.startsWith(`${origin}/`)) rel = panPath.slice(origin.length + 1);
     if (rel === null) continue;
     if (best && normalizeOrigin(best.task.originPath).length >= origin.length) continue;
-    best = { task, relPath: rel, saveDir: path.resolve(DATA_DIR, task.targetPath) };
+    const saveDir = resolveInDataDir(task.targetPath);
+    if (!saveDir) continue; // targetPath 越出数据目录的任务不参与匹配
+    best = { task, relPath: rel, saveDir };
   }
   return best;
 }
@@ -84,11 +87,7 @@ function downloadExts(ctx: LifeContext): Set<string> {
   return new Set((ctx.settings.downloadExtensions || []).map((e) => e.toLowerCase()));
 }
 
-/** .mkv → .strm，与 downloadOrCreateStrm 内部的替换等价 */
-export function toStrmPath(p: string): string {
-  const ext = path.extname(p);
-  return ext ? `${p.slice(0, -ext.length)}.strm` : `${p}.strm`;
-}
+export { toStrmPath };
 
 /** 本地对应文件的最终落盘路径（strm 类换扩展名，下载类保持原名） */
 function localPathFor(match: TaskMatch, ctx: LifeContext, relFile: string): string | null {
