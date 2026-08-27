@@ -36,7 +36,7 @@ export default async function (fastify: FastifyInstance) {
     const telegram = configuredTelegram();
     const pollingStatus = getPollingStatus();
     const webhookInfo = await createTelegramBot(telegram.botToken).getWebhookInfo();
-    return { polling: pollingStatus.active, webhook: (webhookInfo as any).result, message: pollingStatus.message };
+    return { polling: pollingStatus.active, webhook: webhookInfo.result, message: pollingStatus.message };
   });
 
   // PUT: force cleanup

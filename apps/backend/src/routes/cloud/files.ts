@@ -18,9 +18,8 @@ export default async function (fastify: FastifyInstance) {
 
     const accountInfo = accounts.find((a) => a.name === accountName);
     if (!accountInfo || accountInfo.accountType !== "115") throw new HttpError(404, "115 account not found");
-    if (!(accountInfo as any).cookie) throw new HttpError(400, "115 account cookie is required");
+    if (!accountInfo.cookie) throw new HttpError(400, "115 account cookie is required");
 
-    const data = await fsFiles(cid, { accountInfo });
-    return (data as any).data ?? [];
+    return (await fsFiles(cid, { accountInfo })).data ?? [];
   });
 }

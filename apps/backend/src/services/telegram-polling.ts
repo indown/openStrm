@@ -3,11 +3,12 @@ import { createTelegramBot } from "./telegram.js";
 import { readAppSettings } from "../db/repositories/settings.js";
 import { listTasks } from "../db/repositories/tasks.js";
 import { startTask } from "./task/runner.js";
+import type { TaskDefinition } from "@openstrm/shared";
 import { moduleLogger } from "../lib/logger.js";
 
 const log = moduleLogger("telegram-polling");
 
-function readTasks(): any[] {
+function readTasks(): TaskDefinition[] {
   return listTasks();
 }
 
@@ -320,7 +321,7 @@ async function handleCommand(bot: ReturnType<typeof createTelegramBot>, chatId: 
       });
       break;
 
-    case '/users':
+    case '/users': {
       const settings = readAppSettings();
       const users = settings.telegram?.allowedUsers || [];
       
@@ -332,6 +333,7 @@ async function handleCommand(bot: ReturnType<typeof createTelegramBot>, chatId: 
         parse_mode: 'HTML'
       });
       break;
+    }
 
     default:
       await bot.sendMessage({

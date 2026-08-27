@@ -9,6 +9,8 @@ export interface TaskDefinition {
   enablePathEncoding?: boolean;
   enable302?: boolean;
   cronExpression?: string;
+  /** 表单里的 strm 类型（local / …），引擎不读它 */
+  strmType?: string;
 }
 
 export interface TaskExecutionHistory {

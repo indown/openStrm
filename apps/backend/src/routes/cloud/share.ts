@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import type { Account115 } from "@openstrm/shared";
 import {
   shareExtractPayload,
   getShareData,
@@ -43,7 +44,7 @@ export default async function (fastify: FastifyInstance) {
     const { action } = body;
 
     const accounts = listAccounts();
-    const account115 = accounts.find((a) => a.accountType === "115") as any;
+    const account115 = accounts.find((a): a is Account115 => a.accountType === "115");
     if (!account115) throw new HttpError(400, "No 115 account configured");
 
     let shareCode = body.shareCode || body.share_code || "";

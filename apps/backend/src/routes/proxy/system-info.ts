@@ -27,7 +27,7 @@ export function swapUrlPort(value: unknown, fromPort: number, toPort: number): u
    * Emby 正好跑在 80 端口时就换不成了。
    */
   return value.replace(
-    /^([a-z][a-z0-9+.\-]*:\/\/(?:[^/?#@]*@)?(?:\[[^\]]*\]|[^/?#:]*)):(\d+)(?=$|[/?#])/i,
+    /^([a-z][a-z0-9+.-]*:\/\/(?:[^/?#@]*@)?(?:\[[^\]]*\]|[^/?#:]*)):(\d+)(?=$|[/?#])/i,
     (match, prefix: string, port: string) =>
       Number(port) === fromPort ? `${prefix}:${toPort}` : match,
   );

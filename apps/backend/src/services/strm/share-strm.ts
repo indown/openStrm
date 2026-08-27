@@ -84,7 +84,7 @@ export async function generateStrmForSelected(params: {
       checkIntervalMs: 1000,
       accountInfo,
     });
-    const tree = buildTree(raw as any);
+    const tree = buildTree(raw);
     const files: string[] = [];
     for (const node of tree) {
       if (node.children?.length) files.push(...collectFilesAndTopEmptyDirs(node.children));

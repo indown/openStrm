@@ -37,9 +37,7 @@ export default async function (fastify: FastifyInstance) {
 
     const bot = createTelegramBot(botToken);
     const botInfo = await bot.getMe();
-    if (!(botInfo as any).ok) {
-      throw new HttpError(400, "Invalid bot token", { details: (botInfo as any).description });
-    }
+    if (!botInfo.ok) throw new HttpError(400, "Invalid bot token", { details: botInfo.description });
 
     // 只覆盖这次给出的字段：allowedUsers / allowTaskStart 由别的接口维护，不能被这里重置
     writeAppSetting("telegram", {

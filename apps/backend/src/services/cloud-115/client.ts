@@ -46,7 +46,9 @@ interface ExportDirParseOptions {
 
 // 创建缓存实例
 const dirIdCache = new SimpleCache<{ id: number }>(10 * 60 * 1000); // 目录ID缓存10分钟
-const filesListCache = new SimpleCache<{ data: Array<{ n: string; fid: number; cid: number; fc: number }> }>(5 * 60 * 1000); // 文件列表缓存5分钟
+/** 网盘目录项：n 名字、fid 文件 id、cid 目录 id、fc 类别、sha 文件哈希（目录为空） */
+export type DriveEntry = { n: string; fid: number; cid: number; fc: number; sha?: string | null };
+const filesListCache = new SimpleCache<{ data: DriveEntry[] }>(5 * 60 * 1000); // 文件列表缓存5分钟
 const pickcodeCache = new SimpleCache<string>(30 * 60 * 1000); // pickcode缓存30分钟
 
 // 缓存管理函数
@@ -184,6 +186,7 @@ export async function exportDirParse(options: ExportDirParseOptions) {
       try {
         await fsDelete(String(fileIdForDelete), { userAgent, accountInfo });
       } catch {
+        // 导出文件删不掉不影响结果，下次导出会覆盖
       }
     }
   }
@@ -324,7 +327,7 @@ export async function fsFiles(cid: number | string, { userAgent, limit = 1000, o
     limit: String(limit),
     offset: String(offset),
   });
-  const data = await request115<{ data: Array<{ n: string; fid: number; cid: number; fc: number }> }>(url + '?' + params, {
+  const data = await request115<{ data: DriveEntry[] }>(url + '?' + params, {
     method: 'GET',
     userAgent,
     ensureOk: true,

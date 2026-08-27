@@ -5,7 +5,6 @@ import {
   getResourcesByTmdbId,
   unlockResource,
   type HdhiveMediaType,
-  type HdhiveResource,
 } from "../../services/hdhive.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
@@ -44,17 +43,11 @@ export default async function (fastify: FastifyInstance) {
 
     const explicitTmdbId = body.tmdbId != null && String(body.tmdbId).trim() !== "" ? String(body.tmdbId).trim() : "";
 
-    let selected: TmdbSearchResult | null = null;
-    let alternatives: TmdbSearchResult[] = [];
-
+    let picked: { selected: TmdbSearchResult; alternatives: TmdbSearchResult[] };
     if (explicitTmdbId && body.mediaType) {
-      selected = {
-        id: Number(explicitTmdbId) || 0,
-        mediaType: body.mediaType,
-        title: "",
-        year: "",
-        posterUrl: "",
-        overview: "",
+      picked = {
+        selected: { id: Number(explicitTmdbId) || 0, mediaType: body.mediaType, title: "", year: "", posterUrl: "", overview: "" },
+        alternatives: [],
       };
     } else {
       const query = (body.query ?? "").trim();
@@ -64,33 +57,24 @@ export default async function (fastify: FastifyInstance) {
       if (!tmdbKey) throw new HttpError(400, "TMDB 未配置 API Key，无法通过关键词搜索 tmdb_id");
       const language = body.language || settings.tmdb?.language || "zh-CN";
 
-      let tmdbResults: TmdbSearchResult[] = [];
-      try {
-        tmdbResults = await searchMulti(tmdbKey, query, language);
-      } catch (err) {
+      const tmdbResults = await searchMulti(tmdbKey, query, language).catch((err: unknown) => {
         throw new HttpError(502, err instanceof Error ? err.message : "TMDB 搜索失败");
-      }
+      });
       const candidates = tmdbResults.filter((r) => r.mediaType === "movie" || r.mediaType === "tv");
       if (candidates.length === 0) {
         return { tmdb: null, alternatives: [], resources: [], total: 0 };
       }
-      selected = candidates[0];
-      alternatives = candidates.slice(1);
+      picked = { selected: candidates[0], alternatives: candidates.slice(1) };
     }
+    const { selected, alternatives } = picked;
 
-    let resources: HdhiveResource[] = [];
-    let total = 0;
-    try {
-      const resp = await getResourcesByTmdbId(selected.mediaType as HdhiveMediaType, selected.id, {
-        apiKey: hdhiveKey,
-        baseUrl: hdhiveBaseUrl,
-      });
-      resources = resp.resources;
-      total = resp.total;
-    } catch (err) {
+    const { resources, total } = await getResourcesByTmdbId(selected.mediaType as HdhiveMediaType, selected.id, {
+      apiKey: hdhiveKey,
+      baseUrl: hdhiveBaseUrl,
+    }).catch((err: unknown) => {
       // 前端拿着 data 里的 tmdb 结果还能展示，只是没有资源列表
       throw hdhiveError(err, "HDHive 调用失败", { tmdb: selected, alternatives, resources: [], total: 0 });
-    }
+    });
 
     return { tmdb: selected, alternatives, resources, total };
   });
