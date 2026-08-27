@@ -1,11 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Form, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { setToken } from "@/lib/axios";
+import { apiErrorMessage, setToken } from "@/lib/axios";
 import { api } from "@/lib/api";
 import Image from "next/image";
 
@@ -16,11 +17,15 @@ interface LoginForm {
 
 export default function LoginPage() {
   const router = useRouter();
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
   const form = useForm<LoginForm>({
     defaultValues: { username: "", password: "" },
   });
 
   const onSubmit = async (values: LoginForm) => {
+    setError(null);
+    setPending(true);
     try {
       const { token, mustChangePassword } = await api.auth.login(values.username, values.password);
 
@@ -29,8 +34,11 @@ export default function LoginPage() {
 
       // 还在用默认密码的话，先去改密码——其余接口在那之前都会被后端拒绝
       router.push(mustChangePassword ? "/change-password" : "/");
-    } catch {
-      alert("登录失败，请检查用户名或密码");
+    } catch (err) {
+      // 后端的 message 会说明是密码错还是被限流（"请 N 秒后再试"），原样给用户
+      setError(apiErrorMessage(err, "登录失败，请检查用户名或密码"));
+    } finally {
+      setPending(false);
     }
   };
 
@@ -58,7 +66,7 @@ export default function LoginPage() {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>用户名</FormLabel>
-                  <Input placeholder="请输入用户名" {...field} />
+                  <Input placeholder="请输入用户名" autoComplete="username" {...field} />
                   <FormMessage />
                 </FormItem>
               )}
@@ -70,14 +78,20 @@ export default function LoginPage() {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>密码</FormLabel>
-                  <Input type="password" placeholder="请输入密码" {...field} />
+                  <Input type="password" placeholder="请输入密码" autoComplete="current-password" {...field} />
                   <FormMessage />
                 </FormItem>
               )}
             />
 
-            <Button type="submit" className="w-full mt-2">
-              登录
+            {error && (
+              <p role="alert" className="text-sm text-red-600 text-center">
+                {error}
+              </p>
+            )}
+
+            <Button type="submit" className="w-full mt-2" disabled={pending}>
+              {pending ? "登录中..." : "登录"}
             </Button>
           </form>
         </Form>

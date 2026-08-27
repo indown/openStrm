@@ -46,7 +46,9 @@ axiosInstance.interceptors.request.use(
 axiosInstance.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    // 登录接口自己的 401（密码错）不是会话失效：跳转会把整页刷掉，表单和 429 的退避提示都没了
+    const isLoginCall = String(error.config?.url ?? "").endsWith("/api/auth/login");
+    if (error.response?.status === 401 && !isLoginCall) {
       // 清除无效token
       clearToken();
       // 跳转到登录页
