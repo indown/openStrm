@@ -37,7 +37,7 @@ export default function TelegramUsersPage() {
       const response = await axiosInstance.get('/api/telegram/users');
       setUsers(response.data.users || []);
     } catch (error: any) {
-      setError(error.response?.data?.error || 'Failed to load users');
+      setError(error.response?.data?.message || 'Failed to load users');
     } finally {
       setLoading(false);
     }
@@ -71,7 +71,7 @@ export default function TelegramUsersPage() {
         await loadUsers();
       }
     } catch (error: any) {
-      setError(error.response?.data?.error || 'Failed to add user');
+      setError(error.response?.data?.message || 'Failed to add user');
     } finally {
       setLoading(false);
     }
@@ -92,7 +92,7 @@ export default function TelegramUsersPage() {
       setUserToDelete(null);
       await loadUsers();
     } catch (error: any) {
-      setError(error.response?.data?.error || 'Failed to remove user');
+      setError(error.response?.data?.message || 'Failed to remove user');
     } finally {
       setLoading(false);
     }

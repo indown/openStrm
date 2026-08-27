@@ -172,8 +172,8 @@ export default function LifeMonitorPage() {
       toast.success(r.data?.message || "已启动");
       await loadStatus();
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { error?: string } } };
-      toast.error(e.response?.data?.error || "启动失败");
+      const e = err as { response?: { data?: { message?: string } } };
+      toast.error(e.response?.data?.message || "启动失败");
       await loadStatus();
     } finally {
       setBusy(false);
@@ -199,8 +199,8 @@ export default function LifeMonitorPage() {
       const r = await axiosInstance.post("/api/life/probe", { limit: 5 });
       toast.success(`连通正常：${r.data?.message || ""}`);
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { error?: string } } };
-      toast.error(e.response?.data?.error || "连接失败");
+      const e = err as { response?: { data?: { message?: string } } };
+      toast.error(e.response?.data?.message || "连接失败");
     } finally {
       setProbing(false);
     }

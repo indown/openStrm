@@ -13,6 +13,7 @@ import { after, before, test } from "node:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import { eq, sql } from "drizzle-orm";
 import { authPlugin, PASSWORD_CHANGE_REQUIRED } from "../../plugins/auth.js";
+import { registerErrorHandling } from "../../plugins/error-handler.js";
 import { db } from "../../db/client.js";
 import { settings } from "../../db/schema.js";
 import { DEFAULT_AUTH } from "../../db/defaults.js";
@@ -30,6 +31,7 @@ const NEW_PASSWORD = "openstrm-itest-pw";
 
 async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify();
+  registerErrorHandling(app);
   await app.register(authPlugin);
   await app.register(loginRoute);
   await app.register(passwordRoute);

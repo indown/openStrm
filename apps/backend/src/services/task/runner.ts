@@ -45,9 +45,9 @@ export interface StartTaskResult {
   body: Record<string, unknown>;
 }
 
-const fail = (status: number, message: string, error?: string): StartTaskResult => ({
+const fail = (status: number, message: string, detail?: string): StartTaskResult => ({
   status,
-  body: error ? { message, error } : { message },
+  body: detail ? { message, details: detail } : { message },
 });
 
 /* ------------------------------- 本地目录 ------------------------------- */

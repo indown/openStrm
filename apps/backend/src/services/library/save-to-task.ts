@@ -9,6 +9,7 @@ import { fsDirGetId } from "../cloud-115/client.js";
 import { receiveToMyDrive } from "../cloud-115/share.js";
 import { generateStrmForSelected, type SelectedItem } from "../strm/share-strm.js";
 import { startTask } from "../task/runner.js";
+import { HttpError } from "../../lib/http-error.js";
 
 export interface SaveSelectionOpts {
   task: TaskDefinition;
@@ -27,16 +28,6 @@ export type SaveSelectionResult =
   | { mode: "sync"; generatedCount: number; skippedCount: number }
   | { mode: "async"; taskId?: string; message?: string }
   | { mode: "async"; error: unknown };
-
-/** 表示"可映射到 4xx 的业务失败"，供 handler 转成具体 HTTP code */
-export class SaveToTaskError extends Error {
-  statusCode: number;
-  constructor(message: string, statusCode: number) {
-    super(message);
-    this.statusCode = statusCode;
-    this.name = "SaveToTaskError";
-  }
-}
 
 /**
  * 按 task 指定的 account 把 (shareCode, fileIds) 转存到 115，然后:
@@ -57,25 +48,25 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
   } = opts;
 
   if (!task.targetPath || !task.strmPrefix) {
-    throw new SaveToTaskError("所选任务缺少 targetPath 或 strmPrefix 配置", 400);
+    throw new HttpError(400, "所选任务缺少 targetPath 或 strmPrefix 配置");
   }
 
   const fullOriginPath = subPath ? `${task.originPath}/${subPath}` : task.originPath;
   const idRes = (await fsDirGetId(fullOriginPath, { accountInfo })) as { id?: number | string };
   if (idRes?.id == null) {
-    throw new SaveToTaskError(`无法在 115 上找到保存目录：${fullOriginPath}`, 400);
+    throw new HttpError(400, `无法在 115 上找到保存目录：${fullOriginPath}`);
   }
 
   try {
     await receiveToMyDrive(accountInfo, shareCode, receiveCode, fileIds, idRes.id);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "转存到 115 失败";
-    throw new SaveToTaskError(msg, 502);
+    throw new HttpError(502, msg);
   }
 
   if (mode === "sync") {
     if (selectedItems.length === 0) {
-      throw new SaveToTaskError("selectedItems is required for sync mode", 400);
+      throw new HttpError(400, "selectedItems is required for sync mode");
     }
     try {
       const { generatedCount, skippedCount } = await generateStrmForSelected({
@@ -88,7 +79,7 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
       return { mode: "sync", generatedCount, skippedCount };
     } catch (err) {
       const msg = err instanceof Error ? err.message : "生成 strm 失败";
-      throw new SaveToTaskError(msg, 502);
+      throw new HttpError(502, msg);
     }
   }
 
@@ -108,13 +99,10 @@ export function resolveTaskAccount115(
 ): Account115 {
   const accountInfo = accounts.find((a) => a.name === task.account);
   if (!accountInfo) {
-    throw new SaveToTaskError(`Task ${task.id} 绑定的账号 ${task.account} 不存在`, 400);
+    throw new HttpError(400, `Task ${task.id} 绑定的账号 ${task.account} 不存在`);
   }
   if (accountInfo.accountType !== "115") {
-    throw new SaveToTaskError(
-      `Task ${task.id} 绑定的账号 ${task.account} 不是 115 账号`,
-      400,
-    );
+    throw new HttpError(400, `Task ${task.id} 绑定的账号 ${task.account} 不是 115 账号`);
   }
   return accountInfo;
 }

@@ -192,9 +192,9 @@ export default function Home() {
         toast.error("任务启动超时，请稍后检查任务状态");
       } else if (error && typeof error === 'object' && 'response' in error) {
         // 处理API错误响应
-        const apiError = error as { response?: { data?: { message?: string; error?: string } } };
+        const apiError = error as { response?: { data?: { message?: string; details?: string } } };
         const message = apiError.response?.data?.message || "任务开始失败";
-        const detail = apiError.response?.data?.error;
+        const detail = apiError.response?.data?.details;
         const errorText = detail ? `${message}: ${detail}` : message;
         toast.error(errorText);
       } else {
@@ -237,7 +237,7 @@ export default function Home() {
       await axiosInstance.post("/api/clearDirectory", { targetPath });
       toast.success(`目录 ${targetPath} 清空成功`);
     } catch (error: unknown) {
-      const errorMessage = (error as { response?: { data?: { error?: string } } })?.response?.data?.error || "清空目录失败";
+      const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message || "清空目录失败";
       toast.error(errorMessage);
     }
   };

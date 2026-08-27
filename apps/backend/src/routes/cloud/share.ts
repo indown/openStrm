@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import {
   shareExtractPayload,
   getShareData,
@@ -6,48 +7,64 @@ import {
   getShareDownloadUrl,
   receiveToMyDrive,
 } from "../../services/cloud-115/share.js";
-import {
-  resolveTaskAccount115,
-  saveSelectionToTask,
-  SaveToTaskError,
-} from "../../services/library/save-to-task.js";
-import type { SelectedItem } from "../../services/strm/share-strm.js";
-import { readAppSettings } from "../../db/repositories/settings.js";
+import { resolveTaskAccount115, saveSelectionToTask } from "../../services/library/save-to-task.js";
 import { listAccounts } from "../../db/repositories/accounts.js";
 import { listTasks } from "../../db/repositories/tasks.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
+import { HttpError } from "../../lib/http-error.js";
+import { parse } from "../../lib/validate.js";
+import { cidSchema } from "../../schemas/entities.js";
+
+const idSchema = z.union([z.string(), z.number()]);
+
+/** 一个接口多个动作；各动作的必填项在 switch 里再查，这里只管类型 */
+const bodySchema = z.looseObject({
+  action: z.enum(["parse", "info", "list", "download_url", "receive"]),
+  url: z.string().optional(),
+  shareCode: z.string().optional(),
+  share_code: z.string().optional(),
+  receiveCode: z.string().optional(),
+  receive_code: z.string().optional(),
+  cid: cidSchema.optional(),
+  limit: z.number().int().positive().optional(),
+  offset: z.number().int().min(0).optional(),
+  fileId: idSchema.optional(),
+  fileIds: z.union([z.array(idSchema), idSchema]).optional(),
+  taskId: z.string().optional(),
+  mode: z.enum(["sync", "async"]).optional(),
+  selectedItems: z.array(z.object({ name: z.string(), isDir: z.boolean() })).optional(),
+  subPath: z.string().optional(),
+  toPid: cidSchema.optional(),
+});
 
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/115/share", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const body = request.body as Record<string, any>;
+    const body = parse(bodySchema, request.body);
     const { action } = body;
 
     const accounts = listAccounts();
     const account115 = accounts.find((a) => a.accountType === "115") as any;
-    if (!account115) {
-      return reply.code(400).send({ code: 400, message: "No 115 account configured" });
-    }
+    if (!account115) throw new HttpError(400, "No 115 account configured");
 
-    let shareCode: string = body.shareCode || body.share_code || "";
-    let receiveCode: string = body.receiveCode || body.receive_code || "";
-    if (!shareCode && typeof body.url === "string" && body.url.trim()) {
+    let shareCode = body.shareCode || body.share_code || "";
+    let receiveCode = body.receiveCode || body.receive_code || "";
+    if (!shareCode && body.url?.trim()) {
       try {
         const parsed = shareExtractPayload(body.url);
         shareCode = parsed.share_code;
         if (!receiveCode) receiveCode = parsed.receive_code;
       } catch {
-        return reply.code(400).send({ code: 400, message: "Invalid share url" });
+        throw new HttpError(400, "Invalid share url");
       }
     }
 
     switch (action) {
       case "parse": {
-        const { url } = body;
-        if (!url) return reply.code(400).send({ code: 400, message: "url is required" });
-        const result = shareExtractPayload(url);
-        return { code: 200, data: result };
+        if (!body.url) throw new HttpError(400, "url is required");
+        return { code: 200, data: shareExtractPayload(body.url) };
       }
       case "info": {
-        if (!shareCode) return reply.code(400).send({ code: 400, message: "shareCode is required" });
+        if (!shareCode) throw new HttpError(400, "shareCode is required");
         const data = await getShareData(account115, shareCode, receiveCode);
         return { code: 200, data };
       }
@@ -55,73 +72,45 @@ export default async function (fastify: FastifyInstance) {
         const cid = body.cid || 0;
         const limit = body.limit || 32;
         const offset = body.offset || 0;
-        if (!shareCode) return reply.code(400).send({ code: 400, message: "shareCode is required" });
+        if (!shareCode) throw new HttpError(400, "shareCode is required");
         const { list, count } = await getShareDirList(account115, shareCode, receiveCode, cid, { limit, offset });
         return { code: 200, data: { list, count, limit, offset } };
       }
       case "download_url": {
-        const fileId = body.fileId;
-        if (!shareCode || !fileId) return reply.code(400).send({ code: 400, message: "shareCode and fileId are required" });
-        const url = await getShareDownloadUrl(account115, shareCode, receiveCode, fileId);
+        if (!shareCode || !body.fileId) throw new HttpError(400, "shareCode and fileId are required");
+        const url = await getShareDownloadUrl(account115, shareCode, receiveCode, body.fileId);
         return { code: 200, data: { url } };
       }
       case "receive": {
         const fileIds = body.fileIds;
-        const taskId: string | undefined = body.taskId;
-        const mode: "sync" | "async" = body.mode === "async" ? "async" : "sync";
-        const selectedItems: SelectedItem[] = Array.isArray(body.selectedItems) ? body.selectedItems : [];
-        const subPath: string = typeof body.subPath === "string"
-          ? body.subPath.split("/").map((s: string) => s.trim()).filter(Boolean).join("/")
-          : "";
-        if (!shareCode || !fileIds) return reply.code(400).send({ code: 400, message: "shareCode and fileIds are required" });
+        const mode = body.mode === "async" ? "async" : "sync";
+        const selectedItems = body.selectedItems ?? [];
+        const subPath = (body.subPath ?? "").split("/").map((s) => s.trim()).filter(Boolean).join("/");
+        if (!shareCode || !fileIds) throw new HttpError(400, "shareCode and fileIds are required");
 
-        if (taskId) {
-          const task = listTasks().find((t) => t.id === taskId);
-          if (!task) return reply.code(400).send({ code: 400, message: `Task not found: ${taskId}` });
-
-          let taskAccount;
-          try {
-            taskAccount = resolveTaskAccount115(accounts, task);
-          } catch (err) {
-            if (err instanceof SaveToTaskError) {
-              return reply.code(err.statusCode).send({ code: err.statusCode, message: err.message });
-            }
-            throw err;
-          }
-
-          try {
-            const result = await saveSelectionToTask({
-              task,
-              accountInfo: taskAccount,
-              shareCode,
-              receiveCode,
-              fileIds,
-              selectedItems,
-              subPath,
-              mode,
-              settings: readAppSettings(),
-            });
-            if (result.mode === "sync") {
-              return { code: 200, data: { strmGenerated: true, ...result } };
-            }
-            if ("error" in result) {
-              return reply.code(200).send({ code: 200, data: { strmGenerated: false, ...result } });
-            }
-            return { code: 200, data: { strmGenerated: true, ...result } };
-          } catch (err) {
-            if (err instanceof SaveToTaskError) {
-              return reply.code(err.statusCode).send({ code: err.statusCode, message: err.message });
-            }
-            throw err;
-          }
+        if (body.taskId) {
+          const task = listTasks().find((t) => t.id === body.taskId);
+          if (!task) throw new HttpError(400, `Task not found: ${body.taskId}`);
+          const taskAccount = resolveTaskAccount115(accounts, task);
+          const result = await saveSelectionToTask({
+            task,
+            accountInfo: taskAccount,
+            shareCode,
+            receiveCode,
+            fileIds: Array.isArray(fileIds) ? fileIds : [fileIds],
+            selectedItems,
+            subPath,
+            mode,
+            settings: readAppSettings(),
+          });
+          if (result.mode === "sync") return { code: 200, data: { strmGenerated: true, ...result } };
+          if ("error" in result) return reply.code(200).send({ code: 200, data: { strmGenerated: false, ...result } });
+          return { code: 200, data: { strmGenerated: true, ...result } };
         }
 
-        const toPid = body.toPid ?? 0;
-        const result = await receiveToMyDrive(account115, shareCode, receiveCode, fileIds, toPid);
+        const result = await receiveToMyDrive(account115, shareCode, receiveCode, fileIds, body.toPid ?? 0);
         return { code: 200, data: result };
       }
-      default:
-        return reply.code(400).send({ code: 400, message: `Unknown action: ${action}` });
     }
   });
 }

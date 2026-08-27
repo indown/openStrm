@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { searchMulti, type TmdbSearchResult } from "../../services/tmdb.js";
 import {
   getResourcesByTmdbId,
@@ -7,163 +8,105 @@ import {
   type HdhiveResource,
 } from "../../services/hdhive.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
+import { HttpError } from "../../lib/http-error.js";
+import { parse } from "../../lib/validate.js";
 
-interface SearchBody {
-  query?: string;
-  tmdbId?: number | string;
-  mediaType?: HdhiveMediaType;
-  language?: string;
+const searchSchema = z.object({
+  query: z.string().optional(),
+  tmdbId: z.union([z.number(), z.string()]).optional(),
+  mediaType: z.enum(["movie", "tv"]).optional(),
+  language: z.string().optional(),
+});
+
+const unlockSchema = z.object({ slug: z.string().trim().min(1, "slug 不能为空") });
+
+type HdhiveFailure = Error & { status?: number; code?: string | number; retryAfterSeconds?: number };
+
+/** HDHive 的失败带着它自己的状态码和限流提示，原样转给前端 */
+function hdhiveError(err: unknown, fallback: string, data?: unknown): HttpError {
+  const e = err as HdhiveFailure;
+  const status = e.status && e.status >= 400 ? e.status : 502;
+  return new HttpError(status, e.message || fallback, {
+    code: e.code ?? status,
+    retry_after_seconds: e.retryAfterSeconds,
+    ...(data !== undefined ? { data } : {}),
+  });
 }
 
 export default async function (fastify: FastifyInstance) {
-  fastify.post(
-    "/api/library/hdhive/search",
-    { preHandler: [fastify.authenticate] },
-    async (request, reply) => {
-      const body = (request.body ?? {}) as SearchBody;
-      const settings = readAppSettings();
+  fastify.post("/api/library/hdhive/search", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const body = parse(searchSchema, request.body);
+    const settings = readAppSettings();
 
-      const hdhiveKey = settings.hdhive?.apiKey?.trim();
-      if (!hdhiveKey) {
-        return reply
-          .code(400)
-          .send({ code: 400, message: "HDHive 未配置 API Key，请先到「设置」填入 X-API-Key" });
-      }
-      const hdhiveBaseUrl = settings.hdhive?.baseUrl?.trim();
+    const hdhiveKey = settings.hdhive?.apiKey?.trim();
+    if (!hdhiveKey) throw new HttpError(400, "HDHive 未配置 API Key，请先到「设置」填入 X-API-Key");
+    const hdhiveBaseUrl = settings.hdhive?.baseUrl?.trim();
 
-      const explicitTmdbId =
-        body.tmdbId != null && String(body.tmdbId).trim() !== "" ? String(body.tmdbId).trim() : "";
-      const explicitMediaType =
-        body.mediaType === "movie" || body.mediaType === "tv" ? body.mediaType : undefined;
+    const explicitTmdbId = body.tmdbId != null && String(body.tmdbId).trim() !== "" ? String(body.tmdbId).trim() : "";
 
-      let selected: TmdbSearchResult | null = null;
-      let alternatives: TmdbSearchResult[] = [];
+    let selected: TmdbSearchResult | null = null;
+    let alternatives: TmdbSearchResult[] = [];
 
-      if (explicitTmdbId && explicitMediaType) {
-        selected = {
-          id: Number(explicitTmdbId) || 0,
-          mediaType: explicitMediaType,
-          title: "",
-          year: "",
-          posterUrl: "",
-          overview: "",
-        };
-      } else {
-        const query = typeof body.query === "string" ? body.query.trim() : "";
-        if (!query) {
-          return reply.code(400).send({ code: 400, message: "query 不能为空" });
-        }
-        const tmdbKey = settings.tmdb?.apiKey?.trim();
-        if (!tmdbKey) {
-          return reply
-            .code(400)
-            .send({ code: 400, message: "TMDB 未配置 API Key，无法通过关键词搜索 tmdb_id" });
-        }
-        const language =
-          typeof body.language === "string" && body.language
-            ? body.language
-            : settings.tmdb?.language || "zh-CN";
-
-        let tmdbResults: TmdbSearchResult[] = [];
-        try {
-          tmdbResults = await searchMulti(tmdbKey, query, language);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : "TMDB 搜索失败";
-          return reply.code(502).send({ code: 502, message });
-        }
-        const candidates = tmdbResults.filter(
-          (r) => r.mediaType === "movie" || r.mediaType === "tv",
-        );
-        if (candidates.length === 0) {
-          return reply
-            .code(200)
-            .send({ code: 200, data: { tmdb: null, alternatives: [], resources: [], total: 0 } });
-        }
-        selected = candidates[0];
-        alternatives = candidates.slice(1);
-      }
-
-      if (!selected) {
-        return reply
-          .code(200)
-          .send({ code: 200, data: { tmdb: null, alternatives: [], resources: [], total: 0 } });
-      }
-
-      let resources: HdhiveResource[] = [];
-      let total = 0;
-      try {
-        const resp = await getResourcesByTmdbId(
-          selected.mediaType as HdhiveMediaType,
-          selected.id,
-          { apiKey: hdhiveKey, baseUrl: hdhiveBaseUrl },
-        );
-        resources = resp.resources;
-        total = resp.total;
-      } catch (err) {
-        const e = err as Error & { status?: number; code?: string | number; retryAfterSeconds?: number };
-        const status = e.status && e.status >= 400 ? e.status : 502;
-        return reply.code(status).send({
-          code: e.code ?? status,
-          message: e.message || "HDHive 调用失败",
-          retry_after_seconds: e.retryAfterSeconds,
-          data: {
-            tmdb: selected,
-            alternatives,
-            resources: [],
-            total: 0,
-          },
-        });
-      }
-
-      return {
-        code: 200,
-        data: {
-          tmdb: selected,
-          alternatives,
-          resources,
-          total,
-        },
+    if (explicitTmdbId && body.mediaType) {
+      selected = {
+        id: Number(explicitTmdbId) || 0,
+        mediaType: body.mediaType,
+        title: "",
+        year: "",
+        posterUrl: "",
+        overview: "",
       };
-    },
-  );
+    } else {
+      const query = (body.query ?? "").trim();
+      if (!query) throw new HttpError(400, "query 或 tmdbId+mediaType 至少提供一个");
 
-  fastify.post(
-    "/api/library/hdhive/unlock",
-    { preHandler: [fastify.authenticate] },
-    async (request, reply) => {
-      const body = (request.body ?? {}) as { slug?: unknown };
-      const slug = typeof body.slug === "string" ? body.slug.trim() : "";
-      if (!slug) {
-        return reply.code(400).send({ code: 400, message: "slug 不能为空" });
-      }
+      const tmdbKey = settings.tmdb?.apiKey?.trim();
+      if (!tmdbKey) throw new HttpError(400, "TMDB 未配置 API Key，无法通过关键词搜索 tmdb_id");
+      const language = body.language || settings.tmdb?.language || "zh-CN";
 
-      const settings = readAppSettings();
-      const hdhiveKey = settings.hdhive?.apiKey?.trim();
-      if (!hdhiveKey) {
-        return reply
-          .code(400)
-          .send({ code: 400, message: "HDHive 未配置 API Key，请先到「设置」填入 X-API-Key" });
-      }
-
+      let tmdbResults: TmdbSearchResult[] = [];
       try {
-        const data = await unlockResource(slug, {
-          apiKey: hdhiveKey,
-          baseUrl: settings.hdhive?.baseUrl?.trim(),
-        });
-        return { code: 200, data };
+        tmdbResults = await searchMulti(tmdbKey, query, language);
       } catch (err) {
-        const e = err as Error & {
-          status?: number;
-          code?: string | number;
-          retryAfterSeconds?: number;
-        };
-        const status = e.status && e.status >= 400 ? e.status : 502;
-        return reply.code(status).send({
-          code: e.code ?? status,
-          message: e.message || "HDHive 解锁失败",
-          retry_after_seconds: e.retryAfterSeconds,
-        });
+        throw new HttpError(502, err instanceof Error ? err.message : "TMDB 搜索失败");
       }
-    },
-  );
+      const candidates = tmdbResults.filter((r) => r.mediaType === "movie" || r.mediaType === "tv");
+      if (candidates.length === 0) {
+        return reply.code(200).send({ code: 200, data: { tmdb: null, alternatives: [], resources: [], total: 0 } });
+      }
+      selected = candidates[0];
+      alternatives = candidates.slice(1);
+    }
+
+    let resources: HdhiveResource[] = [];
+    let total = 0;
+    try {
+      const resp = await getResourcesByTmdbId(selected.mediaType as HdhiveMediaType, selected.id, {
+        apiKey: hdhiveKey,
+        baseUrl: hdhiveBaseUrl,
+      });
+      resources = resp.resources;
+      total = resp.total;
+    } catch (err) {
+      // 前端拿着 data 里的 tmdb 结果还能展示，只是没有资源列表
+      throw hdhiveError(err, "HDHive 调用失败", { tmdb: selected, alternatives, resources: [], total: 0 });
+    }
+
+    return { code: 200, data: { tmdb: selected, alternatives, resources, total } };
+  });
+
+  fastify.post("/api/library/hdhive/unlock", { preHandler: [fastify.authenticate] }, async (request) => {
+    const { slug } = parse(unlockSchema, request.body);
+
+    const settings = readAppSettings();
+    const hdhiveKey = settings.hdhive?.apiKey?.trim();
+    if (!hdhiveKey) throw new HttpError(400, "HDHive 未配置 API Key，请先到「设置」填入 X-API-Key");
+
+    try {
+      const data = await unlockResource(slug, { apiKey: hdhiveKey, baseUrl: settings.hdhive?.baseUrl?.trim() });
+      return { code: 200, data };
+    } catch (err) {
+      throw hdhiveError(err, "HDHive 解锁失败");
+    }
+  });
 }

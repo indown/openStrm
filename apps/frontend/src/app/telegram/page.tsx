@@ -99,7 +99,7 @@ export default function TelegramPage() {
         await loadBotInfo();
       }
     } catch (error: any) {
-      const errorMessage = error.response?.data?.error || 'Failed to configure bot';
+      const errorMessage = error.response?.data?.message || 'Failed to configure bot';
       const errorDetails = error.response?.data?.details || '';
       setError(errorDetails ? `${errorMessage}: ${errorDetails}` : errorMessage);
     } finally {
@@ -123,7 +123,7 @@ export default function TelegramPage() {
       setWebhookInfo(null);
       setConfig({});
     } catch (error: any) {
-      setError(error.response?.data?.error || 'Failed to remove bot configuration');
+      setError(error.response?.data?.message || 'Failed to remove bot configuration');
     } finally {
       setLoading(false);
     }
@@ -153,7 +153,7 @@ export default function TelegramPage() {
         await checkPollingStatus();
       }
     } catch (error: any) {
-      setError(error.response?.data?.error || 'Failed to start polling');
+      setError(error.response?.data?.message || 'Failed to start polling');
     } finally {
       setLoading(false);
     }
@@ -173,7 +173,7 @@ export default function TelegramPage() {
         await checkPollingStatus();
       }
     } catch (error: any) {
-      setError(error.response?.data?.error || 'Failed to stop polling');
+      setError(error.response?.data?.message || 'Failed to stop polling');
     } finally {
       setLoading(false);
     }
@@ -197,7 +197,7 @@ export default function TelegramPage() {
 
       setSuccess('Test message sent successfully!');
     } catch (error: any) {
-      setError(error.response?.data?.error || 'Failed to send test message');
+      setError(error.response?.data?.message || 'Failed to send test message');
     } finally {
       setLoading(false);
     }
