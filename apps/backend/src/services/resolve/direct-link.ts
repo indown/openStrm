@@ -95,6 +95,20 @@ export function effectiveMountPaths(settings: AppSettings, tasks: TaskDefinition
 }
 
 /**
+ * 当前生效的挂载前缀，供代理侧按请求现算。
+ * 任务表读不到（库还没建好）时只用手填的那份——和 readSettingsSafe 的降级口径一致。
+ */
+export function currentMountPaths(): string[] {
+  let tasks: TaskDefinition[] = [];
+  try {
+    tasks = listTasks();
+  } catch {
+    /* 库不可用：readSettingsSafe 同样会退成空配置，这里就只看手填的 */
+  }
+  return effectiveMountPaths(readSettingsSafe(), tasks);
+}
+
+/**
  * 反查任务表：哪个任务用的就是这个 strmPrefix、且它的 originPath 正好是这条路径的前缀，
  * 那这个文件就在该任务的账号里。比在路径里找账号名靠谱——strm 路径里根本没有账号名。
  */
