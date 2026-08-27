@@ -59,7 +59,14 @@ export function deleteAllHistory(): void {
   repo.removeAll();
 }
 
+const HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** 每条记录最多带几千行日志，不清的话这张表只增不减。启动时和之后每天各跑一次 */
 export function cleanupOldHistory(): void {
-  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  repo.cleanupOlderThan(cutoff);
+  repo.cleanupOlderThan(Date.now() - HISTORY_RETENTION_MS);
+}
+
+/** 运行中的任务只存在于内存，进程重启后历史里不能永远挂着 running */
+export function reconcileInterruptedExecutions(): number {
+  return repo.failInterrupted("进程重启，执行中断");
 }

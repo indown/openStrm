@@ -130,3 +130,19 @@ export function removeAll(): void {
 export function cleanupOlderThan(cutoffMs: number): void {
   db.delete(taskHistory).where(lt(taskHistory.startTime, cutoffMs)).run();
 }
+
+/** 仍标着 running 的记录：执行早就随上个进程没了，标成 failed 并注明原因。返回处理条数 */
+export function failInterrupted(reason: string): number {
+  const rows = db.select().from(taskHistory).where(eq(taskHistory.status, "running")).all();
+  if (rows.length === 0) return 0;
+  db.transaction((tx) => {
+    for (const row of rows) {
+      const summary = { ...safeParse<Record<string, unknown>>(row.summary, {}), errorMessage: reason };
+      tx.update(taskHistory)
+        .set({ status: "failed", endTime: Date.now(), summary: JSON.stringify(summary) })
+        .where(eq(taskHistory.id, row.id))
+        .run();
+    }
+  });
+  return rows.length;
+}

@@ -6,7 +6,8 @@ import type { AccountInfo } from "../cloud-115/client.js";
 import { exportDirParse, fsDirGetId } from "../cloud-115/client.js";
 import { downloadOrCreateStrm } from "../download/rate-limited.js";
 import { buildTree, collectFilesAndTopEmptyDirs } from "../task/tree.js";
-import { DATA_DIR } from "../../paths.js";
+import { resolveInDataDir } from "../../paths.js";
+import { toStrmPath } from "./naming.js";
 
 export interface SelectedItem {
   name: string;
@@ -18,17 +19,12 @@ export interface GenerateResult {
   skippedCount: number;
 }
 
-function strmLocalPath(savePath: string): string {
-  const ext = path.extname(savePath);
-  return ext ? savePath.replace(new RegExp(`${ext.replace(/\./g, "\\.")}$`), ".strm") : `${savePath}.strm`;
-}
-
 async function writeOneStrm(
   remotePath: string,
   localPath: string,
   task: TaskDefinition,
 ): Promise<"generated" | "skipped"> {
-  if (fs.existsSync(strmLocalPath(localPath))) return "skipped";
+  if (fs.existsSync(toStrmPath(localPath))) return "skipped";
   await firstValueFrom(
     downloadOrCreateStrm(remotePath, localPath, {
       asStrm: true,
@@ -57,10 +53,9 @@ export async function generateStrmForSelected(params: {
   const subPath = normalizeSubPath(params.subPath);
   const originRoot = subPath ? `${task.originPath}/${subPath}` : task.originPath;
   const strmExts = (settings.strmExtensions || []).map((e) => e.toLowerCase());
-  const saveDir = subPath
-    ? path.resolve(DATA_DIR, task.targetPath, subPath)
-    : path.resolve(DATA_DIR, task.targetPath);
-  if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
+  const saveDir = resolveInDataDir(subPath ? path.join(task.targetPath, subPath) : task.targetPath);
+  if (!saveDir) throw new Error(`targetPath 越出了数据目录: ${task.targetPath}`);
+  fs.mkdirSync(saveDir, { recursive: true });
 
   let generatedCount = 0;
   let skippedCount = 0;
