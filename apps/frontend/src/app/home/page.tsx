@@ -224,7 +224,7 @@ export default function Home() {
   const goToLog = async (id: string) => {
     try {
       const logRes = await axiosInstance.get(`/api/taskLog/${id}`);
-      if (logRes.data.taskId) router.push(`/log/${id}`);
+      if (logRes.data.taskId) router.push(`/log?taskId=${id}`);
       else toast.error("没有找到对应的任务日志");
     } catch {
       toast.error("没有找到对应的任务日志");

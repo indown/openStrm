@@ -3,9 +3,8 @@ services:
     image: indown/openstrm:latest
     container_name: openstrm
     ports:
-      - "3000:3000"   # Next.js 管理界面
+      - "3000:3000"   # 管理界面 + API
       - "8091:8091"   # Emby 302 代理（Emby 客户端连这个端口）
-      # - "4000:4000" # Fastify API，默认不对外；前端通过 rewrites 访问
     environment:
       - NODE_ENV=production
       # JWT_SECRET 不用设：首次启动会随机生成并存进 config/openstrm.db。

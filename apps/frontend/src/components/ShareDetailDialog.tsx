@@ -212,7 +212,7 @@ export function ShareDetailDialog({
           toast.success("已触发后台同步", {
             action: {
               label: "查看进度",
-              onClick: () => router.push(`/log/${asyncTaskId}`),
+              onClick: () => router.push(`/log?taskId=${asyncTaskId}`),
             },
           });
         } else if (typeof data.generatedCount === "number") {
