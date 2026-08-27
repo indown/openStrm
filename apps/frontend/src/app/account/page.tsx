@@ -15,7 +15,7 @@ import {
 import { ColumnDef } from "@tanstack/react-table";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import axiosInstance from "@/lib/axios";
+import { api } from "@/lib/api";
 import { 
   Edit, 
   Trash2, 
@@ -48,8 +48,7 @@ export default function AccountPage() {
   const fetchAccounts = async () => {
     try {
       setIsLoading(true);
-      const res = await axiosInstance.get("/api/account");
-      setData(res.data);
+      setData(await api.accounts.list());
     } catch {
       toast.error("获取账户列表失败");
     } finally {
@@ -59,7 +58,7 @@ export default function AccountPage() {
 
   const handleDelete = async (name: string) => {
     try {
-      await axiosInstance.delete(`/api/account?name=${name}`);
+      await api.accounts.remove(name);
       toast.success("删除成功");
       fetchAccounts();
     } catch {

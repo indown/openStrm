@@ -6,22 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import axiosInstance from "@/lib/axios";
+import { api } from "@/lib/api";
+import type { AppSettings } from "@openstrm/shared";
 
-type Settings = {
-  "user-agent"?: string;
-  strmExtensions?: string[];
-  downloadExtensions?: string[];
-  mediaMountPath?: string[];
-  emby?: { url?: string; apiKey?: string; allowAnonymousRedirect?: boolean };
-  tmdb?: { apiKey?: string; language?: string };
-  hdhive?: { apiKey?: string; baseUrl?: string };
-  download?: {
-    linkMaxPerSecond?: number;
-    linkMaxConcurrent?: number;
-    downloadMaxConcurrent?: number;
-  };
-} & Record<string, unknown>;
+type Settings = AppSettings;
 
 export default function SettingsPage() {
   const [data, setData] = useState<Settings>({});
@@ -33,9 +21,8 @@ export default function SettingsPage() {
   const [backingUp, setBackingUp] = useState(false);
 
   useEffect(() => {
-    axiosInstance.get("/api/settings")
-      .then((r) => {
-        const settings = r.data || {};
+    api.settings.get()
+      .then((settings) => {
         setData(settings);
         setStrmExtensionsInput((settings.strmExtensions || []).join(", "));
         setDownloadExtensionsInput((settings.downloadExtensions || []).join(", "));
@@ -82,7 +69,7 @@ export default function SettingsPage() {
         hdhive: data.hdhive,
       };
 
-      await axiosInstance.put("/api/settings", saveData);
+      await api.settings.patch(saveData);
       setData({ ...data, ...saveData });
       toast.success("保存成功");
     } catch (error: unknown) {
@@ -108,13 +95,11 @@ export default function SettingsPage() {
   const downloadBackup = async () => {
     setBackingUp(true);
     try {
-      const res = await axiosInstance.get<Blob>("/api/system/backup", { responseType: "blob" });
-      const disposition = String(res.headers["content-disposition"] ?? "");
-      const name = /filename="([^"]+)"/.exec(disposition)?.[1] ?? "openstrm.db";
-      const url = URL.createObjectURL(res.data);
+      const { blob, filename } = await api.system.backup();
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = name;
+      a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
     } catch {

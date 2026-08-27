@@ -23,50 +23,16 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
-import axiosInstance from "@/lib/axios";
-
-type EventMode = "create" | "move" | "rename" | "remove";
+import type { LifeMonitorSettings } from "@openstrm/shared";
+import { api, type LifeEventMode as EventMode, type LifeEventRow, type LifeMonitorStatus as Status } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/axios";
 
 /**
  * 只放配置项，故意不含 enabled。
  * enabled 是「是否随服务自启」的运行态，由启动/停止按钮独占，
  * 表单若也带着它，保存时会用挂载那一刻的旧值把启停结果覆盖掉。
  */
-type LifeMonitorConfig = {
-  account?: string;
-  pullMode?: "latest" | "all" | "last";
-  intervalSeconds?: number;
-  eventModes?: EventMode[];
-  mediaServerRefreshDelay?: number;
-  mediaServerRefreshMaxWait?: number;
-};
-
-type Status = {
-  running: boolean;
-  account: string | null;
-  cursor: { fromTime: number; fromId: string };
-  interval: number;
-  eventModes: EventMode[];
-  api: "web" | "ios" | "android";
-  startedAt: number | null;
-  lastPollAt: number | null;
-  lastError: string | null;
-  stats: { rounds: number; events: number; handled: number; skipped: number; failed: number };
-  db: { lifeEvents: number; pathCache: number };
-  embyRefresh: { configured: boolean; pendingCount: number; pendingSince: number | null };
-  logs: string[];
-};
-
-type LifeEventRow = {
-  id: string;
-  type: number;
-  typeName: string;
-  fileName: string;
-  fileCategory: number;
-  updateTime: number;
-  status: string;
-  detail: string;
-};
+type LifeMonitorConfig = Omit<LifeMonitorSettings, "enabled">;
 
 type Account = { name: string; accountType: string };
 
@@ -109,8 +75,7 @@ export default function LifeMonitorPage() {
 
   const loadStatus = useCallback(async () => {
     try {
-      const r = await axiosInstance.get<Status>("/api/life/monitor");
-      setStatus(r.data);
+      setStatus(await api.life.status());
     } catch {
       /* 轮询失败静默，避免刷屏 */
     }
@@ -118,8 +83,7 @@ export default function LifeMonitorPage() {
 
   const loadEvents = useCallback(async () => {
     try {
-      const r = await axiosInstance.get<{ events: LifeEventRow[] }>("/api/life/events?limit=30");
-      setEvents(r.data.events || []);
+      setEvents((await api.life.events(30)).events || []);
     } catch {
       /* 同上 */
     }
@@ -127,14 +91,13 @@ export default function LifeMonitorPage() {
 
   useEffect(() => {
     Promise.all([
-      axiosInstance.get("/api/settings").then((r) => {
-        const saved: Record<string, unknown> = { ...(r.data?.lifeMonitor || {}) };
-        delete saved.enabled; // 运行态归启停按钮管，别让表单把它带回来
-        setCfg(saved as LifeMonitorConfig);
+      api.settings.get().then((s) => {
+        // 运行态归启停按钮管，别让表单把它带回来
+        const saved = { ...(s.lifeMonitor ?? {}) };
+        delete saved.enabled;
+        setCfg(saved);
       }),
-      axiosInstance.get<Account[]>("/api/account").then((r) =>
-        setAccounts((r.data || []).filter((a) => a.accountType === "115")),
-      ),
+      api.accounts.list().then((list) => setAccounts((list || []).filter((a) => a.accountType === "115"))),
       loadStatus(),
       loadEvents(),
     ]).finally(() => setLoading(false));
@@ -153,9 +116,9 @@ export default function LifeMonitorPage() {
   const saveConfig = async () => {
     setSaving(true);
     try {
-      // PUT /api/settings 是整体覆盖，必须先取回全量再合并，否则会抹掉其它配置
-      const all = (await axiosInstance.get("/api/settings")).data || {};
-      await axiosInstance.put("/api/settings", { ...all, lifeMonitor: { ...(all.lifeMonitor || {}), ...cfg } });
+      // 只动 lifeMonitor 这一个键；enabled 由启停按钮维护，合并时保留库里的值
+      const current = (await api.settings.get()).lifeMonitor ?? {};
+      await api.settings.patch({ lifeMonitor: { ...current, ...cfg } });
       toast.success("配置已保存");
       if (status?.running) toast.info("部分参数需要重启监控后生效");
     } catch {
@@ -168,12 +131,11 @@ export default function LifeMonitorPage() {
   const start = async () => {
     setBusy(true);
     try {
-      const r = await axiosInstance.post("/api/life/monitor", { config: cfg });
-      toast.success(r.data?.message || "已启动");
+      const r = await api.life.start(cfg);
+      toast.success(r.message || "已启动");
       await loadStatus();
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } } };
-      toast.error(e.response?.data?.message || "启动失败");
+      toast.error(apiErrorMessage(err, "启动失败"));
       await loadStatus();
     } finally {
       setBusy(false);
@@ -183,8 +145,8 @@ export default function LifeMonitorPage() {
   const stop = async () => {
     setBusy(true);
     try {
-      const r = await axiosInstance.delete("/api/life/monitor");
-      toast.success(r.data?.message || "已停止");
+      const r = await api.life.stop();
+      toast.success(r.message || "已停止");
       await loadStatus();
     } catch {
       toast.error("停止失败");
@@ -196,11 +158,10 @@ export default function LifeMonitorPage() {
   const probe = async () => {
     setProbing(true);
     try {
-      const r = await axiosInstance.post("/api/life/probe", { limit: 5 });
-      toast.success(`连通正常：${r.data?.message || ""}`);
+      const r = await api.life.probe(5);
+      toast.success(`连通正常：${r.message || ""}`);
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } } };
-      toast.error(e.response?.data?.message || "连接失败");
+      toast.error(apiErrorMessage(err, "连接失败"));
     } finally {
       setProbing(false);
     }

@@ -22,39 +22,11 @@ import {
   ExternalLink,
   ArrowRightCircle,
 } from "lucide-react";
-import axiosInstance from "@/lib/axios";
+import { api, type HdhiveResourceItem, type HdhiveTmdbItem, type HdhiveUnlockResult } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/axios";
 import { toast } from "sonner";
 
-export interface HdhiveTmdbItem {
-  id: number;
-  mediaType: "movie" | "tv";
-  title: string;
-  year: string;
-  posterUrl: string;
-  overview: string;
-}
-
-export interface HdhiveResourceItem {
-  slug: string;
-  title: string | null;
-  pan_type: string | null;
-  share_size: string | null;
-  video_resolution: string[];
-  source: string[];
-  subtitle_language: string[];
-  subtitle_type: string[];
-  unlock_points: number | null;
-  is_unlocked: boolean;
-  user: Record<string, unknown> | null;
-  remark?: string | null;
-}
-
-export interface HdhiveUnlockResult {
-  url: string;
-  access_code: string;
-  full_url: string;
-  already_owned: boolean;
-}
+export type { HdhiveTmdbItem, HdhiveResourceItem, HdhiveUnlockResult } from "@/lib/api";
 
 interface Props {
   open: boolean;
@@ -321,8 +293,7 @@ export function HdhiveSearchDialog({
       return next;
     });
     try {
-      const resp = await axiosInstance.post<HdhiveUnlockResult>("/api/library/hdhive/unlock", { slug: res.slug });
-      const result = resp.data;
+      const result = await api.hdhive.unlock(res.slug);
       setUnlockResults((prev) => {
         const next = new Map(prev);
         next.set(res.slug, result);
@@ -338,8 +309,7 @@ export function HdhiveSearchDialog({
         onPan115Unlocked(fullUrl, res);
       }
     } catch (err) {
-      const apiErr = err as { response?: { data?: { message?: string } }; message?: string };
-      const msg = apiErr.response?.data?.message || apiErr.message || "解锁失败";
+      const msg = apiErrorMessage(err, (err as Error)?.message || "解锁失败");
       toast.error(msg);
     } finally {
       setUnlockingSlugs((prev) => {

@@ -18,22 +18,16 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { File, ChevronRight, FolderOpen, Download, ChevronLeft, ChevronsLeft, ChevronsRight, BookmarkPlus } from "lucide-react";
-import axiosInstance from "@/lib/axios";
 import { toast } from "sonner";
+import { api, type ShareFileItem } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/axios";
+import { notifySaveToTaskResult } from "@/lib/save-result";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DirectoryPickerDialog } from "@/components/DirectoryPickerDialog";
 import { SaveToDriveDialog, type SaveToTaskChoice } from "@/components/SaveToDriveDialog";
-import type { AddResponse } from "@/components/AddToLibraryDialog";
 
-export interface ShareFileItem {
-  id: number;
-  name: string;
-  is_dir: boolean;
-  parent_id: number;
-  size?: number;
-  [k: string]: unknown;
-}
+export type { ShareFileItem } from "@/lib/api";
 
 interface BreadcrumbItem {
   id: string;
@@ -117,15 +111,9 @@ export function ShareDetailDialog({
     if (!shareLink.trim()) return;
     setLoading(true);
     try {
-      const res = await axiosInstance.post<{ list: ShareFileItem[]; count: number }>("/api/115/share", {
-        action: "list",
-        url: shareLink.trim(),
-        cid,
-        limit: PAGE_SIZE,
-        offset: (nextPage - 1) * PAGE_SIZE,
-      });
-      setCurrentList(res.data.list ?? []);
-      setTotalCount(res.data.count ?? 0);
+      const page = await api.share.list(shareLink.trim(), cid, { limit: PAGE_SIZE, offset: (nextPage - 1) * PAGE_SIZE });
+      setCurrentList(page.list ?? []);
+      setTotalCount(page.count ?? 0);
       setPage(nextPage);
     } catch {
       toast.error("加载目录失败");
@@ -189,8 +177,7 @@ export function ShareDetailDialog({
     setSaving(true);
     try {
       const items = Array.from(selectedItems.entries()).map(([, v]) => ({ name: v.name, isDir: v.isDir }));
-      const res = await axiosInstance.post("/api/115/share", {
-        action: "receive",
+      const result = await api.share.receive({
         url: shareLink.trim(),
         fileIds: Array.from(selectedItems.keys()),
         taskId: choice.taskId,
@@ -198,26 +185,10 @@ export function ShareDetailDialog({
         mode: choice.mode,
         selectedItems: items,
       });
-      {
-        const data = res.data || {};
-        if (data.mode === "async" && data.taskId) {
-          const asyncTaskId = data.taskId as string;
-          toast.success("已触发后台同步", {
-            action: {
-              label: "查看进度",
-              onClick: () => router.push(`/log?taskId=${asyncTaskId}`),
-            },
-          });
-        } else if (typeof data.generatedCount === "number") {
-          toast.success(`保存成功，生成 ${data.generatedCount} 个 strm（跳过 ${data.skippedCount ?? 0} 个）`);
-        } else {
-          toast.success("保存成功");
-        }
-        setSelectedItems(new Map());
-      }
+      notifySaveToTaskResult(result, router);
+      setSelectedItems(new Map());
     } catch (err) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      toast.error(msg || "保存失败");
+      toast.error(apiErrorMessage(err, "保存失败"));
     } finally {
       setSaving(false);
     }
@@ -240,7 +211,7 @@ export function ShareDetailDialog({
         const parentSegments = breadcrumb.slice(1).map((b) => b.name);
         const results = await Promise.allSettled(
           selectedDirs.map((d) =>
-            axiosInstance.post<AddResponse>("/api/library", {
+            api.library.create({
               shareUrl: url,
               cid: d.cid,
               rawName: d.name,
@@ -280,23 +251,21 @@ export function ShareDetailDialog({
       // 情况 2：按面包屑当前层级（根目录 → 后端自动判断合集/单片；子目录 → 入这一条）
       const atRoot = breadcrumb.length <= 1;
       const current = breadcrumb[breadcrumb.length - 1];
-      const body: Record<string, unknown> = { shareUrl: url };
-      if (!atRoot) {
-        body.cid = current.id;
-        body.rawName = current.name;
-        body.sharePath = breadcrumb.slice(1).map((b) => b.name).join("/");
-        body.fileCount = totalCount;
-      }
-      const res = await axiosInstance.post<AddResponse>("/api/library", body);
-      const data = res.data;
+      const data = await api.library.create(
+        atRoot
+          ? { shareUrl: url }
+          : {
+              shareUrl: url,
+              cid: current.id,
+              rawName: current.name,
+              sharePath: breadcrumb.slice(1).map((b) => b.name).join("/"),
+              fileCount: totalCount,
+            },
+      );
       toast.success(`已加入影库：${data.entry.title || data.entry.rawName || data.entry.shareCode}`);
     } catch (err) {
-      const anyErr = err as { response?: { status?: number; data?: { message?: string } } };
-      if (anyErr.response?.status === 409) {
-        toast.error(anyErr.response.data?.message || "该内容已在影库中");
-      } else {
-        toast.error(anyErr.response?.data?.message || "加入影库失败");
-      }
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      toast.error(apiErrorMessage(err, status === 409 ? "该内容已在影库中" : "加入影库失败"));
     } finally {
       setAddingToLibrary(false);
     }
@@ -305,17 +274,11 @@ export function ShareDetailDialog({
   const handleDirSelected = async (cid: number) => {
     setSaving(true);
     try {
-      await axiosInstance.post("/api/115/share", {
-        action: "receive",
-        url: shareLink.trim(),
-        fileIds: Array.from(selectedItems.keys()),
-        toPid: String(cid),
-      });
+      await api.share.receive({ url: shareLink.trim(), fileIds: Array.from(selectedItems.keys()), toPid: String(cid) });
       toast.success("保存成功");
       setSelectedItems(new Map());
     } catch (err) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      toast.error(msg || "保存失败");
+      toast.error(apiErrorMessage(err, "保存失败"));
     } finally {
       setSaving(false);
     }

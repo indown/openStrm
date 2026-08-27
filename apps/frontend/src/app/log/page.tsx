@@ -3,7 +3,8 @@
 import * as React from "react";
 import { useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
-import axiosInstance from "@/lib/axios";
+import { getToken } from "@/lib/axios";
+import { api } from "@/lib/api";
 
 interface Progress {
   filePath?: string;
@@ -47,13 +48,9 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
   // 加载历史日志
   const loadHistoryLogs = useCallback(async () => {
     try {
-      console.log("Loading history logs for taskId:", taskId, "executionId:", executionId);
       // 获取所有历史记录，然后找到特定的执行记录
-      const response = await axiosInstance.get("/api/taskHistory");
-      const allHistory = response.data;
-      console.log("All history data:", allHistory);
-      const execution = allHistory.find((h: { id: string }) => h.id === executionId);
-      console.log("Found execution:", execution);
+      const allHistory = await api.history.list();
+      const execution = allHistory.find((h) => h.id === executionId);
       
       if (execution) {
         setConnectionStatus("历史记录");
@@ -92,7 +89,7 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
       console.error("Failed to load history logs:", error);
       setConnectionStatus("加载历史记录失败");
     }
-  }, [taskId, executionId]);
+  }, [executionId]);
 
   useEffect(() => {
     let abortController: AbortController | null = null;
@@ -108,18 +105,15 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
           return;
         }
 
-        console.log('Starting SSE connection to:', `/api/taskLog/${taskId}`);
-        
         const response = await fetch(`/api/taskLog/${taskId}`, {
           method: 'GET',
           headers: {
             'Accept': 'text/event-stream',
-            'Authorization': `Bearer ${localStorage.getItem('auth-token')}`,
+            'Authorization': `Bearer ${getToken() ?? ""}`,
           },
           signal: abortController.signal,
         });
 
-        console.log('SSE response status:', response.status);
         
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
@@ -138,7 +132,6 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
-            console.log('SSE stream ended');
             setConnectionStatus("连接已断开");
             break;
           }
@@ -153,7 +146,6 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
               if (dataStr.trim()) {
                 try {
                   const data: Progress = JSON.parse(dataStr);
-                  console.log('SSE data received:', data);
                   
                   if (data.error) {
                     // 没有任务的情况
@@ -196,7 +188,6 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
         }
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
-          console.log('SSE connection aborted');
           setConnectionStatus("连接已取消");
         } else {
           console.error('SSE connection error:', error);
@@ -220,14 +211,8 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
     
     setIsCancelling(true);
     try {
-      const response = await axiosInstance.post('/api/cancelTask', { taskId });
-      console.log('Task cancellation response:', response.data);
-      
-      if (response.data.message) {
-        setTaskStatus("已取消");
-        // 显示成功消息
-        console.log('Task cancelled successfully');
-      }
+      const response = await api.tasks.cancel(taskId);
+      if (response.message) setTaskStatus("已取消");
     } catch (error: unknown) {
       console.error('Failed to cancel task:', error);
       const errorMessage = error instanceof Error && 'response' in error 

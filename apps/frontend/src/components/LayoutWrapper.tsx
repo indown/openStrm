@@ -5,7 +5,9 @@ import { usePathname } from "next/navigation";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { Settings, Github, Share2, Search } from "lucide-react";
-import axiosInstance, { clearToken } from "@/lib/axios";
+import { apiErrorBody, clearToken } from "@/lib/axios";
+import { api, type HdhiveResourceItem, type HdhiveTmdbItem } from "@/lib/api";
+import { useShareDetail } from "@/hooks/use-share-detail";
 import {
   Menubar,
   MenubarContent,
@@ -16,23 +18,14 @@ import {
 import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { ShareDetailDialog, type ShareFileItem } from "@/components/ShareDetailDialog";
-import {
-  HdhiveSearchDialog,
-  type HdhiveTmdbItem,
-  type HdhiveResourceItem,
-} from "@/components/HdhiveSearchDialog";
+import { ShareDetailDialog } from "@/components/ShareDetailDialog";
+import { HdhiveSearchDialog } from "@/components/HdhiveSearchDialog";
 import { toast } from "sonner";
 
 export default function LayoutWrapper({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [shareLink, setShareLink] = useState("");
-  const [shareDetailOpen, setShareDetailOpen] = useState(false);
-  const [shareInfo, setShareInfo] = useState<Record<string, unknown> | null>(null);
-  const [shareFileList, setShareFileList] = useState<ShareFileItem[]>([]);
-  const [shareFileCount, setShareFileCount] = useState(0);
-  const [shareLoading, setShareLoading] = useState(false);
+  const share = useShareDetail();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [hdhiveOpen, setHdhiveOpen] = useState(false);
@@ -50,7 +43,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
 
   const logout = async () => {
     try {
-      await axiosInstance.post("/api/auth/logout");
+      await api.auth.logout();
     } catch {
       // 即使API调用失败也要清除token
     }
@@ -79,37 +72,17 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     setHdhiveTotal(0);
 
     try {
-      const body: Record<string, unknown> = {};
-      if (hasExplicit) {
-        body.tmdbId = options.tmdbId;
-        body.mediaType = options.mediaType;
-      } else {
-        body.query = queryToUse;
-      }
-      const res = await axiosInstance.post<{
-        tmdb: HdhiveTmdbItem | null;
-        alternatives: HdhiveTmdbItem[];
-        resources: HdhiveResourceItem[];
-        total: number;
-      }>("/api/library/hdhive/search", body);
-      const data = res.data;
+      const data = await api.hdhive.search(
+        hasExplicit ? { tmdbId: options.tmdbId, mediaType: options.mediaType } : { query: queryToUse },
+      );
       setHdhiveTmdb(data?.tmdb ?? null);
       setHdhiveAlternatives(data?.alternatives ?? []);
       setHdhiveResources(data?.resources ?? []);
       setHdhiveTotal(data?.total ?? 0);
     } catch (err) {
-      const apiErr = err as {
-        response?: { data?: { message?: string; data?: unknown } };
-        message?: string;
-      };
-      const message = apiErr.response?.data?.message || apiErr.message || "搜索失败";
-      setHdhiveError(message);
-      const fallback = apiErr.response?.data?.data as
-        | {
-            tmdb: HdhiveTmdbItem | null;
-            alternatives: HdhiveTmdbItem[];
-          }
-        | undefined;
+      setHdhiveError(apiErrorBody(err).message || (err as Error).message || "搜索失败");
+      // HDHive 挂了时后端仍把 TMDB 结果放在错误体的 data 里，先把它们摆出来
+      const fallback = (apiErrorBody(err) as { data?: { tmdb: HdhiveTmdbItem | null; alternatives: HdhiveTmdbItem[] } }).data;
       if (fallback) {
         setHdhiveTmdb(fallback.tmdb ?? null);
         setHdhiveAlternatives(fallback.alternatives ?? []);
@@ -119,46 +92,14 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     }
   };
 
-  const fetchShareDetail = async (overrideUrl?: string) => {
-    const url = (overrideUrl ?? shareLink).trim();
-    if (!url) {
-      toast.error("请输入 115 分享链接");
-      return;
-    }
-    setShareLoading(true);
-    try {
-      const [infoRes, listRes] = await Promise.all([
-        axiosInstance.post<Record<string, unknown>>("/api/115/share", {
-          action: "info",
-          url,
-        }),
-        axiosInstance.post<{ list: ShareFileItem[]; count: number }>("/api/115/share", {
-          action: "list",
-          url,
-          cid: 0,
-        }),
-      ]);
-      setShareInfo(infoRes.data ?? null);
-      setShareFileList(listRes.data.list ?? []);
-      setShareFileCount(listRes.data.count ?? 0);
-      setShareDetailOpen(true);
-    } catch (err: unknown) {
-      const msg =
-        err && typeof err === "object" && "response" in err && err.response && typeof err.response === "object" && "data" in err.response && err.response.data && typeof err.response.data === "object" && "message" in err.response.data
-          ? String((err.response.data as { message?: string }).message)
-          : "获取分享详情失败";
-      toast.error(msg);
-    } finally {
-      setShareLoading(false);
-    }
-  };
+  const fetchShareDetail = (overrideUrl?: string) => share.load(overrideUrl ?? share.link);
 
   const handle115UnlockedFromHdhive = (fullUrl: string) => {
     const url = (fullUrl || "").trim();
     if (!url) return;
-    setShareLink(url);
+    share.setLink(url);
     setHdhiveOpen(false);
-    void fetchShareDetail(url);
+    void share.load(url);
   };
 
   return (
@@ -172,13 +113,13 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
                 <Share2 className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <Input
                   placeholder="粘贴 115 分享链接"
-                  value={shareLink}
-                  onChange={(e) => setShareLink(e.target.value)}
+                  value={share.link}
+                  onChange={(e) => share.setLink(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && fetchShareDetail()}
                   className="h-8 text-sm"
                 />
-                <Button size="sm" onClick={() => fetchShareDetail()} disabled={shareLoading}>
-                  {shareLoading ? "加载中..." : "查看"}
+                <Button size="sm" onClick={() => fetchShareDetail()} disabled={share.loading}>
+                  {share.loading ? "加载中..." : "查看"}
                 </Button>
               </div>
               <div className="flex items-center gap-2 flex-1 min-w-[200px] max-w-md">
@@ -223,15 +164,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
             <div className="p-[20px]">{children}</div>
           </div>
       </SidebarProvider>
-      <ShareDetailDialog
-        open={shareDetailOpen}
-        onOpenChange={setShareDetailOpen}
-        shareInfo={shareInfo}
-        fileList={shareFileList}
-        fileCount={shareFileCount}
-        shareLink={shareLink}
-        loading={shareLoading}
-      />
+      <ShareDetailDialog {...share.dialogProps} />
       <HdhiveSearchDialog
         open={hdhiveOpen}
         onOpenChange={setHdhiveOpen}

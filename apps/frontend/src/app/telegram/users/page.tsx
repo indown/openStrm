@@ -10,7 +10,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Users, Plus, Trash2, CheckCircle, XCircle, AlertCircle, UserPlus } from "lucide-react";
-import axiosInstance, { apiErrorMessage } from "@/lib/axios";
+import { apiErrorMessage } from "@/lib/axios";
+import { api } from "@/lib/api";
 
 interface TelegramUser {
   id: number;
@@ -34,8 +35,7 @@ export default function TelegramUsersPage() {
   const loadUsers = async () => {
     try {
       setLoading(true);
-      const response = await axiosInstance.get('/api/telegram/users');
-      setUsers(response.data.users || []);
+      setUsers((await api.telegram.users.list()).users || []);
     } catch (error) {
       setError(apiErrorMessage(error, 'Failed to load users'));
     } finally {
@@ -60,11 +60,8 @@ export default function TelegramUsersPage() {
       setError(null);
       setSuccess(null);
 
-      const response = await axiosInstance.post('/api/telegram/users', {
-        userId: userId
-      });
-
-      if (response.data.success) {
+      const response = await api.telegram.users.add(userId);
+      if (response.success) {
         setSuccess('User added successfully!');
         setNewUserId("");
         setAddDialogOpen(false);
@@ -85,7 +82,7 @@ export default function TelegramUsersPage() {
       setError(null);
       setSuccess(null);
 
-      await axiosInstance.delete(`/api/telegram/users?userId=${userToDelete}`);
+      await api.telegram.users.remove(userToDelete);
 
       setSuccess('User removed successfully!');
       setDeleteDialogOpen(false);

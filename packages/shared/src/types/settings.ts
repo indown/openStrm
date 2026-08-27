@@ -24,9 +24,13 @@ export type AppSettings = {
   "user-agent"?: string;
   strmExtensions?: string[];
   downloadExtensions?: string[];
-  linkMaxPerSecond?: number;
-  linkMaxConcurrent?: number;
-  downloadMaxConcurrent?: number;
+  /** 下载限流：每秒取直链次数、取直链并发、文件下载并发 */
+  download?: {
+    linkMaxPerSecond?: number;
+    linkMaxConcurrent?: number;
+    downloadMaxConcurrent?: number;
+  };
+  /** 手填的额外挂载前缀；开了 302 的任务的 strmPrefix 会自动算作挂载点，不用填在这里 */
   mediaMountPath?: string[];
   emby?: {
     url?: string;

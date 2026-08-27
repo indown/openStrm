@@ -14,9 +14,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Search, Film, RefreshCw } from "lucide-react";
-import axiosInstance from "@/lib/axios";
 import { toast } from "sonner";
 import type { MediaLibraryEntry, ScrapeStatus } from "@openstrm/shared";
+import { api, type LibraryAddResponse, type TmdbSearchResult } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/axios";
 
 export interface AddToLibraryInitial {
   id?: string;
@@ -35,18 +36,7 @@ interface AddToLibraryDialogProps {
   onSaved: (entry: MediaLibraryEntry) => void;
 }
 
-export type AddResponse =
-  | { mode: "single"; entry: MediaLibraryEntry }
-  | { mode: "subdir"; entry: MediaLibraryEntry };
-
-interface TmdbSearchResult {
-  id: number;
-  mediaType: string;
-  title: string;
-  year: string;
-  posterUrl: string;
-  overview: string;
-}
+export type AddResponse = LibraryAddResponse;
 
 function splitTags(raw: string): string[] {
   return raw
@@ -84,12 +74,11 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    axiosInstance
-      .get<{ tmdb?: { apiKey?: string } } | Record<string, unknown>>("/api/settings")
-      .then((res) => {
+    api.settings
+      .get()
+      .then((settings) => {
         if (cancelled) return;
-        const data = res.data as { tmdb?: { apiKey?: string } };
-        setTmdbEnabled(Boolean(data?.tmdb?.apiKey?.trim()));
+        setTmdbEnabled(Boolean(settings.tmdb?.apiKey?.trim()));
       })
       .catch(() => setTmdbEnabled(false));
     return () => {
@@ -105,14 +94,11 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
     }
     setTmdbLoading(true);
     try {
-      const res = await axiosInstance.post<TmdbSearchResult[]>("/api/library/tmdb/search", { query: q });
-      setTmdbResults(res.data ?? []);
-      if ((res.data ?? []).length === 0) {
-        toast.info("没有找到相关结果");
-      }
+      const results = (await api.tmdb.search(q)) ?? [];
+      setTmdbResults(results);
+      if (results.length === 0) toast.info("没有找到相关结果");
     } catch (err) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      toast.error(msg || "TMDB 搜索失败");
+      toast.error(apiErrorMessage(err, "TMDB 搜索失败"));
     } finally {
       setTmdbLoading(false);
     }
@@ -132,12 +118,11 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
     }
     setRescraping(true);
     try {
-      await axiosInstance.post<{ id: string; status: string }>(`/api/library/${initial.id}/scrape`);
+      await api.library.scrape(initial.id);
       toast.success("已加入刮削队列，稍后刷新查看");
       onOpenChange(false);
     } catch (err) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      toast.error(msg || "触发重新刮削失败");
+      toast.error(apiErrorMessage(err, "触发重新刮削失败"));
     } finally {
       setRescraping(false);
     }
@@ -155,14 +140,12 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
         notes: notes.trim(),
       };
       if (isEdit && initial.id) {
-        const res = await axiosInstance.put<MediaLibraryEntry>(`/api/library/${initial.id}`, payload);
-        onSaved(res.data);
+        onSaved(await api.library.update(initial.id, payload));
         toast.success("已更新");
         onOpenChange(false);
         return;
       }
-      const res = await axiosInstance.post<AddResponse>("/api/library", payload);
-      onSaved(res.data.entry);
+      onSaved((await api.library.create(payload)).entry);
       toast.success("已加入影库");
       onOpenChange(false);
     } catch (err) {
