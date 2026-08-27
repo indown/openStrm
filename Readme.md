@@ -134,6 +134,7 @@ docker-compose -f docker-compose.prod.yml up -d
 | `LOG_LEVEL` | `info` | 排查「播放没走 302」时设为 `debug` |
 | `CONFIG_DIR` / `DATA_DIR` | `/app/config`、`/app/data` | 容器内路径，一般不用改 |
 | `TRUST_PROXY` | 关 | 放在 nginx/Caddy 之类反代后面时设为 `true`，登录限流和日志里的客户端 IP 才会取 `X-Forwarded-For` |
+| `TELEGRAM_API_BASE` | `https://api.telegram.org` | 连不上 Telegram 官方接口时指到自己的反代，如 `https://tg.example.com` |
 
 ### 数据目录
 

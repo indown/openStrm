@@ -22,7 +22,7 @@ await initDb();
 // Core plugins
 import { authPlugin } from "./plugins/auth.js";
 import { cronPlugin } from "./plugins/cron.js";
-import { stopPolling } from "./services/telegram-polling.js";
+import { startPolling, stopPolling } from "./services/telegram-polling.js";
 import { cancelAllRunningTasks } from "./services/task/registry.js";
 import { reconcileInterruptedExecutions } from "./services/task-history.js";
 import { startHousekeeping } from "./services/housekeeping.js";
@@ -172,10 +172,17 @@ try {
   try { startScrapeWorker(); } catch (err) { app.log.error({ err }, "scrape-worker start failed"); }
 
   // 生活事件监控：配置里开着就跟随服务一起起来
-  if (readAppSettings().lifeMonitor?.enabled) {
+  const settings = readAppSettings();
+  if (settings.lifeMonitor?.enabled) {
     startLifeMonitor()
       .then((r) => (r.ok ? app.log.info(r.message) : app.log.warn(r.message)))
       .catch((err) => app.log.error({ err }, "life monitor start failed"));
+  }
+  // Telegram 轮询同理：上次是开着的就自动恢复，别让每次重启都得有人去界面上再按一次
+  if (settings.telegram?.pollingEnabled) {
+    startPolling()
+      .then((ok) => (ok ? app.log.info("Telegram 轮询已恢复") : app.log.warn("Telegram 轮询未能恢复：bot token 未配置")))
+      .catch((err) => app.log.error({ err }, "telegram polling start failed"));
   }
 } catch (err) {
   app.log.error(err);

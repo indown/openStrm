@@ -1,5 +1,5 @@
 // Telegram Bot API 集成
-import axios from "axios";
+import axios, { type AxiosInstance } from "axios";
 import { readAppSettings } from "../db/repositories/settings.js";
 import { moduleLogger } from "../lib/logger.js";
 
@@ -71,19 +71,26 @@ export interface TelegramBotInfo {
   supports_inline_queries: boolean;
 }
 
-class TelegramBot {
-  private botToken: string;
-  private baseUrl: string;
+/** Bot API 地址。默认官方；连不上 api.telegram.org 的环境可以用 TELEGRAM_API_BASE 指到自己的反代 */
+function telegramApiBase(): string {
+  return (process.env.TELEGRAM_API_BASE || "https://api.telegram.org").replace(/\/+$/, "");
+}
 
-  constructor(botToken: string) {
-    this.botToken = botToken;
-    this.baseUrl = `https://api.telegram.org/bot${botToken}`;
+class TelegramBot {
+  private http: AxiosInstance;
+
+  constructor(botToken: string, apiBase = telegramApiBase()) {
+    /**
+     * 普通调用 10 秒超时：api.telegram.org 挂住时，POST /api/telegram/bot 之类的请求
+     * 不能跟着一起挂到天荒地老。getUpdates 是长轮询，超时自己另算。
+     */
+    this.http = axios.create({ baseURL: `${apiBase}/bot${botToken}`, timeout: 10_000 });
   }
 
   // 发送消息
   async sendMessage(message: TelegramMessage): Promise<TelegramResponse> {
     try {
-      const response = await axios.post(`${this.baseUrl}/sendMessage`, message);
+      const response = await this.http.post("/sendMessage", message);
       return response.data;
     } catch (error) {
       log.error({ err: error }, 'Telegram sendMessage error');
@@ -114,7 +121,7 @@ class TelegramBot {
   // 获取机器人信息
   async getMe(): Promise<TelegramResponse> {
     try {
-      const response = await axios.get(`${this.baseUrl}/getMe`);
+      const response = await this.http.get("/getMe");
       return response.data;
     } catch (error) {
       log.error({ err: error }, 'Telegram getMe error');
@@ -122,28 +129,21 @@ class TelegramBot {
     }
   }
 
-  // 获取更新（用于 webhook 或轮询）
-  async getUpdates(offset?: number, limit?: number, timeout?: number): Promise<TelegramUpdate[]> {
-    try {
-      const params = new URLSearchParams();
-      if (offset) params.append('offset', offset.toString());
-      if (limit) params.append('limit', limit.toString());
-      if (timeout) params.append('timeout', timeout.toString());
-
-      const response = await axios.get(`${this.baseUrl}/getUpdates?${params}`, {
-        timeout: (timeout || 30) * 1000 + 5000, // 给额外的5秒缓冲时间
-      });
-      return response.data.result || [];
-    } catch (error: unknown) {
-      // 409 错误表示没有新消息，这是正常的，不需要记录
-      if (error && typeof error === 'object' && 'response' in error && 
-          (error as { response?: { status?: number } }).response?.status === 409) {
-        log.info('Telegram getUpdates: No new messages (409)');
-        return []; // 返回空数组而不是抛出错误
-      }
-      log.error({ err: error }, 'Telegram getUpdates error');
-      return []; // 返回空数组而不是抛出错误
-    }
+  /**
+   * 长轮询拉更新，只给轮询循环用。
+   *
+   * 错误原样抛出，由循环决定怎么退避：以前这里把 409 当"没有新消息"吞掉，
+   * 循环永远看不到冲突。signal 让 stopPolling 能立刻掐断挂着的长连接，不用等 timeout 到期。
+   */
+  async getUpdates(offset: number, limit: number, timeout: number, signal?: AbortSignal): Promise<TelegramUpdate[]> {
+    const params: Record<string, number> = { limit, timeout };
+    if (offset > 0) params.offset = offset;
+    const response = await this.http.get<{ result?: TelegramUpdate[] }>("/getUpdates", {
+      params,
+      timeout: timeout * 1000 + 5000, // 服务端最长挂 timeout 秒，再给 5 秒网络余量
+      signal,
+    });
+    return response.data.result ?? [];
   }
 
   // 设置 webhook
@@ -152,7 +152,7 @@ class TelegramBot {
       const data: { url: string; secret_token?: string } = { url };
       if (secretToken) data.secret_token = secretToken;
 
-      const response = await axios.post(`${this.baseUrl}/setWebhook`, data);
+      const response = await this.http.post("/setWebhook", data);
       return response.data;
     } catch (error) {
       log.error({ err: error }, 'Telegram setWebhook error');
@@ -163,7 +163,7 @@ class TelegramBot {
   // 删除 webhook
   async deleteWebhook(): Promise<TelegramResponse> {
     try {
-      const response = await axios.post(`${this.baseUrl}/deleteWebhook`);
+      const response = await this.http.post("/deleteWebhook");
       return response.data;
     } catch (error) {
       log.error({ err: error }, 'Telegram deleteWebhook error');
@@ -174,7 +174,7 @@ class TelegramBot {
   // 获取 webhook 信息
   async getWebhookInfo(): Promise<TelegramResponse> {
     try {
-      const response = await axios.get(`${this.baseUrl}/getWebhookInfo`);
+      const response = await this.http.get("/getWebhookInfo");
       return response.data;
     } catch (error) {
       log.error({ err: error }, 'Telegram getWebhookInfo error');
@@ -220,7 +220,7 @@ class TelegramBot {
       };
       if (replyMarkup) data.reply_markup = replyMarkup;
 
-      const response = await axios.post(`${this.baseUrl}/editMessageText`, data);
+      const response = await this.http.post("/editMessageText", data);
       return response.data;
     } catch (error) {
       log.error({ err: error }, 'Telegram editMessageText error');
@@ -234,7 +234,7 @@ class TelegramBot {
       const data: { callback_query_id: string; text?: string } = { callback_query_id: callbackQueryId };
       if (text) data.text = text;
 
-      const response = await axios.post(`${this.baseUrl}/answerCallbackQuery`, data);
+      const response = await this.http.post("/answerCallbackQuery", data);
       return response.data;
     } catch (error) {
       log.error({ err: error }, 'Telegram answerCallbackQuery error');
