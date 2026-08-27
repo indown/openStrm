@@ -13,13 +13,10 @@ COPY apps/backend/package.json apps/backend/
 COPY apps/frontend/package.json apps/frontend/
 RUN pnpm install --frozen-lockfile
 
-# ========== Stage 2: Build shared ==========
-FROM deps AS shared-builder
+# ========== Stage 2: Build backend ==========
+# shared 是纯类型包，types 直接指向 .ts 源码，不需要单独构建
+FROM deps AS backend-builder
 COPY packages/shared packages/shared
-RUN pnpm --filter @openstrm/shared build
-
-# ========== Stage 3: Build backend ==========
-FROM shared-builder AS backend-builder
 COPY apps/backend apps/backend
 RUN pnpm --filter @openstrm/backend build
 # pnpm 的 node_modules 里全是指向根 .pnpm store 的符号链接，直接 COPY 到最终镜像
@@ -42,12 +39,13 @@ RUN rm -rf node_modules/.pnpm/@types+* node_modules/@types && \
     find node_modules -name '*.map' -delete && \
     test -f node_modules/better-sqlite3/build/Release/better_sqlite3.node
 
-# ========== Stage 4: Build frontend ==========
-FROM shared-builder AS frontend-builder
+# ========== Stage 3: Build frontend ==========
+FROM deps AS frontend-builder
+COPY packages/shared packages/shared
 COPY apps/frontend apps/frontend
 RUN pnpm --filter @openstrm/frontend build
 
-# ========== Stage 5: Production image ==========
+# ========== Stage 4: Production image ==========
 FROM node:24-alpine AS runner
 WORKDIR /app
 

@@ -26,10 +26,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # shared 是 workspace 依赖，后端的 tsc 要先有它的 d.ts
-      - name: Build shared package
-        run: pnpm build:shared
-
       - run: pnpm typecheck
 
       # 用例会写 settings 表，必须指到临时目录——

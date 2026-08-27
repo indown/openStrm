@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "dev:proxy": "tsx watch src/proxy.ts",
-    "build": "tsc && cp -R src/db/migrations dist/db/migrations",
+    "build": "rm -rf dist && tsc && cp -R src/db/migrations dist/db/migrations",
     "start": "node dist/index.js",
     "start:proxy": "node dist/proxy.js",
     "typecheck": "tsc --noEmit",

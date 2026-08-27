@@ -3,8 +3,7 @@ set -e
 
 export CONFIG_DIR="/app/config"
 export DATA_DIR="/app/data"
-export LOGS_DIR="/app/logs"
-mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOGS_DIR"
+mkdir -p "$CONFIG_DIR" "$DATA_DIR"
 
 # 三个进程各跑各的：代理和管理端隔离，管理端崩了不影响播放。
 # 任一进程退出就让容器整体退出，交给 restart 策略拉起来。

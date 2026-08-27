@@ -6,8 +6,7 @@
   "license": "MIT",
   "scripts": {
     "dev": "concurrently -n backend,proxy,frontend -c blue,magenta,green \"pnpm --filter @openstrm/backend dev\" \"pnpm --filter @openstrm/backend dev:proxy\" \"pnpm --filter @openstrm/frontend dev\"",
-    "build": "pnpm --filter @openstrm/shared build && pnpm --filter @openstrm/backend build && pnpm --filter @openstrm/frontend build",
-    "build:shared": "pnpm --filter @openstrm/shared build",
+    "build": "pnpm --filter @openstrm/backend build && pnpm --filter @openstrm/frontend build",
     "build:backend": "pnpm --filter @openstrm/backend build",
     "build:frontend": "pnpm --filter @openstrm/frontend build",
     "lint": "pnpm -r lint",

@@ -67,9 +67,6 @@ cd OpenStrm
 corepack enable pnpm
 pnpm install
 
-# backend 的 tsc 依赖 shared 包的类型声明，要先构建
-pnpm build:shared
-
 # 同时启动 backend(4000) / Emby 代理(8091) / 前端(3000)
 pnpm dev
 ```
@@ -89,7 +86,6 @@ docker run -d \
   -p 8091:8091 \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/config:/app/config \
-  -v $(pwd)/logs:/app/logs \
   indown/openstrm:latest
 ```
 
@@ -98,9 +94,10 @@ docker run -d \
 - `8091`: Emby 302 代理端口（Emby 客户端使用此端口连接）
 
 **目录挂载说明**：
-- `./data`: 存储应用数据
-- `./config`: 存储配置文件
-- `./logs`: 应用日志目录
+- `./data`: 生成的 `.strm` 文件，以及字幕、nfo 等随片下载的文件。Emby 挂的是同一个目录
+- `./config`: 只有一个 `openstrm.db`——账号、设置、任务、执行历史、登录凭据全在里面，备份这一个文件就够了
+
+日志走标准输出，`docker logs openstrm` 就能看；compose 里已经配了按大小轮转。
 
 ### 生产环境部署
 
@@ -132,13 +129,12 @@ docker-compose -f docker-compose.prod.yml up -d
 |---|---|---|
 | `JWT_SECRET` | 首次启动随机生成并持久化 | 登录令牌的签名密钥。只有在需要轮换密钥、或多个副本共享同一份登录状态时才手动指定；改动会让所有已登录会话立即失效 |
 | `LOG_LEVEL` | `info` | 排查「播放没走 302」时设为 `debug` |
-| `CONFIG_DIR` / `DATA_DIR` / `LOGS_DIR` | `/app/config`、`/app/data`、`/app/logs` | 容器内路径，一般不用改 |
+| `CONFIG_DIR` / `DATA_DIR` | `/app/config`、`/app/data` | 容器内路径，一般不用改 |
 
 ### 数据目录
 
-- `./config/`: `openstrm.db` —— 账号、设置、同步任务全在这里
-- `./data/`: 生成的 `.strm` 文件
-- `./logs/`: 应用日志
+- `./config/`: `openstrm.db` —— 账号、设置、同步任务、执行历史全在这一个文件里
+- `./data/`: 生成的 `.strm` 文件和随片下载的字幕、nfo 等
 
 > v2 起配置存放在 SQLite，不再有 `config.json`。旧版的 `config.json` 不会被自动导入，需要在界面里重新配置。
 
@@ -154,11 +150,11 @@ docker-compose -f docker-compose.prod.yml up -d
 
 ### 匿名 302 开关
 
-`emby.allowAnonymousRedirect`，默认 **关闭**，界面上没有对应入口。
+`emby.allowAnonymousRedirect`，默认 **关闭**，在设置页的 Emby 区块里有开关；下面的命令行方式留给没有界面的场景。
 
 关闭时，不携带任何 Emby 凭据（query 和请求头里都没有令牌）的请求不会被解析成 115 直链，而是原样回源交给 Emby 自己裁决。打开则恢复旧行为——用服务端配置的管理员 API Key 去解析，这意味着**任何能访问 8091 端口的人，报一个条目 id 就能拿到你的媒体直链**，无需登录 Emby。
 
-绝大多数播放器都会带令牌，不需要打开。只有确认播放器一个令牌都不发时才考虑：
+绝大多数播放器都会带令牌，不需要打开。只有确认播放器一个令牌都不发时才考虑。命令行方式：
 
 ```bash
 docker exec -w /app/backend openstrm node -e '
