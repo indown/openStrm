@@ -1,15 +1,14 @@
 import type { FastifyInstance } from "fastify";
+import { getRunningTask } from "../../services/task/registry.js";
 
 export default async function (fastify: FastifyInstance) {
   fastify.get("/api/taskLog/:taskId", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const { taskId } = request.params as { taskId: string };
-    const task = fastify.downloadTasks[taskId];
+    const task = getRunningTask(taskId);
 
     const accept = request.headers.accept || "";
     if (!accept.includes("text/event-stream")) {
-      if (!task) {
-        return reply.code(404).send({ error: "Task not found" });
-      }
+      if (!task) return reply.code(404).send({ error: "Task not found" });
       return { message: "Task found", taskId };
     }
 
@@ -20,14 +19,10 @@ export default async function (fastify: FastifyInstance) {
       Connection: "keep-alive",
     });
 
-    // Push historical logs
+    // 先补发已经产生的日志，再订阅实时进度
     if (task) {
-      for (const line of task.logs) {
-        reply.raw.write(`data: ${line}\n\n`);
-      }
+      for (const line of task.logs) reply.raw.write(`data: ${line}\n\n`);
     }
-
-    // Subscribe to real-time updates
     const subscription = task?.subject.subscribe({
       next: (data) => reply.raw.write(`data: ${JSON.stringify(data)}\n\n`),
       error: () => reply.raw.end(),

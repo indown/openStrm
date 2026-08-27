@@ -8,7 +8,7 @@
  */
 import assert from "node:assert/strict";
 import http from "node:http";
-import { readAppSettings, writeAppSettings } from "../db/repositories/settings.js";
+import { readAppSettings, replaceAppSettings } from "../db/repositories/settings.js";
 import {
   cancelEmbyRefresh,
   flushEmbyRefresh,
@@ -32,7 +32,7 @@ const baseline = readAppSettings();
 setMediaServerLogger(() => {});
 
 function configure(quiet: number, maxWait: number) {
-  writeAppSettings({
+  replaceAppSettings({
     ...baseline,
     emby: { url: `http://127.0.0.1:${port}`, apiKey: "test" },
     lifeMonitor: {
@@ -76,7 +76,7 @@ async function main() {
   pass++; console.log("  ok  停机时冲刷待发的刷新");
 
   // 4) 没配 Emby 就完全不动
-  writeAppSettings({ ...baseline, emby: { url: "", apiKey: "" } });
+  replaceAppSettings({ ...baseline, emby: { url: "", apiKey: "" } });
   cancelEmbyRefresh(); hits = 0;
   scheduleEmbyRefresh();
   assert.equal(getEmbyRefreshState().pendingCount, 0, "未配置时不该登记任何待发项");
@@ -88,5 +88,5 @@ async function main() {
 }
 
 main()
-  .then(() => { writeAppSettings(baseline); server.close(); })
-  .catch((err) => { writeAppSettings(baseline); server.close(); console.error(err); process.exit(1); });
+  .then(() => { replaceAppSettings(baseline); server.close(); })
+  .catch((err) => { replaceAppSettings(baseline); server.close(); console.error(err); process.exit(1); });

@@ -9,6 +9,7 @@
  */
 import type { AccountInfo, LifeEventMode, LifePullMode } from "@openstrm/shared";
 import type { AccountInfo as Cloud115Account } from "../cloud-115/client.js";
+import { KEY } from "../../db/keys.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { listAccounts } from "../../db/repositories/accounts.js";
 import { listTasks } from "../../db/repositories/tasks.js";
@@ -51,8 +52,8 @@ import {
   type LifeContext,
 } from "./handlers.js";
 
-const CURSOR_KEY = "life.cursor";
-const FALLBACK_KEY = "life.appFallback";
+const CURSOR_KEY = KEY.lifeCursor;
+const FALLBACK_KEY = KEY.lifeAppFallback;
 const WEB_FALLBACK_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_INTERVAL_SEC = 15;
 const ERROR_BACKOFF_MS = 30_000;

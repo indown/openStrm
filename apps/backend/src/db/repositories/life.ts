@@ -5,7 +5,7 @@ import type { PathCacheRow, LifeEventRow } from "../schema.js";
 
 /* ------------------------------------------------------------------ *
  * 内部 KV：直接借用 settings 表，但不带 `app.` 前缀。
- * readAppSettings/writeAppSettings 只认 `app.%`，所以这里的键既不会
+ * readAppSettings/patchAppSettings 只认 `app.%`，所以这里的键既不会
  * 出现在设置接口里，也不会被整体覆写设置时误删。
  * ------------------------------------------------------------------ */
 

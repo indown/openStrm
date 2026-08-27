@@ -1,94 +1,50 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import type { TaskDefinition } from "@openstrm/shared";
+import { deleteTask, insertTask, listTasks, updateTask } from "../../db/repositories/tasks.js";
+import { listRunningTaskIds } from "../../services/task/registry.js";
 
+/**
+ * 任务定义的增删改查。
+ *
+ * 302 的挂载路径不再写进 settings.mediaMountPath：代理侧直接从「开了 302 的任务」
+ * 现算（services/resolve/direct-link.ts），删任务、关 302 时它自然消失，
+ * 不会像以前那样只增不减。
+ */
 export default async function (fastify: FastifyInstance) {
-  // GET: list tasks with status
+  // 定时任务跟着任务定义走。以前只在启动时同步一次，改了 cron 表达式要重启才生效
+  const resyncCron = () => fastify.cron.syncFromConfig();
+
   fastify.get("/api/task", { preHandler: [fastify.authenticate] }, async () => {
-    const tasks = fastify.readTasks();
-
-    const runningTaskIds = new Set(Object.keys(fastify.downloadTasks));
-
-    return tasks.map((task) => ({
+    const running = new Set(listRunningTaskIds());
+    return listTasks().map((task) => ({
       ...task,
-      status: runningTaskIds.has(task.id) ? "processing" : "pending",
+      status: running.has(task.id) ? "processing" : "pending",
     }));
   });
 
-  // POST: create task
   fastify.post("/api/task", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const body = request.body as Record<string, unknown>;
-    const tasks = fastify.readTasks();
-
-    const newTask = {
-      id: Date.now().toString(),
-      ...body,
-    } as any;
-
-    tasks.push(newTask);
-    fastify.writeTasks(tasks);
-
-    // mediaMountPath update for 302 mode
-    if (newTask.enable302 && newTask.strmPrefix) {
-      const fullPath = (newTask.strmPrefix as string).replace(/\/+$/, "");
-      const settings = fastify.readSettings();
-      const mediaMountPath: string[] = Array.isArray(settings.mediaMountPath)
-        ? settings.mediaMountPath
-        : [];
-      if (!mediaMountPath.includes(fullPath)) {
-        mediaMountPath.push(fullPath);
-        settings.mediaMountPath = mediaMountPath;
-        fastify.writeSettings(settings);
-      }
-    }
-
-    return reply.code(201).send(newTask);
+    const body = (request.body ?? {}) as Partial<TaskDefinition>;
+    const task = { ...body, id: randomUUID() } as TaskDefinition;
+    insertTask(task);
+    resyncCron();
+    return reply.code(201).send(task);
   });
 
-  // PUT: update task
   fastify.put("/api/task", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const body = request.body as Record<string, unknown>;
-    const { id, ...updateData } = body;
-
-    const tasks = fastify.readTasks();
-    const idx = tasks.findIndex((t) => t.id === id);
-    if (idx === -1) {
-      return reply.code(404).send({ error: "Task not found" });
-    }
-
-    tasks[idx] = { ...tasks[idx], ...updateData } as any;
-    fastify.writeTasks(tasks);
-
-    // mediaMountPath update for 302 mode
-    const task = tasks[idx];
-    if (task.enable302 && task.strmPrefix) {
-      const fullPath = task.strmPrefix.replace(/\/+$/, "");
-      const settings = fastify.readSettings();
-      const mediaMountPath: string[] = Array.isArray(settings.mediaMountPath)
-        ? settings.mediaMountPath
-        : [];
-      if (!mediaMountPath.includes(fullPath)) {
-        mediaMountPath.push(fullPath);
-        settings.mediaMountPath = mediaMountPath;
-        fastify.writeSettings(settings);
-      }
-    }
-
-    return tasks[idx];
+    const { id, ...patch } = (request.body ?? {}) as Partial<TaskDefinition>;
+    if (!id) return reply.code(400).send({ error: "Task ID required" });
+    const updated = updateTask(id, patch);
+    if (!updated) return reply.code(404).send({ error: "Task not found" });
+    resyncCron();
+    return updated;
   });
 
-  // DELETE: delete task
   fastify.delete("/api/task", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const { id } = request.query as { id?: string };
-    if (!id) {
-      return reply.code(400).send({ error: "Task ID required" });
-    }
-
-    const tasks = fastify.readTasks();
-    const filtered = tasks.filter((t) => t.id !== id);
-    if (filtered.length === tasks.length) {
-      return reply.code(404).send({ error: "Task not found" });
-    }
-
-    fastify.writeTasks(filtered);
+    if (!id) return reply.code(400).send({ error: "Task ID required" });
+    if (!deleteTask(id)) return reply.code(404).send({ error: "Task not found" });
+    resyncCron();
     return { success: true };
   });
 }

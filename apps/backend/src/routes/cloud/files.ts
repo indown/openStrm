@@ -1,11 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { fsFiles } from "../../services/cloud-115/client.js";
+import { listAccounts } from "../../db/repositories/accounts.js";
 
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/115/files", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const { account, cid = 0 } = request.body as { account?: string; cid?: number };
 
-    const accounts = fastify.readAccounts();
+    const accounts = listAccounts();
     const accountName = account ?? accounts.find((a) => a.accountType === "115")?.name;
     if (!accountName) {
       return reply.code(400).send({ code: 400, message: "account is required and at least one 115 account must exist" });

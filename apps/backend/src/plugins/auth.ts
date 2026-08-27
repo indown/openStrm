@@ -55,7 +55,7 @@ export const authPlugin = fp(async (fastify) => {
       });
     }
   });
-}, { name: "auth", dependencies: ["config"] });
+}, { name: "auth" });
 
 declare module "fastify" {
   interface FastifyContextConfig {

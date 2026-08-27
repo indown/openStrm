@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 
 import { DEFAULT_AUTH } from "../../db/defaults.js";
-import { writeAuthPassword } from "../../db/repositories/auth.js";
+import { writeAuthPassword, readAuthConfig } from "../../db/repositories/auth.js";
 import { verifyPassword } from "../../services/password.js";
 
 const MIN_LENGTH = 8;
@@ -21,7 +21,7 @@ export default async function (fastify: FastifyInstance) {
         newPassword?: string;
       };
 
-      const config = fastify.readConfig();
+      const config = readAuthConfig();
       const stored = typeof config.password === "string" ? config.password : "";
       if (!(await verifyPassword(currentPassword ?? "", stored))) {
         return reply.code(401).send({ error: "当前密码不正确" });

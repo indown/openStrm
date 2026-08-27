@@ -4,12 +4,13 @@ import { db } from "../client.js";
 import { settings } from "../schema.js";
 import { DEFAULT_AUTH } from "../defaults.js";
 import { hashPassword, isHashed } from "../../services/password.js";
+import { KEY } from "../keys.js";
 
-const AUTH_PREFIX = "auth.";
+const AUTH_PREFIX = KEY.authPrefix;
 
 // 刻意留在 auth. 前缀之外：readAuthConfig 按 auth.% 通配后整体返回，
 // 密钥搁进那个前缀，迟早会跟着某个响应体一起发出去。
-const JWT_SECRET_KEY = "system.jwt_secret";
+const JWT_SECRET_KEY = KEY.jwtSecret;
 
 export function readAuthConfig(): Record<string, unknown> {
   const rows = db.select().from(settings).where(like(settings.key, `${AUTH_PREFIX}%`)).all();

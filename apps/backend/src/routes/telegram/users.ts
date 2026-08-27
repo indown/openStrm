@@ -1,31 +1,31 @@
 import type { FastifyInstance } from "fastify";
+import { readAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
+
+function parseUserId(raw: unknown): number | null {
+  if (raw === undefined || raw === null || raw === "") return null;
+  const n = Number(raw);
+  return Number.isNaN(n) ? null : n;
+}
 
 export default async function (fastify: FastifyInstance) {
   // GET: list users
   fastify.get("/api/telegram/users", { preHandler: [fastify.authenticate] }, async () => {
-    const settings = fastify.readSettings();
-    const userIds = settings.telegram?.allowedUsers || [];
-    return { users: userIds.map((id: number) => ({ id })) };
+    const userIds = readAppSetting("telegram")?.allowedUsers ?? [];
+    return { users: userIds.map((id) => ({ id })) };
   });
 
   // POST: add user
   fastify.post("/api/telegram/users", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const { userId } = request.body as { userId?: string | number };
-    if (!userId) return reply.code(400).send({ error: "userId is required" });
+    const { userId } = (request.body ?? {}) as { userId?: string | number };
+    if (userId === undefined || userId === "") return reply.code(400).send({ error: "userId is required" });
+    const id = parseUserId(userId);
+    if (id === null) return reply.code(400).send({ error: "Invalid userId" });
 
-    const userIdNum = Number(userId);
-    if (isNaN(userIdNum)) return reply.code(400).send({ error: "Invalid userId" });
+    const telegram = readAppSetting("telegram") ?? {};
+    const allowedUsers = telegram.allowedUsers ?? [];
+    if (allowedUsers.includes(id)) return reply.code(409).send({ error: "User already exists" });
 
-    const settings = fastify.readSettings();
-    if (!settings.telegram) settings.telegram = {};
-    if (!settings.telegram.allowedUsers) settings.telegram.allowedUsers = [];
-
-    if (settings.telegram.allowedUsers.includes(userIdNum)) {
-      return reply.code(409).send({ error: "User already exists" });
-    }
-
-    settings.telegram.allowedUsers.push(userIdNum);
-    fastify.writeSettings(settings);
+    writeAppSetting("telegram", { ...telegram, allowedUsers: [...allowedUsers, id] });
     return { success: true, message: "User added successfully" };
   });
 
@@ -33,21 +33,15 @@ export default async function (fastify: FastifyInstance) {
   fastify.delete("/api/telegram/users", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const { userId } = request.query as { userId?: string };
     if (!userId) return reply.code(400).send({ error: "userId is required" });
+    const id = parseUserId(userId);
+    if (id === null) return reply.code(400).send({ error: "Invalid userId" });
 
-    const userIdNum = Number(userId);
-    if (isNaN(userIdNum)) return reply.code(400).send({ error: "Invalid userId" });
+    const telegram = readAppSetting("telegram") ?? {};
+    const allowedUsers = telegram.allowedUsers ?? [];
+    const remaining = allowedUsers.filter((u) => u !== id);
+    if (remaining.length === allowedUsers.length) return reply.code(404).send({ error: "User not found" });
 
-    const settings = fastify.readSettings();
-    if (!settings.telegram?.allowedUsers) return reply.code(404).send({ error: "User not found" });
-
-    const before = settings.telegram.allowedUsers.length;
-    settings.telegram.allowedUsers = settings.telegram.allowedUsers.filter((id: number) => id !== userIdNum);
-
-    if (settings.telegram.allowedUsers.length === before) {
-      return reply.code(404).send({ error: "User not found" });
-    }
-
-    fastify.writeSettings(settings);
+    writeAppSetting("telegram", { ...telegram, allowedUsers: remaining });
     return { success: true, message: "User removed successfully" };
   });
 }

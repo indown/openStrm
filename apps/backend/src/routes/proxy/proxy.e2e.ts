@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import net from "node:net";
 import Fastify from "fastify";
 import { initDb } from "../../db/migrate.js";
-import { readAppSettings, writeAppSettings } from "../../db/repositories/settings.js";
+import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import proxyPlugin from "./index.js";
 import { clearLinkCache, setLinkResolver } from "./redirect.js";
 
@@ -59,7 +59,7 @@ const t = async (name: string, fn: () => Promise<void> | void) => {
 
 await initDb();
 const baseline = readAppSettings();
-writeAppSettings({
+replaceAppSettings({
   ...baseline,
   emby: { url: EMBY_URL, apiKey: API_KEY },
   mediaMountPath: [MOUNT],
@@ -274,6 +274,6 @@ try {
 
   console.log(`\n${pass} passed`);
 } finally {
-  writeAppSettings(baseline);
+  replaceAppSettings(baseline);
   await app.close();
 }

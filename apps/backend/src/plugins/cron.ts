@@ -1,5 +1,7 @@
 import fp from "fastify-plugin";
 import { CronJob } from "cron";
+import { listTasks } from "../db/repositories/tasks.js";
+import { startTask } from "../services/task/runner.js";
 
 interface ManagedJob {
   taskId: string;
@@ -12,28 +14,17 @@ export const cronPlugin = fp(async (fastify) => {
 
   /** Schedule or replace a cron job for a task */
   function scheduleTask(taskId: string, cronExpression: string) {
-    // Stop existing job if any
     unscheduleTask(taskId);
 
     const job = new CronJob(cronExpression, async () => {
       fastify.log.info(`[CRON] Triggering task ${taskId} (${cronExpression})`);
       try {
-        // 复用 startTask 路由，所以要带一个真能过 fastify.authenticate 的凭据。
-        // 这里现签一个 JWT——写死的假 token 过不了 verifyJwt，定时任务会静默 401。
-        const token = await fastify.signJwt({ username: "cron", taskId });
-        const response = await fastify.inject({
-          method: "POST",
-          url: "/api/startTask",
-          payload: { id: taskId },
-          headers: { authorization: `Bearer ${token}` },
-        });
-        // 状态码不够看：startTask 成功时也可能是「无文件可下载」，失败原因都在 body 里
-        if (response.statusCode === 200) {
-          fastify.log.info(`[CRON] Task ${taskId} triggered: ${response.body}`);
+        const result = await startTask(taskId);
+        // 状态码不够看：成功时也可能是「无文件可下载」，失败原因都在 body 里
+        if (result.status === 200) {
+          fastify.log.info(`[CRON] Task ${taskId} triggered: ${JSON.stringify(result.body)}`);
         } else {
-          fastify.log.error(
-            `[CRON] Task ${taskId} failed with ${response.statusCode}: ${response.body}`,
-          );
+          fastify.log.error(`[CRON] Task ${taskId} failed with ${result.status}: ${JSON.stringify(result.body)}`);
         }
       } catch (err) {
         fastify.log.error(`[CRON] Failed to trigger task ${taskId}: ${err}`);
@@ -55,27 +46,20 @@ export const cronPlugin = fp(async (fastify) => {
     }
   }
 
-  /** Sync cron jobs from task definitions in config */
+  /** 按任务定义同步：有 cron 表达式的排上，没有的摘掉。任务增删改后必须调一次 */
   function syncFromConfig() {
-    const tasks = fastify.readTasks();
     const scheduled = new Set<string>();
-
-    for (const task of tasks) {
+    for (const task of listTasks()) {
       if (task.cronExpression) {
         scheduleTask(task.id, task.cronExpression);
         scheduled.add(task.id);
       }
     }
-
-    // Remove jobs for tasks that no longer have cron expressions
     for (const [taskId] of jobs) {
-      if (!scheduled.has(taskId)) {
-        unscheduleTask(taskId);
-      }
+      if (!scheduled.has(taskId)) unscheduleTask(taskId);
     }
   }
 
-  /** Get all scheduled jobs info */
   function listJobs() {
     return [...jobs.values()].map((j) => ({
       taskId: j.taskId,
@@ -84,26 +68,17 @@ export const cronPlugin = fp(async (fastify) => {
     }));
   }
 
-  fastify.decorate("cron", {
-    scheduleTask,
-    unscheduleTask,
-    syncFromConfig,
-    listJobs,
-  });
+  fastify.decorate("cron", { scheduleTask, unscheduleTask, syncFromConfig, listJobs });
 
-  // Load cron jobs from config on startup
   fastify.addHook("onReady", () => {
     syncFromConfig();
   });
 
-  // Stop all jobs on close
   fastify.addHook("onClose", () => {
-    for (const [, managed] of jobs) {
-      managed.job.stop();
-    }
+    for (const [, managed] of jobs) managed.job.stop();
     jobs.clear();
   });
-}, { name: "cron", dependencies: ["config", "auth"] });
+}, { name: "cron" });
 
 declare module "fastify" {
   interface FastifyInstance {

@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import Fastify from "fastify";
 import { initDb } from "../../db/migrate.js";
-import { readAppSettings, writeAppSettings } from "../../db/repositories/settings.js";
+import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import proxyPlugin from "./index.js";
 import { clearLinkCache, setLinkResolver } from "./redirect.js";
 import { swapPorts, swapUrlPort } from "./system-info.js";
@@ -96,7 +96,7 @@ const embyPort = (emby.address() as { port: number }).port;
 
 // ---- 配置 ----
 const baseline = readAppSettings();
-writeAppSettings({
+replaceAppSettings({
   ...baseline,
   emby: { url: `http://127.0.0.1:${embyPort}`, apiKey: "test-key" },
   mediaMountPath: [MOUNT],
@@ -199,7 +199,7 @@ try {
   await t("显式打开 allowAnonymousRedirect 后匿名也 302", async () => {
     reset();
     const current = readAppSettings();
-    writeAppSettings({
+    replaceAppSettings({
       ...current,
       emby: { ...(current.emby ?? {}), allowAnonymousRedirect: true },
     });
@@ -208,7 +208,7 @@ try {
       const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv" });
       assert.equal(res.statusCode, 302, "开关是给不带凭据的老客户端留的后路，打开就该恢复旧行为");
     } finally {
-      writeAppSettings(current);
+      replaceAppSettings(current);
       resetConfigRevisionMemo();
     }
   });
@@ -347,7 +347,7 @@ try {
     const sniffPort = (sniffer.address() as { port: number }).port;
 
     const current = readAppSettings();
-    writeAppSettings({ ...current, emby: { url: `http://127.0.0.1:${sniffPort}`, apiKey: "k" } });
+    replaceAppSettings({ ...current, emby: { url: `http://127.0.0.1:${sniffPort}`, apiKey: "k" } });
 
     await app.inject({
       method: "GET",
@@ -361,7 +361,7 @@ try {
     assert.notEqual(seen["x-real-ip"], "203.0.113.9", "X-Real-IP 不能采信客户端自报的转发链");
     assert.equal(seen.host, "emby.example.com", "Host 不能被改成上游的");
 
-    writeAppSettings(current);
+    replaceAppSettings(current);
     sniffer.close();
   });
 
@@ -493,18 +493,18 @@ try {
 
     // 改一次配置：updated_at 变了，configRevision 跟着变，key 就对不上了
     const now = readAppSettings();
-    writeAppSettings({ ...now, mediaMountPath: [MOUNT, "/mnt/another"] });
+    replaceAppSettings({ ...now, mediaMountPath: [MOUNT, "/mnt/another"] });
     resetConfigRevisionMemo();
 
     await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-1" } });
     assert.equal(resolveCalls, 2, "配置变了还命中旧缓存，说明失效没生效");
-    writeAppSettings(now);
+    replaceAppSettings(now);
     resetConfigRevisionMemo();
   });
 
   console.log(`\n${pass} passed`);
 } finally {
-  writeAppSettings(baseline);
+  replaceAppSettings(baseline);
   await app.close();
   emby.close();
 }

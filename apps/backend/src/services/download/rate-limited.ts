@@ -4,7 +4,8 @@ import path from "node:path";
 import fs from "node:fs";
 import { defer, firstValueFrom, Observable, retry, timer } from "rxjs";
 import { getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
-import { readSettings } from "../cloud-115/settings-reader.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
+import { toStrmPath } from "../strm/naming.js";
 
 interface Progress {
   filePath?: string;
@@ -27,7 +28,7 @@ export function clearRateLimiters(): void {
 function getSharedLimiter(account: string): Bottleneck {
   const accountType = account.split(":")[0];
   if (!sharedLimiters.has(accountType)) {
-    const settings = readSettings();
+    const settings = readAppSettings();
     const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
     const reservoir = downloadConfig.linkMaxPerSecond || 2;
     sharedLimiters.set(
@@ -70,7 +71,7 @@ export async function getRealDownloadLink(
   maxRetries = 3,
   retryDelay = 2000
 ): Promise<string> {
-  const settings = readSettings();
+  const settings = readAppSettings();
   const accountInfo = accounts.find((acc: any) => acc.name === account);
   if (!accountInfo) throw new Error(`No cookie found for account: ${account}`);
 
@@ -156,8 +157,7 @@ export function downloadOrCreateStrm(
   return new Observable<Progress>((observer) => {
     if (asStrm) {
       try {
-        const ext = path.extname(savePath);
-        const strmPath = savePath.replace(ext, ".strm");
+        const strmPath = toStrmPath(savePath);
         const fullPath = `${strmPrefix}/${url}`;
         const finalPath = enablePathEncoding ? encodeURI(fullPath) : fullPath;
         fs.writeFileSync(strmPath, finalPath, "utf8");
@@ -168,7 +168,7 @@ export function downloadOrCreateStrm(
       }
       return;
     }
-    const userAgent = readSettings()["user-agent"];
+    const userAgent = readAppSettings()["user-agent"];
     axios
       .get(url, { headers: { "User-Agent": userAgent }, responseType: "stream" })
       .then((response) => {
@@ -200,7 +200,7 @@ export function downloadOrCreateStrmLimited(
   maxRetries = 10,
   retryDelay = 2000
 ): Observable<Progress> {
-  const settings = readSettings();
+  const settings = readAppSettings();
   const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
   return defer(() =>
     enqueueForAccount(

@@ -1,10 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { createTelegramBot, formatTaskStatusMessage, formatDownloadCompleteMessage } from "../../services/telegram.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
 
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/telegram/send", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const { message, type, data } = request.body as { message?: string; type?: string; data?: any };
-    const settings = fastify.readSettings();
+    const settings = readAppSettings();
     const telegram = settings.telegram;
 
     if (!telegram?.botToken || !telegram?.chatId) {

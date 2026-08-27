@@ -68,16 +68,22 @@ export default function SettingsPage() {
         .map(p => p.trim())
         .filter(p => p.length > 0);
       
-      const saveData = {
-        ...data,
+      // 只发本页拥有的键。后端按顶层键合并，Telegram / 生活事件监控那些
+      // 由别的页面写的设置不会被这里加载时的快照覆盖掉。
+      const saveData: Settings = {
+        "user-agent": data["user-agent"],
         strmExtensions,
         downloadExtensions,
-        mediaMountPath
+        mediaMountPath,
+        emby: data.emby,
+        download: data.download,
+        tmdb: data.tmdb,
+        hdhive: data.hdhive,
       };
-      
+
       await axiosInstance.put("/api/settings", saveData);
-      setData(saveData);
-      toast.success("保存成功，速率限制器已重置");
+      setData({ ...data, ...saveData });
+      toast.success("保存成功");
     } catch (error: unknown) {
       if (error && typeof error === 'object' && 'response' in error) {
         const apiError = error as { response?: { status?: number; data?: { message?: string } } };
@@ -146,14 +152,15 @@ export default function SettingsPage() {
             </p>
           </div>
           <div className="space-y-2">
-            <Label>媒体挂载路径 (mediaMountPath)</Label>
+            <Label>额外的媒体挂载路径 (mediaMountPath)</Label>
             <Input
               value={mediaMountPathInput}
               onChange={(e) => setMediaMountPathInput(e.target.value)}
               placeholder="/root/webdav/115, /mnt/media"
             />
             <p className="text-xs text-muted-foreground">
-              多个路径用逗号分隔，保存后自动重载 nginx
+              开了 302 的任务会自动把它的 strmPrefix 当作挂载路径，不用填在这里；
+              只填任务之外、也希望代理接管的前缀，多个用逗号分隔
             </p>
           </div>
         </div>
