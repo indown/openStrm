@@ -18,7 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ChevronRight, FolderOpen } from "lucide-react";
-import axiosInstance from "@/lib/axios";
+import { api, type DirectoryNode } from "@/lib/api";
 import { toast } from "sonner";
 
 export interface TaskOption {
@@ -42,12 +42,7 @@ interface SaveToDriveDialogProps {
   selectedCount: number;
 }
 
-interface RemoteDir {
-  name: string;
-  id: number;
-  isDir: boolean;
-  hasChildren: boolean;
-}
+type RemoteDir = DirectoryNode;
 
 export function SaveToDriveDialog({
   open,
@@ -66,10 +61,10 @@ export function SaveToDriveDialog({
   useEffect(() => {
     if (!open) return;
     setLoading(true);
-    axiosInstance
-      .get<TaskOption[]>("/api/task")
-      .then((res) => {
-        const list = Array.isArray(res.data) ? res.data : [];
+    api.tasks
+      .list()
+      .then((rows) => {
+        const list: TaskOption[] = Array.isArray(rows) ? rows : [];
         setTasks(list);
         if (list.length > 0 && !selectedTaskId) setSelectedTaskId(list[0].id);
       })
@@ -92,14 +87,9 @@ export function SaveToDriveDialog({
       ? `${selectedTask.originPath}/${subSegments.join("/")}`
       : selectedTask.originPath;
     setSubdirLoading(true);
-    axiosInstance
-      .post<RemoteDir[]>("/api/directory/remote/list", {
-        account: selectedTask.account,
-        path: fullPath,
-      })
-      .then((res) => {
-        setSubdirs(res.data ?? []);
-      })
+    api.directory
+      .remote(selectedTask.account, fullPath)
+      .then((dirs) => setSubdirs(dirs ?? []))
       .catch(() => {
         setSubdirs([]);
       })

@@ -444,7 +444,7 @@ export async function request115<T = unknown>(
     maxConcurrent,
   } = options || {};
   const settings = readAppSettings();
-  const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
+  const downloadConfig = settings.download ?? {};
   // 从 accountInfo 中获取 cookie
   const cookie = accountInfo?.cookie || null;
   

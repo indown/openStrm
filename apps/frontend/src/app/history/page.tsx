@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
-import axiosInstance from "@/lib/axios";
+import { api } from "@/lib/api";
+import type { TaskExecutionHistory } from "@openstrm/shared";
 import { 
   Clock, 
   CheckCircle, 
@@ -21,27 +22,6 @@ import {
   Download,
   Trash
 } from "lucide-react";
-
-interface TaskExecutionHistory {
-  id: string;
-  taskId: string;
-  startTime: number;
-  endTime?: number;
-  status: "running" | "completed" | "failed" | "cancelled";
-  logs: string[];
-  summary: {
-    totalFiles: number;
-    downloadedFiles: number;
-    deletedFiles: number;
-    errorMessage?: string;
-  };
-  taskInfo: {
-    account: string;
-    originPath: string;
-    targetPath: string;
-    removeExtraFiles: boolean;
-  };
-}
 
 // 状态图标和颜色映射
 const getStatusConfig = (status: TaskExecutionHistory["status"]) => {
@@ -94,8 +74,7 @@ export default function TaskHistoryPage() {
   const fetchHistory = async () => {
     try {
       setLoading(true);
-      const response = await axiosInstance.get("/api/taskHistory");
-      setHistory(response.data);
+      setHistory(await api.history.list());
     } catch (error) {
       console.error("Failed to fetch task history:", error);
       toast.error("获取任务历史失败");
@@ -106,7 +85,7 @@ export default function TaskHistoryPage() {
 
   const deleteHistory = async (executionId: string) => {
     try {
-      await axiosInstance.delete(`/api/taskHistory?executionId=${executionId}`);
+      await api.history.remove(executionId);
       setHistory(history.filter(h => h.id !== executionId));
       toast.success("删除成功");
     } catch (error) {
@@ -117,7 +96,7 @@ export default function TaskHistoryPage() {
 
   const deleteAllHistory = async () => {
     try {
-      await axiosInstance.delete("/api/taskHistory?action=cleanup");
+      await api.history.clear();
       toast.success("所有历史记录已删除");
       // 重新加载历史记录
       fetchHistory();

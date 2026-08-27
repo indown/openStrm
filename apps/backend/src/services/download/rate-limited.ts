@@ -31,9 +31,7 @@ export function clearRateLimiters(): void {
 function getSharedLimiter(account: string): Bottleneck {
   const accountType = account.split(":")[0];
   if (!sharedLimiters.has(accountType)) {
-    const settings = readAppSettings();
-    const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
-    const reservoir = downloadConfig.linkMaxPerSecond || 2;
+    const reservoir = readAppSettings().download?.linkMaxPerSecond || 2;
     sharedLimiters.set(
       accountType,
       new Bottleneck({ reservoir, reservoirRefreshAmount: reservoir, reservoirRefreshInterval: 1000 })
@@ -100,7 +98,6 @@ export async function getRealDownloadLink(
       });
     }
     // openlist / other
-    const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
     return enqueueForAccount(
       account,
       () =>
@@ -109,7 +106,7 @@ export async function getRealDownloadLink(
             .then((url) => { observer.next(url); observer.complete(); })
             .catch((err) => observer.error(err));
         }),
-      downloadConfig.linkMaxConcurrent || 2
+      settings.download?.linkMaxConcurrent || 2
     );
   };
 
@@ -203,13 +200,12 @@ export function downloadOrCreateStrmLimited(
   maxRetries = 10,
   retryDelay = 2000
 ): Observable<Progress> {
-  const settings = readAppSettings();
-  const downloadConfig = (settings as Record<string, unknown>).download as Record<string, number> || {};
+  const maxConcurrent = readAppSettings().download?.downloadMaxConcurrent || 5;
   return defer(() =>
     enqueueForAccount(
       `${account}:download`,
       () => downloadOrCreateStrm(filePathOrUrl, savePath, opts),
-      downloadConfig.downloadMaxConcurrent || 5
+      maxConcurrent
     )
   ).pipe(
     retry({

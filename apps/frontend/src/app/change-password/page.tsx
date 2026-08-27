@@ -8,7 +8,8 @@ import Image from "next/image";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Form, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import axiosInstance, { clearToken } from "@/lib/axios";
+import { clearToken } from "@/lib/axios";
+import { api } from "@/lib/api";
 
 interface ChangePasswordForm {
   currentPassword: string;
@@ -33,10 +34,7 @@ export default function ChangePasswordPage() {
 
     setSubmitting(true);
     try {
-      await axiosInstance.post("/api/auth/password", {
-        currentPassword: values.currentPassword,
-        newPassword: values.newPassword,
-      });
+      await api.auth.changePassword(values.currentPassword, values.newPassword);
       // 旧 token 仍然有效，但让用户用新密码走一遍登录，省得以为没生效
       toast.success("密码已修改，请用新密码登录");
       clearToken();

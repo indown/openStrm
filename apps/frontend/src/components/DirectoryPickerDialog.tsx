@@ -10,14 +10,10 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { FolderOpen, ChevronRight } from "lucide-react";
-import axiosInstance from "@/lib/axios";
+import { api, type Drive115Item } from "@/lib/api";
 import { toast } from "sonner";
 
-interface DirectoryItem {
-  cid: number;
-  n: string;
-  fc: number;
-}
+type DirectoryItem = Drive115Item;
 
 interface BreadcrumbItem {
   cid: number;
@@ -52,8 +48,7 @@ export function DirectoryPickerDialog({
   const fetchDirectories = async (cid: number) => {
     setLoading(true);
     try {
-      const res = await axiosInstance.post<DirectoryItem[]>("/api/115/files", { cid });
-      setDirectories((res.data || []).filter((item) => item.fc === 0));
+      setDirectories(((await api.drive115.list(cid)) || []).filter((item) => item.fc === 0));
     } catch {
       toast.error("加载目录失败");
     } finally {

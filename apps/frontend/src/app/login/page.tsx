@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Form, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import axiosInstance, { setToken } from "@/lib/axios";
+import { setToken } from "@/lib/axios";
+import { api } from "@/lib/api";
 import Image from "next/image";
 
 interface LoginForm {
@@ -21,8 +22,7 @@ export default function LoginPage() {
 
   const onSubmit = async (values: LoginForm) => {
     try {
-      const response = await axiosInstance.post("/api/auth/login", values);
-      const { token, mustChangePassword } = response.data;
+      const { token, mustChangePassword } = await api.auth.login(values.username, values.password);
 
       // 存储token
       setToken(token);

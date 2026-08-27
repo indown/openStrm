@@ -5,7 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { useForm } from "react-hook-form";
 import { Button } from "@/components/ui/button";
-import axiosInstance from "@/lib/axios";
+import { api } from "@/lib/api";
 import { HelpCircle } from "lucide-react";
 import {
   Dialog,
@@ -176,9 +176,9 @@ export function AddTaskDialog({
       };
 
       if (task?.id) {
-        await axiosInstance.put("/api/task", { id: task.id, ...taskData });
+        await api.tasks.update(task.id, taskData);
       } else {
-        await axiosInstance.post("/api/task", taskData);
+        await api.tasks.create(taskData);
       }
 
       onSuccess?.();

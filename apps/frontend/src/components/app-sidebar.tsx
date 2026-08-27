@@ -81,7 +81,6 @@ export function AppSidebar() {
             <SidebarMenu>
               {items.map((item) => {
                 const isActive = pathname === item.url;
-                console.log("Current pathname:", isActive, pathname);
                 return (
                   <SidebarMenuItem key={item.title} className={isActive ? "bg-muted" : ""}>
                     <SidebarMenuButton asChild tooltip={item.title}>

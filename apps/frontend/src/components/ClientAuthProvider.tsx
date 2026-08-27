@@ -26,7 +26,6 @@ export default function ClientAuthProvider({ children }: ClientAuthProviderProps
     const token = localStorage.getItem('auth-token');
     
     if (!token) {
-      console.log('ClientAuthProvider: No token found, redirecting to login');
       router.push('/login');
       return;
     }
@@ -34,7 +33,6 @@ export default function ClientAuthProvider({ children }: ClientAuthProviderProps
     // 简单验证token格式（JWT应该有3个部分）
     const tokenParts = token.split('.');
     if (tokenParts.length !== 3) {
-      console.log('ClientAuthProvider: Invalid token format, redirecting to login');
       localStorage.removeItem('auth-token');
       router.push('/login');
       return;
@@ -46,16 +44,13 @@ export default function ClientAuthProvider({ children }: ClientAuthProviderProps
       const now = Math.floor(Date.now() / 1000);
       
       if (payload.exp && payload.exp < now) {
-        console.log('ClientAuthProvider: Token expired, redirecting to login');
         localStorage.removeItem('auth-token');
         router.push('/login');
         return;
       }
       
-      console.log('ClientAuthProvider: Token valid, user authenticated');
       setIsAuthenticated(true);
     } catch {
-      console.log('ClientAuthProvider: Error parsing token, redirecting to login');
       localStorage.removeItem('auth-token');
       router.push('/login');
     }

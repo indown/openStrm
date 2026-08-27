@@ -9,32 +9,13 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import { Bot, Settings, MessageSquare, CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square } from "lucide-react";
-import axiosInstance, { apiErrorBody, apiErrorMessage } from "@/lib/axios";
+import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
+import { api, type TelegramBotInfo as BotInfo, type TelegramWebhookInfo as WebhookInfo } from "@/lib/api";
 
 interface TelegramConfig {
   botToken?: string;
   chatId?: string;
   webhookUrl?: string;
-}
-
-interface BotInfo {
-  id: number;
-  is_bot: boolean;
-  first_name: string;
-  username: string;
-  can_join_groups: boolean;
-  can_read_all_group_messages: boolean;
-  supports_inline_queries: boolean;
-}
-
-interface WebhookInfo {
-  url: string;
-  has_custom_certificate: boolean;
-  pending_update_count: number;
-  last_error_date?: number;
-  last_error_message?: string;
-  max_connections?: number;
-  allowed_updates?: string[];
 }
 
 export default function TelegramPage() {
@@ -55,14 +36,14 @@ export default function TelegramPage() {
   const loadBotInfo = async () => {
     try {
       setLoading(true);
-      const response = await axiosInstance.get('/api/telegram/bot');
-      if (response.data.configured) {
-        setBotInfo(response.data.bot.result);
-        setWebhookInfo(response.data.webhook.result);
+      const status = await api.telegram.bot.get();
+      if (status.configured) {
+        setBotInfo(status.bot.result);
+        setWebhookInfo(status.webhook.result ?? null);
         setConfig({
-          botToken: response.data.botToken || '',
-          chatId: response.data.chatId || '',
-          webhookUrl: response.data.webhook.result?.url || ''
+          botToken: status.botToken || '',
+          chatId: status.chatId || '',
+          webhookUrl: status.webhook.result?.url || ''
         });
       }
     } catch (error) {
@@ -78,21 +59,22 @@ export default function TelegramPage() {
       setError(null);
       setSuccess(null);
 
-      const response = await axiosInstance.post('/api/telegram/bot', {
-        botToken: config.botToken,
+      const response = await api.telegram.bot.configure({
+        botToken: config.botToken ?? "",
         chatId: config.chatId,
         webhookUrl: config.webhookUrl
       });
 
-      if (response.data.success) {
+      if (response.success) {
         setSuccess('Telegram bot configured successfully!');
         // 直接设置 botInfo，因为后端返回的是完整的 bot 信息
-        setBotInfo(response.data.bot);
+        setBotInfo(response.bot);
         // 更新配置显示
+        // 配置接口不回 token/webhook，沿用刚提交的值；随后的 loadBotInfo 会拿到完整信息
         setConfig({
-          botToken: response.data.botToken || '',
-          chatId: response.data.chatId || '',
-          webhookUrl: response.data.webhook?.result?.url || ''
+          botToken: config.botToken || '',
+          chatId: response.chatId || '',
+          webhookUrl: config.webhookUrl || ''
         });
         // 重新加载完整信息以获取 webhook 信息
         await loadBotInfo();
@@ -116,7 +98,7 @@ export default function TelegramPage() {
       setError(null);
       setSuccess(null);
 
-      await axiosInstance.delete('/api/telegram/bot');
+      await api.telegram.bot.remove();
       setSuccess('Telegram bot configuration removed successfully!');
       setBotInfo(null);
       setWebhookInfo(null);
@@ -131,8 +113,7 @@ export default function TelegramPage() {
   // 检查轮询状态
   const checkPollingStatus = async () => {
     try {
-      const response = await axiosInstance.get('/api/telegram/polling');
-      setPollingStatus(response.data);
+      setPollingStatus(await api.telegram.polling.status());
     } catch (error) {
       console.error('Failed to check polling status:', error);
     }
@@ -145,9 +126,8 @@ export default function TelegramPage() {
       setError(null);
       setSuccess(null);
 
-      const response = await axiosInstance.post('/api/telegram/polling');
-      
-      if (response.data.success) {
+      const response = await api.telegram.polling.start();
+      if (response.success) {
         setSuccess('Polling started successfully!');
         await checkPollingStatus();
       }
@@ -165,9 +145,8 @@ export default function TelegramPage() {
       setError(null);
       setSuccess(null);
 
-      const response = await axiosInstance.delete('/api/telegram/polling');
-      
-      if (response.data.success) {
+      const response = await api.telegram.polling.stop();
+      if (response.success) {
         setSuccess('Polling stopped successfully!');
         await checkPollingStatus();
       }
@@ -189,10 +168,7 @@ export default function TelegramPage() {
       setError(null);
       setSuccess(null);
 
-      await axiosInstance.post('/api/telegram/send', {
-        message: '🤖 Test message from OpenStrm!',
-        type: 'info'
-      });
+      await api.telegram.send({ message: '🤖 Test message from OpenStrm!', type: 'info' });
 
       setSuccess('Test message sent successfully!');
     } catch (error) {

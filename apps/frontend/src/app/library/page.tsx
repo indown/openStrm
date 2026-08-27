@@ -15,10 +15,13 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Film, Edit, Trash2, Search, FileText, Loader2, AlertCircle, CloudUpload } from "lucide-react";
 import { useRouter } from "next/navigation";
-import axiosInstance from "@/lib/axios";
 import { toast } from "sonner";
 import type { MediaLibraryEntry } from "@openstrm/shared";
-import { ShareDetailDialog, type ShareFileItem } from "@/components/ShareDetailDialog";
+import { api } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/axios";
+import { notifySaveToTaskResult } from "@/lib/save-result";
+import { useShareDetail } from "@/hooks/use-share-detail";
+import { ShareDetailDialog } from "@/components/ShareDetailDialog";
 import { AddToLibraryDialog, type AddToLibraryInitial } from "@/components/AddToLibraryDialog";
 import { SaveToDriveDialog, type SaveToTaskChoice } from "@/components/SaveToDriveDialog";
 
@@ -37,20 +40,13 @@ export default function LibraryPage() {
   const [saveToTaskOpen, setSaveToTaskOpen] = useState(false);
   const [savingToTask, setSavingToTask] = useState(false);
 
-  const [shareDetailOpen, setShareDetailOpen] = useState(false);
-  const [shareInfo, setShareInfo] = useState<Record<string, unknown> | null>(null);
-  const [shareFileList, setShareFileList] = useState<ShareFileItem[]>([]);
-  const [shareFileCount, setShareFileCount] = useState(0);
-  const [shareLink, setShareLink] = useState("");
-  const [shareLoading, setShareLoading] = useState(false);
-  const [shareStartCid, setShareStartCid] = useState<string | number | undefined>(undefined);
-  const [shareStartCrumbs, setShareStartCrumbs] = useState<{ id: string; name: string }[] | undefined>(undefined);
+  const share = useShareDetail();
 
   const fetchEntries = async () => {
     setLoading(true);
     try {
-      const res = await axiosInstance.get<MediaLibraryEntry[]>("/api/library");
-      setEntries(Array.isArray(res.data) ? res.data : []);
+      const list = await api.library.list();
+      setEntries(Array.isArray(list) ? list : []);
     } catch {
       toast.error("加载影库失败");
     } finally {
@@ -91,14 +87,12 @@ export default function LibraryPage() {
     let cancelled = false;
     const tick = async () => {
       try {
-        const res = await axiosInstance.get<{ pendingIds: string[]; pendingCount: number }>(
-          "/api/library/scrape-status",
-        );
+        const status = await api.library.scrapeStatus();
         if (cancelled) return;
         const currentPending = new Set(
           entriesRef.current.filter((e) => e.scrapeStatus === "pending").map((e) => e.id),
         );
-        const serverPending = new Set(res.data.pendingIds ?? []);
+        const serverPending = new Set(status.pendingIds ?? []);
         let changed = currentPending.size !== serverPending.size;
         if (!changed) {
           for (const id of currentPending) {
@@ -138,53 +132,21 @@ export default function LibraryPage() {
       })
     : entries;
 
-  const openEntry = async (entry: MediaLibraryEntry) => {
-    setShareLink(entry.shareUrl);
-    setShareLoading(true);
-    setShareDetailOpen(true);
-    setShareInfo(null);
-    setShareFileList([]);
-    setShareFileCount(0);
-    if (entry.shareRootCid && entry.shareRootCid !== "0") {
-      setShareStartCid(entry.shareRootCid);
-      const segments = (entry.sharePath || "")
-        .replace(/^\/+/, "")
-        .split("/")
-        .filter(Boolean);
-      const crumbs =
-        segments.length > 0
-          ? segments.map((name, i) => ({
-              id: i === segments.length - 1 ? entry.shareRootCid : "",
-              name,
-            }))
-          : [{ id: entry.shareRootCid, name: entry.title || entry.rawName || "子目录" }];
-      setShareStartCrumbs(crumbs);
-    } else {
-      setShareStartCid(undefined);
-      setShareStartCrumbs(undefined);
-    }
-    try {
-      const [infoRes, listRes] = await Promise.all([
-        axiosInstance.post<Record<string, unknown>>("/api/115/share", {
-          action: "info",
-          url: entry.shareUrl,
-        }),
-        axiosInstance.post<{ list: ShareFileItem[]; count: number }>("/api/115/share", {
-          action: "list",
-          url: entry.shareUrl,
-          cid: 0,
-        }),
-      ]);
-      setShareInfo(infoRes.data ?? null);
-      setShareFileList(listRes.data.list ?? []);
-      setShareFileCount(listRes.data.count ?? 0);
-    } catch (err) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      toast.error(msg || "打开分享失败");
-      setShareDetailOpen(false);
-    } finally {
-      setShareLoading(false);
-    }
+  const openEntry = (entry: MediaLibraryEntry) => {
+    // 子目录条目：直接定位到入库时记的那一层
+    const isSubdir = Boolean(entry.shareRootCid && entry.shareRootCid !== "0");
+    const segments = (entry.sharePath || "").replace(/^\/+/, "").split("/").filter(Boolean);
+    const startCrumbs = !isSubdir
+      ? undefined
+      : segments.length > 0
+        ? segments.map((name, i) => ({ id: i === segments.length - 1 ? entry.shareRootCid : "", name }))
+        : [{ id: entry.shareRootCid, name: entry.title || entry.rawName || "子目录" }];
+    void share.load(entry.shareUrl, {
+      openImmediately: true,
+      startCid: isSubdir ? entry.shareRootCid : undefined,
+      startCrumbs,
+      failMessage: "打开分享失败",
+    });
   };
 
   const openEditor = (entry: MediaLibraryEntry) => {
@@ -203,7 +165,7 @@ export default function LibraryPage() {
   const confirmDelete = async () => {
     if (!deleteTarget) return;
     try {
-      await axiosInstance.delete(`/api/library/${deleteTarget.id}`);
+      await api.library.remove(deleteTarget.id);
       toast.success("已删除");
       setEntries((prev) => prev.filter((e) => e.id !== deleteTarget.id));
     } catch {
@@ -223,27 +185,9 @@ export default function LibraryPage() {
     setSaveToTaskOpen(false);
     setSavingToTask(true);
     try {
-      const res = await axiosInstance.post<Record<string, unknown>>(
-        `/api/library/${saveToTaskEntry.id}/save-to-task`,
-        { taskId: choice.taskId, subPath: choice.subPath, mode: choice.mode },
-      );
-      const data = res.data ?? {};
-      if (data.mode === "async" && data.taskId) {
-        const asyncTaskId = data.taskId as string;
-        toast.success("已触发后台同步", {
-          action: {
-            label: "查看进度",
-            onClick: () => router.push(`/log?taskId=${asyncTaskId}`),
-          },
-        });
-      } else if (typeof data.generatedCount === "number") {
-        toast.success(`保存成功，生成 ${data.generatedCount} 个 strm（跳过 ${data.skippedCount ?? 0} 个）`);
-      } else {
-        toast.success("保存成功");
-      }
+      notifySaveToTaskResult(await api.library.saveToTask(saveToTaskEntry.id, choice), router);
     } catch (err) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      toast.error(msg || "保存失败");
+      toast.error(apiErrorMessage(err, "保存失败"));
     } finally {
       setSavingToTask(false);
       setSaveToTaskEntry(null);
@@ -309,17 +253,7 @@ export default function LibraryPage() {
         onSaved={handleSaved}
       />
 
-      <ShareDetailDialog
-        open={shareDetailOpen}
-        onOpenChange={setShareDetailOpen}
-        shareInfo={shareInfo}
-        fileList={shareFileList}
-        fileCount={shareFileCount}
-        shareLink={shareLink}
-        loading={shareLoading}
-        startCid={shareStartCid}
-        startCrumbs={shareStartCrumbs}
-      />
+      <ShareDetailDialog {...share.dialogProps} />
 
       <SaveToDriveDialog
         open={saveToTaskOpen}
