@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d0a76ca3-76a4-484c-8b72-e9c70cd53b3d",
-  "prevId": "a9f232cb-308d-430c-895d-002ca756300a",
+  "id": "a9f232cb-308d-430c-895d-002ca756300a",
+  "prevId": "550c42b3-193f-4c40-9147-66f4af79f9d6",
   "tables": {
     "accounts": {
       "name": "accounts",
@@ -93,11 +93,11 @@
         },
         "share_root_cid": {
           "name": "share_root_cid",
-          "type": "text",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false,
-          "default": "''"
+          "default": 0
         },
         "share_receive_ids": {
           "name": "share_receive_ids",
