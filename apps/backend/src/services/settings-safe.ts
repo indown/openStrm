@@ -10,6 +10,9 @@
  */
 import type { AppSettings } from "@openstrm/shared";
 import { readAppSettings } from "../db/repositories/settings.js";
+import { moduleLogger } from "../lib/logger.js";
+
+const log = moduleLogger("settings");
 
 const EMPTY: AppSettings = {};
 
@@ -21,7 +24,7 @@ export function readSettingsSafe(): AppSettings {
   } catch (err) {
     if (!warned) {
       warned = true;
-      console.warn(
+      log.warn(
         `[settings] 读取配置失败，按空配置降级运行: ${err instanceof Error ? err.message : err}`,
       );
     }

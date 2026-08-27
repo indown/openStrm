@@ -14,7 +14,6 @@ import {
   flushEmbyRefresh,
   getEmbyRefreshState,
   scheduleEmbyRefresh,
-  setMediaServerLogger,
 } from "./media-server.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -29,7 +28,6 @@ await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 const port = (server.address() as { port: number }).port;
 
 const baseline = readAppSettings();
-setMediaServerLogger(() => {});
 
 function configure(quiet: number, maxWait: number) {
   replaceAppSettings({

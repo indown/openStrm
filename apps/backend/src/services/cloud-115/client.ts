@@ -5,6 +5,9 @@ import { encrypt, decrypt } from "./crypto.js";
 import { SimpleCache } from "./SimpleCache.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { enqueueForAccount } from "../download/rate-limited.js";
+import { moduleLogger } from "../../lib/logger.js";
+
+const log = moduleLogger("cloud-115");
 
 // 定义账户信息类型（导出供 115share 等模块使用）
 export interface AccountInfo {
@@ -25,14 +28,14 @@ export function clearAllCaches(): void {
   dirIdCache.clear();
   filesListCache.clear();
   pickcodeCache.clear();
-  console.log("[CACHE] All caches cleared");
+  log.debug("[CACHE] All caches cleared");
 }
 
 export function cleanupExpiredCaches(): void {
   dirIdCache.cleanup();
   filesListCache.cleanup();
   pickcodeCache.cleanup();
-  console.log("[CACHE] Expired cache entries cleaned up");
+  log.debug("[CACHE] Expired cache entries cleaned up");
 }
 
 export function getCacheStats(): { dirId: number; files: number; pickcode: number } {
@@ -171,7 +174,7 @@ export async function getIdToPath(options: {
   if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
   if (!path) throw new Error('path is required');
 
-  console.log(`[getIdToPath] Looking for file: ${path}`);
+  log.debug(`[getIdToPath] Looking for file: ${path}`);
 
   // 解析路径，例如 "a/b/c.mkv" -> ["a", "b", "c.mkv"]
   const pathParts = path.split('/').filter(p => p);
@@ -182,12 +185,12 @@ export async function getIdToPath(options: {
 
   // 如果是单层路径，直接查找
   if (pathParts.length === 1) {
-    console.log(`[getIdToPath] Searching in root directory for: ${pathParts[0]}`);
+    log.debug(`[getIdToPath] Searching in root directory for: ${pathParts[0]}`);
     const files = await fsFiles(0, { userAgent, accountInfo });
     
     for (const file of files.data || []) {
       if (file.n === pathParts[0]) {
-        console.log(`[getIdToPath] Found file in root: ${pathParts[0]}, cid: ${file.cid}`);
+        log.debug(`[getIdToPath] Found file in root: ${pathParts[0]}, cid: ${file.cid}`);
         return file.cid;
       }
     }
@@ -198,7 +201,7 @@ export async function getIdToPath(options: {
   const dirPath = pathParts.slice(0, -1).join('/');
   const fileName = pathParts[pathParts.length - 1];
   
-  console.log(`[getIdToPath] Searching in directory: ${dirPath} for file: ${fileName}`);
+  log.debug(`[getIdToPath] Searching in directory: ${dirPath} for file: ${fileName}`);
   
   // 使用 fsDirGetId 获取目录 ID
   try {
@@ -209,28 +212,28 @@ export async function getIdToPath(options: {
       throw new Error(`Directory not found: ${dirPath}`);
     }
 
-    console.log(`[getIdToPath] Directory ID for ${dirPath}: ${dirId}`);
+    log.debug(`[getIdToPath] Directory ID for ${dirPath}: ${dirId}`);
 
     // 列出目录中的文件
     const files = await fsFiles(dirId, { userAgent, accountInfo });
-    console.log(`[getIdToPath] Found ${files.data?.length || 0} files in directory ${dirPath}`);
+    log.debug(`[getIdToPath] Found ${files.data?.length || 0} files in directory ${dirPath}`);
     
     // 查找目标文件
     for (const file of files.data || []) {
       if (file.n === fileName) {
-        console.log(`[getIdToPath] Found target file: ${fileName}, fid: ${file.fid}`);
+        log.debug(`[getIdToPath] Found target file: ${fileName}, fid: ${file.fid}`);
         const pickcode = await getPickcodeToId(file.fid, { userAgent, accountInfo });
-        console.log(`[getIdToPath] Successfully got pickcode for ${path}: ${pickcode}`);
+        log.debug(`[getIdToPath] Successfully got pickcode for ${path}: ${pickcode}`);
         return pickcode;
       }
     }
     
     // 列出目录中的所有文件以便调试
     const fileNames = files.data?.map(f => f.n) || [];
-    console.log(`[getIdToPath] Available files in ${dirPath}:`, fileNames);
+    log.debug({ files: fileNames }, `[getIdToPath] Available files in ${dirPath}`);
     throw new Error(`File not found: ${fileName} in directory: ${dirPath}. Available files: ${fileNames.join(', ')}`);
   } catch (error) {
-    console.error(`[getIdToPath] Error getting directory ID for ${dirPath}:`, error);
+    log.error({ err: error }, `[getIdToPath] Error getting directory ID for ${dirPath}`);
     throw error;
   }
 }
@@ -245,11 +248,11 @@ export async function fsDirGetId(path: string, { userAgent, accountInfo }: { use
   // 尝试从缓存获取
   const cached = dirIdCache.get(cacheKey);
   if (cached) {
-    console.log(`[CACHE HIT] Directory ID for path: ${path}`);
+    log.debug(`[CACHE HIT] Directory ID for path: ${path}`);
     return cached;
   }
 
-  console.log(`[CACHE MISS] Fetching directory ID for path: ${path}`);
+  log.debug(`[CACHE MISS] Fetching directory ID for path: ${path}`);
   const url = 'https://webapi.115.com/files/getid';
   const params = new URLSearchParams({ path });
   const data = await request115<{ id: number }>(url + '?' + params, {
@@ -281,11 +284,11 @@ export async function fsFiles(cid: number | string, { userAgent, limit = 1000, o
   // 尝试从缓存获取
   const cached = filesListCache.get(cacheKey);
   if (cached) {
-    console.log(`[CACHE HIT] Files list for cid: ${cid}`);
+    log.debug(`[CACHE HIT] Files list for cid: ${cid}`);
     return cached;
   }
 
-  console.log(`[CACHE MISS] Fetching files list for cid: ${cid}`);
+  log.debug(`[CACHE MISS] Fetching files list for cid: ${cid}`);
   const url = 'https://webapi.115.com/files';
   const params = new URLSearchParams({
     cid: String(cid),
@@ -417,7 +420,7 @@ export async function request115<T = unknown>(
   // 例如：根据 accountInfo.accountType 设置不同的请求头或参数
   if (accountInfo) {
     // 可以根据账户类型进行特殊处理
-    // console.log(`Request for account: ${accountInfo.name}, type: ${accountInfo.accountType}`);
+    // log.debug(`Request for account: ${accountInfo.name}, type: ${accountInfo.accountType}`);
   }
   
   try {
@@ -487,11 +490,11 @@ export async function getPickcodeToId(id: number, { userAgent = defaultUA(), acc
   // 尝试从缓存获取
   const cached = pickcodeCache.get(cacheKey);
   if (cached) {
-    console.log(`[CACHE HIT] Pickcode for file ID: ${id}`);
+    log.debug(`[CACHE HIT] Pickcode for file ID: ${id}`);
     return cached;
   }
 
-  console.log(`[CACHE MISS] Fetching pickcode for file ID: ${id}`);
+  log.debug(`[CACHE MISS] Fetching pickcode for file ID: ${id}`);
   const response = await request115<{ state: boolean; data: Array<{ pick_code: string }> }>(
     `http://web.api.115.com/files/file?file_id=${id}`,
     {

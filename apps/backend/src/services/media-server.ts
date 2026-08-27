@@ -8,18 +8,14 @@
  */
 import axios from "axios";
 import { readAppSettings } from "../db/repositories/settings.js";
+import { moduleLogger } from "../lib/logger.js";
 
 /** 安静多久后触发刷新（秒） */
 const DEFAULT_QUIET_SECONDS = 30;
 /** 从第一次请求算起最多等多久（秒），防止事件不断导致刷新被饿死 */
 const DEFAULT_MAX_WAIT_SECONDS = 300;
 
-type Logger = (msg: string) => void;
-let log: Logger = () => {};
-
-export function setMediaServerLogger(fn: Logger): void {
-  log = fn;
-}
+const log = moduleLogger("media-server");
 
 function embyEndpoint(): string | null {
   const s = readAppSettings();
@@ -33,8 +29,8 @@ export function refreshEmbyNow(reason = "manual"): void {
   if (!url) return;
   axios
     .post(url)
-    .then(() => log(`Emby 刷新已触发（${reason}）`))
-    .catch((err) => log(`Emby 刷新失败（${reason}）：${err instanceof Error ? err.message : err}`));
+    .then(() => log.info(`Emby 刷新已触发（${reason}）`))
+    .catch((err) => log.warn(`Emby 刷新失败（${reason}）：${err instanceof Error ? err.message : err}`));
 }
 
 /* ------------------------------- 防抖调度 ------------------------------- */

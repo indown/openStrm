@@ -59,6 +59,9 @@ importers:
       lru-cache:
         specifier: ^11.0.2
         version: 11.3.5
+      pino:
+        specifier: ^9.14.0
+        version: 9.14.0
       rxjs:
         specifier: ^7.8.2
         version: 7.8.2

@@ -8,6 +8,9 @@ import {
 } from "../../db/repositories/media-library.js";
 import { normalizeTitle } from "../media-title.js";
 import type { MediaType } from "@openstrm/shared";
+import { moduleLogger } from "../../lib/logger.js";
+
+const log = moduleLogger("scrape-worker");
 
 /** 全局 throttle 用的是同一条 `lastRequestAt` 时间线，因此并行 worker 实际被串行化。
  *  保持 CONCURRENCY=1 以避免 "伪并发" 带来的误解；TMDB 速率由 MIN_INTERVAL_MS 控制 (≈4 req/s)。 */
@@ -169,10 +172,10 @@ export function enqueueOne(id: string): void {
 export function start(): void {
   const pending = getPending();
   if (pending.length === 0) {
-    console.log("[scrape-worker] no pending tasks");
+    log.info("[scrape-worker] no pending tasks");
     return;
   }
-  console.log(`[scrape-worker] resumed ${pending.length} tasks`);
+  log.info(`[scrape-worker] resumed ${pending.length} tasks`);
   enqueue(pending.map((p) => p.id));
 }
 

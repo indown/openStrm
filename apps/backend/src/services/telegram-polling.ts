@@ -3,6 +3,9 @@ import { createTelegramBot } from "./telegram.js";
 import { readAppSettings } from "../db/repositories/settings.js";
 import { listTasks } from "../db/repositories/tasks.js";
 import { startTask } from "./task/runner.js";
+import { moduleLogger } from "../lib/logger.js";
+
+const log = moduleLogger("telegram-polling");
 
 function readTasks(): any[] {
   return listTasks();
@@ -33,7 +36,7 @@ export function setTaskStarter(fn: TaskStarter | null): void {
 
 export async function startPolling(): Promise<boolean> {
   if (isPollingActive) {
-    console.log("Polling already running");
+    log.info("Polling already running");
     return false;
   }
 
@@ -42,7 +45,7 @@ export async function startPolling(): Promise<boolean> {
     const telegram = settings.telegram;
     
     if (!telegram || !telegram.botToken) {
-      console.error("Telegram not configured for polling");
+      log.error("Telegram not configured for polling");
       return false;
     }
 
@@ -51,7 +54,7 @@ export async function startPolling(): Promise<boolean> {
     // 确保删除 webhook 以避免冲突
     try {
       await bot.deleteWebhook();
-      console.log("Deleted existing webhook for polling mode");
+      log.info("Deleted existing webhook for polling mode");
       
       // 等待一段时间确保 webhook 完全删除
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -59,15 +62,15 @@ export async function startPolling(): Promise<boolean> {
       // 验证 webhook 是否已删除
       const webhookInfo = await bot.getWebhookInfo();
       if ((webhookInfo.result as { url?: string })?.url) {
-        console.log("Warning: Webhook still exists, trying to delete again...");
+        log.info("Warning: Webhook still exists, trying to delete again...");
         await bot.deleteWebhook();
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     } catch (error) {
-      console.log("No webhook to delete or error deleting webhook:", error);
+      log.info({ err: error }, "No webhook to delete or error deleting webhook");
     }
     
-    console.log("Starting Telegram polling...");
+    log.info("Starting Telegram polling...");
     isPollingActive = true;
     
     // 延迟启动轮询，确保 webhook 完全清理
@@ -106,7 +109,7 @@ export async function startPolling(): Promise<boolean> {
           return;
         } else {
           // 其他错误（如网络错误、超时等）只记录，不停止轮询
-          console.warn("Polling error (non-409):", axiosError.message || error);
+          log.warn({ err: axiosError.message || error }, "Polling error (non-409)");
         }
       }
       }, 5000); // 每5秒轮询一次
@@ -114,7 +117,7 @@ export async function startPolling(): Promise<boolean> {
 
     return true;
   } catch (error) {
-    console.error("Failed to start polling:", error);
+    log.error({ err: error }, "Failed to start polling");
     isPollingActive = false;
     return false;
   }
@@ -129,7 +132,7 @@ export function stopPolling(): boolean {
   }
 
   isPollingActive = false;
-  console.log("Telegram polling stopped");
+  log.info("Telegram polling stopped");
   return true;
 }
 
@@ -147,7 +150,7 @@ export async function forceCleanup(): Promise<boolean> {
     const telegram = settings.telegram;
     
     if (!telegram || !telegram.botToken) {
-      console.error("Telegram not configured for cleanup");
+      log.error("Telegram not configured for cleanup");
       return false;
     }
 
@@ -159,20 +162,20 @@ export async function forceCleanup(): Promise<boolean> {
     // 强制删除 webhook
     try {
       await bot.deleteWebhook();
-      console.log("Force deleted webhook");
+      log.info("Force deleted webhook");
     } catch (error) {
-      console.log("Error force deleting webhook:", error);
+      log.info({ err: error }, "Error force deleting webhook");
     }
     
     // 等待 5 秒后重新启动轮询，给 Telegram 服务器更多时间
     setTimeout(async () => {
-      console.log("Restarting polling after cleanup...");
+      log.info("Restarting polling after cleanup...");
       await startPolling();
     }, 5000);
     
     return true;
   } catch (error) {
-    console.error("Failed to force cleanup:", error);
+    log.error({ err: error }, "Failed to force cleanup");
     return false;
   }
 }
@@ -184,7 +187,7 @@ export async function safeStartPolling(): Promise<boolean> {
     const telegram = settings.telegram;
     
     if (!telegram || !telegram.botToken) {
-      console.error("Telegram not configured for polling");
+      log.error("Telegram not configured for polling");
       return false;
     }
 
@@ -197,28 +200,28 @@ export async function safeStartPolling(): Promise<boolean> {
     for (let i = 0; i < 3; i++) {
       try {
         await bot.deleteWebhook();
-        console.log(`Deleted webhook (attempt ${i + 1})`);
+        log.info(`Deleted webhook (attempt ${i + 1})`);
         await new Promise(resolve => setTimeout(resolve, 2000));
         
         // 验证 webhook 是否已删除
         const webhookInfo = await bot.getWebhookInfo();
         if (!(webhookInfo.result as { url?: string })?.url) {
-          console.log("Webhook successfully deleted");
+          log.info("Webhook successfully deleted");
           break;
         }
       } catch (error) {
-        console.log(`Error deleting webhook (attempt ${i + 1}):`, error);
+        log.info({ err: error }, `Error deleting webhook (attempt ${i + 1})`);
       }
     }
     
     // 等待更长时间确保状态同步
-    console.log("Waiting for Telegram server to sync...");
+    log.info("Waiting for Telegram server to sync...");
     await new Promise(resolve => setTimeout(resolve, 5000));
     
     // 启动轮询
     return await startPolling();
   } catch (error) {
-    console.error("Failed to safely start polling:", error);
+    log.error({ err: error }, "Failed to safely start polling");
     return false;
   }
 }
@@ -231,8 +234,8 @@ async function handleMessage(bot: ReturnType<typeof createTelegramBot>, message:
   const username = msg.from.username || msg.from.first_name;
   const userId = msg.from.id;
 
-  console.log(`[Telegram Polling] Message from ${username} (${userId}): ${text}`);
-  console.log(`[Telegram Polling] Chat ID: ${chatId}, User ID: ${userId}`);
+  log.info(`[Telegram Polling] Message from ${username} (${userId}): ${text}`);
+  log.info(`[Telegram Polling] Chat ID: ${chatId}, User ID: ${userId}`);
 
   // 处理命令
   if (text?.startsWith('/')) {
@@ -343,7 +346,7 @@ async function handleCommand(bot: ReturnType<typeof createTelegramBot>, chatId: 
 async function handleCallbackQuery(bot: ReturnType<typeof createTelegramBot>, callbackQuery: unknown) {
   const query = callbackQuery as { message?: { chat: { id: number } }; data?: string; id: string };
   if (!query.message) {
-    console.error("Callback query has no message");
+    log.error("Callback query has no message");
     return;
   }
 
@@ -351,7 +354,7 @@ async function handleCallbackQuery(bot: ReturnType<typeof createTelegramBot>, ca
   const data = query.data;
   const queryId = query.id;
 
-  console.log(`[Telegram Polling] Callback query: ${data}`);
+  log.info(`[Telegram Polling] Callback query: ${data}`);
 
   // 回答回调查询
   await bot.answerCallbackQuery(queryId, "Processing...");
@@ -427,7 +430,7 @@ async function handleStartCommand(bot: ReturnType<typeof createTelegramBot>, cha
 
     await bot.sendMessageWithButtons(chatId, message, buttons);
   } catch (error) {
-    console.error("Error handling start command:", error);
+    log.error({ err: error }, "Error handling start command");
     await bot.sendMessage({
       chat_id: chatId,
       text: `❌ Error loading tasks: ${error}`,
@@ -486,7 +489,7 @@ async function handleTaskStartCallback(bot: ReturnType<typeof createTelegramBot>
         });
       }
     } catch (apiError) {
-      console.error("Error calling startTask API:", apiError);
+      log.error({ err: apiError }, "Error calling startTask API");
       await bot.sendMessage({
         chat_id: chatId,
         text: `❌ <b>API Error</b>\n\n` +
@@ -497,7 +500,7 @@ async function handleTaskStartCallback(bot: ReturnType<typeof createTelegramBot>
     }
 
   } catch (error) {
-    console.error("Error starting task:", error);
+    log.error({ err: error }, "Error starting task");
     await bot.sendMessage({
       chat_id: chatId,
       text: `❌ Error starting task: ${error}`,

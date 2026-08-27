@@ -6,6 +6,9 @@ import { defer, firstValueFrom, Observable, retry, timer } from "rxjs";
 import { getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { toStrmPath } from "../strm/naming.js";
+import { moduleLogger } from "../../lib/logger.js";
+
+const log = moduleLogger("download");
 
 interface Progress {
   filePath?: string;
@@ -80,7 +83,7 @@ export async function getRealDownloadLink(
       retry({
         count: maxRetries,
         delay: (_err, i) => {
-          console.warn(`获取下载链接失败，正在重试 ${i}/${maxRetries}`);
+          log.warn(`获取下载链接失败，正在重试 ${i}/${maxRetries}`);
           return timer(retryDelay);
         },
       })
@@ -212,7 +215,7 @@ export function downloadOrCreateStrmLimited(
     retry({
       count: maxRetries,
       delay: (_error, retryCount) => {
-        console.warn(`下载失败，正在重试 ${retryCount}/${maxRetries}`);
+        log.warn(`下载失败，正在重试 ${retryCount}/${maxRetries}`);
         return timer(retryDelay);
       },
     })

@@ -10,6 +10,7 @@
 import type { AccountInfo, LifeEventMode, LifePullMode } from "@openstrm/shared";
 import type { AccountInfo as Cloud115Account } from "../cloud-115/client.js";
 import { KEY } from "../../db/keys.js";
+import { moduleLogger } from "../../lib/logger.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { listAccounts } from "../../db/repositories/accounts.js";
 import { listTasks } from "../../db/repositories/tasks.js";
@@ -60,7 +61,6 @@ const ERROR_BACKOFF_MS = 30_000;
 const ALL_EVENT_MODES: LifeEventMode[] = ["create", "move", "rename", "remove"];
 const LOG_LIMIT = 500;
 
-type Logger = { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void; debug: (m: string) => void };
 
 interface AppFallbackState {
   ios405Count?: number;
@@ -98,17 +98,14 @@ let lastError: string | null = null;
 const stats = { rounds: 0, events: 0, handled: 0, skipped: 0, failed: 0 };
 const logs: string[] = [];
 
-let externalLogger: Logger | null = null;
+const lifeLog = moduleLogger("life");
 
-export function setLifeLogger(l: Logger): void {
-  externalLogger = l;
-}
-
+/** 既写进程日志，也留一份在内存里给状态页展示 */
 function log(level: "info" | "warn" | "error" | "debug", msg: string): void {
   const line = `[${new Date().toISOString()}] [${level}] ${msg}`;
   logs.push(line);
   if (logs.length > LOG_LIMIT) logs.shift();
-  externalLogger?.[level]?.(`[生活事件] ${msg}`);
+  lifeLog[level](msg);
 }
 
 /* ------------------------------ 可中断的等待 ------------------------------ */

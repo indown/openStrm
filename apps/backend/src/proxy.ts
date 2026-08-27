@@ -7,6 +7,7 @@
  */
 import Fastify from "fastify";
 import { sqlite } from "./db/client.js";
+import { logger } from "./lib/logger.js";
 import { readAppSettings } from "./db/repositories/settings.js";
 import proxyPlugin from "./routes/proxy/index.js";
 
@@ -14,7 +15,7 @@ const PROXY_PORT = Number(process.env.PROXY_PORT) || 8091;
 const HOST = process.env.BACKEND_HOST || "0.0.0.0";
 
 const app = Fastify({
-  logger: { level: process.env.LOG_LEVEL || "info" },
+  loggerInstance: logger,
   forceCloseConnections: true,
   /**
    * Fastify 默认把 requestTimeout 设成 0，连 Node 自带的 300s 也一并关掉了，
