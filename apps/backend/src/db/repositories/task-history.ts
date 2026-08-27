@@ -1,18 +1,29 @@
 import { eq, desc, lt } from "drizzle-orm";
-import type { TaskExecutionHistory } from "@openstrm/shared";
+import type { TaskExecutionHistory, TaskExecutionSummary } from "@openstrm/shared";
 import { db } from "../client.js";
 import { taskHistory } from "../schema.js";
 
 type Row = typeof taskHistory.$inferSelect;
+type SummaryRow = Omit<Row, "logs">;
 
-function deserialize(row: Row): TaskExecutionHistory {
+/** 列表只取这些列：logs 是每条几千行的 JSON 块，列表里没人看 */
+const summaryColumns = {
+  id: taskHistory.id,
+  taskId: taskHistory.taskId,
+  startTime: taskHistory.startTime,
+  endTime: taskHistory.endTime,
+  status: taskHistory.status,
+  summary: taskHistory.summary,
+  taskInfo: taskHistory.taskInfo,
+};
+
+function deserializeSummary(row: SummaryRow): TaskExecutionSummary {
   return {
     id: row.id,
     taskId: row.taskId,
     startTime: row.startTime,
     endTime: row.endTime ?? undefined,
     status: row.status as TaskExecutionHistory["status"],
-    logs: safeParse(row.logs, []) as string[],
     summary: safeParse(row.summary, {
       totalFiles: 0,
       downloadedFiles: 0,
@@ -25,6 +36,10 @@ function deserialize(row: Row): TaskExecutionHistory {
       removeExtraFiles: false,
     }) as TaskExecutionHistory["taskInfo"],
   };
+}
+
+function deserialize(row: Row): TaskExecutionHistory {
+  return { ...deserializeSummary(row), logs: safeParse(row.logs, []) as string[] };
 }
 
 function safeParse<T>(raw: string, fallback: T): T {
@@ -109,19 +124,24 @@ export function complete(
     .run();
 }
 
-export function getByTaskId(taskId: string): TaskExecutionHistory[] {
+export function getById(executionId: string): TaskExecutionHistory | undefined {
+  const row = db.select().from(taskHistory).where(eq(taskHistory.id, executionId)).get();
+  return row ? deserialize(row) : undefined;
+}
+
+export function getByTaskId(taskId: string): TaskExecutionSummary[] {
   const rows = db
-    .select()
+    .select(summaryColumns)
     .from(taskHistory)
     .where(eq(taskHistory.taskId, taskId))
     .orderBy(desc(taskHistory.startTime))
     .all();
-  return rows.map(deserialize);
+  return rows.map(deserializeSummary);
 }
 
-export function getAll(): TaskExecutionHistory[] {
-  const rows = db.select().from(taskHistory).orderBy(desc(taskHistory.startTime)).all();
-  return rows.map(deserialize);
+export function getAll(): TaskExecutionSummary[] {
+  const rows = db.select(summaryColumns).from(taskHistory).orderBy(desc(taskHistory.startTime)).all();
+  return rows.map(deserializeSummary);
 }
 
 export function remove(executionId: string): void {

@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import type { TaskExecutionHistory } from "@openstrm/shared";
+import type { TaskExecutionSummary } from "@openstrm/shared";
 import { 
   Clock, 
   CheckCircle, 
@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 
 // 状态图标和颜色映射
-const getStatusConfig = (status: TaskExecutionHistory["status"]) => {
+const getStatusConfig = (status: TaskExecutionSummary["status"]) => {
   const configs = {
     running: { icon: Clock, color: "bg-blue-100 text-blue-800", label: "运行中" },
     completed: { icon: CheckCircle, color: "bg-green-100 text-green-800", label: "已完成" },
@@ -64,7 +64,7 @@ const getDuration = (startTime: number, endTime?: number) => {
 };
 
 export default function TaskHistoryPage() {
-  const [history, setHistory] = useState<TaskExecutionHistory[]>([]);
+  const [history, setHistory] = useState<TaskExecutionSummary[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -106,7 +106,7 @@ export default function TaskHistoryPage() {
     }
   };
 
-  const viewLogs = (execution: TaskExecutionHistory) => {
+  const viewLogs = (execution: TaskExecutionSummary) => {
     // 跳转到日志查看页面
     window.open(`/log?taskId=${encodeURIComponent(execution.taskId)}&executionId=${encodeURIComponent(execution.id)}`, "_blank");
   };

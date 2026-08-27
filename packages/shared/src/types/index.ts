@@ -8,6 +8,7 @@ export type { AccountInfo, Account115, AccountOpenlist } from "./account.js";
 export type {
   TaskDefinition,
   TaskExecutionHistory,
+  TaskExecutionSummary,
 } from "./task.js";
 export type {
   RouteMode,

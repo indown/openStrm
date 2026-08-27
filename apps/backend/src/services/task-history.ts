@@ -1,9 +1,5 @@
-import type { TaskExecutionHistory } from "@openstrm/shared";
+import type { TaskExecutionHistory, TaskExecutionSummary } from "@openstrm/shared";
 import * as repo from "../db/repositories/task-history.js";
-
-export function readTaskHistory(): TaskExecutionHistory[] {
-  return repo.getAll();
-}
 
 export function createTaskExecution(
   taskId: string,
@@ -43,12 +39,17 @@ export function completeTaskExecution(
   repo.complete(executionId, status, summary);
 }
 
-export function getTaskHistory(taskId: string): TaskExecutionHistory[] {
+/** 列表不带 logs；要看日志走 getTaskExecution */
+export function getTaskHistory(taskId: string): TaskExecutionSummary[] {
   return repo.getByTaskId(taskId);
 }
 
-export function getAllTaskHistory(): TaskExecutionHistory[] {
+export function getAllTaskHistory(): TaskExecutionSummary[] {
   return repo.getAll();
+}
+
+export function getTaskExecution(executionId: string): TaskExecutionHistory | undefined {
+  return repo.getById(executionId);
 }
 
 export function deleteTaskExecution(executionId: string): void {

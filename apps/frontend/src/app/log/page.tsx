@@ -45,47 +45,43 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
   const [isCancelling, setIsCancelling] = useState<boolean>(false);
   const [taskStatus, setTaskStatus] = useState<string>("运行中");
 
-  // 加载历史日志
+  // 加载历史日志：按 id 取这一条（带 logs），别把整个历史列表拉下来再找
   const loadHistoryLogs = useCallback(async () => {
+    if (!executionId) return;
     try {
-      // 获取所有历史记录，然后找到特定的执行记录
-      const allHistory = await api.history.list();
-      const execution = allHistory.find((h) => h.id === executionId);
-      
-      if (execution) {
-        setConnectionStatus("历史记录");
-        setTaskStatus(execution.status === "completed" ? "已完成" : 
-                     execution.status === "failed" ? "失败" : 
-                     execution.status === "cancelled" ? "已取消" : "运行中");
-        
-        // 解析历史日志
-        const parsedLogs: Progress[] = [];
-        execution.logs.forEach((logLine: string) => {
-          try {
-            const logData = JSON.parse(logLine);
-            parsedLogs.push(logData);
-          } catch {
-            console.error("Failed to parse log line:", logLine);
-          }
-        });
-        
-        setLogs(parsedLogs);
-        
-        // 计算总体进度 - 查找最后一个有overallPercent的日志
-        let finalOverallPercent = "0";
-        for (let i = parsedLogs.length - 1; i >= 0; i--) {
-          const pct = parsedLogs[i]?.overallPercent;
-          if (pct) {
-            finalOverallPercent = pct;
-            break;
-          }
+      const execution = await api.history.get(executionId);
+      setConnectionStatus("历史记录");
+      setTaskStatus(execution.status === "completed" ? "已完成" :
+                   execution.status === "failed" ? "失败" :
+                   execution.status === "cancelled" ? "已取消" : "运行中");
+
+      // 解析历史日志
+      const parsedLogs: Progress[] = [];
+      execution.logs.forEach((logLine: string) => {
+        try {
+          parsedLogs.push(JSON.parse(logLine));
+        } catch {
+          console.error("Failed to parse log line:", logLine);
         }
-        setOverall(finalOverallPercent);
-      } else {
+      });
+      setLogs(parsedLogs);
+
+      // 计算总体进度 - 查找最后一个有overallPercent的日志
+      let finalOverallPercent = "0";
+      for (let i = parsedLogs.length - 1; i >= 0; i--) {
+        const pct = parsedLogs[i]?.overallPercent;
+        if (pct) {
+          finalOverallPercent = pct;
+          break;
+        }
+      }
+      setOverall(finalOverallPercent);
+    } catch (error) {
+      if ((error as { response?: { status?: number } } | null)?.response?.status === 404) {
         setConnectionStatus("历史记录不存在");
         setTaskStatus("不存在");
+        return;
       }
-    } catch (error) {
       console.error("Failed to load history logs:", error);
       setConnectionStatus("加载历史记录失败");
     }

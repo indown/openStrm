@@ -13,6 +13,9 @@ export interface TaskDefinition {
   strmType?: string;
 }
 
+/** 列表接口给的是这个：不带 logs。每条记录最多几千行日志，列表里没人看，白传几十 MB */
+export type TaskExecutionSummary = Omit<TaskExecutionHistory, "logs">;
+
 export interface TaskExecutionHistory {
   id: string;
   taskId: string;

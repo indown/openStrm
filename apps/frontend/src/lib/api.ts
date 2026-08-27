@@ -12,6 +12,7 @@ import type {
   MediaLibraryEntry,
   TaskDefinition,
   TaskExecutionHistory,
+  TaskExecutionSummary,
 } from "@openstrm/shared";
 
 /* ------------------------------- 类型 ------------------------------- */
@@ -228,8 +229,11 @@ export const api = {
   },
 
   history: {
+    /** 列表不带 logs；要看某次执行的日志用 get */
     list: (taskId?: string) =>
-      data(axiosInstance.get<TaskExecutionHistory[]>(taskId ? `/api/taskHistory?taskId=${encodeURIComponent(taskId)}` : "/api/taskHistory")),
+      data(axiosInstance.get<TaskExecutionSummary[]>(taskId ? `/api/taskHistory?taskId=${encodeURIComponent(taskId)}` : "/api/taskHistory")),
+    get: (executionId: string) =>
+      data(axiosInstance.get<TaskExecutionHistory>(`/api/taskHistory/${encodeURIComponent(executionId)}`)),
     remove: (executionId: string) =>
       data(axiosInstance.delete<{ success: true }>(`/api/taskHistory?executionId=${encodeURIComponent(executionId)}`)),
     clear: () => data(axiosInstance.delete<{ success: true; message: string }>("/api/taskHistory?action=cleanup")),
