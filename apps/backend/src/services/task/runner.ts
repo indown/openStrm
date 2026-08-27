@@ -38,7 +38,7 @@ import {
   type RunningTask,
 } from "./registry.js";
 import { flattenTree, planSync } from "./plan.js";
-import { buildTree, collectFilesAndTopEmptyDirs, type TreeNode } from "./tree.js";
+import { buildTree, collectFilesAndTopEmptyDirs, TreeBuilder, type TreeNode } from "./tree.js";
 
 export interface StartTaskResult {
   /** HTTP 语义的状态码：200 已受理（可能是"无事可做"），其余为失败 */
@@ -122,27 +122,9 @@ async function getOpenlistTreeData(baseUrl: string, token: string, originPath: s
     })
     .filter(Boolean);
 
-  const data: TreeNode[] = [{ depth: 0, key: 0, name: "", parent_key: 0 }];
-  const nodeMap = new Map<string, number>();
-  let counter = 1;
-  for (const full of cleaned) {
-    const segs = full.split("/").filter(Boolean);
-    let parentKey = 0;
-    let cur = "";
-    for (let i = 0; i < segs.length; i++) {
-      cur = i === 0 ? segs[i] : `${cur}/${segs[i]}`;
-      const nk = `${i + 1}-${segs[i]}-${parentKey}`;
-      if (!nodeMap.has(nk)) {
-        const k = counter++;
-        data.push({ depth: i + 1, key: k, name: segs[i], parent_key: parentKey });
-        nodeMap.set(nk, k);
-        parentKey = k;
-      } else {
-        parentKey = nodeMap.get(nk)!;
-      }
-    }
-  }
-  return data;
+  const tree = new TreeBuilder();
+  for (const full of cleaned) tree.add(full.split("/").filter(Boolean));
+  return tree.nodes;
 }
 
 async function loadRemoteTree(
