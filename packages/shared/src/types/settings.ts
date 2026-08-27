@@ -53,6 +53,8 @@ export type AppSettings = {
      * 默认关闭：按钮一按就会真的跑任务，属于有副作用的动作，需要显式开启。
      */
     allowTaskStart?: boolean;
+    /** 轮询开关的落库副本：轮询状态只在内存里，进程重启后据此自动恢复 */
+    pollingEnabled?: boolean;
   };
   tmdb?: {
     apiKey?: string;

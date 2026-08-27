@@ -1,5 +1,13 @@
-// Telegram 轮询管理器
-import { createTelegramBot } from "./telegram.js";
+/**
+ * Telegram 轮询管理器。
+ *
+ * 一个顺序的长轮询循环：一次 getUpdates 最多挂 30 秒，回来把这批处理完再发下一次。
+ * 以前是 setInterval 每 5 秒发一次 30 秒的长轮询，同一时刻最多 6 个请求叠着，
+ * Telegram 对并发的 getUpdates 回 409 把前一个掐掉——自己跟自己打架；
+ * 再加上 limit=1，消息一多就一条条漏。
+ */
+import axios from "axios";
+import { createTelegramBot, type TelegramUpdate } from "./telegram.js";
 import { readAppSettings } from "../db/repositories/settings.js";
 import { listTasks } from "../db/repositories/tasks.js";
 import { startTask } from "./task/runner.js";
@@ -7,6 +15,8 @@ import type { TaskDefinition } from "@openstrm/shared";
 import { moduleLogger } from "../lib/logger.js";
 
 const log = moduleLogger("telegram-polling");
+
+type Bot = ReturnType<typeof createTelegramBot>;
 
 function readTasks(): TaskDefinition[] {
   return listTasks();
@@ -16,10 +26,6 @@ function isTelegramUserAllowed(userId: number): boolean {
   const settings = readAppSettings();
   return settings.telegram?.allowedUsers?.includes(userId) || false;
 }
-
-let pollingInterval: NodeJS.Timeout | null = null;
-let lastUpdateId = 0;
-let isPollingActive = false;
 
 /** 启动任务的执行器。默认直接调 runner；测试可以换成桩，传 null 恢复默认 */
 export type TaskStarter = (taskId: string) => Promise<{ ok: boolean; body: string }>;
@@ -35,197 +41,144 @@ export function setTaskStarter(fn: TaskStarter | null): void {
   taskStarter = fn ?? defaultTaskStarter;
 }
 
-export async function startPolling(): Promise<boolean> {
-  if (isPollingActive) {
-    log.info("Polling already running");
-    return false;
-  }
+/* ------------------------------- 轮询循环 ------------------------------- */
 
-  try {
-    const settings = readAppSettings();
-    const telegram = settings.telegram;
-    
-    if (!telegram || !telegram.botToken) {
-      log.error("Telegram not configured for polling");
-      return false;
-    }
+/** 出错后的等待。409 是"另有人在拉同一个 bot"，等久一点；其余按次数指数退避 */
+const backoff = { conflictMs: 10_000, errorBaseMs: 1_000, errorMaxMs: 30_000 };
 
-    const bot = createTelegramBot(telegram.botToken);
-    
-    // 确保删除 webhook 以避免冲突
+let active = false;
+let abort: AbortController | null = null;
+let loopDone: Promise<void> = Promise.resolve();
+let startPromise: Promise<boolean> | null = null;
+/**
+ * 只存在内存里：进程重启后从 0 开始，Telegram 会把上次没确认的更新再发一遍。
+ * 确认发生在下一次 getUpdates 带上 offset 的时候，所以只有"停在一批处理到一半"这种
+ * 窗口会重复收到已处理的那几条。
+ */
+let lastUpdateId = 0;
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+async function pollLoop(bot: Bot, signal: AbortSignal): Promise<void> {
+  let failures = 0;
+  while (!signal.aborted) {
+    let updates: TelegramUpdate[];
     try {
-      await bot.deleteWebhook();
-      log.info("Deleted existing webhook for polling mode");
-      
-      // 等待一段时间确保 webhook 完全删除
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // 验证 webhook 是否已删除
-      const webhookInfo = await bot.getWebhookInfo();
-      if ((webhookInfo.result as { url?: string })?.url) {
-        log.info("Warning: Webhook still exists, trying to delete again...");
-        await bot.deleteWebhook();
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      // 还没处理过任何 update 时不带 offset：Telegram 会从最早没确认的那条给起
+      const offset = lastUpdateId > 0 ? lastUpdateId + 1 : 0;
+      updates = await bot.getUpdates(offset, 100, 30, signal);
+      failures = 0;
+    } catch (err) {
+      if (signal.aborted) return;
+      failures++;
+      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+      if (status === 409) {
+        // 另一个进程在用同一个 token 轮询，或者 webhook 还没摘掉——不是"没有新消息"
+        log.warn(`getUpdates 409：另有轮询者或 webhook 仍在，${backoff.conflictMs / 1000}s 后重试`);
+        await sleep(backoff.conflictMs, signal);
+      } else {
+        const wait = Math.min(backoff.errorMaxMs, backoff.errorBaseMs * 2 ** (failures - 1));
+        log.warn({ err }, `getUpdates 失败（连续 ${failures} 次），${wait / 1000}s 后重试`);
+        await sleep(wait, signal);
       }
-    } catch (error) {
-      log.info({ err: error }, "No webhook to delete or error deleting webhook");
+      continue;
     }
-    
-    log.info("Starting Telegram polling...");
-    isPollingActive = true;
-    
-    // 延迟启动轮询，确保 webhook 完全清理
-    setTimeout(() => {
-      if (!isPollingActive) return; // 如果已经被停止，不启动
-      
-      pollingInterval = setInterval(async () => {
-      try {
-        // 使用更保守的参数：只获取1条消息，30秒超时
-        const updates = await bot.getUpdates(lastUpdateId + 1, 1, 30);
-        
-        // 如果没有新消息，直接返回，不处理
-        if (!updates || updates.length === 0) {
-          return;
-        }
-        
-        for (const update of updates) {
-          lastUpdateId = update.update_id;
-          
-          // 处理消息
-          if (update.message) {
-            await handleMessage(bot, update.message);
-          }
-          
-          // 处理回调查询
-          if (update.callback_query) {
-            await handleCallbackQuery(bot, update.callback_query);
-          }
-        }
-      } catch (error: unknown) {
-        const axiosError = error as { response?: { status?: number }; message?: string };
-        
-        // 如果是 409 错误，说明没有新消息，这是正常情况，不报错
-        if (axiosError.response?.status === 409) {
-          // 409 错误通常表示没有新消息，这是正常的，不需要处理
-          return;
-        } else {
-          // 其他错误（如网络错误、超时等）只记录，不停止轮询
-          log.warn({ err: axiosError.message || error }, "Polling error (non-409)");
-        }
-      }
-      }, 5000); // 每5秒轮询一次
-    }, 3000); // 延迟 3 秒启动
 
-    return true;
-  } catch (error) {
-    log.error({ err: error }, "Failed to start polling");
-    isPollingActive = false;
-    return false;
+    for (const update of updates) {
+      // 停了就不再处理：没处理的那些下次从 lastUpdateId + 1 再拉，不会丢
+      if (signal.aborted) return;
+      lastUpdateId = update.update_id;
+      try {
+        if (update.message) await handleMessage(bot, update.message);
+        if (update.callback_query) await handleCallbackQuery(bot, update.callback_query);
+      } catch (err) {
+        // 单条消息处理失败不能把整个循环带死
+        log.error({ err, updateId: update.update_id }, "处理 Telegram update 失败");
+      }
+    }
   }
 }
 
-export function stopPolling(): boolean {
-  if (!isPollingActive) return false;
+/** 起轮询。已在跑返回 false；没配 bot token 也返回 false（并记一条 error） */
+export function startPolling(): Promise<boolean> {
+  if (active) return Promise.resolve(false);
+  // 并发的两次 start 共用同一个启动过程，不会起出两个循环
+  startPromise ??= doStart().finally(() => {
+    startPromise = null;
+  });
+  return startPromise;
+}
 
-  if (pollingInterval) {
-    clearInterval(pollingInterval);
-    pollingInterval = null;
+async function doStart(): Promise<boolean> {
+  const telegram = readAppSettings().telegram;
+  if (!telegram?.botToken) {
+    log.error("Telegram not configured for polling");
+    return false;
   }
+  // 上一轮循环可能还在收尾（stop 之后 handler 还没跑完）：等它退出再起新的
+  await loopDone;
 
-  isPollingActive = false;
+  const bot = createTelegramBot(telegram.botToken);
+  // getUpdates 和 webhook 互斥，先把 webhook 摘掉。摘不掉也照常起：真冲突会以 409 的形式在循环里暴露出来
+  await bot.deleteWebhook();
+
+  active = true;
+  const controller = new AbortController();
+  abort = controller;
+  loopDone = pollLoop(bot, controller.signal)
+    .catch((err) => log.error({ err }, "Telegram 轮询循环异常退出"))
+    .finally(() => {
+      // 循环自己退出（而不是被 stop 掉）时也要把状态收回来，界面上才能再点启动
+      if (abort === controller) {
+        active = false;
+        abort = null;
+      }
+    });
+  log.info("Telegram polling started");
+  return true;
+}
+
+/** 停轮询：中止挂着的长连接，循环随即退出。本来就没在跑返回 false */
+export function stopPolling(): boolean {
+  if (!active) return false;
+  active = false;
+  abort?.abort();
+  abort = null;
   log.info("Telegram polling stopped");
   return true;
 }
 
+/** 停掉再起：界面上的"强制清理"用；bot token 改了之后也走这个 */
+export async function restartPolling(): Promise<boolean> {
+  stopPolling();
+  return startPolling();
+}
+
 export function getPollingStatus(): { active: boolean; message: string } {
   return {
-    active: isPollingActive,
-    message: isPollingActive ? "Polling is active" : "Polling is not active"
+    active,
+    message: active ? "Polling is active" : "Polling is not active",
   };
 }
 
-// 强制清理 webhook 和轮询状态
-export async function forceCleanup(): Promise<boolean> {
-  try {
-    const settings = readAppSettings();
-    const telegram = settings.telegram;
-    
-    if (!telegram || !telegram.botToken) {
-      log.error("Telegram not configured for cleanup");
-      return false;
-    }
-
-    const bot = createTelegramBot(telegram.botToken);
-    
-    // 停止轮询
-    stopPolling();
-    
-    // 强制删除 webhook
-    try {
-      await bot.deleteWebhook();
-      log.info("Force deleted webhook");
-    } catch (error) {
-      log.info({ err: error }, "Error force deleting webhook");
-    }
-    
-    // 等待 5 秒后重新启动轮询，给 Telegram 服务器更多时间
-    setTimeout(async () => {
-      log.info("Restarting polling after cleanup...");
-      await startPolling();
-    }, 5000);
-    
-    return true;
-  } catch (error) {
-    log.error({ err: error }, "Failed to force cleanup");
-    return false;
-  }
+/** 仅供测试：把退避调短、等循环真正退出 */
+export function __test_setBackoff(next: Partial<typeof backoff>): void {
+  Object.assign(backoff, next);
 }
+export const __test_pollingDone = (): Promise<void> => loopDone;
 
-// 安全启动轮询（处理冲突）
-export async function safeStartPolling(): Promise<boolean> {
-  try {
-    const settings = readAppSettings();
-    const telegram = settings.telegram;
-    
-    if (!telegram || !telegram.botToken) {
-      log.error("Telegram not configured for polling");
-      return false;
-    }
-
-    const bot = createTelegramBot(telegram.botToken);
-    
-    // 停止现有轮询
-    stopPolling();
-    
-    // 多次尝试删除 webhook
-    for (let i = 0; i < 3; i++) {
-      try {
-        await bot.deleteWebhook();
-        log.info(`Deleted webhook (attempt ${i + 1})`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        // 验证 webhook 是否已删除
-        const webhookInfo = await bot.getWebhookInfo();
-        if (!(webhookInfo.result as { url?: string })?.url) {
-          log.info("Webhook successfully deleted");
-          break;
-        }
-      } catch (error) {
-        log.info({ err: error }, `Error deleting webhook (attempt ${i + 1})`);
-      }
-    }
-    
-    // 等待更长时间确保状态同步
-    log.info("Waiting for Telegram server to sync...");
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // 启动轮询
-    return await startPolling();
-  } catch (error) {
-    log.error({ err: error }, "Failed to safely start polling");
-    return false;
-  }
-}
+/* ------------------------------- 消息处理 ------------------------------- */
 
 // 处理消息
 async function handleMessage(bot: ReturnType<typeof createTelegramBot>, message: unknown) {
