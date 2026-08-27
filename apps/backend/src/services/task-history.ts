@@ -31,8 +31,8 @@ export function updateTaskExecution(executionId: string, updates: Partial<TaskEx
   repo.update(executionId, updates);
 }
 
-export function addLogToTaskExecution(executionId: string, log: string): void {
-  repo.appendLog(executionId, log);
+export function addLogsToTaskExecution(executionId: string, lines: string[]): void {
+  repo.appendLogs(executionId, lines);
 }
 
 export function completeTaskExecution(
