@@ -6,6 +6,7 @@ import * as z from "zod";
 import { useForm } from "react-hook-form";
 
 import { api } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/axios";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -71,17 +72,26 @@ export function AddAccountDialog({ account, trigger, onSuccess }: AddAccountDial
   const [open, setOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
 
-  const form = useForm<AccountFormValues>({
-    resolver: zodResolver(accountFormSchema),
-    defaultValues: account ?? {
+  const currentDefaults = (): AccountFormValues =>
+    account ?? {
       accountType: "",
       name: "",
       cookie: "",
       account: "",
       password: "",
       url: "",
-    },
+    };
+
+  const form = useForm<AccountFormValues>({
+    resolver: zodResolver(accountFormSchema),
+    defaultValues: currentDefaults(),
   });
+
+  // 每次打开都按当前的 account 重置：defaultValues 只在挂载时取一次，保存后重开会显示旧值
+  const handleOpenChange = (next: boolean) => {
+    if (next) form.reset(currentDefaults());
+    setOpen(next);
+  };
 
   const watchAccountType = form.watch("accountType");
 
@@ -102,10 +112,8 @@ export function AddAccountDialog({ account, trigger, onSuccess }: AddAccountDial
       onSuccess?.();
 
       setOpen(false);
-      form.reset();
     } catch (err) {
-      console.error("提交失败:", err);
-      toast.error("操作失败");
+      toast.error(apiErrorMessage(err, "操作失败"));
     } finally {
       setLoading(false);
     }
@@ -115,7 +123,7 @@ export function AddAccountDialog({ account, trigger, onSuccess }: AddAccountDial
   const accountTypes = ["115", "openlist"];
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         {trigger ?? (
           <Button variant="outline">{account ? "Edit Account" : "Add Account"}</Button>

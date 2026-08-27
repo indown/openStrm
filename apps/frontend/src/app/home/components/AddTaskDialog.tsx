@@ -4,8 +4,10 @@ import * as React from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { useForm } from "react-hook-form";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/axios";
 import { HelpCircle } from "lucide-react";
 import {
   Dialog,
@@ -110,22 +112,32 @@ export function AddTaskDialog({
     return prefix;
   };
 
+  /** 当前应当显示的表单值：编辑时来自 task（去掉 302 拼上的账号后缀），新增时是空表单 */
+  const currentDefaults = (): TaskFormValues =>
+    task
+      ? { ...task, strmPrefix: getInitialStrmPrefix() }
+      : {
+          account: "",
+          originPath: "",
+          targetPath: "",
+          strmType: "local",
+          strmPrefix: "",
+          removeExtraFiles: true,
+          enable302: false,
+          enablePathEncoding: false,
+        };
+
   const form = useForm<TaskFormValues>({
     resolver: zodResolver(taskFormSchema),
-    defaultValues: task ? {
-      ...task,
-      strmPrefix: getInitialStrmPrefix(),
-    } : {
-      account: "",
-      originPath: "",
-      targetPath: "",
-      strmType: "local",
-      strmPrefix: "",
-      removeExtraFiles: true,
-      enable302: false,
-      enablePathEncoding: false,
-    },
+    defaultValues: currentDefaults(),
   });
+
+  // 每次打开都按当前的 task 重置：useForm 的 defaultValues 只在挂载时取一次，
+  // 保存成功后再点"编辑"会显示改之前的值，再存一次就把新值盖回去了
+  const handleOpenChange = (next: boolean) => {
+    if (next) form.reset(currentDefaults());
+    setOpen(next);
+  };
 
   // 监听表单值变化
   React.useEffect(() => {
@@ -183,14 +195,16 @@ export function AddTaskDialog({
 
       onSuccess?.();
       setOpen(false);
-      form.reset();
+    } catch (err) {
+      // handleSubmit 会把这里抛出的错误再抛出去：不接住的话保存失败没有任何提示
+      toast.error(apiErrorMessage(err, "保存失败"));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         {trigger ?? (
           <Button variant="outline">{task ? "编辑" : "新增任务"}</Button>
