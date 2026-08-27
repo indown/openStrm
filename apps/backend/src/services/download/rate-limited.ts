@@ -119,7 +119,7 @@ export async function getRealDownloadLink(
 async function getRealDownloadLinkDirect115(
   filePath: string,
   accountInfo: { name: string; cookie: string; accountType?: string },
-  userAgent: string
+  userAgent: string | undefined,
 ): Promise<string> {
   const pickcode = await getIdToPath({ path: filePath, userAgent, accountInfo });
   if (!pickcode) throw new Error(`No pickcode found for file: ${filePath}`);

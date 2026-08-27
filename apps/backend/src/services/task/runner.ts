@@ -296,7 +296,7 @@ export async function startTask(taskId: string): Promise<StartTaskResult> {
     )
     .subscribe({
       next: (p) => {
-        perFile.set(p.filePath!, Math.min(100, Math.max(0, p.percent)));
+        perFile.set(p.filePath!, Math.min(100, Math.max(0, p.percent ?? 0)));
         const sum = [...perFile.values()].reduce((a, b) => a + b, 0);
         pushLog({ filePath: p.filePath, percent: p.percent, overallPercent: (sum / total).toFixed(2) });
       },

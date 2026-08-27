@@ -21,7 +21,7 @@ const G_kts = new Uint8Array([
 const RSA_e = BigInt('0x8686980c0f5a24c4b9d43020cd2c22703ff3f450756529058b1cf88f09b8602136477198a6e2683149659bd122c33592fdb5ad47944ad1ea4d36c6b172aad6338c3bb6ac6227502d010993ac967d1aef00f0c8e038de2e4d3bc2ec368af2e9f10a6f1eda4f7262f136420c07c331b871bf139f74f3010e3c4fe57df3afb71683');
 const RSA_n = BigInt('0x10001');
 
-function padPkcs1V1_5(message) {
+function padPkcs1V1_5(message: Uint8Array) {
     const msg_len = message.length
     const buffer = new Uint8Array(128);
     buffer.fill(0x02, 1, 127 - msg_len);
@@ -71,7 +71,7 @@ export function decrypt(cipherData: string): string {
   const tmp = xor(dataArray.subarray(16), keyL).reverse();
   return (new TextDecoder("utf-8")).decode(xor(tmp, new Uint8Array([0x8d, 0xa5, 0xa5, 0x8d])));
 }
-function genKey(randKey, skLen) {
+function genKey(randKey: Uint8Array, skLen: number) {
   const xorKey = new Uint8Array(skLen);
   let length = skLen * (skLen - 1);
   let index = 0;
@@ -89,7 +89,7 @@ function fromBytes(bytes: Uint8Array): bigint {
       intVal = (intVal << BigInt(8)) | BigInt(b);
   return intVal;
 }
-function xor(src, key) {
+function xor(src: Uint8Array, key: Uint8Array) {
   const buffer = new Uint8Array(src.length);
   const i = src.length & 0b11;
   if (i)
@@ -98,13 +98,13 @@ function xor(src, key) {
       buffer.set(bytesXor(src.subarray(j, k), key), j);
   return buffer;
 }
-function bytesXor(v1, v2) {
+function bytesXor(v1: Uint8Array, v2: Uint8Array) {
   const result = new Uint8Array(v1.length);
   for (let i = 0; i < v1.length; i++)
       result[i] = v1[i] ^ v2[i];
   return result;
 }
-function* accStep(start, stop, step = 1) {
+function* accStep(start: number, stop: number, step = 1): Generator<[number, number, number]> {
   for (let i = start + step; i < stop; i += step) {
       yield [start, i, step];
       start = i;
