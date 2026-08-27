@@ -4,37 +4,17 @@
  * 115 那一段用 setLinkResolver 换掉，所以不需要真账号也能验证
  * 302 / 回源 / 缓存这几条分支——它们才是最容易写错的地方。
  *
- *   CONFIG_DIR=... DATA_DIR=... npx tsx src/routes/proxy/proxy.itest.ts
+ *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/routes/proxy/proxy.itest.ts
  */
 import assert from "node:assert/strict";
+import { after, test } from "node:test";
 import http from "node:http";
 import Fastify from "fastify";
-import { initDb } from "../../db/migrate.js";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import proxyPlugin from "./index.js";
 import { clearLinkCache, setLinkResolver } from "./redirect.js";
 import { swapPorts, swapUrlPort } from "./system-info.js";
 import { resetConfigRevisionMemo } from "../../services/config-revision.js";
-
-/**
- * 这些用例会写 settings 表。没指定 CONFIG_DIR 就会写到开发者真实的库上，
- * 把 Emby 地址改成一个测试用的死端口——直接拒绝跑。
- */
-if (!process.env.CONFIG_DIR) {
-  console.error("拒绝在默认 CONFIG_DIR 上运行：请显式指定 CONFIG_DIR / DATA_DIR 到临时目录");
-  process.exit(2);
-}
-
-
-// 指向临时 CONFIG_DIR 时库还是空的，自己把迁移跑起来
-await initDb();
-
-let pass = 0;
-const t = async (name: string, fn: () => Promise<void> | void) => {
-  await fn();
-  pass++;
-  console.log("  ok  " + name);
-};
 
 const MOUNT = "/mnt/pan";
 const PAN_FILE = `${MOUNT}/tv/Show/ep1.mkv`;
@@ -120,43 +100,41 @@ function reset() {
   clearLinkCache();
 }
 
-try {
-  console.log("302 重定向");
+// ---- 302 重定向 ----
 
-  await t("挂载点里的条目 302 到直链", async () => {
+test("挂载点里的条目 302 到直链", async () => {
     reset();
     const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k" });
     assert.equal(res.statusCode, 302);
     assert.equal(res.headers.location, DIRECT_URL, "已转义的直链必须原样透传，不能二次编码");
   });
 
-  await t("小写路径同样命中（客户端大小写不统一）", async () => {
+test("小写路径同样命中（客户端大小写不统一）", async () => {
     reset();
     const res = await app.inject({ method: "GET", url: "/emby/videos/item-1/stream?api_key=k" });
     assert.equal(res.statusCode, 302);
   });
 
-  await t("不带 /emby 前缀也命中", async () => {
+test("不带 /emby 前缀也命中", async () => {
     reset();
     const res = await app.inject({ method: "GET", url: "/Videos/item-1/original.mkv?api_key=k" });
     assert.equal(res.statusCode, 302);
   });
 
-  await t("Audio universal 命中", async () => {
+test("Audio universal 命中", async () => {
     reset();
     const res = await app.inject({ method: "GET", url: "/emby/Audio/item-1/universal?api_key=k" });
     assert.equal(res.statusCode, 302);
   });
 
-  await t("Items Download 命中", async () => {
+test("Items Download 命中", async () => {
     reset();
     const res = await app.inject({ method: "GET", url: "/emby/Items/item-1/Download?api_key=k" });
     assert.equal(res.statusCode, 302);
   });
+// ---- 凭据闸门 ----
 
-  console.log("凭据闸门");
-
-  await t("不带任何凭据不 302，透传给 Emby 自己裁决", async () => {
+test("不带任何凭据不 302，透传给 Emby 自己裁决", async () => {
     reset();
     const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv" });
     assert.equal(res.statusCode, 200, "匿名请求不能换到直链");
@@ -164,7 +142,7 @@ try {
     assert.equal(resolveCalls, 0, "连解析都不该发生——别拿管理员身份替匿名者查");
   });
 
-  await t("令牌放在请求头里同样算已认证", async () => {
+test("令牌放在请求头里同样算已认证", async () => {
     for (const headers of [
       { "x-emby-token": "k" },
       { "x-mediabrowser-token": "k" },
@@ -177,7 +155,7 @@ try {
     }
   });
 
-  await t("匿名请求拿不到别人已解析好的缓存直链", async () => {
+test("匿名请求拿不到别人已解析好的缓存直链", async () => {
     reset();
     const warm = await app.inject({
       method: "GET",
@@ -196,7 +174,7 @@ try {
     assert.equal(anon.statusCode, 200, "闸门必须排在缓存查询之前");
   });
 
-  await t("显式打开 allowAnonymousRedirect 后匿名也 302", async () => {
+test("显式打开 allowAnonymousRedirect 后匿名也 302", async () => {
     reset();
     const current = readAppSettings();
     replaceAppSettings({
@@ -212,38 +190,37 @@ try {
       resetConfigRevisionMemo();
     }
   });
+// ---- 回源兜底 ----
 
-  console.log("回源兜底");
-
-  await t("HEAD 探测直接回源，不去换直链", async () => {
+test("HEAD 探测直接回源，不去换直链", async () => {
     reset();
     const res = await app.inject({ method: "HEAD", url: "/emby/Videos/item-1/stream.mkv?api_key=k" });
     assert.equal(res.statusCode, 200);
     assert.equal(resolveCalls, 0, "HEAD 不该触发直链解析");
   });
 
-  await t("本地文件不被 302，老老实实回源", async () => {
+test("本地文件不被 302，老老实实回源", async () => {
     reset();
     const res = await app.inject({ method: "GET", url: "/emby/Videos/item-local/stream.mkv?api_key=k" });
     assert.equal(res.statusCode, 200);
     assert.equal(res.body, "upstream-ok");
   });
 
-  await t("master/live 之类不在白名单的动作回源", async () => {
+test("master/live 之类不在白名单的动作回源", async () => {
     reset();
     const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/master.m3u8?api_key=k" });
     assert.equal(res.statusCode, 200);
     assert.equal(resolveCalls, 0);
   });
 
-  await t("字幕请求穿过通配路由回源", async () => {
+test("字幕请求穿过通配路由回源", async () => {
     reset();
     const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/Subtitles/0/Stream.srt?api_key=k" });
     assert.equal(res.statusCode, 200);
     assert.equal(res.body, "upstream-ok");
   });
 
-  await t("解析抛异常也回源，不让播放直接失败", async () => {
+test("解析抛异常也回源，不让播放直接失败", async () => {
     reset();
     setLinkResolver(async () => {
       throw new Error("115 挂了");
@@ -259,10 +236,9 @@ try {
         : { ok: false, reason: "not-mounted" };
     });
   });
+// ---- 缓存 ----
 
-  console.log("缓存");
-
-  await t("同一条目重复请求只解析一次", async () => {
+test("同一条目重复请求只解析一次", async () => {
     reset();
     const a = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-1" } });
     const b = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-1" } });
@@ -271,16 +247,15 @@ try {
     assert.equal(resolveCalls, 1, "第二次该走缓存");
   });
 
-  await t("UA 不同要重新解析——115 直链和 UA 绑定", async () => {
+test("UA 不同要重新解析——115 直链和 UA 绑定", async () => {
     reset();
     await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-1" } });
     await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-2" } });
     assert.equal(resolveCalls, 2);
   });
+// ---- PlaybackInfo 改写 ----
 
-  console.log("PlaybackInfo 改写");
-
-  await t("挂载点里的媒体源被标成可直连，本地源不动", async () => {
+test("挂载点里的媒体源被标成可直连，本地源不动", async () => {
     reset();
     const res = await app.inject({ method: "POST", url: "/emby/Items/item-1/PlaybackInfo", payload: {} });
     assert.equal(res.statusCode, 200);
@@ -296,10 +271,9 @@ try {
 
     assert.equal(local.SupportsDirectPlay, false, "本地源不该被改");
   });
+// ---- System/Info 端口改写 ----
 
-  console.log("System/Info 端口改写");
-
-  await t("端口被换掉，客户端才不会绕过代理直连 Emby", async () => {
+test("端口被换掉，客户端才不会绕过代理直连 Emby", async () => {
     reset();
     const res = await app.inject({ method: "GET", url: "/emby/System/Info" });
     assert.equal(res.statusCode, 200);
@@ -308,7 +282,7 @@ try {
     assert.ok(!String(body.LocalAddress).includes("8096"), "地址里的端口也要换");
   });
 
-  await t("swapPorts 对各种字段形态都生效", () => {
+test("swapPorts 对各种字段形态都生效", () => {
     const out = swapPorts(
       {
         WebSocketPortNumber: 8096,
@@ -329,14 +303,13 @@ try {
     assert.deepEqual(out.RemoteAddresses, ["http://d:8091"]);
   });
 
-  await t("端口相同时什么都不改", () => {
+test("端口相同时什么都不改", () => {
     const out = swapPorts({ WebSocketPortNumber: 8091, LocalAddress: "http://a:8091" }, 8091, 8091);
     assert.equal(out.LocalAddress, "http://a:8091");
   });
+// ---- 转发头 ----
 
-  console.log("转发头");
-
-  await t("回源时带上真实客户端 IP", async () => {
+test("回源时带上真实客户端 IP", async () => {
     reset();
     const seen: Record<string, string | string[] | undefined> = {};
     const sniffer = http.createServer((req, res) => {
@@ -364,10 +337,9 @@ try {
     replaceAppSettings(current);
     sniffer.close();
   });
+// ---- 回源与改写的边界情况 ----
 
-  console.log("回源与改写的边界情况");
-
-  await t("非 ASCII 直链才转义，且只转非 ASCII 部分", async () => {
+test("非 ASCII 直链才转义，且只转非 ASCII 部分", async () => {
     reset();
     setLinkResolver(async () => ({ ok: true, url: UNICODE_URL, accountName: "主号", panPath: "/x" }));
     const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k" });
@@ -381,7 +353,7 @@ try {
     });
   });
 
-  await t("PlaybackInfo 接受空 body 和表单 content-type", async () => {
+test("PlaybackInfo 接受空 body 和表单 content-type", async () => {
     // 默认 JSON 解析器会先判 400/415，handler 根本轮不到
     for (const ct of ["application/json", "application/x-www-form-urlencoded", "text/plain"]) {
       const res = await app.inject({
@@ -394,7 +366,7 @@ try {
     }
   });
 
-  await t("PlaybackInfo 关掉转码并去掉 TranscodingUrl", async () => {
+test("PlaybackInfo 关掉转码并去掉 TranscodingUrl", async () => {
     reset();
     const res = await app.inject({ method: "POST", url: "/emby/Items/item-1/PlaybackInfo", payload: {} });
     const pan = JSON.parse(res.body).MediaSources.find((s: { Id: string }) => s.Id === "ms-pan");
@@ -402,7 +374,7 @@ try {
     assert.equal(pan.TranscodingUrl, undefined);
   });
 
-  await t("DirectStreamUrl 用条目 id 且带 Static=true", async () => {
+test("DirectStreamUrl 用条目 id 且带 Static=true", async () => {
     reset();
     const res = await app.inject({ method: "POST", url: "/emby/Items/item-1/PlaybackInfo", payload: {} });
     const pan = JSON.parse(res.body).MediaSources.find((s: { Id: string }) => s.Id === "ms-pan");
@@ -412,7 +384,7 @@ try {
     assert.ok(!/TranscodeReasons/.test(pan.DirectStreamUrl), "不该残留 TranscodeReasons");
   });
 
-  await t("头里认证的客户端：PlaybackInfo 给出的地址能过闸门", async () => {
+test("头里认证的客户端：PlaybackInfo 给出的地址能过闸门", async () => {
     reset();
     // Infuse / SenPlayer 这类客户端把令牌放在头里。上游若没给出带 api_key 的
     // DirectStreamUrl，重写时必须从头里补上，否则客户端拿着一个匿名地址回来，
@@ -430,7 +402,7 @@ try {
     assert.equal(play.statusCode, 302, "照着 PlaybackInfo 给的地址请求，应当直接 302");
   });
 
-  await t("DirectStreamUrl 不带 /emby 前缀——base 带路径的客户端才不会拼出两层", async () => {
+test("DirectStreamUrl 不带 /emby 前缀——base 带路径的客户端才不会拼出两层", async () => {
     reset();
     const info = await app.inject({
       method: "POST",
@@ -454,7 +426,7 @@ try {
     assert.equal(underEmby.statusCode, 302, "base 带 /emby 的部署同样要命中，否则全程中转");
   });
 
-  await t("逐跳头不再把请求打成 500", async () => {
+test("逐跳头不再把请求打成 500", async () => {
     for (const headers of [{ "keep-alive": "timeout=5" }, { expect: "100-continue" }]) {
       const a = await app.inject({ method: "GET", url: "/emby/System/Info", headers });
       const b = await app.inject({ method: "GET", url: "/Users/u1/Views", headers });
@@ -463,13 +435,13 @@ try {
     }
   });
 
-  await t("拦截路径保留上游响应头", async () => {
+test("拦截路径保留上游响应头", async () => {
     const res = await app.inject({ method: "GET", url: "/emby/System/Info" });
     // 只回 content-type 的话，跨源的浏览器客户端会被 CORS 拦掉
     assert.ok(res.headers["x-lab-marker"], "上游自定义响应头应当带回来");
   });
 
-  await t("swapUrlPort 不碰主机名里的数字", () => {
+test("swapUrlPort 不碰主机名里的数字", () => {
     // 子串替换会把 emby8096.duckdns.org 改坏，同时端口没换
     assert.equal(swapUrlPort("http://emby8096.duckdns.org:8096", 8096, 8091),
                  "http://emby8096.duckdns.org:8091");
@@ -478,14 +450,14 @@ try {
     assert.equal(swapUrlPort("not-a-url", 8096, 8091), "not-a-url");
   });
 
-  await t("Sync/JobItems 下载走 302（main 默认也 302）", async () => {
+test("Sync/JobItems 下载走 302（main 默认也 302）", async () => {
     reset();
     const res = await app.inject({ method: "GET", url: "/emby/Sync/JobItems/job-1/File?api_key=k" });
     assert.equal(res.statusCode, 302, "离线下载不 302 的话整个文件都从 Node 过");
     assert.equal(res.headers.location, DIRECT_URL);
   });
 
-  await t("改配置后旧缓存自动失效（跨进程）", async () => {
+test("改配置后旧缓存自动失效（跨进程）", async () => {
     reset();
     const a = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-1" } });
     assert.equal(a.statusCode, 302);
@@ -502,9 +474,8 @@ try {
     resetConfigRevisionMemo();
   });
 
-  console.log(`\n${pass} passed`);
-} finally {
+after(async () => {
   replaceAppSettings(baseline);
   await app.close();
   emby.close();
-}
+});

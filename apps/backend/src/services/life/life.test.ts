@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { test as t } from "node:test";
 import fs from "node:fs";
 import path from "node:path";
 import { parseJsonBigIntSafe, reachedCursor, type LifeEvent } from "../cloud-115/life.js";
@@ -6,12 +7,7 @@ import { matchTask, toStrmPath, type LifeContext } from "./handlers.js";
 import { joinPanPath } from "../cloud-115/path-resolver.js";
 import type { TaskDefinition } from "@openstrm/shared";
 import { listTasks } from "../../db/repositories/tasks.js";
-
-let pass = 0;
-const t = (name: string, fn: () => void) => { fn(); pass++; console.log("  ok  " + name); };
-const raw = (fn: () => void) => fn();
-
-console.log("parseJsonBigIntSafe");
+// ---- parseJsonBigIntSafe ----
 t("19 位 id 不丢精度", () => {
   const raw = '{"data":{"count":3,"list":[{"id":2618855323975851714,"file_id":3040163688862324736,"parent_id":0,"type":2}]}}';
   const o = parseJsonBigIntSafe<any>(raw);
@@ -66,8 +62,7 @@ t("浮点与短整数原样保留为数字", () => {
   const o = parseJsonBigIntSafe<any>('{"a":1.5,"b":123,"c":1e3,"d":0}');
   assert.equal(o.a, 1.5); assert.equal(o.b, 123); assert.equal(o.c, 1000); assert.equal(o.d, 0);
 });
-
-console.log("reachedCursor（列表倒序，命中即停）");
+// ---- reachedCursor（列表倒序，命中即停） ----
 const ev = (id: string, ut: number) => ({ id, update_time: ut } as LifeEvent);
 t("id 相等 → 停", () => assert.equal(reachedCursor(ev("100", 5), { fromId: "100", fromTime: 0 }), true));
 t("id 更小 → 停", () => assert.equal(reachedCursor(ev("99", 5), { fromId: "100", fromTime: 0 }), true));
@@ -79,17 +74,14 @@ t("19 位 id 按长度先比，不走字典序", () => {
 });
 t("update_time 早于游标 → 停", () => assert.equal(reachedCursor(ev("0", 100), { fromId: "0", fromTime: 200 }), true));
 t("update_time 等于游标 → 继续（含）", () => assert.equal(reachedCursor(ev("0", 200), { fromId: "0", fromTime: 200 }), false));
-
-console.log("joinPanPath");
+// ---- joinPanPath ----
 t("根目录下拼接不出现双斜杠", () => assert.equal(joinPanPath("/", "tv"), "/tv"));
 t("普通拼接", () => assert.equal(joinPanPath("/tv", "ShowA"), "/tv/ShowA"));
 t("文件名里的 / 被转义", () => assert.equal(joinPanPath("/tv", "a/b"), "/tv/a\\/b"));
-
-console.log("toStrmPath");
+// ---- toStrmPath ----
 t(".mkv → .strm", () => assert.equal(toStrmPath("/d/a.mkv"), "/d/a.strm"));
 t("目录名含点也不误伤", () => assert.equal(toStrmPath("/d.v2/a.mkv"), "/d.v2/a.strm"));
-
-console.log("matchTask + strm 内容与全量任务一致");
+// ---- matchTask + strm 内容与全量任务一致 ----
 const tasks: TaskDefinition[] = [
   { id: "t-tv", account: "acct", accountType: "115", originPath: "tv", targetPath: "tv", strmPrefix: "/prefix" },
   { id: "t-movie", account: "acct", accountType: "115", originPath: "movie", targetPath: "movie", strmPrefix: "/prefix" },
@@ -121,10 +113,11 @@ function findFirstStrm(dir: string): string | null {
   return null;
 }
 
-raw(() => {
+t("生成的 strm 内容与磁盘上已有的逐字节一致", (ctx) => {
   // 拿库里真实配置的 115 任务，随便找一个它已经生成的 strm，
   // 用本模块的公式反推内容，两边必须完全相同——这是防止 strm 格式跑偏的回归线。
-  const real = listTasks().filter((t) => (t.accountType ?? "115") === "115" && t.strmPrefix);
+  // 测试库里通常没有任务，那就跳过。
+  const real = listTasks().filter((task) => (task.accountType ?? "115") === "115" && task.strmPrefix);
   for (const task of real) {
     const root = path.resolve(import.meta.dirname, "../../../../../data", task.targetPath);
     const sample = fs.existsSync(root) ? findFirstStrm(root) : null;
@@ -134,12 +127,8 @@ raw(() => {
     const relFile = path.relative(root, sample).replace(/\.strm$/, path.extname(onDisk));
     const m = matchTask({ tasks: [task] } as unknown as LifeContext, `/${task.originPath}/${relFile}`)!;
     const generated = `${task.strmPrefix}/${task.originPath}/${m.relPath}`;
-    assert.equal(generated, onDisk);
-    console.log(`  ok  生成的 strm 内容与磁盘上已有的逐字节一致（任务 ${task.id}）`);
-    pass++;
+    assert.equal(generated, onDisk, `任务 ${task.id}`);
     return;
   }
-  console.log("  --  跳过：本地没有可对照的 strm 样本");
+  ctx.skip("本地没有可对照的 strm 样本");
 });
-
-console.log(`\n${pass} passed`);
