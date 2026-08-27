@@ -139,7 +139,7 @@ async function toDirectUrl(
 ): Promise<ResolveResult> {
   // getIdToPath 找不到文件时是抛异常而不是返回空，这里翻译成 not-found，
   // 真正的网络/接口错误继续往上抛，不要被伪装成"文件不存在"
-  let pickcode: unknown;
+  let pickcode: Awaited<ReturnType<typeof getIdToPath>>;
   try {
     pickcode = await getIdToPath({ path: panPath, userAgent, accountInfo: account });
   } catch (err) {

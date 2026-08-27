@@ -1,4 +1,10 @@
-import type { FastifyInstance } from "fastify";
+import type {
+  FastifyBaseLogger,
+  FastifyInstance,
+  RawReplyDefaultExpression,
+  RawRequestDefaultExpression,
+  RawServerDefault,
+} from "fastify";
 import { HttpError } from "../lib/http-error.js";
 
 /**
@@ -10,7 +16,11 @@ import { HttpError } from "../lib/http-error.js";
  * - 其余都是没预料到的异常：500，记完整堆栈；message 仍然给出去——
  *   这是给管理员自己用的工具，"Internal Server Error" 五个字对排障毫无帮助。
  */
-export function registerErrorHandling(app: FastifyInstance): void {
+// loggerInstance 会把 logger 的具体类型带进 FastifyInstance 的类型参数，
+// 这里对它泛型化，index.ts 的 pino 实例和测试里的裸 Fastify() 都能传
+export function registerErrorHandling<Logger extends FastifyBaseLogger>(
+  app: FastifyInstance<RawServerDefault, RawRequestDefaultExpression, RawReplyDefaultExpression, Logger>,
+): void {
   app.setErrorHandler((err: unknown, request, reply) => {
     if (err instanceof HttpError) {
       return reply.code(err.status).send({ message: err.message, ...err.extra });
