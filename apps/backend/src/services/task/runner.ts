@@ -14,6 +14,7 @@ import { listAccounts, updateAccount } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { resolveInDataDir } from "../../paths.js";
+import { DEFAULT_TIMEOUT_MS } from "../../lib/http.js";
 import { exportDirParse, fsDirGetId } from "../cloud-115/client.js";
 import {
   downloadOrCreateStrm,
@@ -97,7 +98,7 @@ async function getOpenlistTreeData(baseUrl: string, token: string, originPath: s
     const r = await axios.post(
       `${baseUrl}/api/fs/list`,
       { path: cur, page: 1, per_page: 0, refresh: true },
-      { headers: { Authorization: token } },
+      { headers: { Authorization: token }, timeout: DEFAULT_TIMEOUT_MS },
     );
     if (r.data.code !== 200) throw new Error(`Failed to list ${cur}: ${r.data.message}`);
     for (const item of r.data.data.content || []) {
@@ -163,10 +164,11 @@ async function loadRemoteTree(
     }
     let token = accountInfo.token;
     if (!token || (accountInfo.expiresAt && Date.now() / 1000 > accountInfo.expiresAt)) {
-      const lr = await axios.post(`${accountInfo.url}/api/auth/login`, {
-        username: accountInfo.account,
-        password: accountInfo.password,
-      });
+      const lr = await axios.post(
+        `${accountInfo.url}/api/auth/login`,
+        { username: accountInfo.account, password: accountInfo.password },
+        { timeout: DEFAULT_TIMEOUT_MS },
+      );
       if (lr.data.code !== 200) return { fail: fail(500, "Openlist login failed") };
       token = lr.data.data.token;
       accountInfo.token = token;

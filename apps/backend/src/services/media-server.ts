@@ -9,6 +9,7 @@
 import axios from "axios";
 import { readAppSettings } from "../db/repositories/settings.js";
 import { moduleLogger } from "../lib/logger.js";
+import { DEFAULT_TIMEOUT_MS } from "../lib/http.js";
 
 /** 安静多久后触发刷新（秒） */
 const DEFAULT_QUIET_SECONDS = 30;
@@ -28,7 +29,7 @@ export function refreshEmbyNow(reason = "manual"): void {
   const url = embyEndpoint();
   if (!url) return;
   axios
-    .post(url)
+    .post(url, undefined, { timeout: DEFAULT_TIMEOUT_MS })
     .then(() => log.info(`Emby 刷新已触发（${reason}）`))
     .catch((err) => log.warn(`Emby 刷新失败（${reason}）：${err instanceof Error ? err.message : err}`));
 }

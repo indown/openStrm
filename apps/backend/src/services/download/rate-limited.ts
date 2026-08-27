@@ -8,6 +8,7 @@ import type { AccountInfo } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { toStrmPath } from "../strm/naming.js";
 import { moduleLogger } from "../../lib/logger.js";
+import { DEFAULT_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, guardIdleStream } from "../../lib/http.js";
 
 const log = moduleLogger("download");
 
@@ -132,6 +133,7 @@ async function getRealDownloadLinkDirect(
       throw new Error(`Missing openlist credentials for account: ${accountInfo.name}`);
     const response = await axios.post(`${accountInfo.url}/api/fs/get`, { path: filePath }, {
       headers: { Authorization: accountInfo.token },
+      timeout: DEFAULT_TIMEOUT_MS,
     });
     const result = response.data;
     if (result.code !== 200) throw new Error(`Failed to get file info: ${result.message}`);
@@ -141,15 +143,21 @@ async function getRealDownloadLinkDirect(
   throw new Error(`Unsupported account type: ${accountInfo.accountType}`);
 }
 
-export function downloadOrCreateStrm(
-  url: string,
-  savePath: string,
-  opts?: { asStrm?: boolean; displayPath?: string; strmPrefix?: string; enablePathEncoding?: boolean }
-): Observable<Progress> {
+export interface DownloadOptions {
+  asStrm?: boolean;
+  displayPath?: string;
+  strmPrefix?: string;
+  enablePathEncoding?: boolean;
+  /** 下载流多久没数据算卡死。默认 STREAM_IDLE_TIMEOUT_MS，测试调小 */
+  idleTimeoutMs?: number;
+}
+
+export function downloadOrCreateStrm(url: string, savePath: string, opts?: DownloadOptions): Observable<Progress> {
   const asStrm = !!opts?.asStrm;
   const displayPath = opts?.displayPath ?? savePath;
   const strmPrefix = opts?.strmPrefix ?? "";
   const enablePathEncoding = !!opts?.enablePathEncoding;
+  const idleTimeoutMs = opts?.idleTimeoutMs ?? STREAM_IDLE_TIMEOUT_MS;
 
   const dir = path.dirname(savePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -170,11 +178,13 @@ export function downloadOrCreateStrm(
     }
     const userAgent = readAppSettings()["user-agent"];
     axios
-      .get(url, { headers: { "User-Agent": userAgent }, responseType: "stream" })
+      .get(url, { headers: { "User-Agent": userAgent }, responseType: "stream", timeout: DEFAULT_TIMEOUT_MS })
       .then((response) => {
         const total = parseInt(response.headers["content-length"] || "0", 10);
         let received = 0;
         const writer = fs.createWriteStream(savePath);
+        // 卡住的下载会被销毁并走到下面的 error，由 downloadOrCreateStrmLimited 的 retry 重来
+        guardIdleStream(response.data, idleTimeoutMs, `下载 ${displayPath}`);
         response.data.on("data", (chunk: Buffer) => {
           received += chunk.length;
           const percent = total ? (received / total) * 100 : 0;
@@ -196,7 +206,7 @@ export function downloadOrCreateStrmLimited(
   filePathOrUrl: string,
   savePath: string,
   account: string,
-  opts?: { asStrm?: boolean; displayPath?: string; strmPrefix?: string; enablePathEncoding?: boolean },
+  opts?: DownloadOptions,
   maxRetries = 10,
   retryDelay = 2000
 ): Observable<Progress> {

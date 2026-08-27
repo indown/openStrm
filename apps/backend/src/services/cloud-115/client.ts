@@ -7,6 +7,7 @@ import { readAppSettings } from "../../db/repositories/settings.js";
 import { enqueueForAccount } from "../download/rate-limited.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { TreeBuilder } from "../task/tree.js";
+import { DEFAULT_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, guardIdleStream } from "../../lib/http.js";
 
 const log = moduleLogger("cloud-115");
 
@@ -432,6 +433,8 @@ export async function request115<T = unknown>(
       method: method.toLowerCase(),
       url,
       headers: mergedHeaders,
+      // 115 的 CDN / WAF 会把连接黑洞掉；没有超时的话卡住的请求把限流槽位占到进程重启
+      timeout: DEFAULT_TIMEOUT_MS,
     };
     if (data !== undefined) config.data = data;
     if (responseType) config.responseType = responseType;
@@ -633,15 +636,18 @@ async function openFileStream(url: string, { userAgent }: { cookie: string; user
   };
 
   // Use axios exactly like downloadOrCreateStrm - let it handle 302 automatically
-  const res = await axios.get(url, { 
-    headers, 
-    responseType: 'stream' 
+  const res = await axios.get(url, {
+    headers,
+    responseType: 'stream',
+    timeout: DEFAULT_TIMEOUT_MS,
   });
 
   const nodeStream = res.data; // Node.js Readable
   if (!nodeStream || typeof nodeStream.on !== 'function') {
     throw new Error('Response is not a readable stream');
   }
+  // 导出文件可能几十 MB；CDN 把连接黑洞掉的话，没有这个看门狗整个同步就永远挂在这里
+  guardIdleStream(nodeStream, STREAM_IDLE_TIMEOUT_MS, "115 目录导出文件下载");
   // Wrap Node Readable into Web ReadableStream
   return new ReadableStream({
     start(controller) {
