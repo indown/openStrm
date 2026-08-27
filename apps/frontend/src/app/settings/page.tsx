@@ -278,6 +278,7 @@ export default function SettingsPage() {
               }
               placeholder="xxxxxxxxxxxxxxxx"
             />
+            <p className="text-xs text-muted-foreground">已保存的密钥只显示末 4 位；改动即替换，清空即删除</p>
           </div>
         </div>
         <label className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
@@ -323,6 +324,7 @@ export default function SettingsPage() {
               }
               placeholder="eyJhbGciOiJIUzI1NiJ9..."
             />
+            <p className="text-xs text-muted-foreground">已保存的密钥只显示末 4 位；改动即替换，清空即删除</p>
           </div>
           <div className="space-y-2">
             <Label>默认语言</Label>
@@ -360,6 +362,7 @@ export default function SettingsPage() {
               }
               placeholder="个人 API Key 或应用 Secret"
             />
+            <p className="text-xs text-muted-foreground">已保存的密钥只显示末 4 位；改动即替换，清空即删除</p>
           </div>
           <div className="space-y-2">
             <Label>Base URL (可选)</Label>

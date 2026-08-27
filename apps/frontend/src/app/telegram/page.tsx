@@ -221,6 +221,7 @@ export default function TelegramPage() {
                 value={config.botToken || ''}
                 onChange={(e) => setConfig({ ...config, botToken: e.target.value })}
               />
+              <p className="text-xs text-muted-foreground">已保存的 token 只显示末 4 位；原样提交等于不改，输入新值即替换</p>
               <p className="text-sm text-muted-foreground">
                 Get your bot token from @BotFather. Format: 数字:35位字符
               </p>

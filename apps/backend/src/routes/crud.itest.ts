@@ -123,7 +123,8 @@ test("POST /api/account：115 账号缺 cookie → 400，且说明原因", async
 test("POST /api/account：建成功 201；同名再建 409", async () => {
   const res = await call("POST", "/api/account", { accountType: "115", name: "main", cookie: "c1" });
   assert.equal(res.statusCode, 201);
-  assert.equal(res.json().cookie, "c1");
+  assert.equal(res.json().cookie, "••••", "响应里的凭据也是掩码");
+  assert.equal((listAccounts().find((a) => a.name === "main") as { cookie?: string }).cookie, "c1");
   const dup = await call("POST", "/api/account", { accountType: "115", name: "main", cookie: "c2" });
   assert.equal(dup.statusCode, 409);
 });
@@ -134,6 +135,23 @@ test("PUT /api/account：只改提交的字段，cookie 沿用旧值", async () 
   const stored = listAccounts().find((a) => a.name === "main") as AccountInfo & { note?: string; cookie?: string };
   assert.equal(stored.note, "hello");
   assert.equal(stored.cookie, "c1");
+});
+
+test("GET /api/account 只给 cookie 末 4 位；编辑时原样提交掩码值不会覆盖真值", async () => {
+  await call("PUT", "/api/account", { name: "main", cookie: "UID=1234567890;SEID=abc" });
+  const listed = (await call("GET", "/api/account")).json().find((a: { name: string }) => a.name === "main");
+  assert.equal(listed.cookie, "••••=abc");
+  const res = await call("PUT", "/api/account", { name: "main", accountType: "115", cookie: listed.cookie, note: "edited" });
+  assert.equal(res.statusCode, 200);
+  const stored = listAccounts().find((a) => a.name === "main") as AccountInfo & { cookie?: string; note?: string };
+  assert.equal(stored.cookie, "UID=1234567890;SEID=abc", "掩码值不能被写进库");
+  assert.equal(stored.note, "edited");
+});
+
+test("POST /api/account 不接受掩码值当 cookie", async () => {
+  const res = await call("POST", "/api/account", { accountType: "115", name: "masked", cookie: "••••abcd" });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json().message, /cookie/);
 });
 
 test("DELETE /api/account：删掉后再删 404", async () => {
@@ -167,4 +185,17 @@ test("GET /api/settings：直接返回设置对象，没有 code 壳", async () 
   assert.equal(res.statusCode, 200);
   assert.equal(res.json().code, undefined);
   assert.equal(res.json().emby?.url, "http://new");
+});
+
+test("密钥只给末 4 位；回传掩码值不改真值，空串才清除", async () => {
+  await call("PUT", "/api/settings", { emby: { url: "http://new", apiKey: "emby-secret-key-1234" } });
+  const masked = (await call("GET", "/api/settings")).json().emby.apiKey;
+  assert.equal(masked, "••••1234");
+
+  await call("PUT", "/api/settings", { emby: { url: "http://newer", apiKey: masked } });
+  assert.equal(readAppSettings().emby?.apiKey, "emby-secret-key-1234", "掩码值不能被写进库");
+  assert.equal(readAppSettings().emby?.url, "http://newer", "同一次提交里的其它字段照常更新");
+
+  await call("PUT", "/api/settings", { emby: { url: "http://newer", apiKey: "" } });
+  assert.equal(readAppSettings().emby?.apiKey, "", "空串才是清除");
 });

@@ -4,9 +4,12 @@ import { createTelegramBot } from "../../services/telegram.js";
 import { deleteAppSetting, readAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
+import { maskSecret, resolveSecret } from "../../lib/secrets.js";
+
+const TOKEN_PATTERN = /^\d+:[A-Za-z0-9_-]{35}$/;
 
 const configureSchema = z.object({
-  botToken: z.string({ error: "Bot token is required" }).regex(/^\d+:[A-Za-z0-9_-]{35}$/, "Invalid bot token format"),
+  botToken: z.string({ error: "Bot token is required" }).min(1, "Bot token is required"),
   chatId: z.string().optional(),
   webhookUrl: z.string().optional(),
 });
@@ -21,12 +24,16 @@ export default async function (fastify: FastifyInstance) {
     const botInfo = await bot.getMe();
     const webhookInfo = await bot.getWebhookInfo();
 
-    return { bot: botInfo, webhook: webhookInfo, configured: true, chatId: telegram.chatId || "", botToken: telegram.botToken || "" };
+    return { bot: botInfo, webhook: webhookInfo, configured: true, chatId: telegram.chatId || "", botToken: maskSecret(telegram.botToken) };
   });
 
   // POST: configure bot
   fastify.post("/api/telegram/bot", { preHandler: [fastify.authenticate] }, async (request) => {
-    const { botToken, chatId, webhookUrl } = parse(configureSchema, request.body);
+    const { botToken: submitted, chatId, webhookUrl } = parse(configureSchema, request.body);
+    // 表单回填的是掩码，原样提交等于沿用已保存的 token
+    const current = readAppSetting("telegram") ?? {};
+    const botToken = resolveSecret(submitted, current.botToken);
+    if (!botToken || !TOKEN_PATTERN.test(botToken)) throw new HttpError(400, "Invalid bot token format");
 
     const bot = createTelegramBot(botToken);
     const botInfo = await bot.getMe();
@@ -35,7 +42,6 @@ export default async function (fastify: FastifyInstance) {
     }
 
     // 只覆盖这次给出的字段：allowedUsers / allowTaskStart 由别的接口维护，不能被这里重置
-    const current = readAppSetting("telegram") ?? {};
     writeAppSetting("telegram", {
       ...current,
       botToken,
