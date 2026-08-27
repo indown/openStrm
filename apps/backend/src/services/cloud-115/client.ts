@@ -6,6 +6,7 @@ import { SimpleCache } from "./SimpleCache.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { enqueueForAccount } from "../download/rate-limited.js";
 import { moduleLogger } from "../../lib/logger.js";
+import { TreeBuilder } from "../task/tree.js";
 
 const log = moduleLogger("cloud-115");
 
@@ -136,49 +137,12 @@ export async function exportDirParse(options: ExportDirParseOptions) {
   const fileIdForDelete = result && result.file_id;
   try {
     const stream = await openFileStream(url, { cookie: accountInfo.cookie, userAgent });
-    const treeData: Array<{ depth: number; key: number; name: string; parent_key: number }> = [];
-    let keyCounter = 0;
-    
-    // 添加根节点
-    treeData.push({
-      depth: 0,
-      key: keyCounter++,
-      name: '',
-      parent_key: 0
-    });
-    
+    const tree = new TreeBuilder();
     for await (const path of parseExportDirAsPathIter(stream)) {
-      const pathParts = path.split('/').filter(part => part !== '');
-      let parentKey = 0;
-      
-      for (let i = 0; i < pathParts.length; i++) {
-        const name = pathParts[i].trim(); // 去除前后空白字符包括换行符
-        const depth = i;
-        
-        // 查找是否已经存在这个路径节点
-        const existingNode = treeData.find(node => 
-          node.depth === depth && 
-          node.name === name && 
-          node.parent_key === parentKey
-        );
-        
-        if (!existingNode) {
-          // 创建新节点
-          const newNode = {
-            depth,
-            key: keyCounter++,
-            name,
-            parent_key: parentKey
-          };
-          treeData.push(newNode);
-          parentKey = newNode.key;
-        } else {
-          parentKey = existingNode.key;
-        }
-      }
+      // 导出文件末尾的空行会被解析器折进最后一条路径，所以每段都要去掉首尾空白（含换行）
+      tree.add(path.split("/").map((part) => part.trim()).filter(Boolean));
     }
-    
-    return treeData;
+    return tree.nodes;
   } finally {
     // 5) Optionally delete export file
     // if (mustDelete && fileIdForDelete) {
