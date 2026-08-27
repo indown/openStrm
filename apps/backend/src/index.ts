@@ -24,7 +24,8 @@ import { authPlugin } from "./plugins/auth.js";
 import { cronPlugin } from "./plugins/cron.js";
 import { stopPolling } from "./services/telegram-polling.js";
 import { cancelAllRunningTasks } from "./services/task/registry.js";
-import { cleanupOldHistory, reconcileInterruptedExecutions } from "./services/task-history.js";
+import { reconcileInterruptedExecutions } from "./services/task-history.js";
+import { startHousekeeping } from "./services/housekeeping.js";
 
 // Auth routes
 import authLoginRoute from "./routes/auth/login.js";
@@ -68,6 +69,8 @@ import { flushEmbyRefresh } from "./services/media-server.js";
 // System routes
 import clearDirectoryRoute from "./routes/system/clear-directory.js";
 import clearRateLimitersRoute from "./routes/system/clear-rate-limiters.js";
+import healthRoute from "./routes/system/health.js";
+import backupRoute from "./routes/system/backup.js";
 
 const app = Fastify({
   loggerInstance: logger,
@@ -78,11 +81,11 @@ const app = Fastify({
 });
 registerErrorHandling(app);
 
-// 上个进程退出时还在跑的任务已经没了，历史里不能永远挂着 running；顺手把 30 天前的记录清掉
+// 上个进程退出时还在跑的任务已经没了，历史里不能永远挂着 running
 const interrupted = reconcileInterruptedExecutions();
 if (interrupted > 0) app.log.warn(`[history] ${interrupted} 条执行记录因进程重启被标为失败`);
-cleanupOldHistory();
-setInterval(cleanupOldHistory, 24 * 60 * 60 * 1000).unref();
+// 只增不减的几张表：启动清一次，之后每天一次
+startHousekeeping();
 
 // Global plugins
 await app.register(cors, { origin: true, credentials: true });
@@ -132,6 +135,8 @@ await app.register(lifeMonitorRoute);
 // System routes
 await app.register(clearDirectoryRoute);
 await app.register(clearRateLimitersRoute);
+await app.register(healthRoute);
+await app.register(backupRoute);
 
 // Telegram routes
 import telegramBotRoute from "./routes/telegram/bot.js";

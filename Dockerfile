@@ -64,5 +64,11 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 EXPOSE 3000 8091
 
 ENV NODE_ENV=production
+# entrypoint 用它决定 API 进程的端口；写成镜像 ENV 是为了让 HEALTHCHECK 也能读到
+ENV BACKEND_PORT=3000
+
+# /api/health 不鉴权，只验证进程活着且库能读；代理进程退出时 entrypoint 会让整个容器退出
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -qO- "http://127.0.0.1:${BACKEND_PORT}/api/health" >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

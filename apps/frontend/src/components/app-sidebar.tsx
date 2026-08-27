@@ -1,5 +1,5 @@
 "use client"
-import { Home, Inbox, Settings, Github, Bot, History, Library, Radar } from "lucide-react";
+import { Home, Inbox, Settings, Github, History, Library, Radar } from "lucide-react";
 import Image from "next/image";
 
 import {
