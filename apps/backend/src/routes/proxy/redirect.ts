@@ -70,10 +70,12 @@ function actionOf(rest: string): string {
  * `%25E4%25B8%25AD`，CDN 直接 403。
  * 所以纯 ASCII 原样返回，只有混进非 ASCII 时才逐字符转义。
  */
+// eslint-disable-next-line no-control-regex -- 正是要匹配 ASCII 之外的字符
+const NON_ASCII = /[^\x00-\x7F]/, NON_ASCII_ALL = /[^\x00-\x7F]/g;
+
 function safeLocation(url: string): string {
-  // eslint-disable-next-line no-control-regex
-  if (!/[^\x00-\x7F]/.test(url)) return url;
-  return url.replace(/[^\x00-\x7F]/g, (c) => encodeURIComponent(c));
+  if (!NON_ASCII.test(url)) return url;
+  return url.replace(NON_ASCII_ALL, (c) => encodeURIComponent(c));
 }
 
 /** 查路径的方式：普通条目走 /Items，同步任务项走 /Sync/JobItems */

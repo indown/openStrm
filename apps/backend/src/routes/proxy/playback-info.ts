@@ -7,7 +7,7 @@
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { EmbyMediaSource } from "../../services/emby/api.js";
-import { clientApiKey, embyUpstream } from "../../services/emby/api.js";
+import { clientApiKey } from "../../services/emby/api.js";
 import { readSettingsSafe } from "../../services/settings-safe.js";
 import { safeDecode, stripMountPath } from "../../services/resolve/direct-link.js";
 import { fetchUpstream, relayResponse, toEmby } from "./upstream.js";

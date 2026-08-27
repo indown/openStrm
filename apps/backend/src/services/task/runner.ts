@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import axios from "axios";
 import { from, mergeMap, Subject, Subscription } from "rxjs";
-import type { TaskDefinition } from "@openstrm/shared";
+import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
 import { listAccounts, updateAccount } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -147,7 +147,7 @@ async function getOpenlistTreeData(baseUrl: string, token: string, originPath: s
 
 async function loadRemoteTree(
   task: TaskDefinition,
-  accountInfo: any,
+  accountInfo: AccountInfo,
 ): Promise<{ tree: TreeNode[] } | { fail: StartTaskResult }> {
   const { account, originPath } = task;
 
@@ -156,7 +156,7 @@ async function loadRemoteTree(
     try {
       const idRes = await fsDirGetId(originPath, { accountInfo });
       const data = await exportDirParse({
-        exportFileIds: (idRes as any).id,
+        exportFileIds: idRes.id,
         targetPid: 0,
         layerLimit: 0,
         deleteAfter: true,
@@ -164,7 +164,7 @@ async function loadRemoteTree(
         checkIntervalMs: 1000,
         accountInfo,
       });
-      return { tree: buildTree(data as any) };
+      return { tree: buildTree(data) };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (msg.includes("<!doctypehtml>") || msg.includes("405") || msg.includes("您的访问被阻断")) {
@@ -190,10 +190,12 @@ async function loadRemoteTree(
       accountInfo.expiresAt = Math.floor(Date.now() / 1000) + 47 * 3600;
       updateAccount(accountInfo.name, { token, expiresAt: accountInfo.expiresAt });
     }
+    if (!token) return { fail: fail(500, "Openlist login failed") };
     return { tree: buildTree(await getOpenlistTreeData(accountInfo.url, token, originPath)) };
   }
 
-  return { fail: fail(400, `Unknown account type: ${accountInfo.accountType}`) };
+  // AccountInfo 是判别联合，到这里已经穷尽；留一条兜底以防将来加类型
+  return { fail: fail(400, "Unknown account type") };
 }
 
 /* --------------------------------- 入口 --------------------------------- */
@@ -205,7 +207,7 @@ export async function startTask(taskId: string): Promise<StartTaskResult> {
 
   const { id, account, originPath, targetPath, strmPrefix } = task;
   const accounts = listAccounts();
-  const accountInfo = accounts.find((a) => a.name === account) as any;
+  const accountInfo = accounts.find((a) => a.name === account);
   if (!accountInfo) return fail(500, `No account found: ${account}`);
 
   const saveDir = resolveInDataDir(targetPath);

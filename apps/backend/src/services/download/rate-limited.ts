@@ -4,6 +4,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { defer, firstValueFrom, Observable, retry, timer } from "rxjs";
 import { getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
+import type { AccountInfo } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { toStrmPath } from "../strm/naming.js";
 import { moduleLogger } from "../../lib/logger.js";
@@ -68,12 +69,12 @@ export function enqueueForAccount<T>(
 export async function getRealDownloadLink(
   filePath: string,
   account: string,
-  accounts: any[],
+  accounts: AccountInfo[],
   maxRetries = 3,
   retryDelay = 2000
 ): Promise<string> {
   const settings = readAppSettings();
-  const accountInfo = accounts.find((acc: any) => acc.name === account);
+  const accountInfo = accounts.find((acc) => acc.name === account);
   if (!accountInfo) throw new Error(`No cookie found for account: ${account}`);
 
   const createRetryObservable = (fn: () => Observable<string>) =>
@@ -88,8 +89,7 @@ export async function getRealDownloadLink(
     );
 
   const createAccountObservable = (): Observable<string> => {
-    const accountType = accountInfo.accountType || "unknown";
-    if (accountType === "115") {
+    if (accountInfo.accountType === "115") {
       const userAgent = settings["user-agent"];
       return new Observable<string>((observer) => {
         getRealDownloadLinkDirect115(filePath, accountInfo, userAgent)

@@ -29,10 +29,10 @@ jobs:
       # pnpm -r typecheck 覆盖 shared / backend / frontend 三个包
       - run: pnpm typecheck
 
-      # 前端的 eslint 也在 next build 里跑，但那在 docker 作业里、失败信息混在构建日志中；
-      # 这里单独跑一遍，几秒钟就能给出准确的行号
-      - name: Lint frontend
-        run: pnpm --filter @openstrm/frontend lint
+      # 前后端的 eslint（pnpm -r lint）。前端的也在 next build 里跑，但那在 docker 作业里、
+      # 失败信息混在构建日志中；这里单独跑一遍，几秒钟就能给出准确的行号
+      - name: Lint
+        run: pnpm lint
 
       # 用例会改写 settings 表、在 DATA_DIR 里建删目录，必须指到临时目录——
       # src/test/setup.ts 见不到这两个变量会直接拒绝运行

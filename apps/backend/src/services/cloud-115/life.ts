@@ -152,6 +152,7 @@ export function parseJsonBigIntSafe<T>(text: string, context = ""): T {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
       `解析 115 响应失败${context ? `（${context}）` : ""}：${msg}；原始片段 ${text.slice(0, 300)}`,
+      { cause: err },
     );
   }
 }
@@ -270,7 +271,8 @@ export async function pullLifeEvents(opts: PullOptions): Promise<LifeEvent[]> {
   const seen = new Set<string>();
   let offset = 0;
   let limit = opts.firstBatchSize ?? (hasCursor ? 64 : 1000);
-  let total = Number.POSITIVE_INFINITY;
+  // 每页返回后由 count 覆盖；循环体内先赋值再读，无需初值
+  let total: number;
 
   for (let page = 0; page < maxPages; page++) {
     if (signal?.aborted) break;

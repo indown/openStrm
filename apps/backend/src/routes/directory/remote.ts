@@ -23,7 +23,7 @@ export default async function (fastify: FastifyInstance) {
     if (path) {
       try {
         const dirResp = await fsDirGetId(path, { userAgent, accountInfo });
-        cid = (dirResp as any).id;
+        cid = dirResp.id;
       } catch {
         return [];
       }
@@ -31,11 +31,10 @@ export default async function (fastify: FastifyInstance) {
 
     try {
       const filesResponse = await fsFiles(cid, { userAgent, accountInfo, limit: 1000, offset: 0 });
-      const items: any[] = (filesResponse as any).data || [];
-      const nodes = items
-        .filter((item) => !item.sha || item.sha === "" || item.sha === null)
+      // 目录没有 sha；文件不进目录树
+      return (filesResponse.data || [])
+        .filter((item) => !item.sha)
         .map((item) => ({ name: item.n, id: item.cid, isDir: true, hasChildren: true }));
-      return nodes;
     } catch {
       return [];
     }

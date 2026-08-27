@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { MediaLibraryEntry } from "@openstrm/shared";
+import type { Account115, MediaLibraryEntry } from "@openstrm/shared";
 import {
   getAll,
   getById,
@@ -49,20 +49,17 @@ export default async function (fastify: FastifyInstance) {
     const body = parse(createSchema, request.body);
     const shareUrl = body.shareUrl;
 
-    let shareCode = "";
-    let receiveCode = "";
+    let parsed: ReturnType<typeof shareExtractPayload>;
     try {
-      const parsed = shareExtractPayload(shareUrl);
-      shareCode = parsed.share_code;
-      receiveCode = parsed.receive_code;
+      parsed = shareExtractPayload(shareUrl);
     } catch {
       throw new HttpError(400, "Invalid share url");
     }
+    const { share_code: shareCode, receive_code: receiveCode } = parsed;
     if (!shareCode) throw new HttpError(400, "Cannot parse shareCode from url");
 
     const settings = readAppSettings();
     const hasTmdb = Boolean(settings.tmdb?.apiKey?.trim());
-    const userAgent = typeof settings["user-agent"] === "string" ? settings["user-agent"] : undefined;
     const bodyTitle = (body.title ?? "").trim();
     const bodyCoverUrl = (body.coverUrl ?? "").trim();
     const bodyTags = sanitizeTags(body.tags);
@@ -108,7 +105,7 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(201).send({ mode: "subdir", entry });
     }
 
-    const account115 = listAccounts().find((a) => a.accountType === "115") as any;
+    const account115 = listAccounts().find((a): a is Account115 => a.accountType === "115");
 
     // ==== 单片模式 ====
     const existing = getByShareCode(shareCode);
@@ -119,8 +116,8 @@ export default async function (fastify: FastifyInstance) {
 
     if ((!title || !fileCount) && account115) {
       try {
-        const data = (await getShareData(account115, shareCode, receiveCode)) as Record<string, any>;
-        const shareInfo = (data?.share_info ?? {}) as Record<string, any>;
+        const data = await getShareData(account115, shareCode, receiveCode);
+        const shareInfo = (data.share_info ?? {}) as { share_title?: string; name?: string; file_size?: number; file_count?: number };
         if (!title) title = String(shareInfo.share_title ?? shareInfo.name ?? "").trim();
         if (!fileCount) fileCount = Number(shareInfo.file_size ?? shareInfo.file_count ?? 0) || 0;
       } catch {
