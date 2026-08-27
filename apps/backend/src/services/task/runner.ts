@@ -21,7 +21,7 @@ import {
   getRealDownloadLink,
 } from "../download/rate-limited.js";
 import {
-  addLogToTaskExecution,
+  addLogsToTaskExecution,
   completeTaskExecution,
   createTaskExecution,
   updateTaskExecution,
@@ -37,6 +37,7 @@ import {
   type DownloadProgress,
   type RunningTask,
 } from "./registry.js";
+import { LogBatcher } from "./log-batch.js";
 import { flattenTree, planSync } from "./plan.js";
 import { buildTree, collectFilesAndTopEmptyDirs, TreeBuilder, type TreeNode } from "./tree.js";
 
@@ -227,6 +228,8 @@ export async function startTask(taskId: string): Promise<StartTaskResult> {
   registerRunningTask(id, running);
   sendTelegramNotification(`<b>Task ID:</b> ${id}\n<b>Account:</b> ${account}\n<b>Files:</b> ${total}`, "start");
 
+  // 落库的日志攒批写；取消时随订阅一起 flush（见下面的 subscription.add）
+  const history = new LogBatcher((lines) => addLogsToTaskExecution(execution.id, lines));
   const pushLog = (log: DownloadProgress) => {
     // 被取消之后不再往流里写：订阅者早就收到 done 了
     if (getRunningTask(id) !== running) return;
@@ -234,7 +237,7 @@ export async function startTask(taskId: string): Promise<StartTaskResult> {
     running.logs.push(line);
     if (running.logs.length > 20000) running.logs.shift();
     subject.next(log);
-    if ((log.filePath && log.percent === 100) || log.done || log.error) addLogToTaskExecution(execution.id, line);
+    if ((log.filePath && log.percent === 100) || log.done || log.error) history.push(line);
   };
 
   // strm 只是写一个小文本文件，不限流
@@ -278,6 +281,7 @@ export async function startTask(taskId: string): Promise<StartTaskResult> {
       },
       complete: () => {
         pushLog({ done: true, overallPercent: "100.00" });
+        history.flush();
         subject.complete();
         sendTelegramNotification(`<b>Task ID:</b> ${id}\n<b>Files:</b> ${total}\n<b>Status:</b> Completed`, "complete");
         completeTaskExecution(execution.id, "completed", { totalFiles: total, downloadedFiles: total });
@@ -286,12 +290,15 @@ export async function startTask(taskId: string): Promise<StartTaskResult> {
       },
       error: (err) => {
         pushLog({ error: err.message });
+        history.flush();
         sendTelegramNotification(`<b>Task ID:</b> ${id}\n<b>Error:</b> ${err.message}`, "error");
         completeTaskExecution(execution.id, "failed", { totalFiles: total, downloadedFiles: 0, errorMessage: err.message });
         subject.complete();
         unregisterRunningTask(id);
       },
     });
+  // 退订（取消、进程退出）时把还没落库的行写掉；正常结束时上面已经 flush 过，这里是空操作
+  running.subscription.add(() => history.flush());
 
   return {
     status: 200,

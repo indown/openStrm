@@ -69,7 +69,12 @@ export function update(executionId: string, updates: Partial<TaskExecutionHistor
     .run();
 }
 
-export function appendLog(executionId: string, log: string): void {
+/**
+ * 追加一批日志行。logs 是一整块 JSON，每次追加都是读→解析→拼→序列化→写，
+ * 所以调用方要攒一批再来（runner 用 LogBatcher），别一行一次。超过 5000 行只留最近 3000。
+ */
+export function appendLogs(executionId: string, lines: string[]): void {
+  if (lines.length === 0) return;
   const row = db
     .select({ logs: taskHistory.logs })
     .from(taskHistory)
@@ -77,7 +82,7 @@ export function appendLog(executionId: string, log: string): void {
     .get();
   if (!row) return;
   let logs = safeParse<string[]>(row.logs, []);
-  logs.push(log);
+  logs.push(...lines);
   if (logs.length > 5000) logs = logs.slice(-3000);
   db.update(taskHistory)
     .set({ logs: JSON.stringify(logs) })
