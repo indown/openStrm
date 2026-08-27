@@ -4,6 +4,9 @@ import { settings } from "./schema.js";
 import { DEFAULT_AUTH, buildDefaultAppSettings } from "./defaults.js";
 import { hashPassword } from "../services/password.js";
 import { KEY } from "./keys.js";
+import { moduleLogger } from "../lib/logger.js";
+
+const log = moduleLogger("seed");
 
 const SEEDED_MARKER_KEY = KEY.seededMarker;
 
@@ -14,7 +17,7 @@ export async function seedIfEmpty(): Promise<void> {
     .where(eq(settings.key, SEEDED_MARKER_KEY))
     .all();
   if (marker.length > 0) {
-    console.log("[seed] already seeded, skip");
+    log.info("[seed] already seeded, skip");
     return;
   }
 
@@ -43,5 +46,5 @@ export async function seedIfEmpty(): Promise<void> {
       .run();
   });
 
-  console.log("[seed] inserted defaults");
+  log.info("[seed] inserted defaults");
 }

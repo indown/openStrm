@@ -5,10 +5,11 @@ import compress from "@fastify/compress";
 import { initDb } from "./db/migrate.js";
 import { sqlite } from "./db/client.js";
 import { readAppSettings } from "./db/repositories/settings.js";
+import { logger } from "./lib/logger.js";
 
 // Prevent unhandled rejections from crashing the process
 process.on("unhandledRejection", (err) => {
-  console.error("[unhandledRejection]", err);
+  logger.error({ err }, "unhandledRejection");
 });
 
 // Apply DB migrations and seed from JSON on first run (before any plugin reads config)
@@ -57,23 +58,14 @@ import directoryRemoteRoute from "./routes/directory/remote.js";
 
 // 115 life-event monitor (incremental cloud-drive change detection)
 import lifeMonitorRoute from "./routes/life/index.js";
-import {
-  setLifeLogger,
-  startLifeMonitor,
-  stopLifeMonitor,
-} from "./services/life/monitor.js";
-import { flushEmbyRefresh, setMediaServerLogger } from "./services/media-server.js";
+import { startLifeMonitor, stopLifeMonitor } from "./services/life/monitor.js";
+import { flushEmbyRefresh } from "./services/media-server.js";
 
 // System routes
 import clearDirectoryRoute from "./routes/system/clear-directory.js";
 import clearRateLimitersRoute from "./routes/system/clear-rate-limiters.js";
 
-const app = Fastify({
-  logger: {
-    level: process.env.LOG_LEVEL || "info",
-  },
-  forceCloseConnections: true,
-});
+const app = Fastify({ loggerInstance: logger, forceCloseConnections: true });
 
 // 上个进程退出时还在跑的任务已经没了，历史里不能永远挂着 running；顺手把 30 天前的记录清掉
 const interrupted = reconcileInterruptedExecutions();
@@ -151,15 +143,7 @@ try {
   app.log.info(`API server running on http://${HOST}:${API_PORT}`);
   try { startScrapeWorker(); } catch (err) { app.log.error({ err }, "scrape-worker start failed"); }
 
-  setMediaServerLogger((m) => app.log.info(`[媒体服务器] ${m}`));
-
   // 生活事件监控：配置里开着就跟随服务一起起来
-  setLifeLogger({
-    info: (m) => app.log.info(m),
-    warn: (m) => app.log.warn(m),
-    error: (m) => app.log.error(m),
-    debug: (m) => app.log.debug(m),
-  });
   if (readAppSettings().lifeMonitor?.enabled) {
     startLifeMonitor()
       .then((r) => (r.ok ? app.log.info(r.message) : app.log.warn(r.message)))
