@@ -22,17 +22,34 @@ export interface RunningTask {
 }
 
 const running = new Map<string, RunningTask>();
+/** 正在准备启动（拉远端目录树等）、还没注册进 running 的任务 */
+const starting = new Set<string>();
 
 export function getRunningTask(id: string): RunningTask | undefined {
   return running.get(id);
 }
 
 export function isTaskRunning(id: string): boolean {
-  return running.has(id);
+  return running.has(id) || starting.has(id);
 }
 
 export function listRunningTaskIds(): string[] {
-  return [...running.keys()];
+  return [...new Set([...starting, ...running.keys()])];
+}
+
+/**
+ * 占住启动权。startTask 在第一个 await 之前调它：拉远端目录树可能要几分钟，
+ * 这期间 cron 和手动点击都会再进来，只查 running 表挡不住第二次——
+ * 同一任务跑两遍，下载翻倍，后注册的把先注册的进度流顶掉。
+ */
+export function reserveTaskStart(id: string): boolean {
+  if (running.has(id) || starting.has(id)) return false;
+  starting.add(id);
+  return true;
+}
+
+export function releaseTaskStart(id: string): void {
+  starting.delete(id);
 }
 
 export function registerRunningTask(id: string, task: RunningTask): void {

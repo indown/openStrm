@@ -32,8 +32,9 @@ import { extOf, extSet } from "../strm/naming.js";
 import { sendTelegramNotification } from "../telegram.js";
 import {
   getRunningTask,
-  isTaskRunning,
   registerRunningTask,
+  releaseTaskStart,
+  reserveTaskStart,
   unregisterRunningTask,
   type DownloadProgress,
   type RunningTask,
@@ -188,8 +189,17 @@ async function loadRemoteTree(
 export async function startTask(taskId: string): Promise<StartTaskResult> {
   const task = getTask(taskId);
   if (!task) return fail(404, "Task not found");
-  if (isTaskRunning(taskId)) return fail(409, "Task is already running");
+  // 第一个 await 之前就占住：拉远端目录树可能要几分钟，只查 running 表挡不住这期间的第二次启动
+  if (!reserveTaskStart(taskId)) return fail(409, "Task is already running");
+  try {
+    return await launch(task);
+  } finally {
+    // 到这里要么已经注册进 running，要么是提前失败返回；占位都可以放掉了
+    releaseTaskStart(taskId);
+  }
+}
 
+async function launch(task: TaskDefinition): Promise<StartTaskResult> {
   const { id, account, originPath, targetPath, strmPrefix } = task;
   const accounts = listAccounts();
   const accountInfo = accounts.find((a) => a.name === account);
