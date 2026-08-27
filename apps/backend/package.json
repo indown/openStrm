@@ -18,7 +18,7 @@
     "db:studio": "drizzle-kit studio",
     "test": "node --import tsx --import ./src/test/setup.ts --test --test-reporter=spec --test-concurrency=1 'src/**/*.test.ts' 'src/**/*.itest.ts'",
     "test:e2e": "tsx src/routes/proxy/proxy.e2e.ts",
-    "test:file": "node --import tsx --import ./src/test/setup.ts --test --test-reporter=spec"
+    "test:file": "node --import tsx --import ./src/test/setup.ts --test --test-concurrency=1 --test-reporter=spec"
   },
   "dependencies": {
     "@fastify/compress": "^8.3.1",

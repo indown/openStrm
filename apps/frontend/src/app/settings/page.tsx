@@ -30,6 +30,7 @@ export default function SettingsPage() {
   const [strmExtensionsInput, setStrmExtensionsInput] = useState("");
   const [downloadExtensionsInput, setDownloadExtensionsInput] = useState("");
   const [mediaMountPathInput, setMediaMountPathInput] = useState("");
+  const [backingUp, setBackingUp] = useState(false);
 
   useEffect(() => {
     axiosInstance.get("/api/settings")
@@ -100,6 +101,26 @@ export default function SettingsPage() {
       }
     } finally {
       setSaving(false);
+    }
+  };
+
+  // 备份接口要带登录 token，普通 <a download> 带不上，只能拉成 blob 再触发下载
+  const downloadBackup = async () => {
+    setBackingUp(true);
+    try {
+      const res = await axiosInstance.get<Blob>("/api/system/backup", { responseType: "blob" });
+      const disposition = String(res.headers["content-disposition"] ?? "");
+      const name = /filename="([^"]+)"/.exec(disposition)?.[1] ?? "openstrm.db";
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("下载备份失败");
+    } finally {
+      setBackingUp(false);
     }
   };
 
@@ -371,10 +392,16 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      <div className="pt-2">
+      <div className="pt-2 flex items-center gap-3">
         <Button disabled={saving} onClick={onSave}>
           {saving ? "Saving..." : "Save"}
         </Button>
+        <Button variant="outline" disabled={backingUp} onClick={downloadBackup}>
+          {backingUp ? "打包中..." : "下载备份"}
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          一致性快照（openstrm.db）；库是 WAL 模式，直接拷文件可能拷到一半
+        </span>
       </div>
     </div>
   );

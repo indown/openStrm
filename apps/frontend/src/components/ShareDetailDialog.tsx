@@ -305,7 +305,7 @@ export function ShareDetailDialog({
   const handleDirSelected = async (cid: number) => {
     setSaving(true);
     try {
-      const res = await axiosInstance.post("/api/115/share", {
+      await axiosInstance.post("/api/115/share", {
         action: "receive",
         url: shareLink.trim(),
         fileIds: Array.from(selectedItems.keys()),

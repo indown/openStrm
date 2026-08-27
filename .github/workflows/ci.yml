@@ -94,6 +94,14 @@ jobs:
           [ "$code" = "401" ] || { echo "::error::API :3000/api/settings 期望 401，实际 $code"; exit 1; }
           echo "  API :3000/api/settings -> 401"
 
+          # 镜像自带的 HEALTHCHECK 走的是 /api/health，等它把容器判成 healthy
+          for i in $(seq 1 12); do
+            [ "$(docker inspect --format '{{.State.Health.Status}}' smoke)" = "healthy" ] && { healthy=1; break; }
+            sleep 5
+          done
+          [ "${healthy:-0}" = "1" ] || { echo "::error::HEALTHCHECK 未在 60 秒内变为 healthy"; docker inspect --format '{{json .State.Health}}' smoke; exit 1; }
+          echo "  HEALTHCHECK -> healthy"
+
           # 代理只要求"在监听"：没配 Emby 时回源失败是正常的，
           # 返回 500 也说明进程活着，只有 000 才是没起来
           code=$(probe http://127.0.0.1:8091/System/Info/Public)

@@ -1,4 +1,4 @@
-import { sql, eq, inArray, desc } from "drizzle-orm";
+import { sql, eq, inArray, desc, lt } from "drizzle-orm";
 import { db } from "../client.js";
 import { settings, pathCache, lifeEvents } from "../schema.js";
 import type { PathCacheRow, LifeEventRow } from "../schema.js";
@@ -164,4 +164,16 @@ export function isLifeEventHandled(id: string): boolean {
     .where(eq(lifeEvents.id, id))
     .get();
   return row?.status === "done" || row?.status === "skipped";
+}
+
+/* -------------------------------- 留存清理 -------------------------------- */
+
+/** 删掉 115 侧 update_time 早于 cutoff（unix 秒）的事件，返回条数 */
+export function deleteLifeEventsBefore(cutoffSec: number): number {
+  return db.delete(lifeEvents).where(lt(lifeEvents.updateTime, cutoffSec)).run().changes;
+}
+
+/** 删掉自 cutoff（unix 秒）以来没被任何目录列举刷新过的路径缓存，返回条数 */
+export function deletePathCacheNotTouchedSince(cutoffSec: number): number {
+  return db.delete(pathCache).where(lt(pathCache.updatedAt, cutoffSec)).run().changes;
 }

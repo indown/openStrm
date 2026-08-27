@@ -96,9 +96,9 @@ docker run -d \
 
 **目录挂载说明**：
 - `./data`: 生成的 `.strm` 文件，以及字幕、nfo 等随片下载的文件。Emby 挂的是同一个目录
-- `./config`: 只有一个 `openstrm.db`——账号、设置、任务、执行历史、登录凭据全在里面，备份这一个文件就够了
+- `./config`: 只有一个 `openstrm.db`——账号、设置、任务、执行历史、登录凭据全在里面。备份用设置页的「下载备份」（或带登录 token 请求 `GET /api/system/backup`），拿到的是一致的快照；库是 WAL 模式，直接拷文件可能拷到一半
 
-日志走标准输出，`docker logs openstrm` 就能看；compose 里已经配了按大小轮转。
+日志走标准输出，`docker logs openstrm` 就能看；compose 里已经配了按大小轮转。镜像自带 HEALTHCHECK（`GET /api/health`，不鉴权），`docker ps` 能看到 healthy 状态。
 
 ### 生产环境部署
 
@@ -135,7 +135,7 @@ docker-compose -f docker-compose.prod.yml up -d
 
 ### 数据目录
 
-- `./config/`: `openstrm.db` —— 账号、设置、同步任务、执行历史全在这一个文件里
+- `./config/`: `openstrm.db` —— 账号、设置、同步任务、执行历史全在这一个文件里；备份见上文「下载备份」
 - `./data/`: 生成的 `.strm` 文件和随片下载的字幕、nfo 等
 
 > v2 起配置存放在 SQLite，不再有 `config.json`。旧版的 `config.json` 不会被自动导入，需要在界面里重新配置。
