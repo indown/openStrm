@@ -7,8 +7,48 @@
  * 把 app.log 注入进去——两条路都不用再走。
  */
 import pino from "pino";
+import axios from "axios";
 
-export const logger = pino({ level: process.env.LOG_LEVEL || "info" });
+/**
+ * 只留 origin + 路径：查询串里可能有 api_key / 签名，Telegram 的 bot token 直接嵌在路径里。
+ * 解析不了就不给，宁缺毋滥。
+ */
+function redactUrl(url: string | undefined, baseURL: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const u = new URL(url, baseURL);
+    return `${u.origin}${u.pathname.replace(/\/bot[^/]+/, "/bot[redacted]")}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * pino 默认的 err 序列化会把 Error 上所有可枚举属性都带上。AxiosError 挂着整个
+ * config（headers 里是 115 的 Cookie、URL 里是 Telegram 的 bot token）、request 和 response：
+ * 一次网络错误就把凭据写进日志，而且动辄几十 KB。这里只留下定位问题需要的几项。
+ *
+ * Fastify 会把 loggerInstance 上的 serializers 合并进它自己的 child logger，
+ * 所以 app.log / request.log / 各 service 的 moduleLogger 都经过这里。
+ */
+export function serializeError(err: unknown): unknown {
+  if (axios.isAxiosError(err)) {
+    return {
+      type: "AxiosError",
+      message: err.message,
+      code: err.code,
+      status: err.response?.status,
+      method: err.config?.method?.toUpperCase(),
+      url: redactUrl(err.config?.url, err.config?.baseURL),
+    };
+  }
+  return pino.stdSerializers.err(err as Error);
+}
+
+export const logger = pino({
+  level: process.env.LOG_LEVEL || "info",
+  serializers: { err: serializeError },
+});
 
 /** 按模块打标，日志里能看出是哪块发出来的 */
 export function moduleLogger(mod: string) {
