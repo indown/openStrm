@@ -3,6 +3,7 @@ import { SignJWT, jwtVerify } from "jose";
 import type { FastifyRequest, FastifyReply } from "fastify";
 
 import { isUsingDefaultPassword, resolveJwtSecret } from "../db/repositories/auth.js";
+import { HttpError } from "../lib/http-error.js";
 
 /** 前端据此把用户引导到改密码页，不要改动字面量。 */
 export const PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
@@ -31,28 +32,22 @@ export const authPlugin = fp(async (fastify) => {
   });
 
   // Auth preHandler hook
-  fastify.decorate("authenticate", async (request: FastifyRequest, reply: FastifyReply) => {
+  fastify.decorate("authenticate", async (request: FastifyRequest, _reply: FastifyReply) => {
     const authHeader = request.headers.authorization;
     if (!authHeader?.startsWith("Bearer ")) {
-      reply.code(401).send({ error: "Unauthorized" });
-      return;
+      throw new HttpError(401, "Unauthorized", { code: "UNAUTHORIZED" });
     }
     try {
-      const token = authHeader.slice(7);
-      request.user = await fastify.verifyJwt(token);
+      request.user = await fastify.verifyJwt(authHeader.slice(7));
     } catch {
-      reply.code(401).send({ error: "Invalid or expired token" });
-      return;
+      throw new HttpError(401, "Invalid or expired token", { code: "UNAUTHORIZED" });
     }
 
     // 默认口令是公开的，此时拿到 token 不代表这个人有权限。除改密码本身外
     // 一律挡下——判断放在这里，是因为所有受保护路由共用这一个 preHandler，
     // 逐个路由加守卫早晚会漏掉一个。
     if (!request.routeOptions.config?.allowDefaultPassword && isUsingDefaultPassword()) {
-      reply.code(403).send({
-        error: "请先修改默认密码",
-        code: PASSWORD_CHANGE_REQUIRED,
-      });
+      throw new HttpError(403, "请先修改默认密码", { code: PASSWORD_CHANGE_REQUIRED });
     }
   });
 }, { name: "auth" });

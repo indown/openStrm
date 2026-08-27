@@ -1,14 +1,19 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { getRunningTask } from "../../services/task/registry.js";
+import { HttpError } from "../../lib/http-error.js";
+import { parse } from "../../lib/validate.js";
+
+const paramsSchema = z.object({ taskId: z.string().min(1) });
 
 export default async function (fastify: FastifyInstance) {
   fastify.get("/api/taskLog/:taskId", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const { taskId } = request.params as { taskId: string };
+    const { taskId } = parse(paramsSchema, request.params, "params");
     const task = getRunningTask(taskId);
 
     const accept = request.headers.accept || "";
     if (!accept.includes("text/event-stream")) {
-      if (!task) return reply.code(404).send({ error: "Task not found" });
+      if (!task) throw new HttpError(404, "Task not found");
       return { message: "Task found", taskId };
     }
 

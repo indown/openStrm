@@ -218,7 +218,7 @@ export default function DownloadProgressPage({
     } catch (error: unknown) {
       console.error('Failed to cancel task:', error);
       const errorMessage = error instanceof Error && 'response' in error 
-        ? (error as { response?: { data?: { error?: string } } }).response?.data?.error || '取消任务失败，请重试'
+        ? (error as { response?: { data?: { message?: string } } }).response?.data?.message || '取消任务失败，请重试'
         : '取消任务失败，请重试';
       alert(errorMessage);
     } finally {

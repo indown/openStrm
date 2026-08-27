@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import type { TaskDefinition } from "@openstrm/shared";
 import { deleteTask, insertTask, listTasks, updateTask } from "../../db/repositories/tasks.js";
 import { listRunningTaskIds } from "../../services/task/registry.js";
+import { HttpError } from "../../lib/http-error.js";
+import { parse } from "../../lib/validate.js";
+import { taskInputSchema, taskPatchSchema } from "../../schemas/entities.js";
+
+const idQuerySchema = z.object({ id: z.string().min(1, "Task ID required") });
 
 /**
  * 任务定义的增删改查。
@@ -24,26 +30,23 @@ export default async function (fastify: FastifyInstance) {
   });
 
   fastify.post("/api/task", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const body = (request.body ?? {}) as Partial<TaskDefinition>;
-    const task = { ...body, id: randomUUID() } as TaskDefinition;
+    const task: TaskDefinition = { ...parse(taskInputSchema, request.body), id: randomUUID() };
     insertTask(task);
     resyncCron();
     return reply.code(201).send(task);
   });
 
-  fastify.put("/api/task", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const { id, ...patch } = (request.body ?? {}) as Partial<TaskDefinition>;
-    if (!id) return reply.code(400).send({ error: "Task ID required" });
+  fastify.put("/api/task", { preHandler: [fastify.authenticate] }, async (request) => {
+    const { id, ...patch } = parse(taskPatchSchema, request.body);
     const updated = updateTask(id, patch);
-    if (!updated) return reply.code(404).send({ error: "Task not found" });
+    if (!updated) throw new HttpError(404, "Task not found");
     resyncCron();
     return updated;
   });
 
-  fastify.delete("/api/task", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const { id } = request.query as { id?: string };
-    if (!id) return reply.code(400).send({ error: "Task ID required" });
-    if (!deleteTask(id)) return reply.code(404).send({ error: "Task not found" });
+  fastify.delete("/api/task", { preHandler: [fastify.authenticate] }, async (request) => {
+    const { id } = parse(idQuerySchema, request.query, "query");
+    if (!deleteTask(id)) throw new HttpError(404, "Task not found");
     resyncCron();
     return { success: true };
   });

@@ -1,17 +1,19 @@
 import type { FastifyInstance } from "fastify";
 import { createTelegramBot } from "../../services/telegram.js";
 import { stopPolling, getPollingStatus, forceCleanup, safeStartPolling } from "../../services/telegram-polling.js";
-import { readAppSettings } from "../../db/repositories/settings.js";
+import { readAppSetting } from "../../db/repositories/settings.js";
+import { HttpError } from "../../lib/http-error.js";
+
+function configuredTelegram() {
+  const telegram = readAppSetting("telegram");
+  if (!telegram?.botToken) throw new HttpError(400, "Telegram not configured");
+  return telegram as typeof telegram & { botToken: string };
+}
 
 export default async function (fastify: FastifyInstance) {
   // POST: start polling
-  fastify.post("/api/telegram/polling", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const settings = readAppSettings();
-    const telegram = settings.telegram;
-    if (!telegram?.botToken) {
-      return reply.code(400).send({ error: "Telegram not configured" });
-    }
-
+  fastify.post("/api/telegram/polling", { preHandler: [fastify.authenticate] }, async () => {
+    const telegram = configuredTelegram();
     const bot = createTelegramBot(telegram.botToken);
     try { await bot.deleteWebhook(); } catch { /* ignore */ }
 
@@ -20,44 +22,26 @@ export default async function (fastify: FastifyInstance) {
   });
 
   // DELETE: stop polling
-  fastify.delete("/api/telegram/polling", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const settings = readAppSettings();
-    const telegram = settings.telegram;
-    if (!telegram?.botToken) {
-      return reply.code(400).send({ error: "Telegram not configured" });
-    }
-
+  fastify.delete("/api/telegram/polling", { preHandler: [fastify.authenticate] }, async () => {
+    const telegram = configuredTelegram();
     stopPolling();
-
     if (telegram.webhookUrl) {
-      const bot = createTelegramBot(telegram.botToken);
-      await bot.setWebhook(telegram.webhookUrl);
+      await createTelegramBot(telegram.botToken).setWebhook(telegram.webhookUrl);
     }
-
     return { success: true, message: "Polling stopped successfully" };
   });
 
   // GET: polling status
-  fastify.get("/api/telegram/polling", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const settings = readAppSettings();
-    const telegram = settings.telegram;
-    if (!telegram?.botToken) {
-      return reply.code(400).send({ error: "Telegram not configured" });
-    }
-
+  fastify.get("/api/telegram/polling", { preHandler: [fastify.authenticate] }, async () => {
+    const telegram = configuredTelegram();
     const pollingStatus = getPollingStatus();
-    const bot = createTelegramBot(telegram.botToken);
-    const webhookInfo = await bot.getWebhookInfo();
-
+    const webhookInfo = await createTelegramBot(telegram.botToken).getWebhookInfo();
     return { polling: pollingStatus.active, webhook: (webhookInfo as any).result, message: pollingStatus.message };
   });
 
   // PUT: force cleanup
-  fastify.put("/api/telegram/polling", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const success = await forceCleanup();
-    if (success) {
-      return { success: true, message: "Force cleanup completed" };
-    }
-    return reply.code(500).send({ error: "Failed to perform force cleanup" });
+  fastify.put("/api/telegram/polling", { preHandler: [fastify.authenticate] }, async () => {
+    if (!(await forceCleanup())) throw new HttpError(500, "Failed to perform force cleanup");
+    return { success: true, message: "Force cleanup completed" };
   });
 }

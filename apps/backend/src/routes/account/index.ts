@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import type { AccountInfo } from "@openstrm/shared";
 import {
   deleteAccount,
@@ -7,7 +8,13 @@ import {
   listAccounts,
   updateAccount,
 } from "../../db/repositories/accounts.js";
+import { HttpError } from "../../lib/http-error.js";
+import { parse } from "../../lib/validate.js";
+import { accountInputSchema, accountPatchSchema } from "../../schemas/entities.js";
 
+const nameQuerySchema = z.object({ name: z.string().min(1, "Missing name") });
+
+/** 改账号时凭据可以不传（沿用旧值），但传了 accountType 就得配套 */
 function missingCredentials(body: Record<string, unknown>): string | null {
   if (body.accountType === "115" && !body.cookie) return "cookie is required for 115 accounts";
   if (body.accountType === "openlist" && (!body.account || !body.password || !body.url)) {
@@ -20,36 +27,24 @@ export default async function (fastify: FastifyInstance) {
   fastify.get("/api/account", { preHandler: [fastify.authenticate] }, async () => listAccounts());
 
   fastify.post("/api/account", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const body = (request.body ?? {}) as Record<string, unknown>;
-    const { accountType, name } = body;
-    if (!accountType || typeof name !== "string" || !name) {
-      return reply.code(400).send({ error: "accountType and name are required" });
-    }
-    const missing = missingCredentials(body);
-    if (missing) return reply.code(400).send({ error: missing });
-    if (getAccount(name)) return reply.code(400).send({ error: "Account name already exists" });
-
-    const account = { ...body, accountType, name } as AccountInfo;
+    const account = parse(accountInputSchema, request.body) as AccountInfo;
+    if (getAccount(account.name)) throw new HttpError(409, "Account name already exists");
     insertAccount(account);
     return reply.code(201).send(account);
   });
 
-  fastify.put("/api/account", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const body = (request.body ?? {}) as Record<string, unknown>;
-    const { name } = body;
-    if (typeof name !== "string" || !name) return reply.code(400).send({ error: "name is required" });
+  fastify.put("/api/account", { preHandler: [fastify.authenticate] }, async (request) => {
+    const body = parse(accountPatchSchema, request.body);
     const missing = missingCredentials(body);
-    if (missing) return reply.code(400).send({ error: missing });
-
-    const updated = updateAccount(name, body);
-    if (!updated) return reply.code(404).send({ error: "Account not found" });
+    if (missing) throw new HttpError(400, missing);
+    const updated = updateAccount(body.name, body);
+    if (!updated) throw new HttpError(404, "Account not found");
     return updated;
   });
 
-  fastify.delete("/api/account", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const { name } = request.query as { name?: string };
-    if (!name) return reply.code(400).send({ error: "Missing name" });
-    if (!deleteAccount(name)) return reply.code(404).send({ error: "Account not found" });
+  fastify.delete("/api/account", { preHandler: [fastify.authenticate] }, async (request) => {
+    const { name } = parse(nameQuerySchema, request.query, "query");
+    if (!deleteAccount(name)) throw new HttpError(404, "Account not found");
     return { message: "Account deleted" };
   });
 }

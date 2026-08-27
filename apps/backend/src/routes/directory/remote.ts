@@ -1,24 +1,23 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { fsDirGetId, fsFiles } from "../../services/cloud-115/client.js";
-import { readAppSettings } from "../../db/repositories/settings.js";
 import { listAccounts } from "../../db/repositories/accounts.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
+import { HttpError } from "../../lib/http-error.js";
+import { parse } from "../../lib/validate.js";
+
+const bodySchema = z.object({ account: z.string().min(1, "account is required"), path: z.string().default("") });
 
 export default async function (fastify: FastifyInstance) {
-  fastify.post("/api/directory/remote/list", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const { account, path = "" } = request.body as { account: string; path?: string };
+  fastify.post("/api/directory/remote/list", { preHandler: [fastify.authenticate] }, async (request) => {
+    const { account, path } = parse(bodySchema, request.body);
 
-    if (!account) {
-      return reply.code(400).send({ code: 400, message: "account is required" });
-    }
-
-    const accounts = listAccounts();
-    const accountInfo = accounts.find((a) => a.name === account);
+    const accountInfo = listAccounts().find((a) => a.name === account);
     if (!accountInfo || accountInfo.accountType !== "115") {
-      return reply.code(400).send({ code: 400, message: "only 115 accounts are supported" });
+      throw new HttpError(400, "only 115 accounts are supported");
     }
 
-    const settings = readAppSettings();
-    const userAgent = settings["user-agent"] || undefined;
+    const userAgent = readAppSettings()["user-agent"] || undefined;
 
     let cid = 0;
     if (path) {

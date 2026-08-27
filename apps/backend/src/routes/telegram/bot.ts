@@ -1,14 +1,21 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { createTelegramBot } from "../../services/telegram.js";
 import { deleteAppSetting, readAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
+import { HttpError } from "../../lib/http-error.js";
+import { parse } from "../../lib/validate.js";
+
+const configureSchema = z.object({
+  botToken: z.string({ error: "Bot token is required" }).regex(/^\d+:[A-Za-z0-9_-]{35}$/, "Invalid bot token format"),
+  chatId: z.string().optional(),
+  webhookUrl: z.string().optional(),
+});
 
 export default async function (fastify: FastifyInstance) {
   // GET: bot info
-  fastify.get("/api/telegram/bot", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  fastify.get("/api/telegram/bot", { preHandler: [fastify.authenticate] }, async () => {
     const telegram = readAppSetting("telegram");
-    if (!telegram?.botToken) {
-      return reply.code(400).send({ error: "Telegram not configured" });
-    }
+    if (!telegram?.botToken) throw new HttpError(400, "Telegram not configured");
 
     const bot = createTelegramBot(telegram.botToken);
     const botInfo = await bot.getMe();
@@ -18,21 +25,13 @@ export default async function (fastify: FastifyInstance) {
   });
 
   // POST: configure bot
-  fastify.post("/api/telegram/bot", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const { botToken, chatId, webhookUrl } = request.body as { botToken?: string; chatId?: string; webhookUrl?: string };
-    if (!botToken) {
-      return reply.code(400).send({ error: "Bot token is required" });
-    }
-
-    const tokenPattern = /^\d+:[A-Za-z0-9_-]{35}$/;
-    if (!tokenPattern.test(botToken)) {
-      return reply.code(400).send({ error: "Invalid bot token format" });
-    }
+  fastify.post("/api/telegram/bot", { preHandler: [fastify.authenticate] }, async (request) => {
+    const { botToken, chatId, webhookUrl } = parse(configureSchema, request.body);
 
     const bot = createTelegramBot(botToken);
     const botInfo = await bot.getMe();
     if (!(botInfo as any).ok) {
-      return reply.code(400).send({ error: "Invalid bot token", details: (botInfo as any).description });
+      throw new HttpError(400, "Invalid bot token", { details: (botInfo as any).description });
     }
 
     // 只覆盖这次给出的字段：allowedUsers / allowTaskStart 由别的接口维护，不能被这里重置

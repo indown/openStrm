@@ -6,6 +6,7 @@ import { initDb } from "./db/migrate.js";
 import { sqlite } from "./db/client.js";
 import { readAppSettings } from "./db/repositories/settings.js";
 import { logger } from "./lib/logger.js";
+import { registerErrorHandling } from "./plugins/error-handler.js";
 
 // Prevent unhandled rejections from crashing the process
 process.on("unhandledRejection", (err) => {
@@ -66,6 +67,7 @@ import clearDirectoryRoute from "./routes/system/clear-directory.js";
 import clearRateLimitersRoute from "./routes/system/clear-rate-limiters.js";
 
 const app = Fastify({ loggerInstance: logger, forceCloseConnections: true });
+registerErrorHandling(app);
 
 // 上个进程退出时还在跑的任务已经没了，历史里不能永远挂着 running；顺手把 30 天前的记录清掉
 const interrupted = reconcileInterruptedExecutions();

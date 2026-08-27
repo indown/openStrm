@@ -1,10 +1,17 @@
 import type { FastifyInstance } from "fastify";
-
+import { z } from "zod";
 import { DEFAULT_AUTH } from "../../db/defaults.js";
 import { writeAuthPassword, readAuthConfig } from "../../db/repositories/auth.js";
 import { verifyPassword } from "../../services/password.js";
+import { HttpError } from "../../lib/http-error.js";
+import { parse } from "../../lib/validate.js";
 
 const MIN_LENGTH = 8;
+
+const changeSchema = z.object({
+  currentPassword: z.string().default(""),
+  newPassword: z.string().min(MIN_LENGTH, `新密码至少 ${MIN_LENGTH} 位`),
+});
 
 export default async function (fastify: FastifyInstance) {
   fastify.post(
@@ -15,27 +22,17 @@ export default async function (fastify: FastifyInstance) {
       preHandler: [fastify.authenticate],
       config: { allowDefaultPassword: true },
     },
-    async (request, reply) => {
-      const { currentPassword, newPassword } = (request.body ?? {}) as {
-        currentPassword?: string;
-        newPassword?: string;
-      };
+    async (request) => {
+      const { currentPassword, newPassword } = parse(changeSchema, request.body);
 
       const config = readAuthConfig();
       const stored = typeof config.password === "string" ? config.password : "";
-      if (!(await verifyPassword(currentPassword ?? "", stored))) {
-        return reply.code(401).send({ error: "当前密码不正确" });
-      }
-      if (typeof newPassword !== "string" || newPassword.length < MIN_LENGTH) {
-        return reply.code(400).send({ error: `新密码至少 ${MIN_LENGTH} 位` });
+      if (!(await verifyPassword(currentPassword, stored))) {
+        throw new HttpError(401, "当前密码不正确");
       }
       // 允许改回默认值就等于允许绕过这道强制
-      if (newPassword === DEFAULT_AUTH.password) {
-        return reply.code(400).send({ error: "不能使用默认密码" });
-      }
-      if (newPassword === currentPassword) {
-        return reply.code(400).send({ error: "新密码不能与当前密码相同" });
-      }
+      if (newPassword === DEFAULT_AUTH.password) throw new HttpError(400, "不能使用默认密码");
+      if (newPassword === currentPassword) throw new HttpError(400, "新密码不能与当前密码相同");
 
       await writeAuthPassword(newPassword);
       fastify.log.info("[auth] 密码已更新");

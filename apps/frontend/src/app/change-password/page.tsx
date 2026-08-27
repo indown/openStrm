@@ -43,7 +43,7 @@ export default function ChangePasswordPage() {
       router.push("/login");
     } catch (err) {
       const message =
-        (err as { response?: { data?: { error?: string } } }).response?.data?.error ??
+        (err as { response?: { data?: { message?: string } } }).response?.data?.message ??
         "修改失败，请重试";
       toast.error(message);
     } finally {

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { LifeMonitorSettings } from "@openstrm/shared";
+import { z } from "zod";
 import {
   getLifeMonitorStatus,
   probeLifeEvents,
@@ -9,25 +9,26 @@ import {
 import { listRecentLifeEvents } from "../../db/repositories/life.js";
 import { BEHAVIOR_TYPE_TO_NAME } from "../../services/cloud-115/life.js";
 import { readAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
+import { HttpError } from "../../lib/http-error.js";
+import { parse } from "../../lib/validate.js";
+import { lifeMonitorSchema } from "../../schemas/entities.js";
+
+const startSchema = z.object({ config: lifeMonitorSchema.optional() });
+const probeSchema = z.object({ limit: z.number().int().positive().optional() });
+const eventsQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(500).default(50) });
 
 export default async function (fastify: FastifyInstance) {
   /** 运行状态 + 统计 + 最近日志 */
-  fastify.get("/api/life/monitor", { preHandler: [fastify.authenticate] }, async () => {
-    return getLifeMonitorStatus();
-  });
+  fastify.get("/api/life/monitor", { preHandler: [fastify.authenticate] }, async () => getLifeMonitorStatus());
 
   /** 启动监控；可选地在启动前写入配置 */
-  fastify.post("/api/life/monitor", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const body = (request.body ?? {}) as { config?: LifeMonitorSettings };
-    if (body.config) {
-      writeAppSetting("lifeMonitor", {
-        ...(readAppSetting("lifeMonitor") ?? {}),
-        ...body.config,
-        enabled: true,
-      });
+  fastify.post("/api/life/monitor", { preHandler: [fastify.authenticate] }, async (request) => {
+    const { config } = parse(startSchema, request.body);
+    if (config) {
+      writeAppSetting("lifeMonitor", { ...(readAppSetting("lifeMonitor") ?? {}), ...config, enabled: true });
     }
     const res = await startLifeMonitor();
-    if (!res.ok) return reply.code(400).send({ error: res.message });
+    if (!res.ok) throw new HttpError(400, res.message);
     return { success: true, message: res.message, status: getLifeMonitorStatus() };
   });
 
@@ -39,17 +40,16 @@ export default async function (fastify: FastifyInstance) {
   });
 
   /** 只拉不处理，用来确认账号能不能读到生活事件 */
-  fastify.post("/api/life/probe", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const body = (request.body ?? {}) as { limit?: number };
-    const res = await probeLifeEvents(Number(body.limit) || 20);
-    if (!res.ok) return reply.code(400).send({ error: res.message });
+  fastify.post("/api/life/probe", { preHandler: [fastify.authenticate] }, async (request) => {
+    const { limit } = parse(probeSchema, request.body);
+    const res = await probeLifeEvents(limit ?? 20);
+    if (!res.ok) throw new HttpError(400, res.message);
     return res;
   });
 
   /** 已处理事件的历史记录 */
   fastify.get("/api/life/events", { preHandler: [fastify.authenticate] }, async (request) => {
-    const q = (request.query ?? {}) as { limit?: string };
-    const limit = Math.min(Math.max(Number(q.limit) || 50, 1), 500);
+    const { limit } = parse(eventsQuerySchema, request.query, "query");
     return {
       events: listRecentLifeEvents(limit).map((e) => ({
         ...e,

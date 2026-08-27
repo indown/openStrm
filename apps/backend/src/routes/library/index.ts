@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import type { MediaLibraryEntry } from "@openstrm/shared";
 import {
   getAll,
@@ -12,21 +13,41 @@ import {
 import { shareExtractPayload, getShareData } from "../../services/cloud-115/share.js";
 import { enqueueOne } from "../../services/library/scrape-worker.js";
 import { normalizeTitle } from "../../services/media-title.js";
-import { randomId, sanitizeTags, shareRootCidForDb } from "./_util.js";
-import { readAppSettings } from "../../db/repositories/settings.js";
 import { listAccounts } from "../../db/repositories/accounts.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
+import { HttpError } from "../../lib/http-error.js";
+import { parse } from "../../lib/validate.js";
+import { cidSchema } from "../../schemas/entities.js";
+import { randomId, sanitizeTags, shareRootCidForDb } from "./_util.js";
+
+const idParamsSchema = z.object({ id: z.string().min(1) });
+
+const createSchema = z.looseObject({
+  shareUrl: z.string().trim().min(1, "shareUrl is required"),
+  title: z.string().optional(),
+  coverUrl: z.string().optional(),
+  tags: z.array(z.unknown()).optional(),
+  notes: z.string().optional(),
+  cid: cidSchema.optional(),
+  fileCount: z.union([z.number(), z.string()]).optional(),
+  rawName: z.string().optional(),
+  sharePath: z.string().optional(),
+});
+
+const patchSchema = z.object({
+  title: z.string().optional(),
+  coverUrl: z.string().optional(),
+  notes: z.string().optional(),
+  tags: z.array(z.unknown()).optional(),
+  receiveCode: z.string().optional(),
+});
 
 export default async function (fastify: FastifyInstance) {
-  fastify.get("/api/library", { preHandler: [fastify.authenticate] }, async () => {
-    return getAll();
-  });
+  fastify.get("/api/library", { preHandler: [fastify.authenticate] }, async () => getAll());
 
   fastify.post("/api/library", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const body = request.body as Record<string, unknown>;
-    const shareUrl = typeof body.shareUrl === "string" ? body.shareUrl.trim() : "";
-    if (!shareUrl) {
-      return reply.code(400).send({ code: 400, message: "shareUrl is required" });
-    }
+    const body = parse(createSchema, request.body);
+    const shareUrl = body.shareUrl;
 
     let shareCode = "";
     let receiveCode = "";
@@ -35,36 +56,30 @@ export default async function (fastify: FastifyInstance) {
       shareCode = parsed.share_code;
       receiveCode = parsed.receive_code;
     } catch {
-      return reply.code(400).send({ code: 400, message: "Invalid share url" });
+      throw new HttpError(400, "Invalid share url");
     }
-    if (!shareCode) {
-      return reply.code(400).send({ code: 400, message: "Cannot parse shareCode from url" });
-    }
+    if (!shareCode) throw new HttpError(400, "Cannot parse shareCode from url");
 
     const settings = readAppSettings();
     const hasTmdb = Boolean(settings.tmdb?.apiKey?.trim());
     const userAgent = typeof settings["user-agent"] === "string" ? settings["user-agent"] : undefined;
-    const bodyTitle = typeof body.title === "string" ? body.title.trim() : "";
-    const bodyCoverUrl = typeof body.coverUrl === "string" ? body.coverUrl.trim() : "";
+    const bodyTitle = (body.title ?? "").trim();
+    const bodyCoverUrl = (body.coverUrl ?? "").trim();
     const bodyTags = sanitizeTags(body.tags);
-    const bodyNotes = typeof body.notes === "string" ? body.notes : "";
+    const bodyNotes = body.notes ?? "";
     const cidStr = shareRootCidForDb(body.cid);
     const hasCidFromClient = Boolean(cidStr && cidStr !== "0");
-    const bodyRawName = typeof body.rawName === "string" ? body.rawName.trim() : "";
+    const bodyRawName = (body.rawName ?? "").trim();
 
     const now = Math.floor(Date.now() / 1000);
 
     // ==== 子目录直接入库模式：前端已定位到具体子目录 ====
     if (hasCidFromClient && bodyRawName) {
-      const bodyPath =
-        typeof body.sharePath === "string"
-          ? body.sharePath.split("/").map((s) => s.trim()).filter(Boolean).join("/")
-          : "";
+      const bodyPath = (body.sharePath ?? "").split("/").map((s) => s.trim()).filter(Boolean).join("/");
       const sharePath = bodyPath ? `/${bodyPath}` : `/${bodyRawName}`;
       const existing = getByShareCodeAndPath(shareCode, sharePath);
-      if (existing) {
-        return reply.code(409).send({ code: 409, message: "该子目录已在影库中", data: existing });
-      }
+      if (existing) throw new HttpError(409, "该子目录已在影库中", { data: existing });
+
       const bodyFileCount = typeof body.fileCount === "number" ? body.fileCount : Number(body.fileCount ?? 0) || 0;
       const { title: normTitle, year: normYear } = normalizeTitle(bodyRawName);
       const entry: MediaLibraryEntry = {
@@ -93,14 +108,11 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(201).send({ mode: "subdir", entry });
     }
 
-    const accounts = listAccounts();
-    const account115 = accounts.find((a) => a.accountType === "115") as any;
+    const account115 = listAccounts().find((a) => a.accountType === "115") as any;
 
     // ==== 单片模式 ====
     const existing = getByShareCode(shareCode);
-    if (existing) {
-      return reply.code(409).send({ code: 409, message: "该分享已在影库中", data: existing });
-    }
+    if (existing) throw new HttpError(409, "该分享已在影库中", { data: existing });
 
     let title = bodyTitle;
     let fileCount = typeof body.fileCount === "number" ? body.fileCount : 0;
@@ -144,34 +156,26 @@ export default async function (fastify: FastifyInstance) {
     return reply.code(201).send({ mode: "single", entry });
   });
 
-  fastify.put("/api/library/:id", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const body = request.body as Record<string, unknown>;
-    const existing = getById(id);
-    if (!existing) {
-      return reply.code(404).send({ code: 404, message: "Entry not found" });
-    }
+  fastify.put("/api/library/:id", { preHandler: [fastify.authenticate] }, async (request) => {
+    const { id } = parse(idParamsSchema, request.params, "params");
+    const body = parse(patchSchema, request.body);
+    if (!getById(id)) throw new HttpError(404, "Entry not found");
 
     const updates: Partial<MediaLibraryEntry> = {};
-    if (typeof body.title === "string") updates.title = body.title.trim();
-    if (typeof body.coverUrl === "string") updates.coverUrl = body.coverUrl.trim();
-    if (typeof body.notes === "string") updates.notes = body.notes;
-    if (Array.isArray(body.tags)) updates.tags = sanitizeTags(body.tags);
-    if (typeof body.receiveCode === "string") updates.receiveCode = body.receiveCode.trim();
+    if (body.title !== undefined) updates.title = body.title.trim();
+    if (body.coverUrl !== undefined) updates.coverUrl = body.coverUrl.trim();
+    if (body.notes !== undefined) updates.notes = body.notes;
+    if (body.tags !== undefined) updates.tags = sanitizeTags(body.tags);
+    if (body.receiveCode !== undefined) updates.receiveCode = body.receiveCode.trim();
 
     const merged = update(id, updates);
-    if (!merged) {
-      return reply.code(404).send({ code: 404, message: "Entry not found" });
-    }
+    if (!merged) throw new HttpError(404, "Entry not found");
     return merged;
   });
 
-  fastify.delete("/api/library/:id", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const existing = getById(id);
-    if (!existing) {
-      return reply.code(404).send({ code: 404, message: "Entry not found" });
-    }
+  fastify.delete("/api/library/:id", { preHandler: [fastify.authenticate] }, async (request) => {
+    const { id } = parse(idParamsSchema, request.params, "params");
+    if (!getById(id)) throw new HttpError(404, "Entry not found");
     remove(id);
     return { success: true };
   });
