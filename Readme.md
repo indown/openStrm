@@ -130,6 +130,7 @@ docker-compose -f docker-compose.prod.yml up -d
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
+| `TZ` | `UTC` | 定时任务按这个时区解释 cron 表达式。compose 示例里已设为 `Asia/Shanghai`；不设的话 `0 3 * * *` 会在北京时间 11:00 跑 |
 | `JWT_SECRET` | 首次启动随机生成并持久化 | 登录令牌的签名密钥。只有在需要轮换密钥、或多个副本共享同一份登录状态时才手动指定；改动会让所有已登录会话立即失效 |
 | `LOG_LEVEL` | `info` | 排查「播放没走 302」时设为 `debug` |
 | `CONFIG_DIR` / `DATA_DIR` | `/app/config`、`/app/data` | 容器内路径，一般不用改 |
