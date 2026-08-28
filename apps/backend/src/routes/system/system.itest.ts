@@ -35,12 +35,13 @@ after(async () => {
   await writeAuthPassword(DEFAULT_AUTH.password);
 });
 
-test("/api/health 不鉴权，只回状态和运行时长", async () => {
+test("/api/health 不鉴权，只回状态、版本和运行时长", async () => {
   const res = await app.inject({ method: "GET", url: "/api/health" });
   assert.equal(res.statusCode, 200);
   assert.equal(res.json().status, "ok");
   assert.equal(typeof res.json().uptimeSeconds, "number");
-  assert.equal(Object.keys(res.json()).length, 2, "不该带出配置或统计");
+  assert.match(res.json().version, /^\d+\.\d+\.\d+/, "本地跑就是 package.json 的版本号");
+  assert.deepEqual(Object.keys(res.json()).sort(), ["status", "uptimeSeconds", "version"], "不该带出配置或统计");
 });
 
 test("/api/system/backup 需要登录", async () => {

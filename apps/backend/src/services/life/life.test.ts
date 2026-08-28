@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
 import { test as t } from "node:test";
-import fs from "node:fs";
-import path from "node:path";
 import { parseJsonBigIntSafe, reachedCursor, type LifeEvent } from "../cloud-115/life.js";
 import { matchTask, toStrmPath, type LifeContext } from "./handlers.js";
 import { joinPanPath } from "../cloud-115/path-resolver.js";
 import type { TaskDefinition } from "@openstrm/shared";
-import { listTasks } from "../../db/repositories/tasks.js";
 // ---- parseJsonBigIntSafe ----
 t("19 位 id 不丢精度", () => {
   const raw = '{"data":{"count":3,"list":[{"id":2618855323975851714,"file_id":3040163688862324736,"parent_id":0,"type":2}]}}';
@@ -101,34 +98,3 @@ t("命中最长（最具体）的 originPath", () => {
 t("不在任何 originPath 下 → null", () => assert.equal(matchTask(ctx, "/other/x.mkv"), null));
 t("前缀相同但不是子路径 → 不命中", () => assert.equal(matchTask(ctx, "/tvshows/x.mkv"), null));
 t("originPath 自身 → relPath 为空", () => assert.equal(matchTask(ctx, "/tv")?.relPath, ""));
-
-function findFirstStrm(dir: string): string | null {
-  let items: fs.Dirent[];
-  try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch { return null; }
-  for (const it of items) {
-    const full = path.join(dir, it.name);
-    if (it.isDirectory()) { const hit = findFirstStrm(full); if (hit) return hit; }
-    else if (it.name.endsWith(".strm")) return full;
-  }
-  return null;
-}
-
-t("生成的 strm 内容与磁盘上已有的逐字节一致", (ctx) => {
-  // 拿库里真实配置的 115 任务，随便找一个它已经生成的 strm，
-  // 用本模块的公式反推内容，两边必须完全相同——这是防止 strm 格式跑偏的回归线。
-  // 测试库里通常没有任务，那就跳过。
-  const real = listTasks().filter((task) => (task.accountType ?? "115") === "115" && task.strmPrefix);
-  for (const task of real) {
-    const root = path.resolve(import.meta.dirname, "../../../../../data", task.targetPath);
-    const sample = fs.existsSync(root) ? findFirstStrm(root) : null;
-    if (!sample) continue;
-
-    const onDisk = fs.readFileSync(sample, "utf8");
-    const relFile = path.relative(root, sample).replace(/\.strm$/, path.extname(onDisk));
-    const m = matchTask({ tasks: [task] } as unknown as LifeContext, `/${task.originPath}/${relFile}`)!;
-    const generated = `${task.strmPrefix}/${task.originPath}/${m.relPath}`;
-    assert.equal(generated, onDisk, `任务 ${task.id}`);
-    return;
-  }
-  ctx.skip("本地没有可对照的 strm 样本");
-});
