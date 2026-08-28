@@ -51,9 +51,10 @@ axiosInstance.interceptors.response.use(
     if (error.response?.status === 401 && !isLoginCall) {
       // 清除无效token
       clearToken();
-      // 跳转到登录页
-      if (typeof window !== 'undefined') {
-        window.location.href = '/login';
+      // 跳登录页并记住当前位置，登录后回来；已经在登录页就不用再跳
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        const here = window.location.pathname + window.location.search;
+        window.location.href = here && here !== '/' ? `/login?next=${encodeURIComponent(here)}` : '/login';
       }
     }
     // 默认密码没改之前，后端会挡下改密码以外的全部接口。

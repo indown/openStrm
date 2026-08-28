@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -58,43 +58,63 @@ export function SaveToDriveDialog({
   const [subdirs, setSubdirs] = useState<RemoteDir[]>([]);
   const [subdirLoading, setSubdirLoading] = useState(false);
 
+  // 任务列表只在打开时拉一次；默认选中用函数式更新，别把 selectedTaskId 放进依赖里反复重拉
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
     setLoading(true);
+    setSubSegments([]);
     api.tasks
       .list()
       .then((rows) => {
+        if (cancelled) return;
         const list: TaskOption[] = Array.isArray(rows) ? rows : [];
         setTasks(list);
-        if (list.length > 0 && !selectedTaskId) setSelectedTaskId(list[0].id);
+        setSelectedTaskId((prev) => (prev && list.some((t) => t.id === prev) ? prev : (list[0]?.id ?? "")));
       })
-      .catch(() => toast.error("加载任务列表失败"))
-      .finally(() => setLoading(false));
-  }, [open, selectedTaskId]);
+      .catch(() => {
+        if (!cancelled) toast.error("加载任务列表失败");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
-  const selectedTask = tasks.find((t) => t.id === selectedTaskId);
+  const selectedTask = useMemo(() => tasks.find((t) => t.id === selectedTaskId), [tasks, selectedTaskId]);
   const taskInvalid = selectedTask && (!selectedTask.targetPath || !selectedTask.strmPrefix);
   const subPath = subSegments.join("/");
+  // 子目录请求只跟任务 id 和路径走，不跟任务对象的引用走：每次拉列表都是新对象，会把导航重置掉
+  const taskAccount = selectedTask?.account;
+  const taskOriginPath = selectedTask?.originPath;
 
   useEffect(() => {
-    if (!open || !selectedTask) return;
-    setSubSegments([]);
-  }, [open, selectedTaskId, selectedTask]);
-
-  useEffect(() => {
-    if (!open || !selectedTask) return;
-    const fullPath = subSegments.length
-      ? `${selectedTask.originPath}/${subSegments.join("/")}`
-      : selectedTask.originPath;
+    if (!open || !selectedTaskId || taskAccount == null || taskOriginPath == null) return;
+    let cancelled = false;
+    const fullPath = subSegments.length ? `${taskOriginPath}/${subSegments.join("/")}` : taskOriginPath;
     setSubdirLoading(true);
     api.directory
-      .remote(selectedTask.account, fullPath)
-      .then((dirs) => setSubdirs(dirs ?? []))
-      .catch(() => {
-        setSubdirs([]);
+      .remote(taskAccount, fullPath)
+      .then((dirs) => {
+        if (!cancelled) setSubdirs(dirs ?? []);
       })
-      .finally(() => setSubdirLoading(false));
-  }, [open, selectedTask, subSegments]);
+      .catch(() => {
+        if (!cancelled) setSubdirs([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSubdirLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, selectedTaskId, taskAccount, taskOriginPath, subSegments]);
+
+  const handleSelectTask = (id: string) => {
+    setSelectedTaskId(id);
+    setSubSegments([]);
+  };
 
   const handleOpenSubdir = (name: string) => {
     setSubSegments((prev) => [...prev, name]);
@@ -134,7 +154,7 @@ export function SaveToDriveDialog({
                 暂无任务，请先到首页创建一个指向你希望保存到的 115 目录的任务。
               </div>
             ) : (
-              <Select value={selectedTaskId} onValueChange={setSelectedTaskId}>
+              <Select value={selectedTaskId} onValueChange={handleSelectTask}>
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="选择任务" />
                 </SelectTrigger>

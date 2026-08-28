@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -26,35 +26,42 @@ interface DirectoryPickerDialogProps {
   onSelect: (cid: number) => void;
 }
 
+const ROOT_CRUMB: BreadcrumbItem = { cid: 0, name: "根目录" };
+
 export function DirectoryPickerDialog({
   open,
   onOpenChange,
   onSelect,
 }: DirectoryPickerDialogProps) {
-  const [breadcrumb, setBreadcrumb] = useState<BreadcrumbItem[]>([
-    { cid: 0, name: "根目录" },
-  ]);
+  const [breadcrumb, setBreadcrumb] = useState<BreadcrumbItem[]>([ROOT_CRUMB]);
   const [directories, setDirectories] = useState<DirectoryItem[]>([]);
   const [loading, setLoading] = useState(false);
+  // 连续点目录时只认最后一次请求，慢的旧响应不能盖掉新目录
+  const seqRef = useRef(0);
 
   const currentCid = breadcrumb[breadcrumb.length - 1].cid;
 
-  useEffect(() => {
-    if (open) {
-      fetchDirectories(0);
-    }
-  }, [open]);
-
-  const fetchDirectories = async (cid: number) => {
+  const fetchDirectories = useCallback(async (cid: number) => {
+    const seq = ++seqRef.current;
     setLoading(true);
     try {
-      setDirectories(((await api.drive115.list(cid)) || []).filter((item) => item.fc === 0));
+      const list = ((await api.drive115.list(cid)) || []).filter((item) => item.fc === 0);
+      if (seq !== seqRef.current) return;
+      setDirectories(list);
     } catch {
+      if (seq !== seqRef.current) return;
       toast.error("加载目录失败");
     } finally {
-      setLoading(false);
+      if (seq === seqRef.current) setLoading(false);
     }
-  };
+  }, []);
+
+  // 每次打开都从根目录开始：面包屑不重置的话，"保存到此位置"会指向上次逛到的目录
+  useEffect(() => {
+    if (!open) return;
+    setBreadcrumb([ROOT_CRUMB]);
+    fetchDirectories(0);
+  }, [open, fetchDirectories]);
 
   const handleOpenFolder = (dir: DirectoryItem) => {
     setBreadcrumb((prev) => [...prev, { cid: dir.cid, name: dir.n }]);

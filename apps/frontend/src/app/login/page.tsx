@@ -15,6 +15,15 @@ interface LoginForm {
   password: string;
 }
 
+/** 登录后要回去的站内路径：只认以 / 开头的路径，// 开头（协议相对）、带反斜杠、指回登录页的都不要 */
+function safeNextPath(): string | null {
+  const next = new URLSearchParams(window.location.search).get("next");
+  if (!next || !next.startsWith("/") || next.startsWith("//") || next.includes("\\") || next.startsWith("/login")) {
+    return null;
+  }
+  return next;
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -33,7 +42,7 @@ export default function LoginPage() {
       setToken(token);
 
       // 还在用默认密码的话，先去改密码——其余接口在那之前都会被后端拒绝
-      router.push(mustChangePassword ? "/change-password" : "/");
+      router.push(mustChangePassword ? "/change-password" : (safeNextPath() ?? "/"));
     } catch (err) {
       // 后端的 message 会说明是密码错还是被限流（"请 N 秒后再试"），原样给用户
       setError(apiErrorMessage(err, "登录失败，请检查用户名或密码"));
@@ -47,7 +56,7 @@ export default function LoginPage() {
       <div className="w-full max-w-md bg-white p-8 rounded-2xl shadow-lg">
         <div className="flex flex-col items-center mb-6">
           <Image
-            src="/logo.svg"
+            src="/logo-128.png"
             alt="OpenStrm Logo"
             width={64}
             height={64}

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
@@ -18,9 +19,15 @@ import {
 import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { ShareDetailDialog } from "@/components/ShareDetailDialog";
-import { HdhiveSearchDialog } from "@/components/HdhiveSearchDialog";
 import { toast } from "sonner";
+
+// 两个弹框只在用到时才加载：它们（连同转存 / 目录选择弹框）不该进所有页面共享的首屏包，登录页也得为它们买单
+const ShareDetailDialog = dynamic(() => import("@/components/ShareDetailDialog").then((m) => m.ShareDetailDialog), {
+  ssr: false,
+});
+const HdhiveSearchDialog = dynamic(() => import("@/components/HdhiveSearchDialog").then((m) => m.HdhiveSearchDialog), {
+  ssr: false,
+});
 
 export default function LayoutWrapper({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -35,6 +42,8 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   const [hdhiveResources, setHdhiveResources] = useState<HdhiveResourceItem[]>([]);
   const [hdhiveTotal, setHdhiveTotal] = useState(0);
   const [hdhiveError, setHdhiveError] = useState<string | null>(null);
+  // 连续搜索时只认最后一次的结果，慢的旧响应不能盖掉新的
+  const hdhiveSeqRef = useRef(0);
 
   // 登录页和强制改密码页都不显示导航等
   if (pathname === "/login" || pathname === "/change-password") {
@@ -63,6 +72,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       return;
     }
 
+    const seq = ++hdhiveSeqRef.current;
     setHdhiveOpen(true);
     setHdhiveLoading(true);
     setHdhiveError(null);
@@ -75,11 +85,13 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       const data = await api.hdhive.search(
         hasExplicit ? { tmdbId: options.tmdbId, mediaType: options.mediaType } : { query: queryToUse },
       );
+      if (seq !== hdhiveSeqRef.current) return;
       setHdhiveTmdb(data?.tmdb ?? null);
       setHdhiveAlternatives(data?.alternatives ?? []);
       setHdhiveResources(data?.resources ?? []);
       setHdhiveTotal(data?.total ?? 0);
     } catch (err) {
+      if (seq !== hdhiveSeqRef.current) return;
       setHdhiveError(apiErrorBody(err).message || (err as Error).message || "搜索失败");
       // HDHive 挂了时后端仍把 TMDB 结果放在错误体的 data 里，先把它们摆出来
       const fallback = (apiErrorBody(err) as { data?: { tmdb: HdhiveTmdbItem | null; alternatives: HdhiveTmdbItem[] } }).data;
@@ -88,7 +100,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
         setHdhiveAlternatives(fallback.alternatives ?? []);
       }
     } finally {
-      setHdhiveLoading(false);
+      if (seq === hdhiveSeqRef.current) setHdhiveLoading(false);
     }
   };
 
@@ -115,7 +127,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
                   placeholder="粘贴 115 分享链接"
                   value={share.link}
                   onChange={(e) => share.setLink(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && fetchShareDetail()}
+                  onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && fetchShareDetail()}
                   className="h-8 text-sm"
                 />
                 <Button size="sm" onClick={() => fetchShareDetail()} disabled={share.loading}>
@@ -128,7 +140,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
                   placeholder="搜索影视资源（TMDB → HDHive）"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && runHdhiveSearch()}
+                  onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && runHdhiveSearch()}
                   className="h-8 text-sm"
                 />
                 <Button

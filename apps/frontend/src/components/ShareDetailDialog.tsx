@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   Dialog,
@@ -88,14 +88,46 @@ export function ShareDetailDialog({
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
-  // 弹框打开时用根目录列表初始化；关闭时重置面包屑和列表
+  // 定位用的面包屑按内容比较：每次 load 都传新数组，按引用比较会把弹框多初始化一次
+  const startKey = useMemo(() => (startCrumbs ?? []).map((c) => `${c.id}:${c.name}`).join("/"), [startCrumbs]);
+  const startCrumbsRef = useRef(startCrumbs);
+  useEffect(() => {
+    startCrumbsRef.current = startCrumbs;
+  });
+  // 连续进目录 / 翻页时只认最后一次请求，慢的旧响应不能盖掉新列表
+  const seqRef = useRef(0);
+
+  const fetchList = useCallback(
+    async (cid: string, nextPage: number) => {
+      const link = shareLink.trim();
+      if (!link) return;
+      const seq = ++seqRef.current;
+      setLoading(true);
+      try {
+        const page = await api.share.list(link, cid, { limit: PAGE_SIZE, offset: (nextPage - 1) * PAGE_SIZE });
+        if (seq !== seqRef.current) return;
+        setCurrentList(page.list ?? []);
+        setTotalCount(page.count ?? 0);
+        setPage(nextPage);
+      } catch {
+        if (seq !== seqRef.current) return;
+        toast.error("加载目录失败");
+      } finally {
+        if (seq === seqRef.current) setLoading(false);
+      }
+    },
+    [shareLink],
+  );
+
+  // 弹框打开时用根目录列表初始化；带 startCid 时直接拉那一层
   useEffect(() => {
     if (!open) return;
     setSelectedItems(new Map());
     setPage(1);
     const startCidStr = startCid != null ? String(startCid) : "";
-    if (startCidStr && startCidStr !== "0" && startCrumbs && startCrumbs.length > 0) {
-      setBreadcrumb([{ id: "0", name: "根目录" }, ...startCrumbs]);
+    const crumbs = startCrumbsRef.current;
+    if (startCidStr && startCidStr !== "0" && crumbs && crumbs.length > 0) {
+      setBreadcrumb([{ id: "0", name: "根目录" }, ...crumbs]);
       setCurrentList([]);
       setTotalCount(0);
       fetchList(startCidStr, 1);
@@ -104,23 +136,7 @@ export function ShareDetailDialog({
       setCurrentList(initialFileList);
       setTotalCount(initialFileCount);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, initialFileList, initialFileCount, startCid, startCrumbs?.map((c) => c.name).join("/")]);
-
-  const fetchList = async (cid: string, nextPage: number) => {
-    if (!shareLink.trim()) return;
-    setLoading(true);
-    try {
-      const page = await api.share.list(shareLink.trim(), cid, { limit: PAGE_SIZE, offset: (nextPage - 1) * PAGE_SIZE });
-      setCurrentList(page.list ?? []);
-      setTotalCount(page.count ?? 0);
-      setPage(nextPage);
-    } catch {
-      toast.error("加载目录失败");
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [open, initialFileList, initialFileCount, startCid, startKey, fetchList]);
 
   const handleOpenFolder = (item: ShareFileItem) => {
     if (!item.is_dir) return;

@@ -44,6 +44,12 @@
 }
 
 :root {
+  /* 系统字体栈。变量名沿用 next/font 时代的 --font-geist-*，@theme 里的 --font-sans / --font-mono 还指着它们 */
+  --font-geist-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  --font-geist-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -119,4 +125,28 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* 日志页进度条的动画（原来写在页面的 <style jsx> 里） */
+@keyframes log-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+@keyframes log-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+.log-shimmer {
+  animation: log-shimmer 2s infinite;
+}
+.log-spin {
+  animation: log-spin 1s linear infinite;
 }

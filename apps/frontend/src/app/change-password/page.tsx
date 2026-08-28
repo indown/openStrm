@@ -54,7 +54,7 @@ export default function ChangePasswordPage() {
       <div className="w-full max-w-md bg-white p-8 rounded-2xl shadow-lg">
         <div className="flex flex-col items-center mb-6">
           <Image
-            src="/logo.svg"
+            src="/logo-128.png"
             alt="OpenStrm Logo"
             width={64}
             height={64}
