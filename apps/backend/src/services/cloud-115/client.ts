@@ -2,7 +2,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
 import { defer, firstValueFrom, Observable } from "rxjs";
 import { encrypt, decrypt } from "./crypto.js";
-import { SimpleCache } from "./SimpleCache.js";
+import { LRUCache } from "lru-cache";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { enqueueForAccount } from "../download/rate-limited.js";
 import { moduleLogger } from "../../lib/logger.js";
@@ -46,40 +46,16 @@ interface ExportDirParseOptions {
   deleteAfter?: boolean;
 }
 
-// 创建缓存实例
-const dirIdCache = new SimpleCache<{ id: number }>(10 * 60 * 1000); // 目录ID缓存10分钟
+/**
+ * 三份缓存都封顶。以前是裸 Map、过期项没人清：浏览/同步过几万个目录之后条目只增不减
+ * （filesListCache 每项还是一个最多 1000 条的数组），compose 限的 1 GB 内存迟早被顶爆。
+ */
+const dirIdCache = new LRUCache<string, { id: number }>({ max: 5000, ttl: 10 * 60 * 1000 });
 /** 网盘目录项：n 名字、fid 文件 id、cid 目录 id、fc 类别、sha 文件哈希（目录为空） */
 export type DriveEntry = { n: string; fid: number; cid: number; fc: number; sha?: string | null };
-const filesListCache = new SimpleCache<{ data: DriveEntry[] }>(5 * 60 * 1000); // 文件列表缓存5分钟
-const pickcodeCache = new SimpleCache<string>(30 * 60 * 1000); // pickcode缓存30分钟
+const filesListCache = new LRUCache<string, { data: DriveEntry[] }>({ max: 2000, ttl: 5 * 60 * 1000 });
+const pickcodeCache = new LRUCache<string, string>({ max: 20_000, ttl: 30 * 60 * 1000 });
 
-// 缓存管理函数
-export function clearAllCaches(): void {
-  dirIdCache.clear();
-  filesListCache.clear();
-  pickcodeCache.clear();
-  log.debug("[CACHE] All caches cleared");
-}
-
-export function cleanupExpiredCaches(): void {
-  dirIdCache.cleanup();
-  filesListCache.cleanup();
-  pickcodeCache.cleanup();
-  log.debug("[CACHE] Expired cache entries cleaned up");
-}
-
-export function getCacheStats(): { dirId: number; files: number; pickcode: number } {
-  // 使用类型断言访问私有属性
-  const dirIdSize = (dirIdCache as unknown as { cache: Map<string, unknown> }).cache.size;
-  const filesSize = (filesListCache as unknown as { cache: Map<string, unknown> }).cache.size;
-  const pickcodeSize = (pickcodeCache as unknown as { cache: Map<string, unknown> }).cache.size;
-  
-  return {
-    dirId: dirIdSize,
-    files: filesSize,
-    pickcode: pickcodeSize
-  };
-}
 export async function exportDirParse(options: ExportDirParseOptions) {
   const {
     exportFileIds = 0, // number | string | string[]
