@@ -78,6 +78,41 @@ function safeLocation(url: string): string {
   return url.replace(NON_ASCII_ALL, (c) => encodeURIComponent(c));
 }
 
+/**
+ * 需要"两跳"的客户端。
+ *
+ * 115 直链和换链时用的 User-Agent 严格绑定（实测：用 A 换的链接拿 B 去取，CDN 直接 403）。
+ * 我们按到达代理的那个 UA 换链，前提是客户端跟随 302 去 CDN 时还用同一个 UA。
+ * Infuse 不是：拖进度条时到代理的 UA 和到 CDN 的 UA 不一样，拿着按前者绑定的缓存直链
+ * 反复 403、反复重试（日志里就是一串"缓存命中"），把那个文件打到 115 临时限流。
+ *
+ * 处理办法是先 302 回代理自己同一路径（带 _hop=2），客户端跟随这一跳时用的 UA
+ * 才是它随后去 CDN 用的 UA，按那个换链再 302 出去。v1 里给 Infuse 转到 Alist /d/ 再跳一次的
+ * clientSelfAlistRule 是同一个原理。
+ */
+const SECOND_HOP_CLIENTS = [/infuse/i];
+const HOP_PARAM = "_hop";
+
+function needsSecondHop(userAgent: string | undefined): boolean {
+  return !!userAgent && SECOND_HOP_CLIENTS.some((re) => re.test(userAgent));
+}
+
+function isSecondHop(query: unknown): boolean {
+  return queryValue(query, HOP_PARAM) === "2";
+}
+
+/**
+ * 第二跳的地址：同一路径，标上 _hop=2。令牌只在请求头里的话补进 query——
+ * 换 UA 的客户端多半连自定义头一起丢，第二跳没有凭据就会被闸门挡成回源。
+ * 相对地址即可：客户端按它请求代理用的 host 解析，反代后面也不用知道公网地址。
+ */
+function secondHopLocation(request: FastifyRequest, apiKey: string): string {
+  const url = new URL(request.url, "http://openstrm.local");
+  url.searchParams.set(HOP_PARAM, "2");
+  if (!queryValue(request.query, "X-Emby-Token", "api_key", "ApiKey")) url.searchParams.set("api_key", apiKey);
+  return `${url.pathname}${url.search}`;
+}
+
 /** 查路径的方式：普通条目走 /Items，同步任务项走 /Sync/JobItems */
 type PathLookup = (
   id: string,
@@ -109,6 +144,11 @@ async function redirectWithLookup(
     return toEmby(request, reply);
   }
 
+  if (needsSecondHop(userAgent) && !isSecondHop(request.query)) {
+    request.log.debug({ itemId, ua: userAgent }, "该客户端跟随重定向时会换 UA，先跳回代理自己一次再换链");
+    return reply.redirect(secondHopLocation(request, apiKey), 302);
+  }
+
   /**
    * key 里带配置版本：改了账号或挂载点之后旧条目自然失效。
    * 代理是独立进程，收不到 API 进程的失效通知，只能这样跨进程对齐。
@@ -118,7 +158,7 @@ async function redirectWithLookup(
   const cached = linkCache.get(cacheKey);
   if (cached) {
     // 每次拖进度条都命中一次，info 太吵；首次解析那条仍是 info
-    request.log.debug({ itemId }, "302 缓存命中");
+    request.log.debug({ itemId, ua: userAgent }, "302 缓存命中");
     return reply.redirect(cached, 302);
   }
 
@@ -151,7 +191,8 @@ async function redirectWithLookup(
 
     target = safeLocation(resolved.url);
     linkCache.set(cacheKey, target);
-    request.log.info({ itemId, account: resolved.accountName }, "302 到 115 直链");
+    // 带上 UA：直链和它绑定，排查"能起播不能拖动"之类的问题时要看两跳的 UA 是否一致
+    request.log.info({ itemId, account: resolved.accountName, ua: userAgent }, "302 到 115 直链");
   } catch (err) {
     request.log.error({ err, itemId }, "302 解析失败，回源");
     return toEmby(request, reply);
