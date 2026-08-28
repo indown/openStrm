@@ -86,7 +86,18 @@ export const settingsPatchSchema = z.looseObject({
       webhookUrl: z.string().optional(),
       allowedUsers: z.array(z.number()).optional(),
       allowTaskStart: z.boolean().optional(),
+      allowOfflineAdd: z.boolean().optional(),
+      allowShareReceive: z.boolean().optional(),
       pollingEnabled: z.boolean().optional(),
+      notify: z
+        .looseObject({
+          taskStart: z.boolean().optional(),
+          taskDone: z.boolean().optional(),
+          taskFailed: z.boolean().optional(),
+          offline: z.boolean().optional(),
+          accountAlert: z.boolean().optional(),
+        })
+        .optional(),
     })
     .optional(),
   tmdb: z.looseObject({ apiKey: z.string().optional(), language: z.string().optional() }).optional(),

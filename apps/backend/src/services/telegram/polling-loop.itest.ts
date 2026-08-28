@@ -3,25 +3,19 @@
  * 以及启停开关落库（重启后 index.ts 据此恢复）。Telegram 用本地桩代替，
  * 通过 TELEGRAM_API_BASE 指过去。
  *
- *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/services/telegram-polling-loop.itest.ts
+ *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/services/telegram/polling-loop.itest.ts
  */
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import http from "node:http";
 import Fastify, { type FastifyInstance } from "fastify";
-import { registerErrorHandling } from "../plugins/error-handler.js";
-import { authPlugin } from "../plugins/auth.js";
-import pollingRoute from "../routes/telegram/polling.js";
-import { DEFAULT_AUTH } from "../db/defaults.js";
-import { writeAuthPassword } from "../db/repositories/auth.js";
-import { readAppSettings, replaceAppSettings } from "../db/repositories/settings.js";
-import {
-  __test_pollingDone,
-  __test_setBackoff,
-  getPollingStatus,
-  startPolling,
-  stopPolling,
-} from "./telegram-polling.js";
+import { registerErrorHandling } from "../../plugins/error-handler.js";
+import { authPlugin } from "../../plugins/auth.js";
+import pollingRoute from "../../routes/telegram/polling.js";
+import { DEFAULT_AUTH } from "../../db/defaults.js";
+import { writeAuthPassword } from "../../db/repositories/auth.js";
+import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
+import { __test_pollingDone, __test_setBackoff, getPollingStatus, startPolling, stopPolling } from "./polling.js";
 
 // ---- 假 Telegram ----
 type Scripted = { status: number; body: unknown } | "hold";
@@ -29,11 +23,13 @@ type Scripted = { status: number; body: unknown } | "hold";
 const script: Scripted[] = [];
 const calls: Array<{ query: URLSearchParams; at: number }> = [];
 const sent: Array<{ text: string }> = [];
+const methods: string[] = [];
 let inFlight = 0;
 let maxInFlight = 0;
 
 const tg = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", "http://x");
+  methods.push(url.pathname.split("/").pop() ?? "");
   const json = (status: number, body: unknown) => {
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
@@ -56,7 +52,7 @@ const tg = http.createServer((req, res) => {
     });
     return;
   }
-  json(200, { ok: true, result: true }); // deleteWebhook / setWebhook / getWebhookInfo
+  json(200, { ok: true, result: true }); // deleteWebhook / setMyCommands
 });
 await new Promise<void>((r) => tg.listen(0, "127.0.0.1", r));
 process.env.TELEGRAM_API_BASE = `http://127.0.0.1:${(tg.address() as { port: number }).port}`;
@@ -90,6 +86,7 @@ async function stopAndDrain() {
   script.length = 0;
   calls.length = 0;
   sent.length = 0;
+  methods.length = 0;
   maxInFlight = 0;
 }
 
@@ -113,7 +110,7 @@ after(async () => {
   await new Promise<void>((r) => tg.close(() => r()));
 });
 
-test("顺序长轮询：同一时刻只有一个 getUpdates，offset 按处理过的 update_id 推进，limit=100", async () => {
+test("顺序长轮询：起循环前摘 webhook、注册命令菜单；同一时刻只有一个 getUpdates，offset 按处理过的 update_id 推进", async () => {
   script.push(
     { status: 200, body: { ok: true, result: [message(10, "/ping"), message(11, "/ping")] } },
     { status: 200, body: { ok: true, result: [] } },
@@ -122,6 +119,8 @@ test("顺序长轮询：同一时刻只有一个 getUpdates，offset 按处理�
   assert.equal(await startPolling(), true);
   assert.equal(await startPolling(), false, "已在跑就不再起第二个循环");
   assert.equal(getPollingStatus().active, true);
+  assert.ok(methods.includes("deleteWebhook"));
+  assert.ok(methods.includes("setMyCommands"));
 
   await waitFor(() => calls.length >= 3, "三次 getUpdates");
   assert.equal(maxInFlight, 1, "长轮询必须串行，叠着发会被 Telegram 用 409 互相掐掉");

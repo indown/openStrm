@@ -33,7 +33,7 @@ import {
 } from "../task-history.js";
 import { refreshEmbyNow } from "../media-server.js";
 import { extOf, extSet } from "../strm/naming.js";
-import { sendTelegramNotification } from "../telegram.js";
+import { notify, type TaskTrigger } from "../telegram/notify.js";
 import {
   getRunningTask,
   registerRunningTask,
@@ -204,17 +204,22 @@ async function loadRemoteTree(
 
 /* --------------------------------- 入口 --------------------------------- */
 
-export async function startTask(taskId: string): Promise<StartTaskResult> {
+export interface StartTaskOptions {
+  /** 谁触发的：只影响通知文案 */
+  trigger?: TaskTrigger;
+}
+
+export async function startTask(taskId: string, opts: StartTaskOptions = {}): Promise<StartTaskResult> {
   const task = getTask(taskId);
   if (!task) return fail(404, "Task not found");
   // 第一个 await 之前就占住：拉远端目录树可能要几分钟，只查 running 表挡不住这期间的第二次启动
   if (!reserveTaskStart(taskId)) return fail(409, "Task is already running");
   try {
-    const result = await launch(task);
-    if (result.status !== 200) recordFailedStart(task, result.body);
+    const result = await launch(task, opts.trigger);
+    if (result.status !== 200) recordFailedStart(task, result.body, opts.trigger);
     return result;
   } catch (err) {
-    recordFailedStart(task, { message: err instanceof Error ? err.message : String(err) });
+    recordFailedStart(task, { message: err instanceof Error ? err.message : String(err) }, opts.trigger);
     throw err;
   } finally {
     // 到这里要么已经注册进 running，要么是提前失败返回；占位都可以放掉了
@@ -227,9 +232,10 @@ export async function startTask(taskId: string): Promise<StartTaskResult> {
  * 以前只在响应里说一句，历史页看不到"为什么没跑"——定时触发的更是无人知晓。
  * "无事可做"的 200 不算失败，照旧不留记录，不然每 30 分钟一条空记录。
  */
-function recordFailedStart(task: TaskDefinition, body: Record<string, unknown>): void {
+function recordFailedStart(task: TaskDefinition, body: Record<string, unknown>, trigger?: TaskTrigger): void {
   const message = typeof body.message === "string" && body.message ? body.message : "启动失败";
   const details = typeof body.details === "string" && body.details ? `：${body.details}` : "";
+  void notify({ type: "task-start-failed", task, reason: `${message}${details}`, trigger });
   try {
     const execution = createTaskExecution(task.id, {
       account: task.account,
@@ -243,7 +249,7 @@ function recordFailedStart(task: TaskDefinition, body: Record<string, unknown>):
   }
 }
 
-async function launch(task: TaskDefinition): Promise<StartTaskResult> {
+async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<StartTaskResult> {
   const { id, account, originPath, targetPath, strmPrefix } = task;
   const accounts = listAccounts();
   const accountInfo = accounts.find((a) => a.name === account);
@@ -289,7 +295,7 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
 
   const running: RunningTask = { subject, subscription: new Subscription(), logs: [] };
   registerRunningTask(id, running);
-  sendTelegramNotification(`<b>Task ID:</b> ${id}\n<b>Account:</b> ${account}\n<b>Files:</b> ${total}`, "start");
+  void notify({ type: "task-start", task, total, trigger });
 
   // 落库的日志攒批写；取消时随订阅一起 flush（见下面的 subscription.add）
   const history = new LogBatcher((lines) => addLogsToTaskExecution(execution.id, lines));
@@ -334,6 +340,10 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
   };
   const finish = (status: "completed" | "failed", fatal?: string) => {
     const message = fatal ?? (failedFiles.length > 0 ? describeFailures(failedFiles) : undefined);
+    void notify({
+      type: "task-done", task, status, total, finished: finished.size, failed: failedFiles.length,
+      durationMs: Date.now() - execution.startTime, message,
+    });
     pushLog({
       done: true, status, total, finished: finished.size, failed: failedFiles.length,
       overallPercent: overall(), message, at: Date.now(),
@@ -350,6 +360,10 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
     history.flush();
     completeTaskExecution(execution.id, "cancelled", {
       totalFiles: total, downloadedFiles: finished.size, failedFiles: failedFiles.length, errorMessage: reason,
+    });
+    void notify({
+      type: "task-done", task, status: "cancelled", total, finished: finished.size, failed: failedFiles.length,
+      durationMs: Date.now() - execution.startTime, message: reason,
     });
   };
 
@@ -391,16 +405,7 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
   // 两条一起跑完才算完成：以前 strm 那条不在订阅里，纯 strm 的任务会在文件还没写完时就报"完成"
   running.subscription = merge(strm$, download$).subscribe({
     complete: () => {
-      const status = failedFiles.length > 0 ? "failed" : "completed";
-      finish(status);
-      if (status === "completed") {
-        sendTelegramNotification(`<b>Task ID:</b> ${id}\n<b>Files:</b> ${total}\n<b>Status:</b> Completed`, "complete");
-      } else {
-        sendTelegramNotification(
-          `<b>Task ID:</b> ${id}\n<b>Files:</b> ${total}\n<b>Failed:</b> ${failedFiles.length}\n${describeFailures(failedFiles)}`,
-          "error",
-        );
-      }
+      finish(failedFiles.length > 0 ? "failed" : "completed");
       // 失败的只是个别文件，写好的那些一样要让媒体库看到
       refreshEmbyNow("全量任务完成");
     },
@@ -408,7 +413,6 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
       // 单个文件的失败都在上面接住了，走到这里是流本身出了意外
       pushLog({ error: err.message });
       finish("failed", err.message);
-      sendTelegramNotification(`<b>Task ID:</b> ${id}\n<b>Error:</b> ${err.message}`, "error");
     },
   });
   // 退订（取消、进程退出）时把还没落库的行写掉；正常结束时上面已经 flush 过，这里是空操作

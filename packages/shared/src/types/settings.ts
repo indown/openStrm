@@ -20,6 +20,35 @@ export type LifeMonitorSettings = {
   mediaServerRefreshMaxWait?: number;
 };
 
+/** 主动推送哪些事件；缺省值见后端 telegram/notify.ts 的 DEFAULT_NOTIFY（任务开始默认关，其它默认开） */
+export type TelegramNotifySettings = {
+  taskStart?: boolean;
+  taskDone?: boolean;
+  taskFailed?: boolean;
+  offline?: boolean;
+  /** 115 cookie 失效 / 被封控 */
+  accountAlert?: boolean;
+};
+
+export type TelegramSettings = {
+  botToken?: string;
+  /** 通知发到哪个会话；也是唯一会响应命令的群 */
+  chatId?: string;
+  /** 老版本的字段，已不再使用（webhook 模式已移除） */
+  webhookUrl?: string;
+  allowedUsers?: number[];
+  /**
+   * 会产生副作用的动作各有一个开关，默认全关：
+   * 按钮一按就会真的跑任务 / 往网盘里加东西，需要显式开启。
+   */
+  allowTaskStart?: boolean;
+  allowOfflineAdd?: boolean;
+  allowShareReceive?: boolean;
+  /** 轮询开关的落库副本：轮询状态只在内存里，进程重启后据此自动恢复 */
+  pollingEnabled?: boolean;
+  notify?: TelegramNotifySettings;
+};
+
 export type AppSettings = {
   "user-agent"?: string;
   strmExtensions?: string[];
@@ -43,19 +72,7 @@ export type AppSettings = {
      */
     allowAnonymousRedirect?: boolean;
   };
-  telegram?: {
-    botToken?: string;
-    chatId?: string;
-    webhookUrl?: string;
-    allowedUsers?: number[];
-    /**
-     * 是否允许从 Telegram 按钮直接启动同步任务。
-     * 默认关闭：按钮一按就会真的跑任务，属于有副作用的动作，需要显式开启。
-     */
-    allowTaskStart?: boolean;
-    /** 轮询开关的落库副本：轮询状态只在内存里，进程重启后据此自动恢复 */
-    pollingEnabled?: boolean;
-  };
+  telegram?: TelegramSettings;
   tmdb?: {
     apiKey?: string;
     language?: string;

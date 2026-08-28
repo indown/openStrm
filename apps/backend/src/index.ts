@@ -22,7 +22,7 @@ await initDb();
 // Core plugins
 import { authPlugin } from "./plugins/auth.js";
 import { cronPlugin } from "./plugins/cron.js";
-import { startPolling, stopPolling } from "./services/telegram-polling.js";
+import { startPolling, stopPolling } from "./services/telegram/polling.js";
 import { cancelAllRunningTasks } from "./services/task/registry.js";
 import { reconcileInterruptedExecutions } from "./services/task-history.js";
 import { startHousekeeping } from "./services/housekeeping.js";
@@ -146,12 +146,10 @@ await app.register(backupRoute);
 
 // Telegram routes
 import telegramBotRoute from "./routes/telegram/bot.js";
-import telegramSendRoute from "./routes/telegram/send.js";
 import telegramUsersRoute from "./routes/telegram/users.js";
 import telegramPollingRoute from "./routes/telegram/polling.js";
 
 await app.register(telegramBotRoute);
-await app.register(telegramSendRoute);
 await app.register(telegramUsersRoute);
 await app.register(telegramPollingRoute);
 
