@@ -23,6 +23,7 @@ const ORIGIN = "/media/Show";
 let listDelayMs = 0;
 let listCalls = 0;
 let holdRaw = false;
+let emptyRemote = false;
 let rawRequests = 0;
 const held = new Set<http.ServerResponse>();
 
@@ -46,7 +47,7 @@ const server = http.createServer((req, res) => {
     if (req.url === "/api/auth/login") return json({ code: 200, data: { token: "tok" } });
     if (req.url === "/api/fs/list") {
       listCalls++;
-      const content = tree[body.path as string] ?? [];
+      const content = emptyRemote ? [] : (tree[body.path as string] ?? []);
       setTimeout(() => json({ code: 200, data: { content } }), listDelayMs);
       return;
     }
@@ -160,6 +161,22 @@ test("removeExtraFiles：本地多出来的文件和空目录被删掉，远端�
     assert.ok(fs.existsSync(path.join(outDir, "out/S1/ep1.strm")), "远端仍有的不能被删");
     assert.ok(fs.existsSync(path.join(outDir, "out/S1/ep1.nfo")));
   } finally {
+    updateTask(TASK, { removeExtraFiles: false });
+  }
+});
+
+test("removeExtraFiles：远端目录为空时拒绝清理本地（多半是导出失败），并在响应里说明", async () => {
+  updateTask(TASK, { removeExtraFiles: true });
+  emptyRemote = true;
+  try {
+    const res = await startTask(TASK);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.message, "no files to download");
+    assert.match(String(res.body.warning), /远端目录为空.*已跳过清理/);
+    assert.ok(fs.existsSync(path.join(outDir, "out/S1/ep1.strm")), "本地库不能被清空");
+    assert.ok(fs.existsSync(path.join(outDir, "out/S1/ep1.nfo")));
+  } finally {
+    emptyRemote = false;
     updateTask(TASK, { removeExtraFiles: false });
   }
 });
