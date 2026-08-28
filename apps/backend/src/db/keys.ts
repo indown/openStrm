@@ -6,6 +6,7 @@
  * - `auth.*`    登录凭据：用户名、口令哈希、mustChangePassword。
  * - `system.*`  不该随任何响应体外发的机密，目前只有 JWT 密钥。
  * - `life.*`    生活事件监控的运行状态：游标、接口降级状态。
+ * - `offline.*` 云下载的回执：哪些 115 离线任务完成后要生成 strm。
  * - 无前缀的标记键：任何前缀匹配都碰不到它，用来记「已初始化」这类一次性事实。
  */
 export const KEY = {
@@ -16,4 +17,5 @@ export const KEY = {
   seededMarker: "__migrated_from_json__",
   lifeCursor: "life.cursor",
   lifeAppFallback: "life.appFallback",
+  offlineFollowups: "offline.followups",
 } as const;

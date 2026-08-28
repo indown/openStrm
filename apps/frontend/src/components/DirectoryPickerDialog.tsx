@@ -23,7 +23,10 @@ interface BreadcrumbItem {
 interface DirectoryPickerDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSelect: (cid: number) => void;
+  /** path 是从根目录起的各级目录名（根目录为空串），给调用方回显用 */
+  onSelect: (cid: number, path: string) => void;
+  /** 浏览哪个 115 账号的网盘；不传取第一个 */
+  account?: string;
 }
 
 const ROOT_CRUMB: BreadcrumbItem = { cid: 0, name: "根目录" };
@@ -32,6 +35,7 @@ export function DirectoryPickerDialog({
   open,
   onOpenChange,
   onSelect,
+  account,
 }: DirectoryPickerDialogProps) {
   const [breadcrumb, setBreadcrumb] = useState<BreadcrumbItem[]>([ROOT_CRUMB]);
   const [directories, setDirectories] = useState<DirectoryItem[]>([]);
@@ -45,7 +49,7 @@ export function DirectoryPickerDialog({
     const seq = ++seqRef.current;
     setLoading(true);
     try {
-      const list = ((await api.drive115.list(cid)) || []).filter((item) => item.fc === 0);
+      const list = ((await api.drive115.list(cid, account)) || []).filter((item) => item.fc === 0);
       if (seq !== seqRef.current) return;
       setDirectories(list);
     } catch {
@@ -54,7 +58,7 @@ export function DirectoryPickerDialog({
     } finally {
       if (seq === seqRef.current) setLoading(false);
     }
-  }, []);
+  }, [account]);
 
   // 每次打开都从根目录开始：面包屑不重置的话，"保存到此位置"会指向上次逛到的目录
   useEffect(() => {
@@ -76,7 +80,7 @@ export function DirectoryPickerDialog({
   };
 
   const handleConfirm = () => {
-    onSelect(currentCid);
+    onSelect(currentCid, breadcrumb.slice(1).map((b) => b.name).join("/"));
     onOpenChange(false);
   };
 

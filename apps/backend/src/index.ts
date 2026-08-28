@@ -47,6 +47,8 @@ import taskCronRoute from "./routes/task/cron.js";
 // Cloud storage routes
 import cloudFilesRoute from "./routes/cloud/files.js";
 import cloudShareRoute from "./routes/cloud/share.js";
+import cloudOfflineRoute from "./routes/cloud/offline.js";
+import { startOfflineWatcher, stopOfflineWatcher } from "./services/offline/service.js";
 
 // Library routes
 import libraryRoute from "./routes/library/index.js";
@@ -118,6 +120,7 @@ await app.register(taskCronRoute);
 // Cloud storage routes
 await app.register(cloudFilesRoute);
 await app.register(cloudShareRoute);
+await app.register(cloudOfflineRoute);
 
 // Library routes
 await app.register(libraryRoute);
@@ -181,6 +184,8 @@ try {
       .then((r) => (r.ok ? app.log.info(r.message) : app.log.warn(r.message)))
       .catch((err) => app.log.error({ err }, "life monitor start failed"));
   }
+  // 云下载回执：上次关机前还有"下完生成 strm"没兑现的，接着盯
+  startOfflineWatcher();
   // Telegram 轮询同理：上次是开着的就自动恢复，别让每次重启都得有人去界面上再按一次
   if (settings.telegram?.pollingEnabled) {
     startPolling()
@@ -199,6 +204,7 @@ async function shutdown() {
   shuttingDown = true;
 
   try { await stopLifeMonitor(); } catch { /* ignore */ }
+  try { await stopOfflineWatcher(); } catch { /* ignore */ }
   try { flushEmbyRefresh(); } catch { /* ignore */ }
   try { cancelAllRunningTasks(); } catch { /* ignore */ }
 

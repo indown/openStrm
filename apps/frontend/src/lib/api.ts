@@ -159,6 +159,98 @@ export type LifeEventRow = {
   detail: string;
 };
 
+/* ------------------------------- 115 云下载 ------------------------------- */
+
+export type OfflineTaskState = "pending" | "downloading" | "done" | "failed" | "unknown";
+export interface OfflineTask {
+  infoHash: string;
+  name: string;
+  url: string;
+  size: number;
+  /** 0-100 */
+  percent: number;
+  status: number;
+  state: OfflineTaskState;
+  /** 115 给的中文说明 */
+  statusText: string;
+  /** unix 秒 */
+  addTime: number;
+  lastUpdate: number;
+  leftTime: number;
+  peers: number;
+  rateDownload: number;
+  dirId: string;
+  resultId: string;
+  resultName: string;
+  isDir: boolean;
+  move: number;
+  pickCode: string;
+}
+export type OfflineFollowupStatus = "pending" | "done" | "failed";
+/** 「下载完成后生成 strm」的回执 */
+export interface OfflineFollowup {
+  infoHash: string;
+  account: string;
+  taskId: string;
+  subPath: string;
+  name: string;
+  addedAt: number;
+  status: OfflineFollowupStatus;
+  detail: string;
+  doneAt?: number;
+  attempts: number;
+  misses: number;
+}
+export interface OfflineWatcherStatus {
+  running: boolean;
+  pending: number;
+  lastTickAt: number | null;
+  lastError: string | null;
+}
+export interface OfflineListPage {
+  account: string;
+  page: number;
+  pageCount: number;
+  pageSize: number;
+  count: number;
+  quota: number | null;
+  total: number | null;
+  tasks: OfflineTask[];
+  followups: OfflineFollowup[];
+  watcher: OfflineWatcherStatus;
+}
+export interface OfflineAddResult {
+  url: string;
+  ok: boolean;
+  infoHash?: string;
+  name?: string;
+  message?: string;
+}
+export interface OfflineAddResponse {
+  account: string;
+  dirId: string | null;
+  dirPath: string | null;
+  added: number;
+  failed: number;
+  invalid: string[];
+  results: OfflineAddResult[];
+  followup: boolean;
+}
+export interface OfflineAddInput {
+  account?: string;
+  /** 每行一条 */
+  urls: string;
+  dirId?: string;
+  taskId?: string;
+  subPath?: string;
+  generateStrm?: boolean;
+}
+export interface OfflineDownPath {
+  id: string;
+  name: string;
+  selected: boolean;
+}
+
 export interface TelegramBotInfo {
   id: number;
   is_bot: boolean;
@@ -285,8 +377,25 @@ export const api = {
   },
 
   drive115: {
-    /** 网盘目录内容（原始字段：cid / n / fc） */
-    list: (cid: number) => data(axiosInstance.post<Drive115Item[]>("/api/115/files", { cid })),
+    /** 网盘目录内容（原始字段：cid / n / fc）；account 不传取第一个 115 账号 */
+    list: (cid: number | string, account?: string) =>
+      data(axiosInstance.post<Drive115Item[]>("/api/115/files", { cid, account })),
+  },
+
+  offline: {
+    list: (account?: string, page = 1) =>
+      data(axiosInstance.get<OfflineListPage>("/api/115/offline", { params: { account, page } })),
+    /** 提交给 115 之前要解析目录，可能慢一点 */
+    add: (input: OfflineAddInput) => data(axiosInstance.post<OfflineAddResponse>("/api/115/offline", input, { timeout: 60_000 })),
+    remove: (body: { account?: string; infoHashes: string[]; deleteFiles?: boolean }) =>
+      data(axiosInstance.post<{ success: true; removed: number }>("/api/115/offline/delete", body)),
+    /** flag：0 已完成 / 1 全部 / 2 已失败 / 3 进行中 / 4 已完成+删源文件 / 5 全部+删源文件 */
+    clear: (body: { account?: string; flag: number }) =>
+      data(axiosInstance.post<{ success: true }>("/api/115/offline/clear", body)),
+    restart: (body: { account?: string; infoHash: string }) =>
+      data(axiosInstance.post<{ success: true }>("/api/115/offline/restart", body)),
+    downPaths: (account?: string) =>
+      data(axiosInstance.get<{ dirs: OfflineDownPath[] }>("/api/115/offline/downpath", { params: { account } })),
   },
 
   directory: {
