@@ -10,6 +10,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# 两个作业都只读仓库；token 默认权限跟着仓库设置走，这里明确收窄
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Typecheck and tests
@@ -60,8 +64,10 @@ jobs:
           push: false
           load: true
           tags: openstrm:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # scope 和 release.yml 的 amd64 作业一致：打 tag 时的 amd64 构建能直接复用这里的层，
+          # 否则每次发版都从零装依赖、重跑 next build
+          cache-from: type=gha,scope=amd64
+          cache-to: type=gha,mode=max,scope=amd64
 
       # 构建成功不代表能跑，必须真起一次。判据是服务在不在应答，不是进程名。
       - name: Smoke test

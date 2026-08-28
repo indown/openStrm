@@ -1,11 +1,15 @@
+import { createRequire } from "node:module";
 import type { FastifyInstance } from "fastify";
 import { sqlite } from "../../db/client.js";
 import { HttpError } from "../../lib/http-error.js";
 
 const startedAt = Date.now();
+// 镜像里由 release 工作流把 git tag 写进 APP_VERSION；本地开发退回 package.json 的版本号
+const pkg = createRequire(import.meta.url)("../../../package.json") as { version: string };
+const version = process.env.APP_VERSION || pkg.version;
 
 /**
- * 探活。不鉴权：给 Docker HEALTHCHECK、反代和监控用，所以只回"活着 + 库能读"，
+ * 探活。不鉴权：给 Docker HEALTHCHECK、反代和监控用，所以只回"活着 + 库能读 + 版本"，
  * 不带任何配置或统计。库读不了回 503，容器编排据此判定不健康。
  */
 export default async function (fastify: FastifyInstance) {
@@ -17,6 +21,6 @@ export default async function (fastify: FastifyInstance) {
         status: "error",
       });
     }
-    return { status: "ok", uptimeSeconds: Math.round((Date.now() - startedAt) / 1000) };
+    return { status: "ok", version, uptimeSeconds: Math.round((Date.now() - startedAt) / 1000) };
   });
 }
