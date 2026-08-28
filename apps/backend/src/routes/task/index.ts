@@ -3,7 +3,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { TaskDefinition } from "@openstrm/shared";
 import { deleteTask, insertTask, listTasks, updateTask } from "../../db/repositories/tasks.js";
-import { listRunningTaskIds } from "../../services/task/registry.js";
+import { isTaskRunning, listRunningTaskIds } from "../../services/task/registry.js";
+import { getLatestExecutions } from "../../services/task-history.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 import { taskInputSchema, taskPatchSchema } from "../../schemas/entities.js";
@@ -21,11 +22,16 @@ export default async function (fastify: FastifyInstance) {
   // 定时任务跟着任务定义走。以前只在启动时同步一次，改了 cron 表达式要重启才生效
   const resyncCron = () => fastify.cron.syncFromConfig();
 
+  /** 任务定义 + 运行态 + 上次执行 + 下次定时：列表页一次拿齐，不用每行再查历史 */
   fastify.get("/api/task", { preHandler: [fastify.authenticate] }, async () => {
     const running = new Set(listRunningTaskIds());
+    const latest = getLatestExecutions();
+    const nextRuns = new Map(fastify.cron.listJobs().map((j) => [j.taskId, j.nextRun]));
     return listTasks().map((task) => ({
       ...task,
       status: running.has(task.id) ? "processing" : "pending",
+      lastRun: latest.get(task.id) ?? null,
+      nextRunAt: nextRuns.get(task.id) ?? null,
     }));
   });
 
@@ -46,6 +52,8 @@ export default async function (fastify: FastifyInstance) {
 
   fastify.delete("/api/task", { preHandler: [fastify.authenticate] }, async (request) => {
     const { id } = parse(idQuerySchema, request.query, "query");
+    // 删了定义任务还在跑：进度流、执行记录都成了没主的；先取消再删
+    if (isTaskRunning(id)) throw new HttpError(409, "任务正在运行，先取消再删除");
     if (!deleteTask(id)) throw new HttpError(404, "Task not found");
     resyncCron();
     return { success: true };

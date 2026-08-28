@@ -3,12 +3,12 @@
 import * as React from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch, type Control } from "react-hook-form";
 import { toast } from "sonner";
+import { FolderOpen } from "lucide-react";
+import type { TaskDefinition } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
-import { apiErrorMessage } from "@/lib/axios";
-import { HelpCircle } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogClose,
@@ -22,6 +22,7 @@ import {
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -35,25 +36,46 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { FolderOpen } from "lucide-react";
+import { api } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/axios";
 import { DirectoryTreeDialog } from "./DirectoryTreeDialog";
 import { LocalDirectoryTreeDialog } from "./LocalDirectoryTreeDialog";
 
+/** 5 段（或带秒的 6 段）就放行，字段是否合法由后端的 cron 库校验，失败会以 400 回来 */
+const CRON_SHAPE = /^\S+(?:\s+\S+){4,5}$/;
+
 export const taskFormSchema = z.object({
-  account: z.string().min(1, "Account 不能为空"),
-  originPath: z.string().min(1, "Origin Path 不能为空"),
-  targetPath: z.string().optional(),
+  account: z.string().min(1, "请选择账户"),
+  originPath: z.string().trim().min(1, "远程路径不能为空"),
+  targetPath: z.string().trim().min(1, "本地路径不能为空"),
+  strmPrefix: z.string().trim().min(1, "Strm 前缀不能为空"),
   strmType: z.string().optional(),
-  strmPrefix: z.string().optional(),
   removeExtraFiles: z.boolean().optional(),
   enable302: z.boolean().optional(),
   enablePathEncoding: z.boolean().optional(),
+  cronExpression: z
+    .string()
+    .trim()
+    .refine((v) => v === "" || CRON_SHAPE.test(v), "cron 表达式应为 5 段，例如 0 3 * * *"),
 });
 
 export type TaskFormValues = z.infer<typeof taskFormSchema>;
 
+/** 编辑时传进来的任务：定义 + 表单存的 strmType */
+export type TaskEditable = Partial<Omit<TaskDefinition, "id">> & { id?: string; strmType?: string };
+
+/** Select 的选项值不能是空串，用两个占位值表示"不定时"和"自定义" */
+const NONE = "__none__";
+const CUSTOM = "__custom__";
+const CRON_PRESETS = [
+  { value: "0 * * * *", label: "每小时" },
+  { value: "0 */6 * * *", label: "每 6 小时" },
+  { value: "0 3 * * *", label: "每天 03:00" },
+  { value: "0 4 * * 1", label: "每周一 04:00" },
+];
+
 interface AddTaskDialogProps {
-  task?: TaskFormValues & { name?: string; id?: string };
+  task?: TaskEditable;
   trigger?: React.ReactNode;
   onSuccess?: () => void;
   accounts?: Array<{ name: string; accountType: string }>;
@@ -63,9 +85,8 @@ interface AddTaskDialogProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-/** 编辑时，如果启用了302且strmPrefix以账号结尾，需要去掉账号后缀 */
-function stripAccountSuffix(task: AddTaskDialogProps["task"]): string {
-  if (!task) return "";
+/** 编辑时，如果启用了 302 且 strmPrefix 以账号结尾，需要去掉账号后缀（保存时会再拼回去） */
+function stripAccountSuffix(task: TaskEditable): string {
   let prefix = task.strmPrefix || "";
   if (task.enable302 && task.account && prefix.endsWith("/" + task.account)) {
     prefix = prefix.slice(0, -(task.account.length + 1));
@@ -74,19 +95,48 @@ function stripAccountSuffix(task: AddTaskDialogProps["task"]): string {
 }
 
 /** 当前应当显示的表单值：编辑时来自 task（去掉 302 拼上的账号后缀），新增时是空表单 */
-function defaultsFor(task: AddTaskDialogProps["task"]): TaskFormValues {
-  return task
-    ? { ...task, strmPrefix: stripAccountSuffix(task) }
-    : {
-        account: "",
-        originPath: "",
-        targetPath: "",
-        strmType: "local",
-        strmPrefix: "",
-        removeExtraFiles: true,
-        enable302: false,
-        enablePathEncoding: false,
-      };
+function defaultsFor(task: TaskEditable | undefined): TaskFormValues {
+  return {
+    account: task?.account ?? "",
+    originPath: task?.originPath ?? "",
+    targetPath: task?.targetPath ?? "",
+    strmPrefix: task ? stripAccountSuffix(task) : "",
+    strmType: task?.strmType ?? "local",
+    removeExtraFiles: task?.removeExtraFiles ?? true,
+    enable302: task?.enable302 ?? false,
+    enablePathEncoding: task?.enablePathEncoding ?? false,
+    cronExpression: task?.cronExpression ?? "",
+  };
+}
+
+function CheckboxRow({
+  control,
+  name,
+  label,
+  description,
+}: {
+  control: Control<TaskFormValues>;
+  name: "removeExtraFiles" | "enable302" | "enablePathEncoding";
+  label: string;
+  description: string;
+}) {
+  return (
+    <FormField
+      control={control}
+      name={name}
+      render={({ field }) => (
+        <FormItem className="flex items-start gap-3 rounded-md border p-3 space-y-0">
+          <FormControl>
+            <Checkbox checked={field.value === true} onCheckedChange={(v) => field.onChange(v === true)} className="mt-0.5" />
+          </FormControl>
+          <div className="space-y-1 leading-snug">
+            <FormLabel className="cursor-pointer font-medium">{label}</FormLabel>
+            <FormDescription className="text-xs">{description}</FormDescription>
+          </div>
+        </FormItem>
+      )}
+    />
+  );
 }
 
 export function AddTaskDialog({
@@ -104,42 +154,21 @@ export function AddTaskDialog({
   const [loading, setLoading] = React.useState(false);
   const [directoryDialogOpen, setDirectoryDialogOpen] = React.useState(false);
   const [localDirectoryDialogOpen, setLocalDirectoryDialogOpen] = React.useState(false);
-  const [formValues, setFormValues] = React.useState({
-    strmPrefix: "",
-    originPath: "",
-    account: "",
-    enable302: false,
-  });
-
-  // 获取选中账户的类型
-  const getAccountType = (accountName: string) => {
-    const selectedAccount = accounts.find((acc) => acc.name === accountName);
-    return selectedAccount?.accountType || "";
-  };
-
-  // 检查当前选中的账户是否是 115 类型
-  const is115Account = getAccountType(formValues.account) === "115";
-
-  // 计算预览路径
-  const getPreviewPath = () => {
-    const { strmPrefix, originPath, account, enable302 } = formValues;
-    if (!strmPrefix && !originPath) {
-      return "请输入 Strm Prefix 和 Origin Path";
-    }
-    let prefix = strmPrefix || "";
-    // 如果是 115 账户且开启了 302，在前缀后拼接账户名
-    if (is115Account && enable302 && account) {
-      prefix = prefix.replace(/\/+$/, "") + "/" + account;
-    }
-    const origin = originPath || "";
-    const combinedPath = prefix + "/" + origin;
-    return `${combinedPath}/....../abc.mkv`;
-  };
+  /** 定时下拉选了"自定义"：表达式为空或不等于预设时也保持输入框可编辑 */
+  const [customCron, setCustomCron] = React.useState(false);
 
   const form = useForm<TaskFormValues>({
     resolver: zodResolver(taskFormSchema),
     defaultValues: defaultsFor(task),
   });
+
+  const account = useWatch({ control: form.control, name: "account" }) ?? "";
+  const originPath = useWatch({ control: form.control, name: "originPath" }) ?? "";
+  const strmPrefix = useWatch({ control: form.control, name: "strmPrefix" }) ?? "";
+  const enable302 = useWatch({ control: form.control, name: "enable302" }) ?? false;
+
+  const accountType = accounts.find((acc) => acc.name === account)?.accountType ?? "";
+  const is115Account = accountType === "115";
 
   const setOpen = (next: boolean) => {
     if (!isControlled) setOpenState(next);
@@ -149,64 +178,43 @@ export function AddTaskDialog({
   // 每次打开都按当前的 task 重置：useForm 的 defaultValues 只在挂载时取一次，
   // 保存成功后再点"编辑"会显示改之前的值，再存一次就把新值盖回去了
   const handleOpenChange = (next: boolean) => {
-    if (next) form.reset(defaultsFor(task));
+    if (next) {
+      form.reset(defaultsFor(task));
+      setCustomCron(false);
+    }
     setOpen(next);
   };
 
   // 受控打开不经过 handleOpenChange（是父组件改的 open），这里补上同样的重置
   React.useEffect(() => {
-    if (isControlled && openProp) form.reset(defaultsFor(task));
+    if (isControlled && openProp) {
+      form.reset(defaultsFor(task));
+      setCustomCron(false);
+    }
   }, [isControlled, openProp, task, form]);
 
-  // 监听表单值变化
-  React.useEffect(() => {
-    const subscription = form.watch((value) => {
-      setFormValues({
-        strmPrefix: value.strmPrefix || "",
-        originPath: value.originPath || "",
-        account: value.account || "",
-        enable302: value.enable302 || false,
-      });
-    });
-    return () => subscription.unsubscribe();
-  }, [form]);
-
-  // 初始化时同步表单值到状态
-  React.useEffect(() => {
-    if (task) {
-      setFormValues({
-        strmPrefix: stripAccountSuffix(task),
-        originPath: task.originPath || "",
-        account: task.account || "",
-        enable302: task.enable302 || false,
-      });
-    }
-  }, [task]);
+  /** 115 + 302 时前缀后面会拼上 /账号名；示例路径让用户看到最终写进 strm 的样子 */
+  const effectivePrefix =
+    is115Account && enable302 && account ? `${strmPrefix.replace(/\/+$/, "")}/${account}` : strmPrefix.replace(/\/+$/, "");
+  const preview =
+    strmPrefix || originPath ? `${effectivePrefix}/${originPath.replace(/^\/+/, "").replace(/\/+$/, "")}/…/abc.mkv` : "";
 
   const onSubmit = async (values: TaskFormValues) => {
     setLoading(true);
     try {
-      // 自动获取选中账户的类型
-      const accountType = getAccountType(values.account);
-      
-      // 如果是115账户且开启了302，在strmPrefix后拼接账户名
-      let finalStrmPrefix = values.strmPrefix || "";
-      if (accountType === "115" && values.enable302 && values.account) {
+      // 如果是 115 账户且开启了 302，在 strmPrefix 后拼接账户名（代理按这个前缀识别 302 挂载点）
+      let finalStrmPrefix = values.strmPrefix;
+      if (is115Account && values.enable302 && values.account) {
         finalStrmPrefix = finalStrmPrefix.replace(/\/+$/, "") + "/" + values.account;
       }
-      
-      const taskData = {
-        ...values,
-        strmPrefix: finalStrmPrefix,
-        accountType,
-      };
+      const taskData = { ...values, strmPrefix: finalStrmPrefix, accountType };
 
       if (task?.id) {
         await api.tasks.update(task.id, taskData);
       } else {
         await api.tasks.create(taskData);
       }
-
+      toast.success(task?.id ? "任务已保存" : "任务已创建");
       onSuccess?.();
       setOpen(false);
     } catch (err) {
@@ -220,278 +228,219 @@ export function AddTaskDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       {(trigger !== undefined || !isControlled) && (
-        <DialogTrigger asChild>
-          {trigger ?? (
-            <Button variant="outline">{task ? "编辑" : "新增任务"}</Button>
-          )}
-        </DialogTrigger>
+        <DialogTrigger asChild>{trigger ?? <Button variant="outline">{task ? "编辑" : "新增任务"}</Button>}</DialogTrigger>
       )}
 
-      <DialogContent className="sm:max-w-[450px]">
+      <DialogContent className="sm:max-w-[560px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{task ? "编辑任务" : "新增任务"}</DialogTitle>
+          <DialogTitle>{task ? "编辑任务" : "新建任务"}</DialogTitle>
           <DialogDescription>
-            {task ? "编辑现有任务" : "添加一个新的任务"}
+            把网盘里的一个目录同步成本地的 strm 目录；媒体库扫本地目录即可播放。
           </DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            {/* 账号 */}
             <FormField
               control={form.control}
               name="account"
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>账户</FormLabel>
-                  <FormControl>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select account" />
+                  <Select onValueChange={field.onChange} value={field.value}>
+                    <FormControl>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="选择网盘账户" />
                       </SelectTrigger>
-                      <SelectContent className="z-[60]">
-                        {accountsLoading ? (
-                          <SelectItem value="loading" disabled>
-                            加载中...
+                    </FormControl>
+                    <SelectContent className="z-[60]">
+                      {accountsLoading ? (
+                        <SelectItem value="loading" disabled>
+                          加载中...
+                        </SelectItem>
+                      ) : accounts.length === 0 ? (
+                        <SelectItem value="no-accounts" disabled>
+                          还没有账号，请先到「账户」页添加
+                        </SelectItem>
+                      ) : (
+                        accounts.map((acc) => (
+                          <SelectItem key={acc.name} value={acc.name}>
+                            {acc.name}（{acc.accountType}）
                           </SelectItem>
-                        ) : accounts.length === 0 ? (
-                          <SelectItem value="no-accounts" disabled>
-                            暂无账号
-                          </SelectItem>
-                        ) : (
-                          accounts.map((acc) => (
-                            <SelectItem key={acc.name} value={acc.name}>
-                              {acc.name} ({acc.accountType})
-                            </SelectItem>
-                          ))
-                        )}
-                      </SelectContent>
-                    </Select>
-                  </FormControl>
+                        ))
+                      )}
+                    </SelectContent>
+                  </Select>
                   <FormMessage />
                 </FormItem>
               )}
             />
 
-            {/* 开启 302 - 仅 115 账户显示 */}
-            {is115Account && (
-              <FormField
-                control={form.control}
-                name="enable302"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel className="flex items-center gap-1">
-                      开启 302 重定向
-                      <div className="group relative">
-                        <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-600 cursor-help" />
-                        <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 text-white text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
-                          开启后，Strm 前缀会自动拼接 /账户名
-                          <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
-                        </div>
-                      </div>
-                    </FormLabel>
-                    <FormControl>
-                      <div className="flex items-center space-x-2">
-                        <input
-                          type="checkbox"
-                          id="enable302"
-                          checked={field.value || false}
-                          onChange={(e) => field.onChange(e.target.checked)}
-                          className="rounded border-gray-300"
-                        />
-                        <label htmlFor="enable302" className="text-sm">
-                          启用 302 重定向模式
-                        </label>
-                      </div>
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            )}
-
-            {/* Origin Path */}
             <FormField
               control={form.control}
               name="originPath"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel className="flex items-center gap-1">
-                    远程路径
-                    <div className="group relative">
-                      <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-600 cursor-help" />
-                      <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 text-white text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
-                        在这里输入网盘路径或openlist的路径，如：tv 或 kuake/tv
-                        <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
-                      </div>
-                    </div>
-                  </FormLabel>
-                  <FormControl>
-                    <div className="flex items-center gap-2">
-                      <Input {...field} placeholder="Origin Path" className="flex-1" />
-                      {is115Account && formValues.account && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="icon"
-                          onClick={() => setDirectoryDialogOpen(true)}
-                          title="选择目录"
-                        >
-                          <FolderOpen className="w-4 h-4" />
-                        </Button>
-                      )}
-                    </div>
-                  </FormControl>
+                  <FormLabel>远程路径</FormLabel>
+                  <div className="flex items-center gap-2">
+                    <FormControl>
+                      <Input {...field} placeholder="例如：tv 或 kuake/tv" className="flex-1" />
+                    </FormControl>
+                    {is115Account && account && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => setDirectoryDialogOpen(true)}
+                        title="浏览网盘目录"
+                      >
+                        <FolderOpen className="w-4 h-4" />
+                      </Button>
+                    )}
+                  </div>
+                  <FormDescription className="text-xs">网盘（或 OpenList）里要同步的目录，从根目录算起，不用带开头的斜杠。</FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
             />
 
-            {/* Target Path */}
             <FormField
               control={form.control}
               name="targetPath"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel className="flex items-center gap-1">
-                    本地路径
-                    <div className="group relative">
-                      <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-600 cursor-help" />
-                      <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 text-white text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
-                        这里将生成strm文件到你的挂载目录里，比如填写 tv 将在挂载目录创建tv目录，并将 Origin Path 内所有的文件strm到TargetPath
-                        <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
-                      </div>
-                    </div>
-                  </FormLabel>
-                  <FormControl>
-                    <div className="flex items-center gap-2">
-                      <Input {...field} placeholder="Target Path" className="flex-1" />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        onClick={() => setLocalDirectoryDialogOpen(true)}
-                        title="选择目录"
-                      >
-                        <FolderOpen className="w-4 h-4" />
-                      </Button>
-                    </div>
-                  </FormControl>
+                  <FormLabel>本地路径</FormLabel>
+                  <div className="flex items-center gap-2">
+                    <FormControl>
+                      <Input {...field} placeholder="例如：tv" className="flex-1" />
+                    </FormControl>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={() => setLocalDirectoryDialogOpen(true)}
+                      title="浏览本地目录"
+                    >
+                      <FolderOpen className="w-4 h-4" />
+                    </Button>
+                  </div>
+                  <FormDescription className="text-xs">
+                    相对数据目录（DATA_DIR）的路径，strm 会按远程目录的结构生成到这里；媒体库扫这个目录。
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
             />
 
-
-            {/* Strm Prefix */}
             <FormField
               control={form.control}
               name="strmPrefix"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel className="flex items-center gap-1">
-                    Strm 前缀
-                    <div className="group relative">
-                      <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-600 cursor-help" />
-                      <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 text-white text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
-                        用于生成strm文件的前缀，最终路径为 Strm Prefix + Origin Path
-                        <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
-                      </div>
-                    </div>
-                  </FormLabel>
-                  <FormControl>
-                    <div className="flex items-center gap-1">
-                      <Input {...field} placeholder="Strm Prefix" className={is115Account && formValues.enable302 ? "flex-1" : "w-full"} />
-                      {is115Account && formValues.enable302 && (
-                        <Input
-                          value={`/${formValues.account}`}
-                          disabled
-                          className="w-[120px] bg-gray-100 text-gray-600 font-medium flex-shrink-0"
-                        />
-                      )}
-                    </div>
-                  </FormControl>
-                  <div className="text-sm text-red-600 font-medium">
-                    请确保emby可以访问到该路径: {getPreviewPath()}
+                  <FormLabel>Strm 前缀</FormLabel>
+                  <div className="flex items-center gap-1">
+                    <FormControl>
+                      <Input {...field} placeholder="例如：http://192.168.1.10:8091/d" className="flex-1" />
+                    </FormControl>
+                    {is115Account && enable302 && account && (
+                      <Input value={`/${account}`} disabled className="w-[120px] bg-muted font-medium shrink-0" title="开启 302 后自动拼上账号名" />
+                    )}
                   </div>
+                  <FormDescription className="text-xs">
+                    写进 strm 文件的地址前缀，播放器要能访问到。
+                    {preview && (
+                      <>
+                        {" "}
+                        示例：<code className="break-all">{preview}</code>
+                      </>
+                    )}
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
             />
 
-            {/* Remove Extra Files */}
             <FormField
               control={form.control}
-              name="removeExtraFiles"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel className="flex items-center gap-1">
-                    删除多余文件
-                    <div className="group relative">
-                      <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-600 cursor-help" />
-                      <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 text-white text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
-                        开启后，任务执行时会删除本地存在但远程不存在的文件
-                        <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
-                      </div>
+              name="cronExpression"
+              render={({ field }) => {
+                const value = field.value ?? "";
+                const matchesPreset = CRON_PRESETS.some((p) => p.value === value);
+                const presetValue = customCron ? CUSTOM : value === "" ? NONE : matchesPreset ? value : CUSTOM;
+                return (
+                  <FormItem>
+                    <FormLabel>定时执行</FormLabel>
+                    <div className="flex items-center gap-2">
+                      <Select
+                        value={presetValue}
+                        onValueChange={(v) => {
+                          if (v === CUSTOM) {
+                            setCustomCron(true);
+                            return;
+                          }
+                          setCustomCron(false);
+                          field.onChange(v === NONE ? "" : v);
+                        }}
+                      >
+                        <SelectTrigger className="w-[150px] shrink-0">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="z-[60]">
+                          <SelectItem value={NONE}>不定时</SelectItem>
+                          {CRON_PRESETS.map((p) => (
+                            <SelectItem key={p.value} value={p.value}>
+                              {p.label}
+                            </SelectItem>
+                          ))}
+                          <SelectItem value={CUSTOM}>自定义</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormControl>
+                        <Input
+                          value={value}
+                          onChange={field.onChange}
+                          onBlur={field.onBlur}
+                          placeholder="分 时 日 月 周，例如 0 3 * * *"
+                          className="flex-1 font-mono"
+                          disabled={presetValue === NONE}
+                        />
+                      </FormControl>
                     </div>
-                  </FormLabel>
-                  <FormControl>
-                    <div className="flex items-center space-x-2">
-                      <input
-                        type="checkbox"
-                        id="removeExtraFiles"
-                        checked={field.value || false}
-                        onChange={(e) => field.onChange(e.target.checked)}
-                        className="rounded border-gray-300"
-                      />
-                      <label htmlFor="removeExtraFiles" className="text-sm">
-                        启用删除本地多余文件功能
-                      </label>
-                    </div>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
+                    <FormDescription className="text-xs">
+                      标准 cron 表达式，按服务器时区。不定时的任务只在手动点开始、或从分享转存时触发。
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                );
+              }}
             />
 
-            {/* Enable Path Encoding */}
-            <FormField
-              control={form.control}
-              name="enablePathEncoding"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel className="flex items-center gap-1">
-                    路径编码
-                    <div className="group relative">
-                      <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-600 cursor-help" />
-                      <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 text-white text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
-                        开启后，strm 文件中的 URL 路径将进行编码
-                        <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
-                      </div>
-                    </div>
-                  </FormLabel>
-                  <FormControl>
-                    <div className="flex items-center space-x-2">
-                      <input
-                        type="checkbox"
-                        id="enablePathEncoding"
-                        checked={field.value || false}
-                        onChange={(e) => field.onChange(e.target.checked)}
-                        className="rounded border-gray-300"
-                      />
-                      <label htmlFor="enablePathEncoding" className="text-sm">
-                        启用 strm URL 路径编码
-                      </label>
-                    </div>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
+            <div className="space-y-2">
+              {is115Account && (
+                <CheckboxRow
+                  control={form.control}
+                  name="enable302"
+                  label="Emby 302 直链"
+                  description="播放时由本工具的代理直接 302 到 115 直链，不再中转流量。前缀会自动拼上 /账号名，代理靠它识别挂载点。"
+                />
               )}
-            />
+              <CheckboxRow
+                control={form.control}
+                name="removeExtraFiles"
+                label="删除本地多余文件"
+                description="同步时删掉本地有、网盘已经没有的文件，保持两边一致。网盘目录读出来是空的时候会跳过，防止误删。"
+              />
+              <CheckboxRow
+                control={form.control}
+                name="enablePathEncoding"
+                label="strm 路径 URL 编码"
+                description="把 strm 里的路径做 URL 编码。有些播放器处理不了中文或空格时打开。"
+              />
+            </div>
 
             <DialogFooter>
               <DialogClose asChild>
-                <Button variant="outline" disabled={loading}>
+                <Button type="button" variant="outline" disabled={loading}>
                   取消
                 </Button>
               </DialogClose>
@@ -502,36 +451,23 @@ export function AddTaskDialog({
           </form>
         </Form>
 
-        {/* 目录树选择对话框 */}
-        {is115Account && formValues.account && (
+        {is115Account && account && (
           <DirectoryTreeDialog
             open={directoryDialogOpen}
             onOpenChange={setDirectoryDialogOpen}
-            account={formValues.account}
-            onSelect={(path) => {
-              form.setValue("originPath", path);
-              setFormValues((prev) => ({ ...prev, originPath: path }));
-            }}
-            onSelectWithTargetPath={(originPath, targetPath) => {
-              form.setValue("originPath", originPath);
-              form.setValue("targetPath", targetPath);
-              setFormValues((prev) => ({
-                ...prev,
-                originPath,
-                targetPath,
-              }));
+            account={account}
+            onSelect={(path) => form.setValue("originPath", path, { shouldValidate: true })}
+            onSelectWithTargetPath={(nextOrigin, nextTarget) => {
+              form.setValue("originPath", nextOrigin, { shouldValidate: true });
+              form.setValue("targetPath", nextTarget, { shouldValidate: true });
             }}
           />
         )}
 
-        {/* 本地目录树选择对话框 */}
         <LocalDirectoryTreeDialog
           open={localDirectoryDialogOpen}
           onOpenChange={setLocalDirectoryDialogOpen}
-          onSelect={(path) => {
-            form.setValue("targetPath", path);
-            setFormValues((prev) => ({ ...prev, targetPath: path }));
-          }}
+          onSelect={(path) => form.setValue("targetPath", path, { shouldValidate: true })}
         />
       </DialogContent>
     </Dialog>

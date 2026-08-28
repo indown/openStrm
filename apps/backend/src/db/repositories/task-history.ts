@@ -1,4 +1,4 @@
-import { eq, desc, lt } from "drizzle-orm";
+import { and, desc, eq, lt, max } from "drizzle-orm";
 import type { TaskExecutionHistory, TaskExecutionSummary } from "@openstrm/shared";
 import { db } from "../client.js";
 import { taskHistory } from "../schema.js";
@@ -137,6 +137,29 @@ export function getByTaskId(taskId: string): TaskExecutionSummary[] {
     .orderBy(desc(taskHistory.startTime))
     .all();
   return rows.map(deserializeSummary);
+}
+
+/** 每个任务最近的一次执行（不带 logs）。任务列表页靠它显示"上次执行" */
+export function getLatestPerTask(): TaskExecutionSummary[] {
+  const latest = db
+    .select({ taskId: taskHistory.taskId, startTime: max(taskHistory.startTime).as("max_start") })
+    .from(taskHistory)
+    .groupBy(taskHistory.taskId)
+    .as("latest");
+  const rows = db
+    .select(summaryColumns)
+    .from(taskHistory)
+    .innerJoin(latest, and(eq(taskHistory.taskId, latest.taskId), eq(taskHistory.startTime, latest.startTime)))
+    .all();
+  // 同一毫秒两条记录（理论上）会各出一行，按 taskId 去重
+  const seen = new Set<string>();
+  const out: TaskExecutionSummary[] = [];
+  for (const row of rows) {
+    if (seen.has(row.taskId)) continue;
+    seen.add(row.taskId);
+    out.push(deserializeSummary(row));
+  }
+  return out;
 }
 
 export function getAll(): TaskExecutionSummary[] {

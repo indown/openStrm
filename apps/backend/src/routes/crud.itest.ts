@@ -21,6 +21,8 @@ import { writeAuthPassword } from "../db/repositories/auth.js";
 import { readAppSettings, replaceAppSettings } from "../db/repositories/settings.js";
 import { deleteTask, insertTask, listTasks, replaceTasks } from "../db/repositories/tasks.js";
 import { listAccounts, replaceAccounts } from "../db/repositories/accounts.js";
+import { releaseTaskStart, reserveTaskStart } from "../services/task/registry.js";
+import { completeTaskExecution, createTaskExecution, deleteTaskExecution } from "../services/task-history.js";
 
 let app: FastifyInstance;
 let auth: Record<string, string>;
@@ -85,12 +87,27 @@ test("POST /api/task：服务端分配 UUID，带 cron 表达式的任务不重�
   assert.ok(app.cron.listJobs().some((j) => j.taskId === taskId), "建任务后 cron 应立即重排");
 });
 
-test("GET /api/task：列表带运行状态", async () => {
+test("GET /api/task：列表带运行状态、上次执行和下次定时", async () => {
   const res = await call("GET", "/api/task");
   assert.equal(res.statusCode, 200);
   const row = res.json().find((t: { id: string }) => t.id === taskId);
   assert.equal(row.status, "pending");
   assert.equal(row.originPath, "/tv");
+  assert.equal(row.lastRun, null, "还没跑过");
+  assert.match(String(row.nextRunAt), /^\d{4}-\d{2}-\d{2}T/, "有 cron 的任务带下次触发时间");
+
+  // 有过执行记录之后，列表里带最近一条（不带 logs）
+  const ex = createTaskExecution(taskId, { account: "acc", originPath: "/tv", targetPath: "tv" });
+  completeTaskExecution(ex.id, "failed", { errorMessage: "boom" });
+  try {
+    const again = (await call("GET", "/api/task")).json().find((t: { id: string }) => t.id === taskId);
+    assert.equal(again.lastRun.id, ex.id);
+    assert.equal(again.lastRun.status, "failed");
+    assert.equal(again.lastRun.summary.errorMessage, "boom");
+    assert.equal("logs" in again.lastRun, false, "列表里不该带日志");
+  } finally {
+    deleteTaskExecution(ex.id);
+  }
 });
 
 test("PUT /api/task：合并字段；清掉 cron 表达式后任务从 cron 摘掉", async () => {
@@ -104,6 +121,18 @@ test("PUT /api/task：合并字段；清掉 cron 表达式后任务从 cron 摘�
 test("PUT /api/task：不存在的 id → 404", async () => {
   const res = await call("PUT", "/api/task", { id: "nope", strmPrefix: "/x" });
   assert.equal(res.statusCode, 404);
+});
+
+test("DELETE /api/task：运行中（含启动中）的任务不能删 → 409", async () => {
+  assert.ok(reserveTaskStart(taskId));
+  try {
+    const res = await call("DELETE", `/api/task?id=${taskId}`);
+    assert.equal(res.statusCode, 409);
+    assert.match(res.json().message, /正在运行/);
+  } finally {
+    releaseTaskStart(taskId);
+  }
+  assert.equal(listTasks().length, 1, "409 时任务还在");
 });
 
 test("DELETE /api/task：删掉后再删 404", async () => {

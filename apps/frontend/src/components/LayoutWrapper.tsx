@@ -119,7 +119,9 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       <SidebarProvider>
           <AppSidebar />
           <SidebarTrigger />
-          <div className="flex flex-col w-full min-h-screen pl-0">
+          {/* min-w-0 + flex-1：内容列是侧栏旁边的 flex 项，w-full 会让它按视口 100% 算宽度、连同侧栏一起把页面撑出横向滚动条；
+              收窄到 800px 以下时顶部搜索栏不换行、表格也滚不了自己的滚动条，全是这一处的锅 */}
+          <div className="flex min-w-0 flex-1 flex-col min-h-screen">
             <header className="w-full border-b flex items-center gap-3 p-2 flex-wrap">
               <div className="flex items-center gap-2 flex-1 min-w-[200px] max-w-md">
                 <Share2 className="h-4 w-4 shrink-0 text-muted-foreground" />

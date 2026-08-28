@@ -1,9 +1,33 @@
 "use client";
 
-import { DataTable } from "@/components/data-table";
-import { AddTaskDialog } from "./components/AddTaskDialog";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  AlertCircle,
+  CalendarClock,
+  Edit,
+  FileText,
+  FolderX,
+  History,
+  Loader2,
+  Play,
+  Plus,
+  RefreshCw,
+  Square,
+  Trash2,
+} from "lucide-react";
+import { toast } from "sonner";
+import type { TaskExecutionSummary } from "@openstrm/shared";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,77 +38,74 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ColumnDef } from "@tanstack/react-table";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
-import { api, type TaskRow } from "@/lib/api";
+import { api, type StartTaskResult, type TaskRow } from "@/lib/api";
 import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
-import { 
-  Play, 
-  Square, 
-  FileText, 
-  Edit, 
-  Trash2, 
-  Plus,
-  CheckCircle,
-  XCircle,
-  AlertCircle,
-  FolderX,
-  Loader2,
-  RefreshCw
-} from "lucide-react";
-
-/** 任务行：后端定义 + 运行状态；success/failed 是页面侧的展示态 */
-export type Task = Omit<TaskRow, "status"> & { status: TaskRow["status"] | "success" | "failed" };
-
-// 状态图标和颜色映射
-const getStatusConfig = (status: Task["status"]) => {
-  const configs = {
-    pending: { icon: AlertCircle, color: "bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-800", label: "待处理" },
-    processing: { icon: AlertCircle, color: "bg-blue-100 text-blue-800 hover:bg-blue-200 hover:text-blue-900", label: "处理中" },
-    success: { icon: CheckCircle, color: "bg-green-100 text-green-800 hover:bg-green-200 hover:text-green-900", label: "成功" },
-    failed: { icon: XCircle, color: "bg-red-100 text-red-800 hover:bg-red-200 hover:text-red-900", label: "失败" }
-  };
-  return configs[status] || { icon: CheckCircle, color: "bg-gray-200 text-gray-700 border border-gray-300 hover:bg-gray-300 hover:text-gray-900", label: "空闲" };
-};
-
-// UI 样式常量
-const BUTTON_STYLES = {
-  disabled: "opacity-30 cursor-not-allowed bg-gray-100 hover:bg-gray-100",
-  enabled: "hover:bg-green-50 hover:text-green-600",
-  loading: "text-blue-600",
-  icon: {
-    disabled: "text-gray-400",
-    enabled: "text-gray-600"
-  }
-} as const;
-
-const ACCOUNT_STYLES = {
-  busy: "border-orange-300 bg-orange-50 text-orange-700",
-  normal: ""
-} as const;
-
-// 状态标签常量
-const STATUS_LABELS = {
-  starting: "启动中",
-  running: "运行中"
-} as const;
+import { AddTaskDialog } from "./components/AddTaskDialog";
 
 /** 有任务在跑时的状态轮询间隔 */
 const POLL_INTERVAL_MS = 5000;
 
+type Account = { name: string; accountType: string };
+
+/** 上次执行结果的配色，和历史页一致 */
+const RUN_STATUS: Record<TaskExecutionSummary["status"], { label: string; className: string }> = {
+  running: { label: "运行中", className: "bg-blue-100 text-blue-800 hover:bg-blue-100" },
+  completed: { label: "成功", className: "bg-green-100 text-green-800 hover:bg-green-100" },
+  failed: { label: "失败", className: "bg-red-100 text-red-800 hover:bg-red-100" },
+  cancelled: { label: "已取消", className: "bg-yellow-100 text-yellow-800 hover:bg-yellow-100" },
+};
+
+function relativePast(ms: number): string {
+  const d = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (d < 60) return "刚刚";
+  if (d < 3600) return `${Math.floor(d / 60)} 分钟前`;
+  if (d < 86400) return `${Math.floor(d / 3600)} 小时前`;
+  return `${Math.floor(d / 86400)} 天前`;
+}
+
+function relativeFuture(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+  const d = Math.max(0, Math.floor((t - Date.now()) / 1000));
+  if (d < 60) return "不到 1 分钟后";
+  if (d < 3600) return `${Math.floor(d / 60)} 分钟后`;
+  if (d < 86400) return `${Math.floor(d / 3600)} 小时后`;
+  return `${Math.floor(d / 86400)} 天后`;
+}
+
+function fmtTime(value: number | string): string {
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+/** 后端 startTask 的 message 是固定的英文句式，界面上说成人话 */
+function describeStart(res: StartTaskResult): string {
+  const m = /^(\d+) files to download$/.exec(res.message);
+  if (m) return `开始处理 ${m[1]} 个文件`;
+  if (res.message === "no files to download") return "本地已是最新，没有需要处理的文件";
+  return res.message;
+}
+
+/** 上次执行的一句话摘要 */
+function describeRun(run: TaskExecutionSummary): string {
+  if (run.status === "failed") return run.summary.errorMessage || "失败";
+  if (run.status === "cancelled") return run.summary.errorMessage ? `已取消：${run.summary.errorMessage}` : "已取消";
+  if (run.status === "running") return "进行中";
+  const parts = [`${run.summary.downloadedFiles}/${run.summary.totalFiles} 个文件`];
+  if (run.summary.deletedFiles) parts.push(`清理 ${run.summary.deletedFiles} 个`);
+  return parts.join("，");
+}
+
 export default function Home() {
-  const [data, setData] = useState<Task[]>([]);
+  const [data, setData] = useState<TaskRow[]>([]);
   // 只有首次加载显示整页转圈；之后的刷新和轮询表格留在屏幕上
   const [loaded, setLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   // 编辑 / 删除 / 清空目录弹框放在页面层，由当前操作的那一行驱动，不在每一行里各放一份
-  const [editing, setEditing] = useState<Task | null>(null);
+  const [editing, setEditing] = useState<TaskRow | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
-  const [clearTarget, setClearTarget] = useState<Task | null>(null);
-  const [accounts, setAccounts] = useState<Array<{name: string, accountType: string}>>([]);
+  const [deleteTarget, setDeleteTarget] = useState<TaskRow | null>(null);
+  const [clearTarget, setClearTarget] = useState<TaskRow | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [startingTasks, setStartingTasks] = useState<Set<string>>(new Set());
   // 列表请求的序号：慢的旧响应不能盖掉新状态（比如启动前发出的轮询把乐观标上的 processing 改回去）
@@ -106,7 +127,6 @@ export default function Home() {
     }
   }, []);
 
-  // 获取账户列表
   const fetchAccounts = useCallback(async () => {
     try {
       setAccountsLoading(true);
@@ -152,53 +172,47 @@ export default function Home() {
     return set;
   }, [data, startingTasks]);
 
-  // 删除任务
-  const deleteTask = async (id: string) => {
+  const deleteTask = async (task: TaskRow) => {
     try {
-      await api.tasks.remove(id);
-      toast.success("任务删除成功");
+      await api.tasks.remove(task.id);
+      toast.success("任务已删除");
+      setDeleteTarget(null);
       fetchTasks();
     } catch (err) {
       toast.error(apiErrorMessage(err, "删除失败"));
     }
   };
 
-  // 开始任务
   const startTask = useCallback(async (id: string) => {
-    // 添加到正在启动的任务集合
-    setStartingTasks(prev => new Set(prev).add(id));
-    
+    setStartingTasks((prev) => new Set(prev).add(id));
     try {
       const res = await api.tasks.start(id);
-      toast.success(`任务已开始: ${res.message}`);
-      
-      // 只有在API成功返回后才更新状态为processing；同时作废在途的列表响应，
+      toast.success(describeStart(res));
+      if (res.warning) toast.warning(res.warning);
+      // 只有在 API 成功返回后才更新状态为 processing；同时作废在途的列表响应，
       // 免得启动前发出的轮询把它改回 pending。之后的轮询会拿到真实状态
       listSeqRef.current++;
-      setData(prevData => 
-        prevData.map(task => 
-          task.id === id ? { ...task, status: "processing" as const } : task
-        )
-      );
+      setData((prev) => prev.map((task) => (task.id === id ? { ...task, status: "processing" as const } : task)));
     } catch (error: unknown) {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'ECONNABORTED') {
-        toast.error("任务启动超时，请稍后检查任务状态");
-      } else if (error && typeof error === 'object' && 'response' in error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ECONNABORTED") {
+        toast.error("启动超时：读取网盘目录太久，请稍后到历史页看结果");
+      } else if (error && typeof error === "object" && "response" in error) {
         const { message, details } = apiErrorBody(error);
-        const text = message || "任务开始失败";
-        toast.error(details ? `${text}: ${details}` : text);
+        const text = message || "任务启动失败";
+        toast.error(details ? `${text}：${details}` : text);
       } else {
-        toast.error("任务开始失败");
+        toast.error("任务启动失败");
       }
     } finally {
-      // 从正在启动的任务集合中移除
-      setStartingTasks(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(id);
-        return newSet;
+      setStartingTasks((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
       });
+      // 起不来的也会进历史：把"上次执行"刷出来
+      void fetchTasks(true);
     }
-  }, []);
+  }, [fetchTasks]);
 
   // 取消任务；不管成没成功都重新拉一次状态
   const cancelTask = useCallback(async (id: string) => {
@@ -212,235 +226,45 @@ export default function Home() {
     }
   }, [fetchTasks]);
 
-  // 查看日志
-  const goToLog = useCallback(async (id: string) => {
-    if (await api.tasks.isRunning(id)) router.push(`/log?taskId=${id}`);
-    else toast.error("没有找到对应的任务日志");
-  }, [router]);
+  /** 运行中看实时日志；不在运行就去看这个任务的执行历史 */
+  const openLogs = (task: TaskRow) => {
+    const id = encodeURIComponent(task.id);
+    router.push(task.status === "processing" ? `/log?taskId=${id}` : `/history?taskId=${id}`);
+  };
 
-  // 清空目录
-  const clearDirectory = async (targetPath: string) => {
+  const clearDirectory = async (task: TaskRow) => {
     try {
-      await api.system.clearDirectory(targetPath);
-      toast.success(`目录 ${targetPath} 清空成功`);
+      await api.system.clearDirectory(task.targetPath);
+      toast.success(`已清空 ${task.targetPath}`);
+      setClearTarget(null);
     } catch (error: unknown) {
       toast.error(apiErrorBody(error).message || "清空目录失败");
     }
   };
 
-  const columns = useMemo<ColumnDef<Task>[]>(() => {
-    const isStarting = (task: Task) => startingTasks.has(task.id);
-    const isBusy = (task: Task) => busyAccounts.has(task.account);
-    // 检查任务是否应该被禁用
-    const isDisabled = (task: Task) => isStarting(task) || task.status === "processing" || isBusy(task);
-    // 获取任务显示状态
-    const displayStatus = (task: Task) => {
-      if (isStarting(task)) return { status: "processing" as const, label: STATUS_LABELS.starting };
-      if (task.status === "processing") return { status: "processing" as const, label: STATUS_LABELS.running };
-      return { status: task.status, label: getStatusConfig(task.status).label };
-    };
-
-    return [
-      { 
-        accessorKey: "id", 
-        header: "任务ID",
-        cell: ({ row }) => (
-          <code className="text-xs bg-gray-100 px-2 py-1 rounded">
-            {row.original.id.slice(0, 8)}...
-          </code>
-        )
-      },
-      { 
-        accessorKey: "account", 
-        header: "账户",
-        cell: ({ row }) => {
-          const task = row.original;
-          const busy = isBusy(task);
-          
-          return (
-            <div className="flex items-center gap-2">
-              <Badge 
-                variant="outline" 
-                className={`text-xs ${
-                  busy ? ACCOUNT_STYLES.busy : ACCOUNT_STYLES.normal
-                }`}
-              >
-                {task.accountType}
-              </Badge>
-              <span className={`font-medium ${
-                busy ? "text-orange-700" : ""
-              }`}>
-                {task.account}
-                {busy && (
-                  <span className="ml-1 text-xs text-orange-600">●</span>
-                )}
-              </span>
-            </div>
-          );
-        }
-      },
-      { 
-        accessorKey: "originPath", 
-        header: "远程路径",
-        cell: ({ row }) => (
-          <span className="text-sm text-gray-600 max-w-xs truncate block">
-            {row.original.originPath}
-          </span>
-        )
-      },
-      { 
-        accessorKey: "targetPath", 
-        header: "本地路径",
-        cell: ({ row }) => {
-          const task = row.original;
-          return (
-            <div className="group flex items-center gap-2 max-w-xs">
-              <span className="text-sm text-gray-600 truncate flex-1">
-                {task.targetPath}
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 w-7 p-0 text-gray-400 hover:text-red-600 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all duration-200 flex-shrink-0"
-                title="清空目录"
-                onClick={() => setClearTarget(task)}
-              >
-                <FolderX className="w-4 h-4" />
-              </Button>
-            </div>
-          );
-        }
-      },
-      { 
-        accessorKey: "status", 
-        header: "状态",
-        cell: ({ row }) => {
-          const { status, label } = displayStatus(row.original);
-          const config = getStatusConfig(status);
-          const Icon = config.icon;
-          
-          return (
-            <Badge className={`${config.color} border-0`}>
-              <Icon className="w-3 h-3 mr-1" />
-              {label}
-            </Badge>
-          );
-        }
-      },
-      {
-        id: "actions",
-        header: "操作",
-        cell: ({ row }) => {
-          const task = row.original;
-          const starting = isStarting(task);
-          const disabled = isDisabled(task);
-          const running = task.status === "processing";
-          
-          return (
-            <div className="flex gap-1">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => startTask(task.id)}
-                disabled={disabled}
-                className={`h-8 w-8 p-0 ${
-                  disabled 
-                    ? BUTTON_STYLES.disabled 
-                    : running
-                      ? "bg-blue-50 hover:bg-blue-100" 
-                      : BUTTON_STYLES.enabled
-                }`}
-                title={
-                  starting ? `${STATUS_LABELS.starting}...` :
-                  running ? "任务运行中" :
-                  isBusy(task) ? `账户 ${task.account} 有任务正在运行` :
-                  "开始任务"
-                }
-              >
-                {starting ? (
-                  <Loader2 className={`w-4 h-4 animate-spin ${BUTTON_STYLES.loading}`} />
-                ) : running ? (
-                  <div className="w-4 h-4 flex items-center justify-center">
-                    <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse"></div>
-                  </div>
-                ) : (
-                  <Play className={`w-4 h-4 ${
-                    disabled ? BUTTON_STYLES.icon.disabled : BUTTON_STYLES.icon.enabled
-                  }`} />
-                )}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => cancelTask(task.id)}
-                disabled={!running}
-                className="h-8 w-8 p-0"
-                title={running ? "取消任务" : "任务未在运行"}
-              >
-                <Square className="w-4 h-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => goToLog(task.id)}
-                className="h-8 w-8 p-0"
-                title="查看日志"
-              >
-                <FileText className="w-4 h-4" />
-              </Button>
-              <Button 
-                variant="ghost" 
-                size="sm"
-                className="h-8 w-8 p-0"
-                title="编辑任务"
-                onClick={() => {
-                  setEditing(task);
-                  setEditorOpen(true);
-                }}
-              >
-                <Edit className="w-4 h-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
-                title="删除任务"
-                onClick={() => setDeleteTarget(task)}
-              >
-                <Trash2 className="w-4 h-4" />
-              </Button>
-            </div>
-          );
-        },
-      },
-    ];
-  }, [busyAccounts, startingTasks, startTask, cancelTask, goToLog]);
-
   if (!loaded) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
   return (
-    <div className="w-full h-full p-6">
-      <div className="flex justify-between items-center mb-6">
+    <div className="mx-auto max-w-6xl space-y-6">
+      <div className="flex justify-between items-start gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-semibold">任务管理</h1>
-          <p className="text-gray-600 mt-1">管理和监控你的下载任务</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            每个任务把网盘的一个目录同步成本地的 strm 目录；可以手动跑，也可以定时
+          </p>
         </div>
         <div className="flex gap-2">
-          <Button 
-            variant="outline" 
-            onClick={() => fetchTasks()}
-            disabled={refreshing}
-          >
-            <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
-            刷新状态
+          <Button variant="outline" onClick={() => fetchTasks()} disabled={refreshing}>
+            <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
+            刷新
           </Button>
-          <AddTaskDialog 
+          <AddTaskDialog
             onSuccess={() => fetchTasks()}
             accounts={accounts}
             accountsLoading={accountsLoading}
@@ -453,15 +277,196 @@ export default function Home() {
           />
         </div>
       </div>
-      
+
       {data.length === 0 ? (
-        <div className="text-center py-12 bg-gray-50 rounded-lg">
-          <AlertCircle className="mx-auto h-12 w-12 text-gray-400" />
-          <h3 className="mt-4 text-lg font-medium text-gray-900">暂无任务</h3>
-          <p className="mt-2 text-gray-600">点击上方按钮创建你的第一个任务</p>
+        <div className="text-center py-12 rounded-lg border border-dashed">
+          <AlertCircle className="mx-auto h-10 w-10 text-muted-foreground" />
+          <h3 className="mt-4 text-lg font-medium">还没有任务</h3>
+          <p className="mt-2 text-sm text-muted-foreground">点右上角「新建任务」，选一个网盘目录和本地目录就能开始</p>
         </div>
       ) : (
-        <DataTable columns={columns} data={data} getRowId={(t) => t.id} />
+        <div className="rounded-lg border overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="min-w-[280px]">任务</TableHead>
+                <TableHead className="w-40">定时</TableHead>
+                <TableHead className="w-60">上次执行</TableHead>
+                <TableHead className="w-24">状态</TableHead>
+                <TableHead className="w-48 text-right">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.map((task) => {
+                const starting = startingTasks.has(task.id);
+                const running = task.status === "processing";
+                const busy = busyAccounts.has(task.account);
+                const startDisabled = starting || running || busy;
+                const startTitle = starting
+                  ? "启动中..."
+                  : busy
+                    ? `账户 ${task.account} 有任务正在运行`
+                    : "开始同步";
+                const run = task.lastRun;
+                return (
+                  <TableRow key={task.id}>
+                    <TableCell className="align-top">
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Badge
+                            variant="outline"
+                            className={`shrink-0 text-xs font-normal ${busy ? "border-orange-300 text-orange-700" : "text-muted-foreground"}`}
+                            title={`账户 ${task.account}（${task.accountType ?? "?"}）`}
+                          >
+                            {task.account}
+                          </Badge>
+                          <span className="text-sm font-medium break-all" title={task.originPath}>
+                            {task.originPath}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0">
+                          <span className="break-all" title={`本地路径：${task.targetPath}`}>
+                            → {task.targetPath}
+                          </span>
+                          {task.enable302 && (
+                            <Badge variant="secondary" className="shrink-0 text-[10px] px-1.5 py-0" title="Emby 302 直链已开启">
+                              302
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell className="align-top">
+                      {task.cronExpression ? (
+                        <div className="space-y-0.5">
+                          <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{task.cronExpression}</code>
+                          {task.nextRunAt && (
+                            <div
+                              className="flex items-center gap-1 text-xs text-muted-foreground whitespace-nowrap"
+                              title={`下次：${fmtTime(task.nextRunAt)}`}
+                            >
+                              <CalendarClock className="w-3 h-3" />
+                              {relativeFuture(task.nextRunAt)}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">手动</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="align-top">
+                      {run ? (
+                        <button
+                          type="button"
+                          className="text-left min-w-0 max-w-[230px] group"
+                          title={`${fmtTime(run.startTime)}\n${describeRun(run)}\n点击查看执行历史`}
+                          onClick={() => router.push(`/history?taskId=${encodeURIComponent(task.id)}`)}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Badge className={`border-0 ${RUN_STATUS[run.status].className}`}>{RUN_STATUS[run.status].label}</Badge>
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">{relativePast(run.startTime)}</span>
+                          </div>
+                          <div
+                            className={`text-xs mt-1 truncate group-hover:underline ${run.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
+                          >
+                            {describeRun(run)}
+                          </div>
+                        </button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">还没跑过</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="align-top">
+                      {starting ? (
+                        <Badge variant="secondary" className="whitespace-nowrap">
+                          <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                          启动中
+                        </Badge>
+                      ) : running ? (
+                        <Badge className={`border-0 whitespace-nowrap ${RUN_STATUS.running.className}`}>
+                          <span className="w-2 h-2 mr-1.5 rounded-full bg-blue-600 animate-pulse" />
+                          运行中
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-muted-foreground font-normal whitespace-nowrap">
+                          空闲
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="align-top">
+                      <div className="flex justify-end gap-0.5">
+                        {running ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            title="取消任务"
+                            onClick={() => cancelTask(task.id)}
+                          >
+                            <Square className="w-4 h-4" />
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            title={startTitle}
+                            disabled={startDisabled}
+                            onClick={() => startTask(task.id)}
+                          >
+                            {starting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          title={running ? "实时日志" : "执行历史"}
+                          onClick={() => openLogs(task)}
+                        >
+                          {running ? <FileText className="w-4 h-4" /> : <History className="w-4 h-4" />}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          title={running ? "运行中不能编辑" : "编辑任务"}
+                          disabled={running}
+                          onClick={() => {
+                            setEditing(task);
+                            setEditorOpen(true);
+                          }}
+                        >
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                          title={running ? "运行中不能清空目录" : "清空本地目录"}
+                          disabled={running}
+                          onClick={() => setClearTarget(task)}
+                        >
+                          <FolderX className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                          title={running ? "运行中不能删除" : "删除任务"}
+                          disabled={running}
+                          onClick={() => setDeleteTarget(task)}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
       )}
 
       {/* 编辑弹框：整页一个，编辑哪一行就喂哪一行的数据 */}
@@ -475,23 +480,25 @@ export default function Home() {
       />
 
       <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <AlertDialogContent className="sm:max-w-[425px]">
+        <AlertDialogContent className="sm:max-w-[460px]">
           <AlertDialogHeader>
-            <AlertDialogTitle>确认删除</AlertDialogTitle>
-            <AlertDialogDescription>
-              你确定要删除这个任务吗？此操作无法撤销。
-              <br />
-              <span className="text-sm text-gray-500 mt-2 block">
-                任务ID: {deleteTarget?.id.slice(0, 8)}...
-              </span>
+            <AlertDialogTitle>删除任务</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p className="break-all font-medium text-foreground">
+                  {deleteTarget?.originPath} → {deleteTarget?.targetPath}
+                </p>
+                <p>账户 {deleteTarget?.account}。只删除任务定义和它的定时；本地已生成的 strm 不会被删。</p>
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="gap-2">
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               className={buttonVariants({ variant: "destructive" })}
-              onClick={() => {
-                if (deleteTarget) void deleteTask(deleteTarget.id);
+              onClick={(e) => {
+                e.preventDefault();
+                if (deleteTarget) void deleteTask(deleteTarget);
               }}
             >
               删除
@@ -501,27 +508,25 @@ export default function Home() {
       </AlertDialog>
 
       <AlertDialog open={clearTarget !== null} onOpenChange={(open) => !open && setClearTarget(null)}>
-        <AlertDialogContent className="sm:max-w-[425px]">
+        <AlertDialogContent className="sm:max-w-[460px]">
           <AlertDialogHeader>
-            <AlertDialogTitle>确认清空目录</AlertDialogTitle>
-            <AlertDialogDescription>
-              你确定要清空目标路径下的所有文件吗？此操作无法撤销。
-              <br />
-              <span className="text-sm text-gray-500 mt-2 block">
-                目标路径: {clearTarget?.targetPath}
-              </span>
-              <br />
-              <span className="text-sm text-red-600 mt-2 block font-medium">
-                ⚠️ 这将删除该目录下的所有文件和子目录！
-              </span>
+            <AlertDialogTitle>清空本地目录</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  将删除本地目录 <span className="font-medium text-foreground break-all">{clearTarget?.targetPath}</span> 下的所有文件和子目录，网盘不受影响。
+                </p>
+                <p className="text-destructive font-medium">此操作无法撤销；下次同步会重新生成 strm。</p>
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="gap-2">
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               className={buttonVariants({ variant: "destructive" })}
-              onClick={() => {
-                if (clearTarget) void clearDirectory(clearTarget.targetPath);
+              onClick={(e) => {
+                e.preventDefault();
+                if (clearTarget) void clearDirectory(clearTarget);
               }}
             >
               确认清空
