@@ -153,7 +153,7 @@ export async function exportDirParse(options: ExportDirParseOptions) {
   // 4) Download and parse
   const fileIdForDelete = result && result.file_id;
   try {
-    const stream = await openFileStream(url, { cookie: accountInfo.cookie, userAgent });
+    const stream = await openFileStream(url, { userAgent });
     const tree = new TreeBuilder();
     for await (const path of parseExportDirAsPathIter(stream)) {
       // 导出文件末尾的空行会被解析器折进最后一条路径，所以每段都要去掉首尾空白（含换行）
@@ -346,21 +346,6 @@ export async function listDirEntries(
   return all;
 }
 
-// 通过文件 ID 获取文件信息
-export async function getFileInfoById(fileId: number, { userAgent, accountInfo }: { userAgent?: string; accountInfo?: AccountInfo }) {
-  const url = `https://webapi.115.com/files/info?fid=${fileId}`;
-  const data = await request115<{ errno?: unknown; state?: boolean; data: unknown }>(url, {
-    method: 'GET',
-    userAgent,
-    useCommonHeaders: true,
-    accountInfo,
-  });
-  if (data.errno || data.state === false) {
-    throw new Error(`115 API error: ${JSON.stringify(data)}`);
-  }
-  return data.data;
-}
-
 /* ------------------------ HTTP helpers (real 115 APIs) ------------------------ */
 
 // POST https://proapi.115.com/android/2.0/ufile/export_dir
@@ -457,12 +442,7 @@ export async function request115<T = unknown>(
   const cookie = accountInfo?.cookie || null;
   
   // accountInfo 现在可以在函数内部使用，用于根据账户类型进行不同的处理
-  // 例如：根据 accountInfo.accountType 设置不同的请求头或参数
-  if (accountInfo) {
-    // 可以根据账户类型进行特殊处理
-    // log.debug(`Request for account: ${accountInfo.name}, type: ${accountInfo.accountType}`);
-  }
-  
+  // 例如：根据 accountInfo.accountType 设置不同的请求头或参数  
   try {
     const mergedHeaders = {
       ...(useCommonHeaders ? commonHeaders({ cookie: cookie || "", userAgent }) : {}),
@@ -669,7 +649,7 @@ function commonHeaders({ cookie, userAgent }: { cookie: string; userAgent?: stri
 
 // Fetch the download URL and return a ReadableStream of bytes
 // Use axios to match downloadOrCreateStrm behavior and handle 302
-async function openFileStream(url: string, { userAgent }: { cookie: string; userAgent?: string }) {
+async function openFileStream(url: string, { userAgent }: { userAgent?: string }) {
   
   const headers = {
     "User-Agent": userAgent,

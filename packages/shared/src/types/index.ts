@@ -10,11 +10,4 @@ export type {
   TaskExecutionHistory,
   TaskExecutionSummary,
 } from "./task.js";
-export type {
-  RouteMode,
-  RouteRule,
-  MappingRule,
-  CacheConfig,
-  ProxyConfig,
-} from "./proxy.js";
 export type { MediaLibraryEntry, ScrapeStatus, MediaType } from "./media-library.js";

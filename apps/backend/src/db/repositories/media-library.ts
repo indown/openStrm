@@ -152,11 +152,6 @@ export function getByShareCodeAndPath(shareCode: string, sharePath: string): Med
   return row ? deserialize(row) : null;
 }
 
-export function listByShareCode(shareCode: string): MediaLibraryEntry[] {
-  const rows = db.select().from(mediaLibrary).where(eq(mediaLibrary.shareCode, shareCode)).all();
-  return rows.map(deserialize);
-}
-
 export function getAll(): MediaLibraryEntry[] {
   const rows = db.select().from(mediaLibrary).orderBy(desc(mediaLibrary.updatedAt)).all();
   return rows.map(deserialize);

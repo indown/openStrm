@@ -26,18 +26,10 @@ export type ResolveFailure =
   /** 找到了文件但拿不到直链 */
   | "no-url";
 
-/**
- * 扁平结构而不是判别联合：backend 的 tsconfig 关了 strict，
- * `ok: true | false` 的联合在这里收窄不了。和代码库里其他 `{ ok, ... }` 返回值保持一致。
- */
-export type ResolveResult = {
-  ok: boolean;
-  /** ok 为 false 时给出失败原因 */
-  reason?: ResolveFailure;
-  url?: string;
-  accountName?: string;
-  panPath?: string;
-};
+/** 判别联合：ok 为 true 时直链和归属账号一定都有，调用方不用再逐个判空 */
+export type ResolveResult =
+  | { ok: true; url: string; accountName: string; panPath: string }
+  | { ok: false; reason: ResolveFailure };
 
 /** strm 落盘时可能被 encodeURI 过（任务的 enablePathEncoding），解不开就按原样用 */
 export function safeDecode(p: string): string {

@@ -34,6 +34,7 @@ export const taskHistory = sqliteTable(
   {
     id: text("id").primaryKey(),
     taskId: text("task_id").notNull(),
+    // 毫秒（Date.now()）。其它表的时间戳都是秒（unixepoch），这张表是历史遗留
     startTime: integer("start_time").notNull(),
     endTime: integer("end_time"),
     status: text("status").notNull(),
@@ -121,17 +122,12 @@ export const lifeEvents = sqliteTable(
     detail: text("detail").notNull().default(""),
     handledAt: integer("handled_at"),
   },
+  // 只按 update_time 查（listRecent / 留存清理）。file_id 和 type 上的索引没有任何查询用到，
+  // 这张表又是写得最多的一张，白白放大写入量，0008 迁移里删掉了
   (t) => ({
-    fileIdIdx: index("life_events_file_id_idx").on(t.fileId),
     updateTimeIdx: index("life_events_update_time_idx").on(t.updateTime),
-    typeIdx: index("life_events_type_idx").on(t.type),
   }),
 );
 
-export type SettingsRow = typeof settings.$inferSelect;
-export type AccountRow = typeof accounts.$inferSelect;
-export type TaskRow = typeof tasks.$inferSelect;
-export type TaskHistoryRow = typeof taskHistory.$inferSelect;
-export type MediaLibraryRow = typeof mediaLibrary.$inferSelect;
 export type PathCacheRow = typeof pathCache.$inferSelect;
 export type LifeEventRow = typeof lifeEvents.$inferSelect;
