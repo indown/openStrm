@@ -1,5 +1,5 @@
 "use client"
-import { Home, Inbox, Settings, Github, History, Library, Radar } from "lucide-react";
+import { Home, Inbox, Settings, Github, History, Library, Radar, Bot, Users } from "lucide-react";
 import Image from "next/image";
 
 import {
@@ -16,9 +16,8 @@ import {
 } from "@/components/ui/sidebar";
 import Link from "next/link";
 import { usePathname } from "next/navigation"; // 新增
-import frontendPkg from "../../package.json" assert { type: "json" };
-type PackageJson = { version?: string } & Record<string, unknown>;
-const appVersion = (frontendPkg as PackageJson).version ?? "";
+// 构建时由 next.config.ts 注入（APP_VERSION 或 package.json 的版本）
+const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? "";
 
 // Menu items.
 const items = [
@@ -54,6 +53,18 @@ const items = [
   },
 ];
 
+const telegramItems = [
+  {
+    title: "Telegram",
+    url: "/telegram",
+    icon: Bot,
+  },
+  {
+    title: "授权用户",
+    url: "/telegram/users",
+    icon: Users,
+  },
+];
 
 export function AppSidebar() {
   const pathname = usePathname();
@@ -63,7 +74,7 @@ export function AppSidebar() {
         <div className="p-4 border-b border-border/50">
           <div className="flex items-center gap-3">
             <Image
-              src="/logo.svg"
+              src="/logo-128.png"
               alt="OpenStrm Logo"
               width={36}
               height={36}
@@ -96,7 +107,7 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
         
-        {/* <SidebarGroup>
+        <SidebarGroup>
           <SidebarGroupLabel>Telegram</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
@@ -115,7 +126,7 @@ export function AppSidebar() {
               })}
             </SidebarMenu>
           </SidebarGroupContent>
-        </SidebarGroup> */}
+        </SidebarGroup>
       </SidebarContent>
       <SidebarSeparator className="ml-0 mr-2 w-auto group-data-[collapsible=icon]:mx-0" />
       <SidebarFooter>

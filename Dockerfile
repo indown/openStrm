@@ -44,6 +44,9 @@ RUN rm -rf node_modules/.pnpm/@types+* node_modules/@types && \
 FROM deps AS frontend-builder
 COPY packages/shared packages/shared
 COPY apps/frontend apps/frontend
+# 版本号编进前端包（侧栏显示）；release 工作流传 git tag，本地构建就是 dev
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
 RUN pnpm --filter @openstrm/frontend build
 
 # ========== Stage 4: Production image ==========

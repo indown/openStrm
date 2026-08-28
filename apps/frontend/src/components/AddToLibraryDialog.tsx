@@ -179,7 +179,7 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
                   placeholder="影片名称"
                   value={tmdbQuery}
                   onChange={(e) => setTmdbQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleTmdbSearch()}
+                  onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && handleTmdbSearch()}
                   className="h-8"
                 />
                 <Button size="sm" onClick={handleTmdbSearch} disabled={tmdbLoading}>

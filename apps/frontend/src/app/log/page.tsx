@@ -1,10 +1,14 @@
 "use client";
 
 import * as React from "react";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
-import { getToken } from "@/lib/axios";
+import { toast } from "sonner";
+import { apiErrorMessage, getToken } from "@/lib/axios";
 import { api } from "@/lib/api";
+
+/** 列表最多渲染最近这么多行：任务动辄几千个文件，全部渲染会把页面拖死 */
+const MAX_ROWS = 500;
 
 interface Progress {
   filePath?: string;
@@ -163,8 +167,17 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
                   }
                   
                   setLogs((prev) => {
-                    // 只有带文件路径的进度才合并到同一行；{done} / {error} 这种没有路径的各自成行
-                    const idx = data.filePath ? prev.findIndex((log) => log.filePath === data.filePath) : -1;
+                    // 只有带文件路径的进度才合并到同一行；{done} / {error} 这种没有路径的各自成行。
+                    // 从尾部往前找：在跑的文件都在最近几行，不用每条事件都从头扫一遍
+                    let idx = -1;
+                    if (data.filePath) {
+                      for (let i = prev.length - 1; i >= 0; i--) {
+                        if (prev[i].filePath === data.filePath) {
+                          idx = i;
+                          break;
+                        }
+                      }
+                    }
                     if (idx !== -1) {
                       const updated = [...prev];
                       updated[idx] = { ...updated[idx], ...data };
@@ -183,6 +196,9 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
           }
         }
       } catch (error) {
+        // 主动 abort 只发生在卸载或依赖变化的清理里（严格模式下还会先卸一次再挂）：
+        // 组件要么已经不在了，要么新一轮 startSSE 马上会写自己的状态，这里不能再动状态
+        if (abortController?.signal.aborted) return;
         if (error instanceof Error && error.name === 'AbortError') {
           setConnectionStatus("连接已取消");
         } else {
@@ -210,15 +226,14 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
       const response = await api.tasks.cancel(taskId);
       if (response.message) setTaskStatus("已取消");
     } catch (error: unknown) {
-      console.error('Failed to cancel task:', error);
-      const errorMessage = error instanceof Error && 'response' in error 
-        ? (error as { response?: { data?: { message?: string } } }).response?.data?.message || '取消任务失败，请重试'
-        : '取消任务失败，请重试';
-      alert(errorMessage);
+      toast.error(apiErrorMessage(error, "取消任务失败，请重试"));
     } finally {
       setIsCancelling(false);
     }
   };
+
+  // 只渲染最近的 MAX_ROWS 行，最新的在最上面
+  const visibleLogs = useMemo(() => logs.slice(-MAX_ROWS).reverse(), [logs]);
 
   return (
     <div style={{ 
@@ -296,13 +311,12 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
             >
               {isCancelling ? (
                 <>
-                  <div style={{
+                  <div className="log-spin" style={{
                     width: 12,
                     height: 12,
                     border: "2px solid transparent",
                     borderTop: "2px solid white",
-                    borderRadius: "50%",
-                    animation: "spin 1s linear infinite"
+                    borderRadius: "50%"
                   }} />
                   取消中...
                 </>
@@ -375,14 +389,13 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
                 }}
               >
                 {/* 进度条光泽效果 */}
-                <div style={{
+                <div className="log-shimmer" style={{
                   position: 'absolute',
                   top: 0,
                   left: 0,
                   right: 0,
                   bottom: 0,
-                  background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent)",
-                  animation: "shimmer 2s infinite"
+                  background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent)"
                 }} />
               </div>
             </div>
@@ -405,10 +418,10 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
             </div>
             
             <div style={{ maxHeight: 600, overflowY: 'auto' }}>
-              {logs.slice().reverse().map((log, index) => (
-                <div key={index} style={{
+              {visibleLogs.map((log, index) => (
+                <div key={log.filePath ?? `evt-${index}`} style={{
                   padding: 16,
-                  borderBottom: index < logs.length - 1 ? "1px solid #f3f4f6" : "none",
+                  borderBottom: index < visibleLogs.length - 1 ? "1px solid #f3f4f6" : "none",
                   display: 'flex',
                   alignItems: 'center',
                   gap: 12,
@@ -499,18 +512,6 @@ function DownloadProgress({ taskId, executionId }: { taskId: string; executionId
           </div>
         </>
       )}
-      
-      {/* 添加CSS动画 */}
-      <style jsx>{`
-        @keyframes shimmer {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(100%); }
-        }
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-      `}</style>
     </div>
   );
 }
