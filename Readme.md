@@ -133,7 +133,8 @@ docker-compose -f docker-compose.prod.yml up -d
 | `TZ` | `UTC` | 定时任务按这个时区解释 cron 表达式。compose 示例里已设为 `Asia/Shanghai`；不设的话 `0 3 * * *` 会在北京时间 11:00 跑 |
 | `JWT_SECRET` | 首次启动随机生成并持久化 | 登录令牌的签名密钥。只有在需要轮换密钥、或多个副本共享同一份登录状态时才手动指定；改动会让所有已登录会话立即失效 |
 | `LOG_LEVEL` | `info` | 排查「播放没走 302」时设为 `debug` |
-| `CONFIG_DIR` / `DATA_DIR` | `/app/config`、`/app/data` | 容器内路径，一般不用改 |
+| `CONFIG_DIR` / `DATA_DIR` | `/app/config`、`/app/data` | 容器内路径，一般不用改；改了要同步改 `volumes` 的挂载点 |
+| `PUID` / `PGID` | 不设，以 root 运行 | 设了就用这个 uid/gid 跑两个进程（NAS 上用 `id` 查自己的）。`config` 目录会自动改归属；之前用 root 生成的 `data` 里的文件请自己 `chown` 一次 |
 | `TRUST_PROXY` | 关 | 放在 nginx/Caddy 之类反代后面时设为 `true`，登录限流和日志里的客户端 IP 才会取 `X-Forwarded-For` |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | 连不上 Telegram 官方接口时指到自己的反代，如 `https://tg.example.com` |
 

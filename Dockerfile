@@ -48,6 +48,8 @@ RUN pnpm --filter @openstrm/frontend build
 
 # ========== Stage 4: Production image ==========
 FROM node:24-alpine AS runner
+# su-exec：entrypoint 在设了 PUID/PGID 时用它把两个 node 进程降到那个身份
+RUN apk add --no-cache su-exec
 WORKDIR /app
 
 # 后端：自包含，入口在 backend/dist/
