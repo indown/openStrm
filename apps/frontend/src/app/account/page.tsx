@@ -1,21 +1,23 @@
 "use client";
 import { DataTable } from "@/components/data-table";
 import { AddAccountDialog } from "./components/AddAccountDialog";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { ColumnDef } from "@tanstack/react-table";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/axios";
 import { 
   Edit, 
   Trash2, 
@@ -38,8 +40,12 @@ export type Account = {
 
 export default function AccountPage() {
   const [data, setData] = useState<Account[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState<string | null>(null);
+  // 只有首次加载显示整页转圈；之后的刷新列表留在屏幕上
+  const [loaded, setLoaded] = useState(false);
+  // 编辑 / 删除弹框放在页面层，由当前操作的那一行驱动，不在每一行里各放一份
+  const [editing, setEditing] = useState<Account | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
 
   useEffect(() => {
     fetchAccounts();
@@ -47,12 +53,11 @@ export default function AccountPage() {
 
   const fetchAccounts = async () => {
     try {
-      setIsLoading(true);
       setData(await api.accounts.list());
-    } catch {
-      toast.error("获取账户列表失败");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "获取账户列表失败"));
     } finally {
-      setIsLoading(false);
+      setLoaded(true);
     }
   };
 
@@ -61,8 +66,8 @@ export default function AccountPage() {
       await api.accounts.remove(name);
       toast.success("删除成功");
       fetchAccounts();
-    } catch {
-      toast.error("删除失败");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "删除失败"));
     }
   };
 
@@ -142,71 +147,34 @@ export default function AccountPage() {
         const account = row.original;
         return (
           <div className="flex gap-1">
-            <AddAccountDialog
-              account={account}
-              trigger={
-                <Button 
-                  variant="ghost" 
-                  size="sm"
-                  className="h-8 w-8 p-0"
-                  title="编辑账户"
-                >
-                  <Edit className="w-4 h-4" />
-                </Button>
-              }
-              onSuccess={fetchAccounts}
-            />
-            <Dialog 
-              open={deleteDialogOpen === account.name} 
-              onOpenChange={(open) => setDeleteDialogOpen(open ? account.name : null)}
+            <Button 
+              variant="ghost" 
+              size="sm"
+              className="h-8 w-8 p-0"
+              title="编辑账户"
+              onClick={() => {
+                setEditing(account);
+                setEditorOpen(true);
+              }}
             >
-              <DialogTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
-                  title="删除账户"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="sm:max-w-[425px]">
-                <DialogHeader>
-                  <DialogTitle>确认删除</DialogTitle>
-                  <DialogDescription>
-                    你确定要删除账户 &ldquo;{account.name}&rdquo; 吗？此操作无法撤销。
-                    <br />
-                    <span className="text-sm text-gray-500 mt-2 block">
-                      账户类型: {account.accountType}
-                    </span>
-                  </DialogDescription>
-                </DialogHeader>
-                <DialogFooter className="gap-2">
-                  <Button 
-                    variant="outline"
-                    onClick={() => setDeleteDialogOpen(null)}
-                  >
-                    取消
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    onClick={() => {
-                      handleDelete(account.name);
-                      setDeleteDialogOpen(null);
-                    }}
-                  >
-                    删除
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
+              <Edit className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+              title="删除账户"
+              onClick={() => setDeleteTarget(account)}
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
           </div>
         );
       },
     },
   ];
 
-  if (isLoading) {
+  if (!loaded) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
@@ -241,6 +209,40 @@ export default function AccountPage() {
       ) : (
         <DataTable columns={columns} data={data} getRowId={(a) => a.name} />
       )}
+
+      {/* 编辑弹框：整页一个，编辑哪一行就喂哪一行的数据 */}
+      <AddAccountDialog
+        account={editing ?? undefined}
+        open={editorOpen}
+        onOpenChange={setEditorOpen}
+        onSuccess={fetchAccounts}
+      />
+
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent className="sm:max-w-[425px]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认删除</AlertDialogTitle>
+            <AlertDialogDescription>
+              你确定要删除账户 &ldquo;{deleteTarget?.name}&rdquo; 吗？此操作无法撤销。
+              <br />
+              <span className="text-sm text-gray-500 mt-2 block">
+                账户类型: {deleteTarget?.accountType}
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2">
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className={buttonVariants({ variant: "destructive" })}
+              onClick={() => {
+                if (deleteTarget) void handleDelete(deleteTarget.name);
+              }}
+            >
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

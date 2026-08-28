@@ -78,6 +78,14 @@ export type LibraryCreateInput = {
   sharePath?: string;
 };
 export type ScrapeStatusSummary = { pendingIds: string[]; pendingCount: number; active: number; queued: number };
+/** 设置里值是对象的顶层键（emby / telegram / lifeMonitor …），可以按组读-改-写 */
+export type SettingsGroupKey = {
+  [K in keyof AppSettings]-?: NonNullable<AppSettings[K]> extends readonly unknown[]
+    ? never
+    : NonNullable<AppSettings[K]> extends object
+      ? K
+      : never;
+}[keyof AppSettings];
 export type SaveToTaskChoice = { taskId: string; subPath: string; mode: "sync" | "async" };
 
 export interface TmdbSearchResult {
@@ -202,6 +210,16 @@ export const api = {
     get: () => data(axiosInstance.get<AppSettings>("/api/settings")),
     /** 按顶层键合并：只发本页拥有的键 */
     patch: (patch: Partial<AppSettings>) => data(axiosInstance.put<{ message: string }>("/api/settings", patch)),
+    /**
+     * 读-改-写一个顶层分组。PUT 是按顶层键整体替换，只改组内一个字段（比如 telegram.allowTaskStart）
+     * 得先把库里的其它字段带上，不然 botToken / allowedUsers 会一起被抹掉。掩码的密钥原样回传等于不改。
+     */
+    patchGroup: async <K extends SettingsGroupKey>(key: K, partial: Partial<NonNullable<AppSettings[K]>>) => {
+      const current = (await data(axiosInstance.get<AppSettings>("/api/settings")))[key];
+      return data(
+        axiosInstance.put<{ message: string }>("/api/settings", { [key]: { ...(current ?? {}), ...partial } }),
+      );
+    },
   },
 
   tasks: {

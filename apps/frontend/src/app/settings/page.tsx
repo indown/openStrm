@@ -7,6 +7,7 @@ import { Separator } from "@/components/ui/separator";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/axios";
 import type { AppSettings } from "@openstrm/shared";
 
 type Settings = AppSettings;
@@ -28,6 +29,7 @@ export default function SettingsPage() {
         setDownloadExtensionsInput((settings.downloadExtensions || []).join(", "));
         setMediaMountPathInput((settings.mediaMountPath || []).join(", "));
       })
+      .catch((err) => toast.error(apiErrorMessage(err, "加载设置失败")))
       .finally(() => setLoading(false));
   }, []);
 
@@ -101,7 +103,8 @@ export default function SettingsPage() {
       a.href = url;
       a.download = filename;
       a.click();
-      URL.revokeObjectURL(url);
+      // 别同步撤销：Firefox / Safari 会在下载真正开始前就把 URL 收回，下载直接中断
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch {
       toast.error("下载备份失败");
     } finally {

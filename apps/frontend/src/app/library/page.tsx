@@ -28,7 +28,8 @@ import { SaveToDriveDialog, type SaveToTaskChoice } from "@/components/SaveToDri
 export default function LibraryPage() {
   const router = useRouter();
   const [entries, setEntries] = useState<MediaLibraryEntry[]>([]);
-  const [loading, setLoading] = useState(false);
+  // 只有首次加载显示"加载中"；之后的刷新（含刮削轮询触发的）不把已有卡片清掉
+  const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -43,14 +44,13 @@ export default function LibraryPage() {
   const share = useShareDetail();
 
   const fetchEntries = async () => {
-    setLoading(true);
     try {
       const list = await api.library.list();
       setEntries(Array.isArray(list) ? list : []);
-    } catch {
-      toast.error("加载影库失败");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "加载影库失败"));
     } finally {
-      setLoading(false);
+      setLoaded(true);
     }
   };
 
@@ -168,8 +168,8 @@ export default function LibraryPage() {
       await api.library.remove(deleteTarget.id);
       toast.success("已删除");
       setEntries((prev) => prev.filter((e) => e.id !== deleteTarget.id));
-    } catch {
-      toast.error("删除失败");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "删除失败"));
     } finally {
       setDeleteTarget(null);
     }
@@ -222,7 +222,7 @@ export default function LibraryPage() {
         </div>
       </div>
 
-      {loading ? (
+      {!loaded ? (
         <div className="text-muted-foreground p-8 text-center">加载中...</div>
       ) : filtered.length === 0 ? (
         <div className="text-muted-foreground p-8 text-center border rounded-md">

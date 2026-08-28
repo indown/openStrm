@@ -100,7 +100,9 @@ export default function LifeMonitorPage() {
       api.accounts.list().then((list) => setAccounts((list || []).filter((a) => a.accountType === "115"))),
       loadStatus(),
       loadEvents(),
-    ]).finally(() => setLoading(false));
+    ])
+      .catch((err) => toast.error(apiErrorMessage(err, "加载监控配置失败")))
+      .finally(() => setLoading(false));
   }, [loadStatus, loadEvents]);
 
   // 运行时每 5s 刷新一次状态，停止时不必轮询

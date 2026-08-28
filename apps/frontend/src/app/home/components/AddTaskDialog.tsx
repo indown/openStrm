@@ -58,15 +58,49 @@ interface AddTaskDialogProps {
   onSuccess?: () => void;
   accounts?: Array<{ name: string; accountType: string }>;
   accountsLoading?: boolean;
+  /** 受控模式：页面统一管一个编辑弹框时传入 open / onOpenChange；不传则自己管 open（"新建任务"按钮那种用法） */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
+
+/** 编辑时，如果启用了302且strmPrefix以账号结尾，需要去掉账号后缀 */
+function stripAccountSuffix(task: AddTaskDialogProps["task"]): string {
+  if (!task) return "";
+  let prefix = task.strmPrefix || "";
+  if (task.enable302 && task.account && prefix.endsWith("/" + task.account)) {
+    prefix = prefix.slice(0, -(task.account.length + 1));
+  }
+  return prefix;
+}
+
+/** 当前应当显示的表单值：编辑时来自 task（去掉 302 拼上的账号后缀），新增时是空表单 */
+function defaultsFor(task: AddTaskDialogProps["task"]): TaskFormValues {
+  return task
+    ? { ...task, strmPrefix: stripAccountSuffix(task) }
+    : {
+        account: "",
+        originPath: "",
+        targetPath: "",
+        strmType: "local",
+        strmPrefix: "",
+        removeExtraFiles: true,
+        enable302: false,
+        enablePathEncoding: false,
+      };
+}
+
 export function AddTaskDialog({
   task,
   trigger,
   onSuccess,
   accounts = [],
   accountsLoading = false,
+  open: openProp,
+  onOpenChange,
 }: AddTaskDialogProps) {
-  const [open, setOpen] = React.useState(false);
+  const [openState, setOpenState] = React.useState(false);
+  const isControlled = openProp !== undefined;
+  const open = isControlled ? openProp : openState;
   const [loading, setLoading] = React.useState(false);
   const [directoryDialogOpen, setDirectoryDialogOpen] = React.useState(false);
   const [localDirectoryDialogOpen, setLocalDirectoryDialogOpen] = React.useState(false);
@@ -102,42 +136,27 @@ export function AddTaskDialog({
     return `${combinedPath}/....../abc.mkv`;
   };
 
-  // 编辑时，如果启用了302且strmPrefix以账号结尾，需要去掉账号后缀
-  const getInitialStrmPrefix = () => {
-    if (!task) return "";
-    let prefix = task.strmPrefix || "";
-    if (task.enable302 && task.account && prefix.endsWith("/" + task.account)) {
-      prefix = prefix.slice(0, -(task.account.length + 1));
-    }
-    return prefix;
-  };
-
-  /** 当前应当显示的表单值：编辑时来自 task（去掉 302 拼上的账号后缀），新增时是空表单 */
-  const currentDefaults = (): TaskFormValues =>
-    task
-      ? { ...task, strmPrefix: getInitialStrmPrefix() }
-      : {
-          account: "",
-          originPath: "",
-          targetPath: "",
-          strmType: "local",
-          strmPrefix: "",
-          removeExtraFiles: true,
-          enable302: false,
-          enablePathEncoding: false,
-        };
-
   const form = useForm<TaskFormValues>({
     resolver: zodResolver(taskFormSchema),
-    defaultValues: currentDefaults(),
+    defaultValues: defaultsFor(task),
   });
+
+  const setOpen = (next: boolean) => {
+    if (!isControlled) setOpenState(next);
+    onOpenChange?.(next);
+  };
 
   // 每次打开都按当前的 task 重置：useForm 的 defaultValues 只在挂载时取一次，
   // 保存成功后再点"编辑"会显示改之前的值，再存一次就把新值盖回去了
   const handleOpenChange = (next: boolean) => {
-    if (next) form.reset(currentDefaults());
+    if (next) form.reset(defaultsFor(task));
     setOpen(next);
   };
+
+  // 受控打开不经过 handleOpenChange（是父组件改的 open），这里补上同样的重置
+  React.useEffect(() => {
+    if (isControlled && openProp) form.reset(defaultsFor(task));
+  }, [isControlled, openProp, task, form]);
 
   // 监听表单值变化
   React.useEffect(() => {
@@ -155,13 +174,8 @@ export function AddTaskDialog({
   // 初始化时同步表单值到状态
   React.useEffect(() => {
     if (task) {
-      // 如果启用了302且strmPrefix以账号结尾，去掉账号后缀
-      let prefix = task.strmPrefix || "";
-      if (task.enable302 && task.account && prefix.endsWith("/" + task.account)) {
-        prefix = prefix.slice(0, -(task.account.length + 1));
-      }
       setFormValues({
-        strmPrefix: prefix,
+        strmPrefix: stripAccountSuffix(task),
         originPath: task.originPath || "",
         account: task.account || "",
         enable302: task.enable302 || false,
@@ -205,11 +219,13 @@ export function AddTaskDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        {trigger ?? (
-          <Button variant="outline">{task ? "编辑" : "新增任务"}</Button>
-        )}
-      </DialogTrigger>
+      {(trigger !== undefined || !isControlled) && (
+        <DialogTrigger asChild>
+          {trigger ?? (
+            <Button variant="outline">{task ? "编辑" : "新增任务"}</Button>
+          )}
+        </DialogTrigger>
+      )}
 
       <DialogContent className="sm:max-w-[450px]">
         <DialogHeader>
