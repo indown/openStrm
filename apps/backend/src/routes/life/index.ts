@@ -9,7 +9,7 @@ import {
 } from "../../services/life/monitor.js";
 import { listRecentLifeEvents } from "../../db/repositories/life.js";
 import { BEHAVIOR_TYPE_TO_NAME } from "../../services/cloud-115/life.js";
-import { readAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
+import { updateAppSetting } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 import { lifeMonitorSchema } from "../../schemas/entities.js";
@@ -26,7 +26,7 @@ export default async function (fastify: FastifyInstance) {
   fastify.post("/api/life/monitor", { preHandler: [fastify.authenticate] }, async (request) => {
     const { config } = parse(startSchema, request.body);
     if (config) {
-      writeAppSetting("lifeMonitor", { ...(readAppSetting("lifeMonitor") ?? {}), ...config, enabled: true });
+      updateAppSetting("lifeMonitor", (current) => ({ ...(current ?? {}), ...config, enabled: true }));
       // 账号、拉取模式、间隔都是启动时定下来的：已在跑就先停再起，不然改了等于没改
       if (isLifeMonitorRunning()) await stopLifeMonitor();
     }
@@ -38,7 +38,7 @@ export default async function (fastify: FastifyInstance) {
   /** 停止监控 */
   fastify.delete("/api/life/monitor", { preHandler: [fastify.authenticate] }, async () => {
     const res = await stopLifeMonitor();
-    writeAppSetting("lifeMonitor", { ...(readAppSetting("lifeMonitor") ?? {}), enabled: false });
+    updateAppSetting("lifeMonitor", (current) => ({ ...(current ?? {}), enabled: false }));
     return { success: res.ok, message: res.message };
   });
 

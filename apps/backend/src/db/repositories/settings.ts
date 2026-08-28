@@ -65,6 +65,21 @@ export function writeAppSetting<K extends keyof AppSettings>(
   patchAppSettings({ [key]: value } as Partial<AppSettings>);
 }
 
+/**
+ * 读-改-写一个顶层键，整个放在一个事务里。
+ * 以前各路由自己 `write(key, { ...read(key), x })`：两个请求同时改 telegram 组的不同字段，后写的把先写的抹掉。
+ */
+export function updateAppSetting<K extends keyof AppSettings>(
+  key: K,
+  updater: (current: AppSettings[K] | undefined) => AppSettings[K],
+): AppSettings[K] {
+  return db.transaction((tx) => {
+    const next = updater(readAppSetting(key));
+    upsertEntries(tx, [[String(key), next]]);
+    return next;
+  });
+}
+
 export function deleteAppSetting(key: keyof AppSettings): void {
   db.delete(settings).where(eq(settings.key, `${PREFIX}${String(key)}`)).run();
 }

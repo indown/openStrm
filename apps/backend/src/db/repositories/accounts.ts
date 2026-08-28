@@ -34,14 +34,17 @@ export function insertAccount(account: AccountInfo): void {
 
 /** 合并给出的字段；name 是主键不可改。账号不存在时返回 null */
 export function updateAccount(name: string, patch: Record<string, unknown>): AccountInfo | null {
-  const current = getAccount(name);
-  if (!current) return null;
-  const merged = { ...current, ...patch, name } as AccountInfo;
-  db.update(accounts)
-    .set({ ...columns(merged), updatedAt: sql`(unixepoch())` })
-    .where(eq(accounts.name, name))
-    .run();
-  return merged;
+  // 读改写放进一个事务：界面保存和 runner 写回 openlist token 同时发生也不会互相抹掉
+  return db.transaction((tx) => {
+    const current = getAccount(name);
+    if (!current) return null;
+    const merged = { ...current, ...patch, name } as AccountInfo;
+    tx.update(accounts)
+      .set({ ...columns(merged), updatedAt: sql`(unixepoch())` })
+      .where(eq(accounts.name, name))
+      .run();
+    return merged;
+  });
 }
 
 export function deleteAccount(name: string): boolean {

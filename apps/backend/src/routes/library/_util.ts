@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
+
 export function randomId(): string {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  return randomUUID();
 }
 
 export function sanitizeTags(input: unknown): string[] {

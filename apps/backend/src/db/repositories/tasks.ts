@@ -34,14 +34,17 @@ export function insertTask(task: TaskDefinition): void {
 
 /** 合并给出的字段；id 不可改。任务不存在时返回 null */
 export function updateTask(id: string, patch: Partial<TaskDefinition>): TaskDefinition | null {
-  const current = getTask(id);
-  if (!current) return null;
-  const merged: TaskDefinition = { ...current, ...patch, id };
-  db.update(tasks)
-    .set({ ...columns(merged), updatedAt: sql`(unixepoch())` })
-    .where(eq(tasks.id, id))
-    .run();
-  return merged;
+  // 读改写放进一个事务：两处同时改同一条（界面保存 + runner 记录 token）不会互相抹掉
+  return db.transaction((tx) => {
+    const current = getTask(id);
+    if (!current) return null;
+    const merged: TaskDefinition = { ...current, ...patch, id };
+    tx.update(tasks)
+      .set({ ...columns(merged), updatedAt: sql`(unixepoch())` })
+      .where(eq(tasks.id, id))
+      .run();
+    return merged;
+  });
 }
 
 export function deleteTask(id: string): boolean {

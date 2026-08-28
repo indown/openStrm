@@ -411,7 +411,8 @@ export function getLifeMonitorStatus(): MonitorStatus {
     stats: { ...stats },
     db: { lifeEvents: countLifeEvents(), pathCache: countPathCache() },
     embyRefresh: getEmbyRefreshState(),
-    logs: [...logs],
+    // 界面只显示最近 50 条，这个接口每 5 秒被轮询一次，别每次都搬 500 行
+    logs: logs.slice(-100),
   };
 }
 

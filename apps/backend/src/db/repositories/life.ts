@@ -91,18 +91,24 @@ export function repathSubtree(oldPath: string, newPath: string): number {
       path: sql`${newPath} || substr(${pathCache.path}, ${oldPath.length + 1})`,
       updatedAt: sql`(unixepoch())`,
     })
-    // 自身 + 后代（后代一定以 oldPath + "/" 开头）
-    .where(sql`(${pathCache.path} = ${oldPath} OR ${pathCache.path} LIKE ${oldPath + "/%"})`)
+    .where(subtreeOf(oldPath))
     .run();
   return res.changes ?? 0;
+}
+
+/**
+ * 自身 + 所有后代（后代一定以 `dir/` 开头）。
+ * 写成范围查询而不是 LIKE 'dir/%'：LIKE 在 SQLite 里走不了索引，每次目录移动/删除都要全表扫
+ * 一遍 path_cache（整个网盘的条目数）。'0' 是 '/' 的下一个字符，`dir/…` 全部落在 [dir/, dir0) 里。
+ */
+function subtreeOf(dir: string) {
+  return sql`(${pathCache.path} = ${dir} OR (${pathCache.path} >= ${dir + "/"} AND ${pathCache.path} < ${dir + "0"}))`;
 }
 
 /** 删除目录时清掉整棵子树的缓存 */
 export function dropSubtree(path: string): void {
   if (!path) return;
-  db.delete(pathCache)
-    .where(sql`(${pathCache.path} = ${path} OR ${pathCache.path} LIKE ${path + "/%"})`)
-    .run();
+  db.delete(pathCache).where(subtreeOf(path)).run();
 }
 
 export function countPathCache(): number {

@@ -10,7 +10,8 @@ import {
 } from "../../services/cloud-115/share.js";
 import { resolveTaskAccount115, saveSelectionToTask } from "../../services/library/save-to-task.js";
 import { listAccounts } from "../../db/repositories/accounts.js";
-import { listTasks } from "../../db/repositories/tasks.js";
+import { getTask } from "../../db/repositories/tasks.js";
+import { normalizeSubPath } from "../../services/strm/naming.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
@@ -85,12 +86,12 @@ export default async function (fastify: FastifyInstance) {
         const fileIds = body.fileIds;
         const mode = body.mode === "async" ? "async" : "sync";
         const selectedItems = body.selectedItems ?? [];
-        const subPath = (body.subPath ?? "").split("/").map((s) => s.trim()).filter(Boolean).join("/");
+        const subPath = normalizeSubPath(body.subPath);
         if (!shareCode || !fileIds) throw new HttpError(400, "shareCode and fileIds are required");
 
         if (body.taskId) {
-          const task = listTasks().find((t) => t.id === body.taskId);
-          if (!task) throw new HttpError(400, `Task not found: ${body.taskId}`);
+          const task = getTask(body.taskId);
+          if (!task) throw new HttpError(404, `Task not found: ${body.taskId}`);
           const taskAccount = resolveTaskAccount115(accounts, task);
           const result = await saveSelectionToTask({
             task,
