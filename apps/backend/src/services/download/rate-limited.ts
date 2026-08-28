@@ -68,12 +68,15 @@ export function enqueueForAccount<T>(
   return new Observable<T>((observer) => {
     let cancelled = false;
     let inner: Subscription | null = null;
+    /** 任务已开始时，调它就是把限流器的槽位还回去 */
+    let release: (() => void) | null = null;
     limiter
       .schedule(
         () =>
           new Promise<void>((resolve) => {
             // 排到队头时订阅方早已退订（任务取消）：直接放过，别再发请求、写盘
             if (cancelled) return resolve();
+            release = resolve;
             inner = fn().subscribe({
               next: (v) => observer.next(v),
               // 错误只走 observer；这里 resolve 是为了让限流器释放槽位
@@ -87,6 +90,10 @@ export function enqueueForAccount<T>(
     return () => {
       cancelled = true;
       inner?.unsubscribe();
+      // 订阅方退订了也要还槽位——不只是任务取消：request115 用 firstValueFrom，拿到第一个值就退订，
+      // 内层随后的 complete 送不到这里。只靠 complete 来 resolve 的话，一个账号的两个槽位
+      // 两次请求就全部漏光，第三次起所有 115 调用永远排队（rc.9 就是这样挂死的）
+      release?.();
     };
   });
 }
