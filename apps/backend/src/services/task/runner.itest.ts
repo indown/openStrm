@@ -14,13 +14,17 @@ import { readAppSettings, replaceAppSettings } from "../../db/repositories/setti
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { deleteTask, insertTask, updateTask } from "../../db/repositories/tasks.js";
 import { deleteTaskExecution, getTaskHistory } from "../task-history.js";
-import { isTaskRunning } from "./registry.js";
+import { clearRateLimiters } from "../download/rate-limited.js";
+import { cancelRunningTask, isTaskRunning } from "./registry.js";
 import { startTask } from "./runner.js";
 
 const TASK = "runner-itest";
 const ORIGIN = "/media/Show";
 let listDelayMs = 0;
 let listCalls = 0;
+let holdRaw = false;
+let rawRequests = 0;
+const held = new Set<http.ServerResponse>();
 
 // ---- 假 openlist ----
 const tree: Record<string, Array<{ name: string; is_dir: boolean }>> = {
@@ -48,6 +52,15 @@ const server = http.createServer((req, res) => {
     }
     if (req.url === "/api/fs/get") return json({ code: 200, data: { raw_url: `${base}/raw${body.path}` } });
     if (req.url?.startsWith("/raw/")) {
+      rawRequests++;
+      if (holdRaw) {
+        // 发一点就挂住，模拟正在进行的大文件下载
+        res.writeHead(200, { "content-type": "text/plain", "content-length": "1000" });
+        res.write("partial");
+        held.add(res);
+        res.on("close", () => held.delete(res));
+        return;
+      }
       res.writeHead(200, { "content-type": "text/plain" });
       return res.end(`content of ${req.url}`);
     }
@@ -148,6 +161,45 @@ test("removeExtraFiles：本地多出来的文件和空目录被删掉，远端�
     assert.ok(fs.existsSync(path.join(outDir, "out/S1/ep1.nfo")));
   } finally {
     updateTask(TASK, { removeExtraFiles: false });
+  }
+});
+
+test("取消：进行中的下载被中止且不留半截文件，排队的不再发请求，历史标 cancelled", async () => {
+  fs.rmSync(outDir, { recursive: true, force: true });
+  tree[`${ORIGIN}/S1`].push({ name: "ep2.nfo", is_dir: false }, { name: "ep3.nfo", is_dir: false });
+  // 下载并发 1：一个挂在半路，另外两个排在限流器队列里
+  replaceAppSettings({
+    ...readAppSettings(),
+    download: { linkMaxPerSecond: 10, linkMaxConcurrent: 2, downloadMaxConcurrent: 1 },
+  });
+  clearRateLimiters();
+  holdRaw = true;
+  rawRequests = 0;
+  try {
+    const res = await startTask(TASK);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    await waitFor(() => rawRequests === 1 && held.size === 1, "第一个下载挂上");
+
+    assert.equal(cancelRunningTask(TASK, "测试取消"), true);
+    assert.equal(isTaskRunning(TASK), false);
+    await waitFor(() => held.size === 0, "服务端看到下载连接被掐断");
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(rawRequests, 1, "排队的两个不该再发请求");
+
+    const left = fs.readdirSync(path.join(outDir, "out/S1"));
+    assert.ok(!left.some((n) => n.endsWith(".part")), `半截文件要删掉，实际剩下 ${left.join(",")}`);
+    assert.ok(!left.some((n) => n.endsWith(".nfo")), `没下完的不能顶着正式文件名，实际剩下 ${left.join(",")}`);
+
+    const [h] = getTaskHistory(TASK);
+    assert.equal(h.status, "cancelled");
+    assert.equal(h.summary.errorMessage, "测试取消");
+    assert.equal(cancelRunningTask(TASK), false, "已经取消的再取消返回 false");
+  } finally {
+    holdRaw = false;
+    for (const r of held) r.destroy();
+    tree[`${ORIGIN}/S1`].length = 2;
+    replaceAppSettings({ ...readAppSettings(), download: baseline.settings.download });
+    clearRateLimiters();
   }
 });
 

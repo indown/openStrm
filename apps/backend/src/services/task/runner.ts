@@ -273,6 +273,11 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
     if (pct === 100) finished.add(fp);
     pushLog({ filePath: fp, percent: pct, overallPercent: (sumPercent / total).toFixed(2) });
   };
+  // 取消（界面按钮、进程退出）时由 registry 调：退订已经中止了下载，这里只管把账记平
+  running.onCancel = (reason) => {
+    history.flush();
+    completeTaskExecution(execution.id, "cancelled", { totalFiles: total, downloadedFiles: finished.size, errorMessage: reason });
+  };
 
   // strm 只是写一个小文本文件，不限流；但几万个也别一口气全扔出去。
   // 单个写失败记一行 error 继续，不拖垮整个任务
