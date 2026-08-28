@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
+import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,7 +10,18 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
-import { Bot, Settings, MessageSquare, CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Bot, Settings, MessageSquare, CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square, Users, ShieldCheck } from "lucide-react";
 import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 import { api, type TelegramBotInfo as BotInfo, type TelegramWebhookInfo as WebhookInfo } from "@/lib/api";
 
@@ -26,11 +39,16 @@ export default function TelegramPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [pollingStatus, setPollingStatus] = useState<{ polling: boolean; message: string } | null>(null);
+  // 是否允许 Bot 的"启动"按钮真的跑任务（settings.telegram.allowTaskStart，默认关）
+  const [allowTaskStart, setAllowTaskStart] = useState(false);
+  const [allowTaskStartSaving, setAllowTaskStartSaving] = useState(false);
+  const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
 
   // 加载当前配置
   useEffect(() => {
     loadBotInfo();
     checkPollingStatus();
+    loadAllowTaskStart();
   }, []);
 
   const loadBotInfo = async () => {
@@ -47,7 +65,7 @@ export default function TelegramPage() {
         });
       }
     } catch (error) {
-      console.error('Failed to load bot info:', error);
+      toast.error(apiErrorMessage(error, "加载 Bot 配置失败"));
     } finally {
       setLoading(false);
     }
@@ -89,10 +107,6 @@ export default function TelegramPage() {
   };
 
   const handleDelete = async () => {
-    if (!confirm('Are you sure you want to remove the Telegram bot configuration?')) {
-      return;
-    }
-
     try {
       setLoading(true);
       setError(null);
@@ -115,7 +129,31 @@ export default function TelegramPage() {
     try {
       setPollingStatus(await api.telegram.polling.status());
     } catch (error) {
-      console.error('Failed to check polling status:', error);
+      toast.error(apiErrorMessage(error, "获取轮询状态失败"));
+    }
+  };
+
+  const loadAllowTaskStart = async () => {
+    try {
+      const settings = await api.settings.get();
+      setAllowTaskStart(Boolean(settings.telegram?.allowTaskStart));
+    } catch (error) {
+      toast.error(apiErrorMessage(error, "加载设置失败"));
+    }
+  };
+
+  // 勾选即保存；PUT 是整组替换，patchGroup 会先把 telegram 组里的其它字段带上
+  const toggleAllowTaskStart = async (next: boolean) => {
+    setAllowTaskStart(next);
+    setAllowTaskStartSaving(true);
+    try {
+      await api.settings.patchGroup("telegram", { allowTaskStart: next });
+      toast.success(next ? "已允许从 Telegram 启动任务" : "已禁止从 Telegram 启动任务");
+    } catch (error) {
+      setAllowTaskStart(!next);
+      toast.error(apiErrorMessage(error, "保存失败"));
+    } finally {
+      setAllowTaskStartSaving(false);
     }
   };
 
@@ -180,9 +218,17 @@ export default function TelegramPage() {
 
   return (
     <div className="container mx-auto p-6 space-y-6">
-      <div className="flex items-center space-x-2">
-        <Bot className="h-6 w-6" />
-        <h1 className="text-3xl font-bold">Telegram Bot Management</h1>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center space-x-2">
+          <Bot className="h-6 w-6" />
+          <h1 className="text-3xl font-bold">Telegram Bot Management</h1>
+        </div>
+        <Button variant="outline" asChild>
+          <Link href="/telegram/users">
+            <Users className="h-4 w-4 mr-2" />
+            管理授权用户
+          </Link>
+        </Button>
       </div>
 
       {error && (
@@ -258,7 +304,7 @@ export default function TelegramPage() {
                 {loading ? 'Saving...' : 'Save Configuration'}
               </Button>
               {botInfo && (
-                <Button variant="outline" onClick={handleDelete} disabled={loading}>
+                <Button variant="outline" onClick={() => setRemoveDialogOpen(true)} disabled={loading}>
                   Remove Configuration
                 </Button>
               )}
@@ -405,6 +451,55 @@ export default function TelegramPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Bot 权限 */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center space-x-2">
+            <ShieldCheck className="h-5 w-5" />
+            <span>Bot 权限</span>
+          </CardTitle>
+          <CardDescription>
+            只有授权用户能使用 Bot 命令；是否允许 Bot 直接启动同步任务单独控制
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <label className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
+            <Checkbox
+              checked={allowTaskStart}
+              disabled={allowTaskStartSaving}
+              onCheckedChange={(v) => void toggleAllowTaskStart(v === true)}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="text-sm font-medium">允许从 Telegram 启动任务</span>
+              <span className="block text-xs text-muted-foreground">
+                默认关闭。开启后，授权用户点 Bot 消息里的「启动」按钮会真的跑一次同步任务；关闭时按钮只会提示未开启。
+              </span>
+            </span>
+          </label>
+          <div className="text-sm text-muted-foreground">
+            授权用户列表在
+            <Link href="/telegram/users" className="underline mx-1">授权用户</Link>
+            页面维护。
+          </div>
+        </CardContent>
+      </Card>
+
+      <AlertDialog open={removeDialogOpen} onOpenChange={setRemoveDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>移除 Bot 配置</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定要移除 Telegram Bot 配置吗？Bot Token、Chat ID 和 Webhook 设置都会被清掉。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void handleDelete()}>移除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Webhook Information */}
       {webhookInfo && (

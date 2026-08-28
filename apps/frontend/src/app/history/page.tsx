@@ -5,8 +5,20 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { buttonVariants } from "@/components/ui/button";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/axios";
 import type { TaskExecutionSummary } from "@openstrm/shared";
 import { 
   Clock, 
@@ -65,7 +77,11 @@ const getDuration = (startTime: number, endTime?: number) => {
 
 export default function TaskHistoryPage() {
   const [history, setHistory] = useState<TaskExecutionSummary[]>([]);
-  const [loading, setLoading] = useState(true);
+  // 只有首次加载显示整页转圈；之后点"刷新"列表留在屏幕上
+  const [loaded, setLoaded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<TaskExecutionSummary | null>(null);
+  const [clearDialogOpen, setClearDialogOpen] = useState(false);
 
   useEffect(() => {
     fetchHistory();
@@ -73,24 +89,23 @@ export default function TaskHistoryPage() {
 
   const fetchHistory = async () => {
     try {
-      setLoading(true);
+      setRefreshing(true);
       setHistory(await api.history.list());
     } catch (error) {
-      console.error("Failed to fetch task history:", error);
-      toast.error("获取任务历史失败");
+      toast.error(apiErrorMessage(error, "获取任务历史失败"));
     } finally {
-      setLoading(false);
+      setLoaded(true);
+      setRefreshing(false);
     }
   };
 
   const deleteHistory = async (executionId: string) => {
     try {
       await api.history.remove(executionId);
-      setHistory(history.filter(h => h.id !== executionId));
+      setHistory((prev) => prev.filter((h) => h.id !== executionId));
       toast.success("删除成功");
     } catch (error) {
-      console.error("Failed to delete history:", error);
-      toast.error("删除失败");
+      toast.error(apiErrorMessage(error, "删除失败"));
     }
   };
 
@@ -101,8 +116,7 @@ export default function TaskHistoryPage() {
       // 重新加载历史记录
       fetchHistory();
     } catch (error) {
-      console.error("Failed to delete history:", error);
-      toast.error("删除失败");
+      toast.error(apiErrorMessage(error, "删除失败"));
     }
   };
 
@@ -111,7 +125,7 @@ export default function TaskHistoryPage() {
     window.open(`/log?taskId=${encodeURIComponent(execution.taskId)}&executionId=${encodeURIComponent(execution.id)}`, "_blank");
   };
 
-  if (loading) {
+  if (!loaded) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
@@ -132,10 +146,10 @@ export default function TaskHistoryPage() {
           </p>
         </div>
         <div className="flex space-x-2">
-          <Button onClick={fetchHistory} variant="outline">
-            刷新
+          <Button onClick={fetchHistory} variant="outline" disabled={refreshing}>
+            {refreshing ? "刷新中..." : "刷新"}
           </Button>
-          <Button onClick={deleteAllHistory} variant="outline">
+          <Button onClick={() => setClearDialogOpen(true)} variant="outline" disabled={history.length === 0}>
             删除所有历史
           </Button>
         </div>
@@ -193,7 +207,8 @@ export default function TaskHistoryPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => deleteHistory(execution.id)}
+                        onClick={() => setDeleteTarget(execution)}
+                        title="删除这条记录"
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -252,6 +267,45 @@ export default function TaskHistoryPage() {
           })}
         </div>
       )}
+
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除这条执行记录</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定删除任务 {deleteTarget?.taskId} 在 {deleteTarget ? formatTime(deleteTarget.startTime) : ""} 的这次执行记录吗？记录和日志会一起删掉，无法恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className={buttonVariants({ variant: "destructive" })}
+              onClick={() => {
+                if (deleteTarget) void deleteHistory(deleteTarget.id);
+              }}
+            >
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={clearDialogOpen} onOpenChange={setClearDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除所有历史</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定删除全部 {history.length} 条执行记录吗？记录和日志会一起删掉，无法恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction className={buttonVariants({ variant: "destructive" })} onClick={() => void deleteAllHistory()}>
+              全部删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

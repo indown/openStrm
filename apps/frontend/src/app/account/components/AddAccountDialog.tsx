@@ -66,32 +66,46 @@ interface AddAccountDialogProps {
   account?: AccountFormValues; // 编辑模式
   trigger?: React.ReactNode;   // 自定义按钮
   onSuccess?: () => void;      // 新增/编辑成功后的回调
+  /** 受控模式：页面统一管一个编辑弹框时传入 open / onOpenChange；不传则自己管 open（"新增账户"按钮那种用法） */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
-export function AddAccountDialog({ account, trigger, onSuccess }: AddAccountDialogProps) {
-  const [open, setOpen] = React.useState(false);
-  const [loading, setLoading] = React.useState(false);
+const EMPTY_ACCOUNT: AccountFormValues = {
+  accountType: "",
+  name: "",
+  cookie: "",
+  account: "",
+  password: "",
+  url: "",
+};
 
-  const currentDefaults = (): AccountFormValues =>
-    account ?? {
-      accountType: "",
-      name: "",
-      cookie: "",
-      account: "",
-      password: "",
-      url: "",
-    };
+export function AddAccountDialog({ account, trigger, onSuccess, open: openProp, onOpenChange }: AddAccountDialogProps) {
+  const [openState, setOpenState] = React.useState(false);
+  const isControlled = openProp !== undefined;
+  const open = isControlled ? openProp : openState;
+  const [loading, setLoading] = React.useState(false);
 
   const form = useForm<AccountFormValues>({
     resolver: zodResolver(accountFormSchema),
-    defaultValues: currentDefaults(),
+    defaultValues: account ?? EMPTY_ACCOUNT,
   });
+
+  const setOpen = (next: boolean) => {
+    if (!isControlled) setOpenState(next);
+    onOpenChange?.(next);
+  };
 
   // 每次打开都按当前的 account 重置：defaultValues 只在挂载时取一次，保存后重开会显示旧值
   const handleOpenChange = (next: boolean) => {
-    if (next) form.reset(currentDefaults());
+    if (next) form.reset(account ?? EMPTY_ACCOUNT);
     setOpen(next);
   };
+
+  // 受控打开不经过 handleOpenChange（是父组件改的 open），这里补上同样的重置
+  React.useEffect(() => {
+    if (isControlled && openProp) form.reset(account ?? EMPTY_ACCOUNT);
+  }, [isControlled, openProp, account, form]);
 
   const watchAccountType = form.watch("accountType");
 
@@ -124,11 +138,13 @@ export function AddAccountDialog({ account, trigger, onSuccess }: AddAccountDial
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        {trigger ?? (
-          <Button variant="outline">{account ? "Edit Account" : "Add Account"}</Button>
-        )}
-      </DialogTrigger>
+      {(trigger !== undefined || !isControlled) && (
+        <DialogTrigger asChild>
+          {trigger ?? (
+            <Button variant="outline">{account ? "Edit Account" : "Add Account"}</Button>
+          )}
+        </DialogTrigger>
+      )}
 
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
