@@ -1,5 +1,5 @@
 "use client"
-import { Home, Inbox, Settings, Github, History, Library, Radar, Bot, Users } from "lucide-react";
+import { Home, Inbox, Settings, Github, History, Library, Radar, Bot, Users, CloudDownload } from "lucide-react";
 import Image from "next/image";
 
 import {
@@ -40,6 +40,11 @@ const items = [
     title: "网盘监控",
     url: "/life",
     icon: Radar,
+  },
+  {
+    title: "云下载",
+    url: "/offline",
+    icon: CloudDownload,
   },
   {
     title: "设置",

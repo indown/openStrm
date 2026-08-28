@@ -9,3 +9,14 @@ export {
   receiveToMyDrive,
   resolveLibraryEntryShareReceiveIds,
 } from "./share.js";
+export {
+  offlineList,
+  offlineAddUrls,
+  offlineRemove,
+  offlineClear,
+  offlineRestart,
+  offlineQuota,
+  offlineDownPaths,
+  normalizeOfflineUrls,
+} from "./offline.js";
+export type { OfflineTask, OfflineListPage, OfflineAddResult, OfflineTaskState } from "./offline.js";

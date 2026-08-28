@@ -12,6 +12,8 @@ import { toStrmPath } from "./naming.js";
 export interface SelectedItem {
   name: string;
   isDir: boolean;
+  /** 目录已知 id 时直接用，省掉按路径解析那一步（云下载完成时 115 已经把产物 id 给了） */
+  cid?: string | number;
 }
 
 export interface GenerateResult {
@@ -72,11 +74,20 @@ export async function generateStrmForSelected(params: {
       continue;
     }
 
-    const folderIdRes = (await fsDirGetId(`${originRoot}/${item.name}`, { accountInfo })) as { id?: number | string };
-    if (folderIdRes?.id == null) throw new Error(`Cannot resolve folder on drive: ${originRoot}/${item.name}`);
+    let folderId: number | string;
+    if (item.cid != null && String(item.cid) !== "" && String(item.cid) !== "0") {
+      folderId = item.cid;
+    } else {
+      const folderIdRes = (await fsDirGetId(`${originRoot}/${item.name}`, { accountInfo })) as { id?: number | string };
+      // getid 对不存在的路径回 id=0；拿 0 去导出等于把整个网盘的目录树拉下来
+      if (folderIdRes?.id == null || String(folderIdRes.id) === "0") {
+        throw new Error(`Cannot resolve folder on drive: ${originRoot}/${item.name}`);
+      }
+      folderId = folderIdRes.id;
+    }
 
     const raw = await exportDirParse({
-      exportFileIds: folderIdRes.id,
+      exportFileIds: folderId,
       targetPid: 0,
       layerLimit: 0,
       deleteAfter: true,
