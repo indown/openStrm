@@ -22,6 +22,46 @@ export interface AccountInfo {
 
 type RequestCtx = { userAgent?: string; accountInfo: AccountInfo };
 
+/**
+ * 115 接口回了非 2xx。
+ * 以前直接把响应体 throw 出去（不是 Error）：调用方拿到的 message 是 "[object Object]"，
+ * 执行历史和 Telegram 通知里全是这个；封控（405）也只能靠在字符串里找数字。
+ */
+export class Cloud115Error extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: unknown,
+    url?: string,
+  ) {
+    super(`115 接口返回 ${status}${pathOf(url)}: ${summarizeBody(body)}`);
+    this.name = "Cloud115Error";
+  }
+}
+
+function pathOf(url: string | undefined): string {
+  if (!url) return "";
+  try {
+    return ` (${new URL(url).pathname})`;
+  } catch {
+    return "";
+  }
+}
+
+function summarizeBody(body: unknown): string {
+  if (typeof body === "string") return body.slice(0, 200);
+  if (body && typeof body === "object") {
+    const b = body as Record<string, unknown>;
+    const msg = b.error ?? b.message ?? b.error_msg;
+    if (typeof msg === "string" && msg) return msg;
+    try {
+      return JSON.stringify(body).slice(0, 200);
+    } catch {
+      return "[unserializable body]";
+    }
+  }
+  return String(body);
+}
+
 /** 导出任务查询接口的 data 部分 */
 type ExportDirResult = {
   export_id?: string;
@@ -53,7 +93,7 @@ interface ExportDirParseOptions {
 const dirIdCache = new LRUCache<string, { id: number }>({ max: 5000, ttl: 10 * 60 * 1000 });
 /** 网盘目录项：n 名字、fid 文件 id、cid 目录 id、fc 类别、sha 文件哈希（目录为空） */
 export type DriveEntry = { n: string; fid: number; cid: number; fc: number; sha?: string | null };
-const filesListCache = new LRUCache<string, { data: DriveEntry[] }>({ max: 2000, ttl: 5 * 60 * 1000 });
+const filesListCache = new LRUCache<string, { data: DriveEntry[]; count?: number }>({ max: 2000, ttl: 5 * 60 * 1000 });
 const pickcodeCache = new LRUCache<string, string>({ max: 20_000, ttl: 30 * 60 * 1000 });
 
 export async function exportDirParse(options: ExportDirParseOptions) {
@@ -159,9 +199,9 @@ export async function getIdToPath(options: {
   // 如果是单层路径，直接查找
   if (pathParts.length === 1) {
     log.debug(`[getIdToPath] Searching in root directory for: ${pathParts[0]}`);
-    const files = await fsFiles(0, { userAgent, accountInfo });
+    const files = await listDirEntries(0, { userAgent, accountInfo });
     
-    for (const file of files.data || []) {
+    for (const file of files) {
       if (file.n === pathParts[0]) {
         log.debug(`[getIdToPath] Found file in root: ${pathParts[0]}, cid: ${file.cid}`);
         return file.cid;
@@ -188,11 +228,11 @@ export async function getIdToPath(options: {
     log.debug(`[getIdToPath] Directory ID for ${dirPath}: ${dirId}`);
 
     // 列出目录中的文件
-    const files = await fsFiles(dirId, { userAgent, accountInfo });
-    log.debug(`[getIdToPath] Found ${files.data?.length || 0} files in directory ${dirPath}`);
+    const files = await listDirEntries(dirId, { userAgent, accountInfo });
+    log.debug(`[getIdToPath] Found ${files.length} files in directory ${dirPath}`);
     
     // 查找目标文件
-    for (const file of files.data || []) {
+    for (const file of files) {
       if (file.n === fileName) {
         log.debug(`[getIdToPath] Found target file: ${fileName}, fid: ${file.fid}`);
         const pickcode = await getPickcodeToId(file.fid, { userAgent, accountInfo });
@@ -202,7 +242,7 @@ export async function getIdToPath(options: {
     }
     
     // 列出目录中的所有文件以便调试
-    const fileNames = files.data?.map(f => f.n) || [];
+    const fileNames = files.map((f) => f.n);
     log.debug({ files: fileNames }, `[getIdToPath] Available files in ${dirPath}`);
     throw new Error(`File not found: ${fileName} in directory: ${dirPath}. Available files: ${fileNames.join(', ')}`);
   } catch (error) {
@@ -268,7 +308,7 @@ export async function fsFiles(cid: number | string, { userAgent, limit = 1000, o
     limit: String(limit),
     offset: String(offset),
   });
-  const data = await request115<{ data: DriveEntry[] }>(url + '?' + params, {
+  const data = await request115<{ data: DriveEntry[]; count?: number }>(url + '?' + params, {
     method: 'GET',
     userAgent,
     ensureOk: true,
@@ -281,6 +321,30 @@ export async function fsFiles(cid: number | string, { userAgent, limit = 1000, o
   return data;
 }
 
+
+/**
+ * 整个目录的条目。files 接口一页最多 1000 条，以前只取第一页：
+ * 超过 1000 个文件的目录，后面的文件一律 "File not found"——全量同步重试三次后失败，
+ * 代理侧则退回转码。按 count 翻页直到取完。
+ *
+ * @param fetchPage 测试用，默认就是 fsFiles
+ */
+export async function listDirEntries(
+  cid: number | string,
+  ctx: RequestCtx,
+  fetchPage: typeof fsFiles = fsFiles,
+): Promise<DriveEntry[]> {
+  const limit = 1000;
+  const all: DriveEntry[] = [];
+  for (let offset = 0; ; offset += limit) {
+    const page = await fetchPage(cid, { ...ctx, limit, offset });
+    const items = page.data ?? [];
+    all.push(...items);
+    const count = typeof page.count === "number" ? page.count : undefined;
+    if (items.length < limit || (count !== undefined && all.length >= count)) break;
+  }
+  return all;
+}
 
 // 通过文件 ID 获取文件信息
 export async function getFileInfoById(fileId: number, { userAgent, accountInfo }: { userAgent?: string; accountInfo?: AccountInfo }) {
@@ -435,7 +499,7 @@ export async function request115<T = unknown>(
     return respData;
   } catch (error) {
     if (!rawError && axios.isAxiosError(error) && error.response) {
-      throw error.response.data;
+      throw new Cloud115Error(error.response.status, error.response.data, error.config?.url);
     }
     throw error;
   }
@@ -445,7 +509,7 @@ export async function request115<T = unknown>(
 export async function getDownloadUrlWeb(pickcode: string | number, { userAgent, accountInfo }: RequestCtx) {
   const data = `data=${encodeURIComponent(encrypt(`{"pick_code":"${pickcode}"}`))}`;
     const response = await request115<{ data: string }>(
-      `http://pro.api.115.com/android/2.0/ufile/download`,
+      `https://proapi.115.com/android/2.0/ufile/download`,
       {
         method: 'POST',
         headers: { "User-Agent": userAgent ?? defaultUA(), "Content-Type": "application/x-www-form-urlencoded", "Content-Length": String(Buffer.byteLength(data)) },
@@ -474,7 +538,7 @@ export async function getPickcodeToId(id: number, { userAgent = defaultUA(), acc
 
   log.debug(`[CACHE MISS] Fetching pickcode for file ID: ${id}`);
   const response = await request115<{ state: boolean; data: Array<{ pick_code: string }> }>(
-    `http://web.api.115.com/files/file?file_id=${id}`,
+    `https://webapi.115.com/files/file?file_id=${id}`,
     {
       method: 'GET',
       headers: { "User-Agent": userAgent },
