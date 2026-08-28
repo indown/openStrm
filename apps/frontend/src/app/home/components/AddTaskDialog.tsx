@@ -114,29 +114,49 @@ function CheckboxRow({
   name,
   label,
   description,
+  disabled = false,
 }: {
   control: Control<TaskFormValues>;
   name: "removeExtraFiles" | "enable302" | "enablePathEncoding";
   label: string;
   description: string;
+  disabled?: boolean;
 }) {
   return (
     <FormField
       control={control}
       name={name}
       render={({ field }) => (
-        <FormItem className="flex items-start gap-3 rounded-md border p-3 space-y-0">
+        <FormItem className={`flex items-start gap-3 rounded-md border p-3 space-y-0 ${disabled ? "opacity-60" : ""}`}>
           <FormControl>
-            <Checkbox checked={field.value === true} onCheckedChange={(v) => field.onChange(v === true)} className="mt-0.5" />
+            <Checkbox
+              checked={field.value === true}
+              onCheckedChange={(v) => field.onChange(v === true)}
+              disabled={disabled}
+              className="mt-0.5"
+            />
           </FormControl>
           <div className="space-y-1 leading-snug">
-            <FormLabel className="cursor-pointer font-medium">{label}</FormLabel>
+            <FormLabel className={`font-medium ${disabled ? "" : "cursor-pointer"}`}>{label}</FormLabel>
             <FormDescription className="text-xs">{description}</FormDescription>
           </div>
         </FormItem>
       )}
     />
   );
+}
+
+/**
+ * 路径编码只对 http(s) 前缀有意义：strm 内容是 URL 时空格、# 之类才是问题。
+ * 302 任务写的是本地挂载路径，不经过 URL；前缀不是 http(s) 时 strm 是文件路径，编码了反而对不上文件。
+ */
+function pathEncodingHint(prefixIsHttp: boolean, is302: boolean): { allowed: boolean; description: string } {
+  if (is302) return { allowed: false, description: "302 模式写的是本地挂载路径，不经过 URL，不需要编码。" };
+  if (!prefixIsHttp) return { allowed: false, description: "前缀不是 http(s) 地址时 strm 里是本地路径，编码了反而对不上文件。" };
+  return {
+    allowed: true,
+    description: "把网盘路径按段做 URL 编码（空格、#、?、中文）。文件名带空格时 ffmpeg 和 Apple 系播放器才打得开，建议开。",
+  };
 }
 
 export function AddTaskDialog({
@@ -169,6 +189,15 @@ export function AddTaskDialog({
 
   const accountType = accounts.find((acc) => acc.name === account)?.accountType ?? "";
   const is115Account = accountType === "115";
+  const prefixIsHttp = /^https?:\/\//i.test(strmPrefix.trim());
+  const encoding = pathEncodingHint(prefixIsHttp, is115Account && enable302);
+
+  // 编码没意义的场景下把它关掉，别让一个灰掉的勾继续生效
+  React.useEffect(() => {
+    if (!encoding.allowed && form.getValues("enablePathEncoding")) {
+      form.setValue("enablePathEncoding", false);
+    }
+  }, [encoding.allowed, form]);
 
   const setOpen = (next: boolean) => {
     if (!isControlled) setOpenState(next);
@@ -434,7 +463,8 @@ export function AddTaskDialog({
                 control={form.control}
                 name="enablePathEncoding"
                 label="strm 路径 URL 编码"
-                description="把 strm 里的路径做 URL 编码。有些播放器处理不了中文或空格时打开。"
+                description={encoding.description}
+                disabled={!encoding.allowed}
               />
             </div>
 

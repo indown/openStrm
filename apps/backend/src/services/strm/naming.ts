@@ -32,3 +32,18 @@ export function normalizeSubPath(input: string | undefined): string {
     .filter(Boolean)
     .join("/");
 }
+
+/** 按路径段做 URL 编码，保留 `/`。encodeURI 不管 `# ? % + &`，文件名里带这些的 URL 照样是坏的 */
+export function encodePathSegments(p: string): string {
+  return p.split("/").map((seg) => encodeURIComponent(seg)).join("/");
+}
+
+/**
+ * strm 文件的内容：`${前缀}/${网盘路径}`。
+ * 开了路径编码时网盘路径按段 encodeURIComponent；前缀（`http://host:5244/d` 或 `/mnt/pan`）
+ * 只过 encodeURI，scheme、host 和 `/` 都得留着。302 代理那头用 decodeURIComponent 还原，两种写法都认。
+ */
+export function strmContent(strmPrefix: string | undefined, remotePath: string, encode: boolean): string {
+  const prefix = strmPrefix ?? "";
+  return encode ? `${encodeURI(prefix)}/${encodePathSegments(remotePath)}` : `${prefix}/${remotePath}`;
+}
