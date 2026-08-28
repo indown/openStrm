@@ -16,6 +16,13 @@ import proxyPlugin from "./index.js";
 import { clearLinkCache, setLinkResolver } from "./redirect.js";
 import { swapPorts, swapUrlPort } from "./system-info.js";
 import { resetConfigRevisionMemo } from "../../services/config-revision.js";
+import { resetSettingsMemo } from "../../services/settings-safe.js";
+
+/** 代理侧读配置有 1 秒 memo：同进程里改完设置要顺手重置，不然下一条请求还看见旧值 */
+function setSettings(next: Parameters<typeof replaceAppSettings>[0]) {
+  replaceAppSettings(next);
+  resetSettingsMemo();
+}
 
 const MOUNT = "/mnt/pan";
 const PAN_FILE = `${MOUNT}/tv/Show/ep1.mkv`;
@@ -77,7 +84,7 @@ const embyPort = (emby.address() as { port: number }).port;
 
 // ---- 配置 ----
 const baseline = readAppSettings();
-replaceAppSettings({
+setSettings({
   ...baseline,
   emby: { url: `http://127.0.0.1:${embyPort}`, apiKey: "test-key" },
   mediaMountPath: [MOUNT],
@@ -178,7 +185,7 @@ test("匿名请求拿不到别人已解析好的缓存直链", async () => {
 test("显式打开 allowAnonymousRedirect 后匿名也 302", async () => {
     reset();
     const current = readAppSettings();
-    replaceAppSettings({
+    setSettings({
       ...current,
       emby: { ...(current.emby ?? {}), allowAnonymousRedirect: true },
     });
@@ -187,7 +194,7 @@ test("显式打开 allowAnonymousRedirect 后匿名也 302", async () => {
       const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv" });
       assert.equal(res.statusCode, 302, "开关是给不带凭据的老客户端留的后路，打开就该恢复旧行为");
     } finally {
-      replaceAppSettings(current);
+      setSettings(current);
       resetConfigRevisionMemo();
     }
   });
@@ -275,7 +282,7 @@ test("挂载点里的媒体源被标成可直连，本地源不动", async () =>
 
 test("只在任务上开了 302、没手填 mediaMountPath：PlaybackInfo 同样改写", async () => {
     const now = readAppSettings();
-    replaceAppSettings({ ...now, mediaMountPath: [] });
+    setSettings({ ...now, mediaMountPath: [] });
     try {
       const before = await app.inject({ method: "POST", url: "/emby/Items/item-1/PlaybackInfo", payload: {} });
       const untouched = JSON.parse(before.body).MediaSources.find((s: { Id: string }) => s.Id === "ms-pan");
@@ -290,7 +297,7 @@ test("只在任务上开了 302、没手填 mediaMountPath：PlaybackInfo 同样
       assert.match(pan.DirectStreamUrl, /^\/Videos\/item-1\/stream\.mkv\?/);
     } finally {
       deleteTask("pi-302");
-      replaceAppSettings(now);
+      setSettings(now);
     }
   });
 // ---- System/Info 端口改写 ----
@@ -342,7 +349,7 @@ test("回源时带上真实客户端 IP", async () => {
     const sniffPort = (sniffer.address() as { port: number }).port;
 
     const current = readAppSettings();
-    replaceAppSettings({ ...current, emby: { url: `http://127.0.0.1:${sniffPort}`, apiKey: "k" } });
+    setSettings({ ...current, emby: { url: `http://127.0.0.1:${sniffPort}`, apiKey: "k" } });
 
     await app.inject({
       method: "GET",
@@ -356,7 +363,7 @@ test("回源时带上真实客户端 IP", async () => {
     assert.notEqual(seen["x-real-ip"], "203.0.113.9", "X-Real-IP 不能采信客户端自报的转发链");
     assert.equal(seen.host, "emby.example.com", "Host 不能被改成上游的");
 
-    replaceAppSettings(current);
+    setSettings(current);
     sniffer.close();
   });
 // ---- 回源与改写的边界情况 ----
@@ -487,17 +494,17 @@ test("改配置后旧缓存自动失效（跨进程）", async () => {
 
     // 改一次配置：updated_at 变了，configRevision 跟着变，key 就对不上了
     const now = readAppSettings();
-    replaceAppSettings({ ...now, mediaMountPath: [MOUNT, "/mnt/another"] });
+    setSettings({ ...now, mediaMountPath: [MOUNT, "/mnt/another"] });
     resetConfigRevisionMemo();
 
     await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k", headers: { "user-agent": "UA-1" } });
     assert.equal(resolveCalls, 2, "配置变了还命中旧缓存，说明失效没生效");
-    replaceAppSettings(now);
+    setSettings(now);
     resetConfigRevisionMemo();
   });
 
 after(async () => {
-  replaceAppSettings(baseline);
+  setSettings(baseline);
   await app.close();
   emby.close();
 });
