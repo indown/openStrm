@@ -5,16 +5,19 @@
  * 不再经由 app.inject 自签 JWT 绕一圈 HTTP 鉴权。返回值就是 HTTP 语义的
  * `{ status, body }`，路由原样透传，其它调用方按 status 判断成败。
  */
-import fs from "node:fs";
+import type { Dirent } from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import axios from "axios";
-import { from, mergeMap, Subject, Subscription } from "rxjs";
+import { catchError, EMPTY, from, merge, mergeMap, Subject, Subscription, tap } from "rxjs";
 import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
 import { listAccounts, updateAccount } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { resolveInDataDir } from "../../paths.js";
 import { DEFAULT_TIMEOUT_MS } from "../../lib/http.js";
+import { mapLimit } from "../../lib/async.js";
+import { isDirectoryEntry } from "../../lib/fs.js";
 import { exportDirParse, fsDirGetId } from "../cloud-115/client.js";
 import {
   downloadOrCreateStrm,
@@ -56,39 +59,46 @@ const fail = (status: number, message: string, detail?: string): StartTaskResult
 
 /* ------------------------------- 本地目录 ------------------------------- */
 
-function getLocalTree(dirPath: string, parentKey = 0, depth = 0, keySeed = { value: 1 }): TreeNode[] {
-  if (!fs.existsSync(dirPath)) return [];
+/**
+ * 本地已有的目录树。一个库几万个文件，同步版会把 API 进程的事件循环卡住几秒到几分钟
+ * （SSE、健康检查、cron 全停），所以整条链路都走异步 fs。
+ */
+async function getLocalTree(dirPath: string, parentKey = 0, depth = 0, keySeed = { value: 1 }): Promise<TreeNode[]> {
+  let entries: Dirent[];
+  try {
+    entries = await fsp.readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return []; // 第一次同步，目录还不存在
+  }
   const nodes: TreeNode[] = [];
-  for (const name of fs.readdirSync(dirPath)) {
-    const full = path.join(dirPath, name);
-    const stat = fs.statSync(full);
-    const node: TreeNode = { key: keySeed.value++, name, parent_key: parentKey, depth, children: [] };
-    if (stat.isDirectory()) node.children = getLocalTree(full, node.key, depth + 1, keySeed);
+  for (const entry of entries) {
+    const node: TreeNode = { key: keySeed.value++, name: entry.name, parent_key: parentKey, depth, children: [] };
+    if (await isDirectoryEntry(dirPath, entry)) {
+      node.children = await getLocalTree(path.join(dirPath, entry.name), node.key, depth + 1, keySeed);
+    }
     nodes.push(node);
   }
   return nodes;
 }
 
-function removeExtraFiles(extraLocally: string[], saveDir: string): void {
-  const removeEmptyParents = (dir: string) => {
+async function removeExtraFiles(extraLocally: string[], saveDir: string): Promise<void> {
+  const removeEmptyParents = async (dir: string): Promise<void> => {
     if (!dir.startsWith(saveDir) || dir === saveDir) return;
     try {
-      if (fs.readdirSync(dir).length === 0) {
-        fs.rmdirSync(dir);
-        removeEmptyParents(path.dirname(dir));
+      if ((await fsp.readdir(dir)).length === 0) {
+        await fsp.rmdir(dir);
+        await removeEmptyParents(path.dirname(dir));
       }
     } catch { /* 非空或已不存在 */ }
   };
-  for (const rel of extraLocally) {
+  await mapLimit(extraLocally, 8, async (rel) => {
     const fp = path.join(saveDir, rel);
     try {
-      if (!fs.existsSync(fp)) continue;
-      const s = fs.statSync(fp);
-      if (s.isFile()) fs.unlinkSync(fp);
-      else if (s.isDirectory()) fs.rmSync(fp, { recursive: true, force: true });
-      removeEmptyParents(path.dirname(fp));
+      // 文件、目录都行；已经不存在也不报错
+      await fsp.rm(fp, { recursive: true, force: true });
+      await removeEmptyParents(path.dirname(fp));
     } catch { /* 单个失败不影响其余 */ }
-  }
+  });
 }
 
 /* ------------------------------- 远端目录 ------------------------------- */
@@ -211,7 +221,7 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
   const loaded = await loadRemoteTree(task, accountInfo);
   if ("fail" in loaded) return loaded.fail;
 
-  fs.mkdirSync(saveDir, { recursive: true });
+  await fsp.mkdir(saveDir, { recursive: true });
 
   const settings = readAppSettings();
   const strmExts = extSet(settings.strmExtensions);
@@ -220,12 +230,12 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
   // 对照规则在 plan.ts，有单测钉着；这里只负责把两边的清单喂进去
   const { missing: missingLocally, extra: extraLocally } = planSync(
     flattenTree(loaded.tree),
-    collectFilesAndTopEmptyDirs(getLocalTree(saveDir)),
+    collectFilesAndTopEmptyDirs(await getLocalTree(saveDir)),
     strmExts,
     dlExts,
   );
 
-  if (task.removeExtraFiles) removeExtraFiles(extraLocally, saveDir);
+  if (task.removeExtraFiles) await removeExtraFiles(extraLocally, saveDir);
   if (missingLocally.length === 0) return { status: 200, body: { message: "no files to download" } };
 
   const total = missingLocally.length;
@@ -252,51 +262,67 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
     if ((log.filePath && log.percent === 100) || log.done || log.error) history.push(line);
   };
 
-  // strm 只是写一个小文本文件，不限流
-  for (const filePath of missingLocally.filter((fp) => strmExts.has(extOf(fp)))) {
-    downloadOrCreateStrm(`${originPath}/${filePath}`, path.join(saveDir, filePath), {
-      asStrm: true,
-      displayPath: filePath,
-      strmPrefix,
-      enablePathEncoding: task.enablePathEncoding,
-    }).subscribe({
-      next: (p) => {
-        perFile.set(p.filePath!, 100);
-        pushLog({ filePath: p.filePath, percent: 100 });
-      },
-      error: (err) => pushLog({ error: err.message }),
-    });
-  }
+  // 总进度用累计值：每来一个事件就把 perFile 全部加一遍是 O(n)，几万个文件就是 O(n²)
+  let sumPercent = 0;
+  const finished = new Set<string>();
+  const report = (p: { filePath?: string; percent?: number }) => {
+    const fp = p.filePath!;
+    const pct = Math.min(100, Math.max(0, p.percent ?? 0));
+    sumPercent += pct - (perFile.get(fp) ?? 0);
+    perFile.set(fp, pct);
+    if (pct === 100) finished.add(fp);
+    pushLog({ filePath: fp, percent: pct, overallPercent: (sumPercent / total).toFixed(2) });
+  };
+
+  // strm 只是写一个小文本文件，不限流；但几万个也别一口气全扔出去。
+  // 单个写失败记一行 error 继续，不拖垮整个任务
+  const strmFiles = missingLocally.filter((fp) => strmExts.has(extOf(fp)));
+  const strm$ = from(strmFiles).pipe(
+    mergeMap(
+      (filePath) =>
+        downloadOrCreateStrm(`${originPath}/${filePath}`, path.join(saveDir, filePath), {
+          asStrm: true,
+          displayPath: filePath,
+          strmPrefix,
+          enablePathEncoding: task.enablePathEncoding,
+        }).pipe(
+          tap(report),
+          catchError((err: Error) => {
+            pushLog({ filePath, error: err.message });
+            return EMPTY;
+          }),
+        ),
+      32,
+    ),
+  );
 
   // 真正要下载的文件走账号级限流
   const downloadFiles = missingLocally.filter((fp) => dlExts.has(extOf(fp)));
-  running.subscription = from(downloadFiles)
-    .pipe(
-      mergeMap(
-        (filePath) =>
-          from(getRealDownloadLink(`${originPath}/${filePath}`, account, accounts)).pipe(
-            mergeMap((url) =>
-              downloadOrCreateStrmLimited(url, path.join(saveDir, filePath), account, {
-                asStrm: false,
-                displayPath: filePath,
-              }),
-            ),
+  const download$ = from(downloadFiles).pipe(
+    mergeMap(
+      (filePath) =>
+        from(getRealDownloadLink(`${originPath}/${filePath}`, account, accounts)).pipe(
+          mergeMap((url) =>
+            downloadOrCreateStrmLimited(url, path.join(saveDir, filePath), account, {
+              asStrm: false,
+              displayPath: filePath,
+            }),
           ),
-        10,
-      ),
-    )
+        ),
+      10,
+    ),
+    tap(report),
+  );
+
+  // 两条一起跑完才算完成：以前 strm 那条不在订阅里，纯 strm 的任务会在文件还没写完时就报"完成"
+  running.subscription = merge(strm$, download$)
     .subscribe({
-      next: (p) => {
-        perFile.set(p.filePath!, Math.min(100, Math.max(0, p.percent ?? 0)));
-        const sum = [...perFile.values()].reduce((a, b) => a + b, 0);
-        pushLog({ filePath: p.filePath, percent: p.percent, overallPercent: (sum / total).toFixed(2) });
-      },
       complete: () => {
         pushLog({ done: true, overallPercent: "100.00" });
         history.flush();
         subject.complete();
         sendTelegramNotification(`<b>Task ID:</b> ${id}\n<b>Files:</b> ${total}\n<b>Status:</b> Completed`, "complete");
-        completeTaskExecution(execution.id, "completed", { totalFiles: total, downloadedFiles: total });
+        completeTaskExecution(execution.id, "completed", { totalFiles: total, downloadedFiles: finished.size });
         refreshEmbyNow("全量任务完成");
         unregisterRunningTask(id);
       },

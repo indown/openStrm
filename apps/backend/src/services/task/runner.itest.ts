@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
-import { deleteTask, insertTask } from "../../db/repositories/tasks.js";
+import { deleteTask, insertTask, updateTask } from "../../db/repositories/tasks.js";
 import { deleteTaskExecution, getTaskHistory } from "../task-history.js";
 import { isTaskRunning } from "./registry.js";
 import { startTask } from "./runner.js";
@@ -132,6 +132,23 @@ test("并发启动同一任务：拉目录树期间第二次进来必须 409", a
   }
   await waitFor(() => !isTaskRunning(TASK), "任务结束");
   assert.equal(getTaskHistory(TASK).filter((h) => h.status === "completed").length, 2);
+});
+
+test("removeExtraFiles：本地多出来的文件和空目录被删掉，远端仍有的不动", async () => {
+  updateTask(TASK, { removeExtraFiles: true });
+  fs.writeFileSync(path.join(outDir, "out/S1/stray.strm"), "x");
+  fs.mkdirSync(path.join(outDir, "out/Empty/Deeper"), { recursive: true });
+  try {
+    const res = await startTask(TASK);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.message, "no files to download", "远端没新文件，只做清理");
+    assert.equal(fs.existsSync(path.join(outDir, "out/S1/stray.strm")), false);
+    assert.equal(fs.existsSync(path.join(outDir, "out/Empty")), false, "顶层空目录整个删掉");
+    assert.ok(fs.existsSync(path.join(outDir, "out/S1/ep1.strm")), "远端仍有的不能被删");
+    assert.ok(fs.existsSync(path.join(outDir, "out/S1/ep1.nfo")));
+  } finally {
+    updateTask(TASK, { removeExtraFiles: false });
+  }
 });
 
 test("不存在的任务 404", async () => {

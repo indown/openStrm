@@ -6,7 +6,8 @@
  *   → 本地位置 = DATA_DIR/<task.targetPath>/<P 相对 originPath 的部分>
  *   → strm 内容 = `${strmPrefix}/${P}`（与全量任务 routes/task/start.ts 完全一致）
  */
-import fs from "node:fs";
+import type { Dirent } from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { firstValueFrom } from "rxjs";
 import type { AppSettings, LifeEventMode, TaskDefinition } from "@openstrm/shared";
@@ -24,6 +25,7 @@ import {
 import { dropSubtree, repathSubtree } from "../../db/repositories/life.js";
 import { resolveInDataDir } from "../../paths.js";
 import { toStrmPath } from "../strm/naming.js";
+import { isDirectoryEntry, pathExists } from "../../lib/fs.js";
 
 export interface LifeContext {
   accountInfo: AccountInfo;
@@ -112,12 +114,12 @@ function strmContentPrefix(task: TaskDefinition, rel: string): string {
   return `${task.strmPrefix ?? ""}/${strmUrlFor(task, rel)}`;
 }
 
-function removeEmptyParents(dir: string, stopAt: string): void {
+async function removeEmptyParents(dir: string, stopAt: string): Promise<void> {
   if (!dir.startsWith(stopAt) || dir === stopAt) return;
   try {
-    if (fs.readdirSync(dir).length === 0) {
-      fs.rmdirSync(dir);
-      removeEmptyParents(path.dirname(dir), stopAt);
+    if ((await fsp.readdir(dir)).length === 0) {
+      await fsp.rmdir(dir);
+      await removeEmptyParents(path.dirname(dir), stopAt);
     }
   } catch {
     /* 目录非空或已不存在，停止 */
@@ -246,41 +248,42 @@ async function materializeFolder(
  * strm 内容形如 `${strmPrefix}/${panPath}`（可能整体 encodeURI 过），
  * encodeURI 不转义 `/`，所以直接做前缀替换在两种情况下都成立。
  */
-function rewriteStrmPrefixUnder(
+async function rewriteStrmPrefixUnder(
   dir: string,
   oldPrefix: string,
   newPrefix: string,
   encoded: boolean,
-): number {
+): Promise<number> {
   const from = encoded ? encodeURI(oldPrefix) : oldPrefix;
   const to = encoded ? encodeURI(newPrefix) : newPrefix;
   if (from === to) return 0;
   let n = 0;
-  const walk = (cur: string) => {
-    let items: fs.Dirent[];
+  // 挪的是整个剧集目录时这里可能是几千个 strm，同步读写会把监控循环所在的事件循环卡住
+  const walk = async (cur: string): Promise<void> => {
+    let items: Dirent[];
     try {
-      items = fs.readdirSync(cur, { withFileTypes: true });
+      items = await fsp.readdir(cur, { withFileTypes: true });
     } catch {
       return;
     }
     for (const it of items) {
       const full = path.join(cur, it.name);
-      if (it.isDirectory()) {
-        walk(full);
+      if (await isDirectoryEntry(cur, it)) {
+        await walk(full);
         continue;
       }
       if (!it.name.endsWith(".strm")) continue;
       try {
-        const content = fs.readFileSync(full, "utf8");
+        const content = await fsp.readFile(full, "utf8");
         if (!content.startsWith(from)) continue;
-        fs.writeFileSync(full, to + content.slice(from.length), "utf8");
+        await fsp.writeFile(full, to + content.slice(from.length), "utf8");
         n++;
       } catch {
         /* 单个文件失败不影响其余 */
       }
     }
   };
-  walk(dir);
+  await walk(dir);
   return n;
 }
 
@@ -362,14 +365,13 @@ export async function handleRemove(ctx: LifeContext, ev: LifeEvent): Promise<Han
     : localPathFor(match, ctx, match.relPath);
 
   if (!target) return skipped(`${panPath} 扩展名不在白名单，无需删除`);
-  if (!fs.existsSync(target)) {
+  if (!(await pathExists(target))) {
     dropSubtree(panPath);
     return skipped(`本地不存在 ${target}（${via}）`);
   }
 
-  if (isDir) fs.rmSync(target, { recursive: true, force: true });
-  else fs.unlinkSync(target);
-  removeEmptyParents(path.dirname(target), match.saveDir);
+  await fsp.rm(target, { recursive: isDir, force: true });
+  await removeEmptyParents(path.dirname(target), match.saveDir);
   dropSubtree(panPath);
 
   return done(`删除 ${target}（${via}）`);
@@ -429,10 +431,9 @@ async function relocate(ctx: LifeContext, ev: LifeEvent, label: string): Promise
     const target = isDir
       ? path.join(oldMatch.saveDir, oldMatch.relPath)
       : localPathFor(oldMatch, ctx, oldMatch.relPath);
-    if (target && fs.existsSync(target)) {
-      if (isDir) fs.rmSync(target, { recursive: true, force: true });
-      else fs.unlinkSync(target);
-      removeEmptyParents(path.dirname(target), oldMatch.saveDir);
+    if (target && (await pathExists(target))) {
+      await fsp.rm(target, { recursive: isDir, force: true });
+      await removeEmptyParents(path.dirname(target), oldMatch.saveDir);
       return done(`${label}出监控范围，已删除 ${target}`);
     }
     return skipped(`${label}出监控范围，本地无对应文件`);
@@ -455,14 +456,14 @@ async function relocate(ctx: LifeContext, ev: LifeEvent, label: string): Promise
 
   if (!from || !to) return skipped(`${newPan} 扩展名不在白名单`);
 
-  if (!fs.existsSync(from)) {
+  if (!(await pathExists(from))) {
     // 本地本来就没有，退化成新增
     return handleCreate({ ...ctx, eventModes: new Set([...ctx.eventModes, "create"]) }, ev);
   }
 
-  fs.mkdirSync(path.dirname(to), { recursive: true });
-  fs.renameSync(from, to);
-  removeEmptyParents(path.dirname(from), oldMatch.saveDir);
+  await fsp.mkdir(path.dirname(to), { recursive: true });
+  await fsp.rename(from, to);
+  await removeEmptyParents(path.dirname(from), oldMatch.saveDir);
 
   // strm 内容里写的是网盘绝对路径，挪了位置就要重写
   if (!isDir && to.endsWith(".strm")) {
@@ -479,7 +480,7 @@ async function relocate(ctx: LifeContext, ev: LifeEvent, label: string): Promise
       ),
     );
   } else if (isDir) {
-    const rewritten = rewriteStrmPrefixUnder(
+    const rewritten = await rewriteStrmPrefixUnder(
       to,
       strmContentPrefix(oldMatch.task, oldMatch.relPath),
       strmContentPrefix(newMatch.task, newMatch.relPath),
