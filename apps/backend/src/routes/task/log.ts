@@ -24,19 +24,30 @@ export default async function (fastify: FastifyInstance) {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      // nginx 默认把代理响应攒够了再发，实时日志就成了隔很久倒一批；这个头让它别缓冲
+      "X-Accel-Buffering": "no",
     });
+
+    const write = (chunk: string) => {
+      if (!reply.raw.writableEnded) reply.raw.write(chunk);
+    };
+    // 每 15 秒一行注释当心跳：任务在等限流时可能几十秒没有事件，反代和浏览器的空闲超时会把连接掐掉
+    const heartbeat = setInterval(() => write(": ping\n\n"), 15_000);
+    heartbeat.unref?.();
+    const stop = () => {
+      clearInterval(heartbeat);
+      subscription.unsubscribe();
+      if (!reply.raw.writableEnded) reply.raw.end();
+    };
 
     // 先补发已经产生的日志，再订阅实时进度
-    for (const line of task.logs) reply.raw.write(`data: ${line}\n\n`);
+    for (const line of task.logs) write(`data: ${line}\n\n`);
     const subscription = task.subject.subscribe({
-      next: (data) => reply.raw.write(`data: ${JSON.stringify(data)}\n\n`),
-      error: () => reply.raw.end(),
-      complete: () => reply.raw.end(),
+      next: (data) => write(`data: ${JSON.stringify(data)}\n\n`),
+      error: stop,
+      complete: stop,
     });
 
-    request.raw.on("close", () => {
-      subscription.unsubscribe();
-      reply.raw.end();
-    });
+    request.raw.on("close", stop);
   });
 }

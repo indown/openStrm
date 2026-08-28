@@ -300,29 +300,60 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
     running.logs.push(line);
     if (running.logs.length > 20000) running.logs.shift();
     subject.next(log);
-    if ((log.filePath && log.percent === 100) || log.done || log.error) history.push(line);
+    // 历史只留有价值的行：开始、单个文件完成/失败、任务级错误、结束；每一步进度不落库
+    if (log.start || (log.filePath && (log.percent === 100 || log.error)) || log.done || log.error) history.push(line);
   };
+
+  const strmFiles = missingLocally.filter((fp) => strmExts.has(extOf(fp)));
+  const downloadFiles = missingLocally.filter((fp) => dlExts.has(extOf(fp)));
+  // 第一条事件：总数和两类各多少。晚打开日志页的人从回放里也能拿到
+  pushLog({ start: true, total, strmTotal: strmFiles.length, downloadTotal: downloadFiles.length, at: Date.now() });
 
   // 总进度用累计值：每来一个事件就把 perFile 全部加一遍是 O(n)，几万个文件就是 O(n²)
   let sumPercent = 0;
   const finished = new Set<string>();
-  const report = (p: { filePath?: string; percent?: number }) => {
+  const failedFiles: string[] = [];
+  const overall = () => (total > 0 ? (sumPercent / total).toFixed(2) : "100.00");
+  const report = (p: { filePath?: string; percent?: number }, kind: "strm" | "download") => {
     const fp = p.filePath!;
     const pct = Math.min(100, Math.max(0, p.percent ?? 0));
     sumPercent += pct - (perFile.get(fp) ?? 0);
     perFile.set(fp, pct);
     if (pct === 100) finished.add(fp);
-    pushLog({ filePath: fp, percent: pct, overallPercent: (sumPercent / total).toFixed(2) });
+    pushLog({ filePath: fp, kind, percent: pct, overallPercent: overall() });
+  };
+  /**
+   * 单个文件失败：记一行、计数，任务继续。
+   * 以前下载那条流没有接住，一个文件 404 会把整条 merge 炸掉：剩下的下载全部中止，
+   * 历史里 downloadedFiles 记 0，错误信息里连是哪个文件都没有。
+   */
+  const failOne = (filePath: string, kind: "strm" | "download", err: unknown) => {
+    failedFiles.push(filePath);
+    pushLog({ filePath, kind, error: err instanceof Error ? err.message : String(err) });
+    return EMPTY;
+  };
+  const finish = (status: "completed" | "failed", fatal?: string) => {
+    const message = fatal ?? (failedFiles.length > 0 ? describeFailures(failedFiles) : undefined);
+    pushLog({
+      done: true, status, total, finished: finished.size, failed: failedFiles.length,
+      overallPercent: overall(), message, at: Date.now(),
+    });
+    history.flush();
+    subject.complete();
+    completeTaskExecution(execution.id, status, {
+      totalFiles: total, downloadedFiles: finished.size, failedFiles: failedFiles.length, errorMessage: message,
+    });
+    unregisterRunningTask(id);
   };
   // 取消（界面按钮、进程退出）时由 registry 调：退订已经中止了下载，这里只管把账记平
   running.onCancel = (reason) => {
     history.flush();
-    completeTaskExecution(execution.id, "cancelled", { totalFiles: total, downloadedFiles: finished.size, errorMessage: reason });
+    completeTaskExecution(execution.id, "cancelled", {
+      totalFiles: total, downloadedFiles: finished.size, failedFiles: failedFiles.length, errorMessage: reason,
+    });
   };
 
-  // strm 只是写一个小文本文件，不限流；但几万个也别一口气全扔出去。
-  // 单个写失败记一行 error 继续，不拖垮整个任务
-  const strmFiles = missingLocally.filter((fp) => strmExts.has(extOf(fp)));
+  // strm 只是写一个小文本文件，不限流；但几万个也别一口气全扔出去
   const strm$ = from(strmFiles).pipe(
     mergeMap(
       (filePath) =>
@@ -332,18 +363,14 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
           strmPrefix,
           enablePathEncoding: task.enablePathEncoding,
         }).pipe(
-          tap(report),
-          catchError((err: Error) => {
-            pushLog({ filePath, error: err.message });
-            return EMPTY;
-          }),
+          tap((p) => report(p, "strm")),
+          catchError((err: unknown) => failOne(filePath, "strm", err)),
         ),
       32,
     ),
   );
 
-  // 真正要下载的文件走账号级限流
-  const downloadFiles = missingLocally.filter((fp) => dlExts.has(extOf(fp)));
+  // 真正要下载的文件走账号级限流；取直链失败和下载失败都算这一个文件的失败
   const download$ = from(downloadFiles).pipe(
     mergeMap(
       (filePath) =>
@@ -354,33 +381,36 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
               displayPath: filePath,
             }),
           ),
+          tap((p) => report(p, "download")),
+          catchError((err: unknown) => failOne(filePath, "download", err)),
         ),
       10,
     ),
-    tap(report),
   );
 
   // 两条一起跑完才算完成：以前 strm 那条不在订阅里，纯 strm 的任务会在文件还没写完时就报"完成"
-  running.subscription = merge(strm$, download$)
-    .subscribe({
-      complete: () => {
-        pushLog({ done: true, overallPercent: "100.00" });
-        history.flush();
-        subject.complete();
+  running.subscription = merge(strm$, download$).subscribe({
+    complete: () => {
+      const status = failedFiles.length > 0 ? "failed" : "completed";
+      finish(status);
+      if (status === "completed") {
         sendTelegramNotification(`<b>Task ID:</b> ${id}\n<b>Files:</b> ${total}\n<b>Status:</b> Completed`, "complete");
-        completeTaskExecution(execution.id, "completed", { totalFiles: total, downloadedFiles: finished.size });
-        refreshEmbyNow("全量任务完成");
-        unregisterRunningTask(id);
-      },
-      error: (err) => {
-        pushLog({ error: err.message });
-        history.flush();
-        sendTelegramNotification(`<b>Task ID:</b> ${id}\n<b>Error:</b> ${err.message}`, "error");
-        completeTaskExecution(execution.id, "failed", { totalFiles: total, downloadedFiles: 0, errorMessage: err.message });
-        subject.complete();
-        unregisterRunningTask(id);
-      },
-    });
+      } else {
+        sendTelegramNotification(
+          `<b>Task ID:</b> ${id}\n<b>Files:</b> ${total}\n<b>Failed:</b> ${failedFiles.length}\n${describeFailures(failedFiles)}`,
+          "error",
+        );
+      }
+      // 失败的只是个别文件，写好的那些一样要让媒体库看到
+      refreshEmbyNow("全量任务完成");
+    },
+    error: (err: Error) => {
+      // 单个文件的失败都在上面接住了，走到这里是流本身出了意外
+      pushLog({ error: err.message });
+      finish("failed", err.message);
+      sendTelegramNotification(`<b>Task ID:</b> ${id}\n<b>Error:</b> ${err.message}`, "error");
+    },
+  });
   // 退订（取消、进程退出）时把还没落库的行写掉；正常结束时上面已经 flush 过，这里是空操作
   running.subscription.add(() => history.flush());
 
@@ -394,4 +424,10 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
       warning,
     },
   };
+}
+
+/** 失败文件的一句话说明：前几个名字 + 总数 */
+function describeFailures(files: string[]): string {
+  const shown = files.slice(0, 3).map((f) => path.basename(f)).join("、");
+  return `${files.length} 个文件失败：${shown}${files.length > 3 ? " 等" : ""}`;
 }

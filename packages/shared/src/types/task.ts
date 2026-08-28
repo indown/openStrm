@@ -27,6 +27,8 @@ export interface TaskExecutionHistory {
     totalFiles: number;
     downloadedFiles: number;
     deletedFiles: number;
+    /** 单个文件失败的个数；失败的文件名在 errorMessage 里 */
+    failedFiles?: number;
     errorMessage?: string;
   };
   taskInfo: {
