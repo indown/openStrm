@@ -287,7 +287,29 @@ function initialCursor(mode: LifePullMode): LifeCursor {
   return { fromTime: Math.floor(Date.now() / 1000), fromId: "0" };
 }
 
-export async function startLifeMonitor(): Promise<{ ok: boolean; message: string }> {
+let startPromise: Promise<{ ok: boolean; message: string }> | null = null;
+
+/**
+ * 启动监控。并发的两次调用（双击启动、启动时 index.ts 自动拉起撞上界面操作）共用同一次启动：
+ * 以前 running 要到几次 await 之后才置位，两次都能过检查，起出两个循环，先起的那个再也停不掉。
+ */
+export function startLifeMonitor(): Promise<{ ok: boolean; message: string }> {
+  if (running) return Promise.resolve({ ok: true, message: "生活事件监控已在运行" });
+  startPromise ??= doStart().finally(() => {
+    startPromise = null;
+  });
+  return startPromise;
+}
+
+async function doStart(): Promise<{ ok: boolean; message: string }> {
+  // 上一轮循环可能还在收尾（stop 之后的最后一轮），等它退出再起新的
+  if (loopDone) {
+    try {
+      await loopDone;
+    } catch {
+      /* 循环内部已经处理过异常 */
+    }
+  }
   if (running) return { ok: true, message: "生活事件监控已在运行" };
 
   const settings = readAppSettings();
