@@ -19,7 +19,7 @@ import { DEFAULT_TIMEOUT_MS } from "../../lib/http.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { mapLimit } from "../../lib/async.js";
 import { isDirectoryEntry } from "../../lib/fs.js";
-import { exportDirParse, fsDirGetId } from "../cloud-115/client.js";
+import { Cloud115Error, exportDirParse, fsDirGetId } from "../cloud-115/client.js";
 import {
   downloadOrCreateStrm,
   downloadOrCreateStrmLimited,
@@ -165,7 +165,11 @@ async function loadRemoteTree(
       return { tree: buildTree(data) };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      if (msg.includes("<!doctypehtml>") || msg.includes("405") || msg.includes("您的访问被阻断")) {
+      const blocked =
+        (error instanceof Cloud115Error && error.status === 405) ||
+        msg.includes("<!doctypehtml>") ||
+        msg.includes("您的访问被阻断");
+      if (blocked) {
         return { fail: fail(403, "115账号被封控", "账号访问被阿里云阻断，请检查账号状态或稍后重试") };
       }
       return { fail: fail(500, "Failed to parse 115 directory", msg) };
