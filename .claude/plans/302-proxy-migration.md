@@ -87,7 +87,7 @@ v2 只读 `emby.url`、`emby.apiKey`、`mediaMountPath`。其余 35 项无对应
 
 ### P1 — 具体场景缺失
 
-3. **`clientSelfAlistRule`** — main 注释明确写着 Infuse 拖进度条依赖它
+3. ~~**`clientSelfAlistRule`** — main 注释明确写着 Infuse 拖进度条依赖它~~ **已做（2026-08-28）**：真机复现是 Infuse 拖动时到代理的 UA 和到 CDN 的 UA 不一致，而 115 直链和换链 UA 严格绑定（实测：A 换的链接用 B 取直接 403，并发/复用都没问题），拿着缓存直链反复 403 把那个文件打到临时限流。`redirect.ts` 对 UA 含 Infuse 的请求先 302 回代理自己同一路径（`_hop=2`，令牌补进 query），第二跳按跟随时的 UA 换链——和 v1 转到 Alist `/d/` 再跳一次是同一个原理，不需要 Alist。
 4. **`redirectCheckEnable`** — 回源前校验直链有效性（对应删掉的 `link-validator.js`）
 5. **`itemHiddenRule`** 媒体库过滤 / **`searchConfig`** 搜索增强 —— 与 302 正交的独立功能
 

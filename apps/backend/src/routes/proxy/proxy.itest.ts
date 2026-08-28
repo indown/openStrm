@@ -96,8 +96,10 @@ await app.register(proxyPlugin);
 await app.ready();
 
 let resolveCalls = 0;
-setLinkResolver(async (embyPath) => {
+let lastResolvedUa: string | undefined;
+setLinkResolver(async (embyPath, userAgent) => {
   resolveCalls++;
+  lastResolvedUa = userAgent;
   return embyPath.startsWith(MOUNT)
     ? { ok: true, url: DIRECT_URL, accountName: "主号", panPath: embyPath }
     : { ok: false, reason: "not-mounted" };
@@ -198,6 +200,60 @@ test("显式打开 allowAnonymousRedirect 后匿名也 302", async () => {
       resetConfigRevisionMemo();
     }
   });
+// ---- 换 UA 的客户端：两跳 ----
+
+test("Infuse 先 302 回代理自己，第二跳按跟随时的 UA 换直链，缓存也按第二跳的 UA 分", async () => {
+    reset();
+    const first = await app.inject({
+      method: "GET",
+      url: "/emby/Videos/item-1/stream.mkv?api_key=k&MediaSourceId=ms-1",
+      headers: { "user-agent": "Infuse-Direct/7.8" },
+    });
+    assert.equal(first.statusCode, 302);
+    const hop = first.headers.location as string;
+    assert.ok(hop.startsWith("/emby/Videos/item-1/stream.mkv?"), `第一跳应指回代理自己，实际 ${hop}`);
+    assert.match(hop, /_hop=2/);
+    assert.match(hop, /api_key=k/);
+    assert.match(hop, /MediaSourceId=ms-1/, "原有查询串要保留");
+    assert.equal(resolveCalls, 0, "第一跳不换链：这时的 UA 不是客户端去 CDN 用的那个");
+
+    // 客户端跟随重定向时换了 UA（Infuse 就是这样）：按这一跳的 UA 换链
+    const second = await app.inject({ method: "GET", url: hop, headers: { "user-agent": "AppleCoreMedia/1.0.0.21F90" } });
+    assert.equal(second.statusCode, 302);
+    assert.equal(second.headers.location, DIRECT_URL);
+    assert.equal(resolveCalls, 1);
+    assert.equal(lastResolvedUa, "AppleCoreMedia/1.0.0.21F90", "直链必须按第二跳的 UA 换，CDN 认的是它");
+
+    // 第二跳的 UA 再来就命中缓存；第一跳的 UA 不会拿到别人的链接
+    await app.inject({ method: "GET", url: hop, headers: { "user-agent": "AppleCoreMedia/1.0.0.21F90" } });
+    assert.equal(resolveCalls, 1, "同一 UA 第二次应命中缓存");
+  });
+
+test("令牌只在请求头里的 Infuse：第二跳地址把令牌补进 query，丢了自定义头也过得了闸门", async () => {
+    reset();
+    const first = await app.inject({
+      method: "GET",
+      url: "/emby/Videos/item-1/stream.mkv",
+      headers: { "user-agent": "Infuse/7.8", "x-emby-token": "k" },
+    });
+    assert.equal(first.statusCode, 302);
+    assert.match(first.headers.location as string, /api_key=k/);
+    const second = await app.inject({ method: "GET", url: first.headers.location as string, headers: { "user-agent": "Infuse/7.8" } });
+    assert.equal(second.statusCode, 302, "第二跳没带头也该能过闸门");
+    assert.equal(second.headers.location, DIRECT_URL);
+  });
+
+test("其它客户端还是一跳直达", async () => {
+    reset();
+    const res = await app.inject({
+      method: "GET",
+      url: "/emby/Videos/item-1/stream.mkv?api_key=k",
+      headers: { "user-agent": "SenPlayer/4.0.8" },
+    });
+    assert.equal(res.statusCode, 302);
+    assert.equal(res.headers.location, DIRECT_URL);
+  });
+
 // ---- 回源兜底 ----
 
 test("HEAD 探测直接回源，不去换直链", async () => {
