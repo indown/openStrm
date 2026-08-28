@@ -274,6 +274,13 @@ function TaskHistoryContent() {
                           <span>{execution.summary.deletedFiles}</span>
                         </div>
                       )}
+                      {(execution.summary.failedFiles ?? 0) > 0 && (
+                        <div className="flex items-center space-x-2 text-sm text-red-600">
+                          <XCircle className="h-4 w-4" />
+                          <span className="font-medium">失败文件:</span>
+                          <span>{execution.summary.failedFiles}</span>
+                        </div>
+                      )}
                     </div>
                     
                     <div className="space-y-2">

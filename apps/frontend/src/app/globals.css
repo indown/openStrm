@@ -128,25 +128,4 @@
 }
 
 /* 日志页进度条的动画（原来写在页面的 <style jsx> 里） */
-@keyframes log-shimmer {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(100%);
-  }
-}
-@keyframes log-spin {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-.log-shimmer {
-  animation: log-shimmer 2s infinite;
-}
-.log-spin {
-  animation: log-spin 1s linear infinite;
-}
+

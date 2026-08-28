@@ -3,7 +3,7 @@ import Bottleneck from "bottleneck";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import { defer, firstValueFrom, Observable, retry, Subscription, timer } from "rxjs";
+import { defer, firstValueFrom, Observable, retry, Subscription, throwError, timer } from "rxjs";
 import { getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
 import type { AccountInfo } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -286,10 +286,17 @@ export function downloadOrCreateStrmLimited(
   ).pipe(
     retry({
       count: maxRetries,
-      delay: (_error, retryCount) => {
+      delay: (error, retryCount) => {
+        // 404 / 410 换多少次都一样：链接指向的文件已经没了，别再拿同一个链接重试 10 次白等 20 秒
+        if (isPermanentFailure(error)) return throwError(() => error);
         log.warn(`下载失败，正在重试 ${retryCount}/${maxRetries}`);
         return timer(retryDelay);
       },
     })
   );
+}
+
+function isPermanentFailure(err: unknown): boolean {
+  const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+  return status === 404 || status === 410;
 }

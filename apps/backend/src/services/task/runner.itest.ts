@@ -13,13 +13,15 @@ import path from "node:path";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { deleteTask, insertTask, updateTask } from "../../db/repositories/tasks.js";
-import { deleteTaskExecution, getTaskHistory } from "../task-history.js";
+import { deleteTaskExecution, getTaskExecution, getTaskHistory } from "../task-history.js";
 import { clearRateLimiters } from "../download/rate-limited.js";
 import { cancelRunningTask, isTaskRunning } from "./registry.js";
 import { startTask } from "./runner.js";
 
 const TASK = "runner-itest";
 const ORIGIN = "/media/Show";
+/** 单文件失败的用例用另一棵树：一个 nfo 的直链 404 */
+const ORIGIN_PARTIAL = "/media/Partial";
 let listDelayMs = 0;
 let listCalls = 0;
 let holdRaw = false;
@@ -33,6 +35,11 @@ const tree: Record<string, Array<{ name: string; is_dir: boolean }>> = {
   [`${ORIGIN}/S1`]: [
     { name: "ep1.mkv", is_dir: false },
     { name: "ep1.nfo", is_dir: false },
+  ],
+  [ORIGIN_PARTIAL]: [
+    { name: "ep1.mkv", is_dir: false },
+    { name: "ep1.nfo", is_dir: false },
+    { name: "missing.nfo", is_dir: false },
   ],
 };
 const server = http.createServer((req, res) => {
@@ -54,6 +61,10 @@ const server = http.createServer((req, res) => {
     if (req.url === "/api/fs/get") return json({ code: 200, data: { raw_url: `${base}/raw${body.path}` } });
     if (req.url?.startsWith("/raw/")) {
       rawRequests++;
+      if (req.url.endsWith("/missing.nfo")) {
+        res.writeHead(404);
+        return res.end("gone");
+      }
       if (holdRaw) {
         // 发一点就挂住，模拟正在进行的大文件下载
         res.writeHead(200, { "content-type": "text/plain", "content-length": "1000" });
@@ -235,6 +246,42 @@ test("起不来也进历史：账号不存在 → 500，历史里有一条 faile
   } finally {
     for (const h of getTaskHistory(id)) deleteTaskExecution(h.id);
     deleteTask(id);
+  }
+});
+
+test("单个文件下载失败不拖死任务：其余照常完成，历史记 failed 并写明是哪个文件", async () => {
+  const id = `${TASK}-partial`;
+  insertTask({ id, account: "ol", accountType: "openlist", originPath: ORIGIN_PARTIAL, targetPath: `${TASK}/partial`, strmPrefix: "http://strm.local" });
+  const dir = path.join(process.env.DATA_DIR!, TASK, "partial");
+  try {
+    const res = await startTask(id);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.message, "3 files to download");
+    await waitFor(() => !isTaskRunning(id), "任务结束");
+    assert.ok(fs.existsSync(path.join(dir, "ep1.strm")), "strm 照常生成");
+    assert.equal(fs.readFileSync(path.join(dir, "ep1.nfo"), "utf8"), `content of /raw${ORIGIN_PARTIAL}/ep1.nfo`, "其它下载照常完成");
+    assert.ok(!fs.existsSync(path.join(dir, "missing.nfo")) && !fs.existsSync(path.join(dir, "missing.nfo.part")), "失败的文件不留半截");
+
+    await waitFor(() => getTaskHistory(id)[0]?.status !== "running", "历史收尾");
+    const [h] = getTaskHistory(id);
+    assert.equal(h.status, "failed");
+    assert.equal(h.summary.totalFiles, 3);
+    assert.equal(h.summary.downloadedFiles, 2, "完成数记真实值，不再是 0");
+    assert.equal(h.summary.failedFiles, 1);
+    assert.match(h.summary.errorMessage ?? "", /1 个文件失败：missing\.nfo/);
+
+    // 历史里的事件行：开始事件、带文件名的失败事件、带结论的结束事件
+    const lines = getTaskExecution(h.id)!.logs.map((l) => JSON.parse(l));
+    assert.ok(lines.some((l) => l.start === true && l.total === 3 && l.strmTotal === 1 && l.downloadTotal === 2), "第一行是开始事件");
+    assert.ok(lines.some((l) => l.filePath === "missing.nfo" && l.kind === "download" && typeof l.error === "string"), "失败事件带文件名");
+    const done = lines.find((l) => l.done === true);
+    assert.equal(done?.status, "failed");
+    assert.equal(done?.finished, 2);
+    assert.equal(done?.failed, 1);
+  } finally {
+    for (const h of getTaskHistory(id)) deleteTaskExecution(h.id);
+    deleteTask(id);
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

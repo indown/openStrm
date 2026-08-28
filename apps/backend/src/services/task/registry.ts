@@ -6,14 +6,34 @@
  */
 import type { Subject, Subscription } from "rxjs";
 
+/**
+ * 任务进度事件。SSE 原样推给页面，历史里也按行存同一种 JSON，页面用一套解析。
+ *
+ *   开始      { start, total, strmTotal, downloadTotal, at }
+ *   文件进度  { filePath, kind, percent, overallPercent }      percent 到 100 即完成
+ *   文件失败  { filePath, kind, error }
+ *   任务错误  { error }                                          不带 filePath
+ *   结束      { done, status, total, finished, failed, overallPercent, message?, at }
+ *   取消      { done, cancelled, status: "cancelled", message, at }
+ */
 export interface DownloadProgress {
+  start?: boolean;
+  total?: number;
+  strmTotal?: number;
+  downloadTotal?: number;
   filePath?: string;
+  kind?: "strm" | "download";
   percent?: number;
   overallPercent?: string;
-  done?: boolean;
-  cancelled?: boolean;
   error?: string;
+  done?: boolean;
+  status?: "completed" | "failed" | "cancelled";
+  finished?: number;
+  failed?: number;
+  cancelled?: boolean;
   message?: string;
+  /** 事件时间（ms），开始 / 结束事件带 */
+  at?: number;
 }
 
 export interface RunningTask {
@@ -79,7 +99,7 @@ export function cancelRunningTask(id: string, reason = "用户取消"): boolean 
   } catch {
     /* 收尾失败不影响取消本身 */
   }
-  task.subject.next({ done: true, cancelled: true, message: `任务已取消：${reason}` });
+  task.subject.next({ done: true, cancelled: true, status: "cancelled", message: `任务已取消：${reason}`, at: Date.now() });
   task.subject.complete();
   return true;
 }

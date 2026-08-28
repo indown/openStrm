@@ -87,7 +87,12 @@ function describeStart(res: StartTaskResult): string {
 
 /** 上次执行的一句话摘要 */
 function describeRun(run: TaskExecutionSummary): string {
-  if (run.status === "failed") return run.summary.errorMessage || "失败";
+  if (run.status === "failed") {
+    // 个别文件失败时 errorMessage 已经是"3 个文件失败：a、b、c"，再带上成功数更完整
+    const failed = run.summary.failedFiles ?? 0;
+    if (failed > 0 && run.summary.errorMessage) return `${run.summary.errorMessage}（完成 ${run.summary.downloadedFiles}/${run.summary.totalFiles}）`;
+    return run.summary.errorMessage || "失败";
+  }
   if (run.status === "cancelled") return run.summary.errorMessage ? `已取消：${run.summary.errorMessage}` : "已取消";
   if (run.status === "running") return "进行中";
   const parts = [`${run.summary.downloadedFiles}/${run.summary.totalFiles} 个文件`];
