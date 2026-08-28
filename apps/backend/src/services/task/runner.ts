@@ -16,6 +16,7 @@ import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { resolveInDataDir } from "../../paths.js";
 import { DEFAULT_TIMEOUT_MS } from "../../lib/http.js";
+import { moduleLogger } from "../../lib/logger.js";
 import { mapLimit } from "../../lib/async.js";
 import { isDirectoryEntry } from "../../lib/fs.js";
 import { exportDirParse, fsDirGetId } from "../cloud-115/client.js";
@@ -51,6 +52,8 @@ export interface StartTaskResult {
   status: number;
   body: Record<string, unknown>;
 }
+
+const log = moduleLogger("task");
 
 const fail = (status: number, message: string, detail?: string): StartTaskResult => ({
   status,
@@ -228,15 +231,22 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
   const dlExts = extSet(settings.downloadExtensions);
 
   // 对照规则在 plan.ts，有单测钉着；这里只负责把两边的清单喂进去
-  const { missing: missingLocally, extra: extraLocally } = planSync(
-    flattenTree(loaded.tree),
-    collectFilesAndTopEmptyDirs(await getLocalTree(saveDir)),
-    strmExts,
-    dlExts,
-  );
+  const remoteEntries = flattenTree(loaded.tree);
+  const localEntries = collectFilesAndTopEmptyDirs(await getLocalTree(saveDir));
+  const { missing: missingLocally, extra: extraLocally } = planSync(remoteEntries, localEntries, strmExts, dlExts);
 
-  if (task.removeExtraFiles) await removeExtraFiles(extraLocally, saveDir);
-  if (missingLocally.length === 0) return { status: 200, body: { message: "no files to download" } };
+  let warning: string | undefined;
+  if (task.removeExtraFiles && extraLocally.length > 0) {
+    if (remoteEntries.length === 0) {
+      // 远端一个文件都没有而本地有一堆，十有八九是导出出了问题（空导出、解析没对上），
+      // 不是用户真把网盘清空了。删错的代价是整个库，宁可跳过；真要清空有"清空目录"
+      warning = `远端目录为空而本地有 ${localEntries.length} 个条目，像是目录导出失败，已跳过清理本地多余文件`;
+      log.warn({ taskId: id, local: localEntries.length }, warning);
+    } else {
+      await removeExtraFiles(extraLocally, saveDir);
+    }
+  }
+  if (missingLocally.length === 0) return { status: 200, body: { message: "no files to download", warning } };
 
   const total = missingLocally.length;
   const subject = new Subject<DownloadProgress>();
@@ -350,6 +360,7 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
       taskId: id,
       extraFilesCount: extraLocally.length,
       willDeleteExtraFiles: task.removeExtraFiles || false,
+      warning,
     },
   };
 }
