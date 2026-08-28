@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false
+  },
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.itest.ts",
+    "src/**/*.e2e.ts",
+    "src/test/**"
+  ]
+}
