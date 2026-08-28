@@ -3,7 +3,7 @@ import Bottleneck from "bottleneck";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import { defer, firstValueFrom, Observable, retry, timer } from "rxjs";
+import { defer, firstValueFrom, Observable, retry, Subscription, timer } from "rxjs";
 import { getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
 import type { AccountInfo } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -24,11 +24,21 @@ interface Progress {
 const limiters = new Map<string, Bottleneck>();
 const sharedLimiters = new Map<string, Bottleneck>();
 
+/**
+ * 丢掉现有限流器，之后的请求按当前设置新建。
+ *
+ * 旧的让它排空：stop() 默认会把排队中的任务全部拒绝掉，正在跑的全量任务就此卡成永远 processing。
+ * 顺序也有讲究：账号限流器链在共享限流器上，任务（包括 stop 自己放进去的收尾哨兵）
+ * 是异步提交给父级的——父级先停，子级的收尾就会被父级拒掉。所以先等子级全部收完，再停父级。
+ */
 export function clearRateLimiters(): void {
-  limiters.forEach((limiter) => limiter.stop());
-  sharedLimiters.forEach((limiter) => limiter.stop());
+  const children = [...limiters.values()];
+  const shared = [...sharedLimiters.values()];
   limiters.clear();
   sharedLimiters.clear();
+  void Promise.allSettled(children.map((l) => l.stop({ dropWaitingJobs: false }))).then(() =>
+    Promise.allSettled(shared.map((l) => l.stop({ dropWaitingJobs: false }))),
+  );
 }
 
 function getSharedLimiter(account: string): Bottleneck {
@@ -56,15 +66,28 @@ export function enqueueForAccount<T>(
   }
   const limiter = limiters.get(accountKey)!;
   return new Observable<T>((observer) => {
-    limiter.schedule(() =>
-      new Promise<void>((resolve, reject) => {
-        fn().subscribe({
-          next: (v) => observer.next(v),
-          error: (err) => { observer.error(err); reject(err); },
-          complete: () => { observer.complete(); resolve(); },
-        });
-      })
-    );
+    let cancelled = false;
+    let inner: Subscription | null = null;
+    limiter
+      .schedule(
+        () =>
+          new Promise<void>((resolve) => {
+            // 排到队头时订阅方早已退订（任务取消）：直接放过，别再发请求、写盘
+            if (cancelled) return resolve();
+            inner = fn().subscribe({
+              next: (v) => observer.next(v),
+              // 错误只走 observer；这里 resolve 是为了让限流器释放槽位
+              error: (err) => { observer.error(err); resolve(); },
+              complete: () => { observer.complete(); resolve(); },
+            });
+          }),
+      )
+      // 限流器被 stop、fn 同步抛出之类的失败以前被丢掉，订阅方永远等不到结果
+      .catch((err) => observer.error(err));
+    return () => {
+      cancelled = true;
+      inner?.unsubscribe();
+    };
   });
 }
 
@@ -174,31 +197,68 @@ export function downloadOrCreateStrm(url: string, savePath: string, opts?: Downl
       return;
     }
     const userAgent = readAppSettings()["user-agent"];
+    const controller = new AbortController();
+    // 先写到 .part，写完再改名：中途断掉的半截文件不会顶着正式文件名，
+    // 下次同步按文件名对照时也就不会把它当成"已存在"而永远不重下
+    const partPath = `${savePath}.part`;
+    let writer: fs.WriteStream | null = null;
+    let settled = false;
+    const discardPart = () => fsp.rm(partPath, { force: true }).catch(() => {});
+    const failWith = (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      writer?.destroy();
+      void discardPart();
+      observer.error(err);
+    };
+
     fsp
       .mkdir(dir, { recursive: true })
       .then(() =>
-        axios.get(url, { headers: { "User-Agent": userAgent }, responseType: "stream", timeout: DEFAULT_TIMEOUT_MS }),
+        axios.get(url, {
+          headers: { "User-Agent": userAgent },
+          responseType: "stream",
+          timeout: DEFAULT_TIMEOUT_MS,
+          signal: controller.signal,
+        }),
       )
       .then((response) => {
+        if (settled) {
+          response.data.destroy();
+          return;
+        }
         const total = parseInt(response.headers["content-length"] || "0", 10);
         let received = 0;
-        const writer = fs.createWriteStream(savePath);
-        // 卡住的下载会被销毁并走到下面的 error，由 downloadOrCreateStrmLimited 的 retry 重来
+        writer = fs.createWriteStream(partPath);
+        // 卡住的下载会被销毁并走到 failWith，由 downloadOrCreateStrmLimited 的 retry 重来
         guardIdleStream(response.data, idleTimeoutMs, `下载 ${displayPath}`);
         response.data.on("data", (chunk: Buffer) => {
           received += chunk.length;
           const percent = total ? (received / total) * 100 : 0;
           observer.next({ percent: Math.min(percent, 100), filePath: displayPath });
         });
-        response.data.on("error", (err: unknown) => observer.error(err));
-        writer.on("error", (err) => observer.error(err));
+        response.data.on("error", failWith);
+        writer.on("error", failWith);
         writer.on("finish", () => {
-          observer.next({ percent: 100, filePath: displayPath });
-          observer.complete();
+          fsp.rename(partPath, savePath).then(() => {
+            if (settled) return;
+            settled = true;
+            observer.next({ percent: 100, filePath: displayPath });
+            observer.complete();
+          }, failWith);
         });
         response.data.pipe(writer);
       })
-      .catch((err) => observer.error(err));
+      .catch(failWith);
+
+    // 退订（任务取消）：中止请求、关掉写入、删掉半截文件
+    return () => {
+      if (settled) return;
+      settled = true;
+      controller.abort();
+      writer?.destroy();
+      void discardPart();
+    };
   });
 }
 
