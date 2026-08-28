@@ -2,6 +2,7 @@ import axios from "axios";
 import Bottleneck from "bottleneck";
 import path from "node:path";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import { defer, firstValueFrom, Observable, retry, timer } from "rxjs";
 import { getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
 import type { AccountInfo } from "@openstrm/shared";
@@ -158,27 +159,26 @@ export function downloadOrCreateStrm(url: string, savePath: string, opts?: Downl
   const strmPrefix = opts?.strmPrefix ?? "";
   const enablePathEncoding = !!opts?.enablePathEncoding;
   const idleTimeoutMs = opts?.idleTimeoutMs ?? STREAM_IDLE_TIMEOUT_MS;
-
   const dir = path.dirname(savePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   return new Observable<Progress>((observer) => {
     if (asStrm) {
-      try {
-        const strmPath = toStrmPath(savePath);
+      // 异步写：全量任务一次会订阅几万个，同步 writeFileSync 就是几万次阻塞写挤在一个 tick 里
+      (async () => {
+        await fsp.mkdir(dir, { recursive: true });
         const fullPath = `${strmPrefix}/${url}`;
-        const finalPath = enablePathEncoding ? encodeURI(fullPath) : fullPath;
-        fs.writeFileSync(strmPath, finalPath, "utf8");
+        await fsp.writeFile(toStrmPath(savePath), enablePathEncoding ? encodeURI(fullPath) : fullPath, "utf8");
         observer.next({ percent: 100, filePath: displayPath });
         observer.complete();
-      } catch (err: unknown) {
-        observer.error(err);
-      }
+      })().catch((err) => observer.error(err));
       return;
     }
     const userAgent = readAppSettings()["user-agent"];
-    axios
-      .get(url, { headers: { "User-Agent": userAgent }, responseType: "stream", timeout: DEFAULT_TIMEOUT_MS })
+    fsp
+      .mkdir(dir, { recursive: true })
+      .then(() =>
+        axios.get(url, { headers: { "User-Agent": userAgent }, responseType: "stream", timeout: DEFAULT_TIMEOUT_MS }),
+      )
       .then((response) => {
         const total = parseInt(response.headers["content-length"] || "0", 10);
         let received = 0;
