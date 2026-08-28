@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://raw.githubusercontent.com/indown/openStrm/refs/heads/main/frontend/public/logo.png" alt="OpenStrm Logo" width="200" height="200">
+  <img src="apps/frontend/public/logo.png" alt="OpenStrm Logo" width="200" height="200">
 </div>
 
 # OpenStrm
@@ -48,14 +48,51 @@
 
 ### 使用 Docker (推荐)
 
+镜像是多架构的（linux/amd64、linux/arm64），`docker-compose.yml` 直接拉取 `indown/openstrm:latest`：
+
 ```bash
-# 使用 Docker Compose
 git clone https://github.com/indown/OpenStrm.git
 cd OpenStrm
-docker-compose up -d
+# 只需要 docker-compose.yml 一个文件；里面有 TZ / PUID / JWT_SECRET 等可选项的注释
+docker compose up -d
 ```
 
-### 手动构建
+不用 compose 的话：
+
+```bash
+docker run -d \
+  --name openstrm \
+  -p 3000:3000 \
+  -p 8091:8091 \
+  -e TZ=Asia/Shanghai \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/config:/app/config \
+  indown/openstrm:latest
+```
+
+**端口说明**：
+- `3000`: 管理界面和 API（同一个进程）
+- `8091`: Emby 302 代理端口（Emby 客户端使用此端口连接）
+
+**目录挂载说明**：
+- `./data`: 生成的 `.strm` 文件，以及字幕、nfo 等随片下载的文件。Emby 挂的是同一个目录
+- `./config`: 只有一个 `openstrm.db`——账号、设置、任务、执行历史、登录凭据全在里面
+
+日志走标准输出，`docker logs openstrm` 就能看；compose 里已经配了按大小轮转。镜像自带 HEALTHCHECK（`GET /api/health`，不鉴权，返回状态、版本和运行时长），`docker ps` 能看到 healthy 状态。
+
+> **从 v2.0.0 之前升级**：旧版 compose 用的是 `./strmData`。换用新文件前先 `mv strmData data`，否则容器会对着一个空目录，Emby 那边的媒体库也会跟着空掉。
+>
+> v1 的 302 层是 nginx + emby2Alist，那套 `constant.js` 里的自定义配置（`mediaPathMapping`、`routeRule`、`clientSelfAlistRule` 等）**不会被继承**：v2 的代理只认「任务开了 302 的 strmPrefix 直接对应 115 目录」这一种映射。挂载结构就是一个前缀对一个目录、用主流客户端播放的话不受影响；改过那些规则的，升级后对应的客户端或目录会不走直链（日志里只有 `not-mounted`），需要反馈具体场景再补。
+
+### 从源码构建镜像
+
+改了代码想跑自己的版本：
+
+```bash
+docker compose -f docker-compose.build.yml up -d --build
+```
+
+### 本地开发
 
 需要 **Node.js 24** 和 **pnpm 9**。仓库是 pnpm workspace，用 npm 装不出正确的依赖树。
 
@@ -72,46 +109,20 @@ pnpm install
 pnpm dev
 ```
 
-### Docker 镜像
-
-项目支持多架构构建 (linux/amd64, linux/arm64)：
+测试、类型检查和 lint：
 
 ```bash
-# 拉取最新镜像
-docker pull indown/openstrm:latest
+pnpm test        # 后端全部单元/集成测试（node --test），跑在 /tmp/openstrm-test 下的临时库上
+pnpm typecheck   # shared / backend / frontend 三个包
+pnpm lint
 
-# 运行容器
-docker run -d \
-  --name openstrm \
-  -p 3000:3000 \
-  -p 8091:8091 \
-  -v $(pwd)/data:/app/data \
-  -v $(pwd)/config:/app/config \
-  indown/openstrm:latest
+# 只跑一个文件：CONFIG_DIR / DATA_DIR 必须指定，用例会改写设置表、在 DATA_DIR 里建删目录
+cd apps/backend
+CONFIG_DIR=/tmp/openstrm-test/config DATA_DIR=/tmp/openstrm-test/data pnpm test:file src/services/task/runner.itest.ts
 ```
 
-**端口说明**：
-- `3000`: 管理界面和 API（同一个进程）
-- `8091`: Emby 302 代理端口（Emby 客户端使用此端口连接）
-
-**目录挂载说明**：
-- `./data`: 生成的 `.strm` 文件，以及字幕、nfo 等随片下载的文件。Emby 挂的是同一个目录
-- `./config`: 只有一个 `openstrm.db`——账号、设置、任务、执行历史、登录凭据全在里面。备份用设置页的「下载备份」（或带登录 token 请求 `GET /api/system/backup`），拿到的是一致的快照；库是 WAL 模式，直接拷文件可能拷到一半
-
-日志走标准输出，`docker logs openstrm` 就能看；compose 里已经配了按大小轮转。镜像自带 HEALTHCHECK（`GET /api/health`，不鉴权），`docker ps` 能看到 healthy 状态。
-
-### 生产环境部署
-
-```bash
-docker-compose -f docker-compose.prod.yml up -d
-```
-
-生成的 strm 文件落在 `./data`，与上面的 Docker 用法一致。
-
-> **从 v2.0.0 之前升级**：旧的 `docker-compose.prod.yml` 用的是 `./strmData`。换用新文件前先 `mv strmData data`，否则容器会对着一个空目录，Emby 那边的媒体库也会跟着空掉。
+代理层还有一套对着真实 Emby 的端到端对照（`scripts/emby-lab.sh up|main|down` 起环境，`pnpm test:e2e` 跑），需要 Docker，用法见 `.claude/plans/302-proxy-migration.md`。
 >
-> v1 的 302 层是 nginx + emby2Alist，那套 `constant.js` 里的自定义配置（`mediaPathMapping`、`routeRule`、`clientSelfAlistRule` 等）**不会被继承**：v2 的代理只认「任务开了 302 的 strmPrefix 直接对应 115 目录」这一种映射。挂载结构就是一个前缀对一个目录、用主流客户端播放的话不受影响；改过那些规则的，升级后对应的客户端或目录会不走直链（日志里只有 `not-mounted`），需要反馈具体场景再补。
-
 ## 🔧 配置说明
 
 ### 首次登录
@@ -136,14 +147,58 @@ docker-compose -f docker-compose.prod.yml up -d
 | `CONFIG_DIR` / `DATA_DIR` | `/app/config`、`/app/data` | 容器内路径，一般不用改；改了要同步改 `volumes` 的挂载点 |
 | `PUID` / `PGID` | 不设，以 root 运行 | 设了就用这个 uid/gid 跑两个进程（NAS 上用 `id` 查自己的）。`config` 目录会自动改归属；之前用 root 生成的 `data` 里的文件请自己 `chown` 一次 |
 | `TRUST_PROXY` | 关 | 放在 nginx/Caddy 之类反代后面时设为 `true`，登录限流和日志里的客户端 IP 才会取 `X-Forwarded-For` |
+| `BACKEND_PORT` / `PROXY_PORT` | `3000` / `8091` | 两个进程的监听端口。改了 `PROXY_PORT` 要同步改 compose 的 `ports` 映射；HEALTHCHECK 跟着 `BACKEND_PORT` 走 |
+| `BACKEND_HOST` | `0.0.0.0` | 只想给本机反代用时可设为 `127.0.0.1`（容器里一般不用改） |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | 连不上 Telegram 官方接口时指到自己的反代，如 `https://tg.example.com` |
 
 ### 数据目录
 
-- `./config/`: `openstrm.db` —— 账号、设置、同步任务、执行历史全在这一个文件里；备份见上文「下载备份」
+- `./config/`: `openstrm.db` —— 账号、设置、同步任务、执行历史全在这一个文件里
 - `./data/`: 生成的 `.strm` 文件和随片下载的字幕、nfo 等
 
 > v2 起配置存放在 SQLite，不再有 `config.json`。旧版的 `config.json` 不会被自动导入，需要在界面里重新配置。
+
+### 备份与恢复
+
+备份用设置页的「下载备份」（或带登录 token 请求 `GET /api/system/backup`），拿到的是一致的快照。库是 WAL 模式，直接拷 `openstrm.db` 可能拷到一半。
+
+恢复：
+
+```bash
+docker compose down
+# 备份文件替换库文件；-wal / -shm 是上次运行留下的日志，必须一起删掉，否则会把旧内容合回去
+cp openstrm-backup.db config/openstrm.db
+rm -f config/openstrm.db-wal config/openstrm.db-shm
+docker compose up -d
+```
+
+`./data` 里的 strm 可以随时用同步任务重新生成，不需要备份；随片下载的字幕、nfo 想留的话按普通文件备份即可。
+
+### 放在反向代理后面
+
+管理界面（3000）按普通站点反代即可。Emby 代理（8091）多一条要求：Emby 的实时通知走 WebSocket，反代要放行升级请求。Caddy 只需一行：
+
+```caddyfile
+emby.example.com {
+    reverse_proxy 127.0.0.1:8091
+}
+```
+
+nginx：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8091;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+Emby 客户端里填反代后的地址；302 给出的是 115 直链，不经过反代。管理界面在反代后面时给容器加 `TRUST_PROXY=true`。
 
 ### 应用设置
 
