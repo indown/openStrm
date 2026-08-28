@@ -1,12 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import { z } from "zod";
 import { getById, getPending, setScrapeStatus } from "../../db/repositories/media-library.js";
 import { enqueueOne, status as workerStatus } from "../../services/library/scrape-worker.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
+import { idParamsSchema } from "../../schemas/entities.js";
 
-const idParamsSchema = z.object({ id: z.string().min(1) });
 
 export default async function (fastify: FastifyInstance) {
   fastify.get("/api/library/scrape-status", { preHandler: [fastify.authenticate] }, async () => {

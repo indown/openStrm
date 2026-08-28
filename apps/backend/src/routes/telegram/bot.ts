@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { createTelegramBot } from "../../services/telegram.js";
-import { deleteAppSetting, readAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
+import { deleteAppSetting, readAppSetting, updateAppSetting } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 import { maskSecret, resolveSecret } from "../../lib/secrets.js";
@@ -39,13 +39,14 @@ export default async function (fastify: FastifyInstance) {
     const botInfo = await bot.getMe();
     if (!botInfo.ok) throw new HttpError(400, "Invalid bot token", { details: botInfo.description });
 
-    // 只覆盖这次给出的字段：allowedUsers / allowTaskStart 由别的接口维护，不能被这里重置
-    writeAppSetting("telegram", {
-      ...current,
+    // 只覆盖这次给出的字段：allowedUsers / allowTaskStart 由别的接口维护，不能被这里重置。
+    // 在事务里重读再写，别拿上面校验 token 时的快照去覆盖这期间别的请求写进去的字段
+    updateAppSetting("telegram", (latest) => ({
+      ...(latest ?? {}),
       botToken,
-      chatId: chatId || current.chatId,
-      webhookUrl: webhookUrl || current.webhookUrl,
-    });
+      chatId: chatId || latest?.chatId,
+      webhookUrl: webhookUrl || latest?.webhookUrl,
+    }));
 
     if (webhookUrl) {
       try { await bot.setWebhook(webhookUrl); } catch { /* ignore */ }

@@ -5,12 +5,13 @@ import { getShareDirList, resolveLibraryEntryShareReceiveIds } from "../../servi
 import { resolveTaskAccount115, saveSelectionToTask } from "../../services/library/save-to-task.js";
 import type { SelectedItem } from "../../services/strm/share-strm.js";
 import { listAccounts } from "../../db/repositories/accounts.js";
-import { listTasks } from "../../db/repositories/tasks.js";
+import { getTask } from "../../db/repositories/tasks.js";
+import { normalizeSubPath } from "../../services/strm/naming.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
+import { idParamsSchema } from "../../schemas/entities.js";
 
-const idParamsSchema = z.object({ id: z.string().min(1) });
 const bodySchema = z.object({
   taskId: z.string().trim().min(1, "taskId is required"),
   subPath: z.string().optional(),
@@ -24,11 +25,11 @@ export default async function (fastify: FastifyInstance) {
     if (!entry) throw new HttpError(404, "影库条目不存在");
 
     const body = parse(bodySchema, request.body);
-    const subPath = (body.subPath ?? "").split("/").map((s) => s.trim()).filter(Boolean).join("/");
+    const subPath = normalizeSubPath(body.subPath);
     const mode = body.mode === "async" ? "async" : "sync";
 
-    const task = listTasks().find((t) => t.id === body.taskId);
-    if (!task) throw new HttpError(400, `Task not found: ${body.taskId}`);
+    const task = getTask(body.taskId);
+    if (!task) throw new HttpError(404, `Task not found: ${body.taskId}`);
     const accountInfo = resolveTaskAccount115(listAccounts(), task);
 
     const settings = readAppSettings();

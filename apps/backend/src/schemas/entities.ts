@@ -9,6 +9,9 @@ import type { AppSettings, LifeMonitorSettings, TaskDefinition } from "@openstrm
 /** 115 的 id 超过 JS 安全整数，前端有的地方传字符串、有的传数字 */
 export const cidSchema = z.union([z.string(), z.number()]);
 
+/** `/:id` 路由参数 */
+export const idParamsSchema = z.object({ id: z.string().min(1) });
+
 /**
  * 空串表示不定时（前端清空字段时就发空串）；其余必须能被 cron 解析。
  * 不在这里拦住的话，坏表达式会被存进库，之后每次启动排程都在 new CronJob 上炸。

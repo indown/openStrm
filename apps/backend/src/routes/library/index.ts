@@ -17,10 +17,9 @@ import { listAccounts } from "../../db/repositories/accounts.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
-import { cidSchema } from "../../schemas/entities.js";
+import { cidSchema, idParamsSchema } from "../../schemas/entities.js";
 import { randomId, sanitizeTags, shareRootCidForDb } from "./_util.js";
 
-const idParamsSchema = z.object({ id: z.string().min(1) });
 
 const createSchema = z.looseObject({
   shareUrl: z.string().trim().min(1, "shareUrl is required"),

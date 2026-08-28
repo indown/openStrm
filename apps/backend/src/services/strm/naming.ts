@@ -23,3 +23,12 @@ export function toStrmPath(p: string): string {
 export function localNameFor(remote: string, strmExts: Set<string>): string {
   return strmExts.has(extOf(remote)) ? toStrmPath(remote) : remote;
 }
+
+/** 用户填的子目录：去掉空段和首尾空白，`a//b / c` → `a/b/c` */
+export function normalizeSubPath(input: string | undefined): string {
+  return (input ?? "")
+    .split("/")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join("/");
+}

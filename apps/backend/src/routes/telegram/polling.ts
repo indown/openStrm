@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { createTelegramBot } from "../../services/telegram.js";
 import { getPollingStatus, restartPolling, startPolling, stopPolling } from "../../services/telegram-polling.js";
-import { readAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
+import { readAppSetting, updateAppSetting } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 
 function configuredTelegram() {
@@ -12,7 +12,7 @@ function configuredTelegram() {
 
 /** 记住开关：轮询状态只在内存里，重启后 index.ts 据此决定要不要自动拉起来 */
 function rememberPolling(enabled: boolean) {
-  writeAppSetting("telegram", { ...(readAppSetting("telegram") ?? {}), pollingEnabled: enabled });
+  updateAppSetting("telegram", (current) => ({ ...(current ?? {}), pollingEnabled: enabled }));
 }
 
 export default async function (fastify: FastifyInstance) {

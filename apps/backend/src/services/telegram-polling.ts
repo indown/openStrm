@@ -180,6 +180,11 @@ export const __test_pollingDone = (): Promise<void> => loopDone;
 
 /* ------------------------------- 消息处理 ------------------------------- */
 
+/** Telegram 的 HTML parse_mode 里，用户名、命令、路径带上 < & 就会让整条消息发不出去（can't parse entities） */
+function esc(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 // 处理消息
 async function handleMessage(bot: ReturnType<typeof createTelegramBot>, message: unknown) {
   const msg = message as { chat: { id: number }; text?: string; from: { username?: string; first_name: string; id: number } };
@@ -198,7 +203,7 @@ async function handleMessage(bot: ReturnType<typeof createTelegramBot>, message:
     // 处理普通消息
     await bot.sendMessage({
       chat_id: chatId,
-      text: `Hello ${username}! 👋\n\nUse /help to see available commands.`,
+      text: `Hello ${esc(username)}! 👋\n\nUse /help to see available commands.`,
       parse_mode: 'HTML'
     });
   }
@@ -236,10 +241,7 @@ async function handleCommand(bot: ReturnType<typeof createTelegramBot>, chatId: 
               `<b>/ping</b> - Test bot connectivity\n` +
               `<b>/status</b> - Show system status\n` +
               `<b>/tasks</b> - List current tasks\n` +
-              `<b>/settings</b> - Show current settings\n` +
-              `<b>/users</b> - List authorized users\n` +
-              `<b>/adduser &lt;user_id&gt;</b> - Add new user\n` +
-              `<b>/removeuser &lt;user_id&gt;</b> - Remove user\n\n` +
+              `<b>/users</b> - List authorized users\n\n` +
               `✅ You are authorized to use all commands.`,
         parse_mode: 'HTML'
       });
@@ -265,13 +267,8 @@ async function handleCommand(bot: ReturnType<typeof createTelegramBot>, chatId: 
       break;
 
     case '/tasks':
-      await bot.sendMessage({
-        chat_id: chatId,
-        text: `<b>📋 Current Tasks</b>\n\n` +
-              `No tasks available at the moment.\n\n` +
-              `<i>This feature will be implemented soon.</i>`,
-        parse_mode: 'HTML'
-      });
+      // 和 /start 一样：列任务、带启动按钮
+      await handleStartCommand(bot, chatId, username);
       break;
 
     case '/users': {
@@ -291,7 +288,7 @@ async function handleCommand(bot: ReturnType<typeof createTelegramBot>, chatId: 
     default:
       await bot.sendMessage({
         chat_id: chatId,
-        text: `❓ Unknown command: ${cmd}\n\nUse /help to see available commands.`,
+        text: `❓ Unknown command: ${esc(cmd)}\n\nUse /help to see available commands.`,
         parse_mode: 'HTML'
       });
   }
@@ -349,7 +346,7 @@ async function handleStartCommand(bot: ReturnType<typeof createTelegramBot>, cha
       await bot.sendMessage({
         chat_id: chatId,
         text: `Welcome to OpenStrm Bot! 🤖\n\n` +
-              `Hello ${username}! You are authorized to use this bot.\n\n` +
+              `Hello ${esc(username)}! You are authorized to use this bot.\n\n` +
               `📋 <b>Current Tasks:</b> No tasks available\n\n` +
               `Use /help to see all available commands.`,
         parse_mode: 'HTML'
@@ -359,7 +356,7 @@ async function handleStartCommand(bot: ReturnType<typeof createTelegramBot>, cha
 
     // 构建任务列表消息
     let message = `Welcome to OpenStrm Bot! 🤖\n\n` +
-                  `Hello ${username}! You are authorized to use this bot.\n\n` +
+                  `Hello ${esc(username)}! You are authorized to use this bot.\n\n` +
                   `📋 <b>Current Tasks (${tasks.length}):</b>\n\n`;
 
     // 为每个任务创建按钮
@@ -368,9 +365,9 @@ async function handleStartCommand(bot: ReturnType<typeof createTelegramBot>, cha
     for (let i = 0; i < tasks.length; i++) {
       const task = tasks[i];
       const taskName = `${task.originPath} → ${task.targetPath}`;
-      const taskInfo = `${i + 1}. <b>${taskName}</b>\n` +
-                      `   Account: ${task.account}\n` +
-                      `   Type: ${task.strmType}\n\n`;
+      const taskInfo = `${i + 1}. <b>${esc(taskName)}</b>\n` +
+                      `   Account: ${esc(task.account)}\n` +
+                      `   Type: ${esc(task.strmType ?? "")}\n\n`;
       
       message += taskInfo;
       
@@ -413,10 +410,10 @@ async function handleTaskStartCallback(bot: ReturnType<typeof createTelegramBot>
     await bot.sendMessage({
       chat_id: chatId,
       text: `🚀 <b>Starting Task</b>\n\n` +
-            `📁 <b>From:</b> ${task.originPath}\n` +
-            `📁 <b>To:</b> ${task.targetPath}\n` +
-            `👤 <b>Account:</b> ${task.account}\n` +
-            `⚙️ <b>Type:</b> ${task.strmType}\n\n` +
+            `📁 <b>From:</b> ${esc(task.originPath)}\n` +
+            `📁 <b>To:</b> ${esc(task.targetPath)}\n` +
+            `👤 <b>Account:</b> ${esc(task.account)}\n` +
+            `⚙️ <b>Type:</b> ${esc(task.strmType ?? "")}\n\n` +
             `⏳ Task is starting...`,
       parse_mode: 'HTML'
     });
@@ -429,8 +426,8 @@ async function handleTaskStartCallback(bot: ReturnType<typeof createTelegramBot>
           chat_id: chatId,
           text: `✅ <b>Task started successfully!</b>\n\n` +
                 `Task ID: <code>${taskId}</code>\n` +
-                `📁 From: ${task.originPath}\n` +
-                `📁 To: ${task.targetPath}\n\n` +
+                `📁 From: ${esc(task.originPath)}\n` +
+                `📁 To: ${esc(task.targetPath)}\n\n` +
                 `You can check the progress in the web interface.`,
           parse_mode: 'HTML'
         });

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { readAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
+import { readAppSetting, updateAppSetting } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 
@@ -24,11 +24,12 @@ export default async function (fastify: FastifyInstance) {
   fastify.post("/api/telegram/users", { preHandler: [fastify.authenticate] }, async (request) => {
     const id = parseUserId(parse(addSchema, request.body).userId);
 
-    const telegram = readAppSetting("telegram") ?? {};
-    const allowedUsers = telegram.allowedUsers ?? [];
-    if (allowedUsers.includes(id)) throw new HttpError(409, "User already exists");
-
-    writeAppSetting("telegram", { ...telegram, allowedUsers: [...allowedUsers, id] });
+    // 查重和写入在同一个事务里：连点两下不会加出两条
+    updateAppSetting("telegram", (telegram) => {
+      const allowedUsers = telegram?.allowedUsers ?? [];
+      if (allowedUsers.includes(id)) throw new HttpError(409, "User already exists");
+      return { ...(telegram ?? {}), allowedUsers: [...allowedUsers, id] };
+    });
     return { success: true, message: "User added successfully" };
   });
 
@@ -36,12 +37,12 @@ export default async function (fastify: FastifyInstance) {
   fastify.delete("/api/telegram/users", { preHandler: [fastify.authenticate] }, async (request) => {
     const id = parseUserId(parse(removeQuerySchema, request.query, "query").userId);
 
-    const telegram = readAppSetting("telegram") ?? {};
-    const allowedUsers = telegram.allowedUsers ?? [];
-    const remaining = allowedUsers.filter((u) => u !== id);
-    if (remaining.length === allowedUsers.length) throw new HttpError(404, "User not found");
-
-    writeAppSetting("telegram", { ...telegram, allowedUsers: remaining });
+    updateAppSetting("telegram", (telegram) => {
+      const allowedUsers = telegram?.allowedUsers ?? [];
+      const remaining = allowedUsers.filter((u) => u !== id);
+      if (remaining.length === allowedUsers.length) throw new HttpError(404, "User not found");
+      return { ...(telegram ?? {}), allowedUsers: remaining };
+    });
     return { success: true, message: "User removed successfully" };
   });
 }
