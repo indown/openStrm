@@ -155,8 +155,20 @@ test("提供正确的当前密码后修改成功，标记随之翻转", async ()
   assert.equal(isUsingDefaultPassword(), false, "标记要跟着口令一起翻转");
 });
 
+test("改密后旧 token 立刻失效，不用等 24 小时过期", async () => {
+  const stale = await app.inject({
+    method: "GET",
+    url: "/api/_probe",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(stale.statusCode, 401, "泄露的 token 必须能靠改密码收回");
+  assert.match(stale.json().message, /密码已更改/);
+});
+
 test("新密码与当前密码相同被拒绝", async () => {
-  const sameAsCurrent = await changePassword(app, token, {
+  // 上一条已经证明老 token 作废，这里用新口令重新登录
+  const fresh = (await login(app, NEW_PASSWORD)).json().token as string;
+  const sameAsCurrent = await changePassword(app, fresh, {
     currentPassword: NEW_PASSWORD,
     newPassword: NEW_PASSWORD,
   });
