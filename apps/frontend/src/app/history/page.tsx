@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -75,7 +76,19 @@ const getDuration = (startTime: number, endTime?: number) => {
   }
 };
 
+/** 静态导出下 useSearchParams 必须包在 Suspense 里，不然 next build 直接报错（和日志页一样） */
 export default function TaskHistoryPage() {
+  return (
+    <React.Suspense fallback={<div className="p-6 text-muted-foreground">加载中...</div>}>
+      <TaskHistoryContent />
+    </React.Suspense>
+  );
+}
+
+function TaskHistoryContent() {
+  const router = useRouter();
+  // 任务页的"执行历史"带 taskId 过来：只看这一个任务的记录
+  const taskId = useSearchParams().get("taskId") ?? "";
   const [history, setHistory] = useState<TaskExecutionSummary[]>([]);
   // 只有首次加载显示整页转圈；之后点"刷新"列表留在屏幕上
   const [loaded, setLoaded] = useState(false);
@@ -83,21 +96,24 @@ export default function TaskHistoryPage() {
   const [deleteTarget, setDeleteTarget] = useState<TaskExecutionSummary | null>(null);
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
 
-  useEffect(() => {
-    fetchHistory();
-  }, []);
-
-  const fetchHistory = async () => {
+  const fetchHistory = useCallback(async () => {
     try {
       setRefreshing(true);
-      setHistory(await api.history.list());
+      setHistory(await api.history.list(taskId || undefined));
     } catch (error) {
       toast.error(apiErrorMessage(error, "获取任务历史失败"));
     } finally {
       setLoaded(true);
       setRefreshing(false);
     }
-  };
+  }, [taskId]);
+
+  useEffect(() => {
+    void fetchHistory();
+  }, [fetchHistory]);
+
+  /** 过滤时用第一条记录里的任务信息做标题；记录为空就只能显示 id */
+  const filteredTask = taskId ? history[0]?.taskInfo : undefined;
 
   const deleteHistory = async (executionId: string) => {
     try {
@@ -142,16 +158,28 @@ export default function TaskHistoryPage() {
         <div>
           <h1 className="text-2xl font-semibold">任务执行历史</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            查看所有任务的执行记录和状态
+            {taskId ? "只显示这个任务的执行记录" : "查看所有任务的执行记录和状态"}
           </p>
+          {taskId && (
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <Badge variant="secondary" className="font-normal break-all">
+                {filteredTask ? `${filteredTask.originPath} → ${filteredTask.targetPath}` : `任务 ${taskId.slice(0, 8)}…`}
+              </Badge>
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => router.push("/history")}>
+                查看全部
+              </Button>
+            </div>
+          )}
         </div>
         <div className="flex space-x-2">
           <Button onClick={fetchHistory} variant="outline" disabled={refreshing}>
             {refreshing ? "刷新中..." : "刷新"}
           </Button>
-          <Button onClick={() => setClearDialogOpen(true)} variant="outline" disabled={history.length === 0}>
-            删除所有历史
-          </Button>
+          {!taskId && (
+            <Button onClick={() => setClearDialogOpen(true)} variant="outline" disabled={history.length === 0}>
+              删除所有历史
+            </Button>
+          )}
         </div>
       </div>
 
@@ -160,7 +188,7 @@ export default function TaskHistoryPage() {
           <CardContent className="flex items-center justify-center h-32">
             <div className="text-center">
               <FileText className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-              <p className="text-gray-600">暂无任务执行历史</p>
+              <p className="text-gray-600">{taskId ? "这个任务还没有执行记录" : "暂无任务执行历史"}</p>
             </div>
           </CardContent>
         </Card>
@@ -176,18 +204,18 @@ export default function TaskHistoryPage() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-3">
                       <StatusIcon className="h-5 w-5" />
-                      <div>
-                        <CardTitle className="text-lg">
-                          任务 {execution.taskId}
+                      <div className="min-w-0">
+                        <CardTitle className="text-base break-all" title={`任务 ${execution.taskId}`}>
+                          {execution.taskInfo.originPath || `任务 ${execution.taskId}`}
                         </CardTitle>
-                        <CardDescription className="flex items-center space-x-4 mt-1">
-                          <span className="flex items-center space-x-1">
+                        <CardDescription className="flex items-center gap-4 mt-1 flex-wrap">
+                          <span className="flex items-center gap-1">
                             <User className="h-4 w-4" />
                             <span>{execution.taskInfo.account}</span>
                           </span>
-                          <span className="flex items-center space-x-1">
-                            <Folder className="h-4 w-4" />
-                            <span>{execution.taskInfo.originPath}</span>
+                          <span className="flex items-center gap-1 min-w-0">
+                            <Folder className="h-4 w-4 shrink-0" />
+                            <span className="break-all">→ {execution.taskInfo.targetPath}</span>
                           </span>
                         </CardDescription>
                       </div>
@@ -249,12 +277,8 @@ export default function TaskHistoryPage() {
                     </div>
                     
                     <div className="space-y-2">
-                      <div className="text-sm">
-                        <span className="font-medium">目标路径:</span>
-                        <span className="ml-2 text-gray-600">{execution.taskInfo.targetPath}</span>
-                      </div>
                       {execution.summary.errorMessage && (
-                        <div className="text-sm text-red-600">
+                        <div className="text-sm text-red-600 break-all">
                           <span className="font-medium">错误信息:</span>
                           <span className="ml-2">{execution.summary.errorMessage}</span>
                         </div>
@@ -273,7 +297,7 @@ export default function TaskHistoryPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>删除这条执行记录</AlertDialogTitle>
             <AlertDialogDescription>
-              确定删除任务 {deleteTarget?.taskId} 在 {deleteTarget ? formatTime(deleteTarget.startTime) : ""} 的这次执行记录吗？记录和日志会一起删掉，无法恢复。
+              确定删除「{deleteTarget?.taskInfo.originPath || deleteTarget?.taskId}」在 {deleteTarget ? formatTime(deleteTarget.startTime) : ""} 的这次执行记录吗？记录和日志会一起删掉，无法恢复。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

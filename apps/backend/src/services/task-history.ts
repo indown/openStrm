@@ -48,6 +48,11 @@ export function getAllTaskHistory(): TaskExecutionSummary[] {
   return repo.getAll();
 }
 
+/** taskId → 最近一次执行 */
+export function getLatestExecutions(): Map<string, TaskExecutionSummary> {
+  return new Map(repo.getLatestPerTask().map((e) => [e.taskId, e]));
+}
+
 export function getTaskExecution(executionId: string): TaskExecutionHistory | undefined {
   return repo.getById(executionId);
 }

@@ -220,6 +220,24 @@ test("取消：进行中的下载被中止且不留半截文件，排队的不�
   }
 });
 
+test("起不来也进历史：账号不存在 → 500，历史里有一条 failed 并写明原因", async () => {
+  const id = `${TASK}-noacc`;
+  insertTask({ id, account: "ghost", accountType: "openlist", originPath: ORIGIN, targetPath: `${TASK}/noacc`, strmPrefix: "x" });
+  try {
+    const res = await startTask(id);
+    assert.equal(res.status, 500);
+    const [h] = getTaskHistory(id);
+    assert.ok(h, "启动阶段失败也要留一条执行记录");
+    assert.equal(h.status, "failed");
+    assert.match(h.summary.errorMessage ?? "", /账号不存在：ghost/);
+    assert.ok(h.endTime, "记录应已结束，不能挂着 running");
+    assert.equal(isTaskRunning(id), false);
+  } finally {
+    for (const h of getTaskHistory(id)) deleteTaskExecution(h.id);
+    deleteTask(id);
+  }
+});
+
 test("不存在的任务 404", async () => {
   assert.equal((await startTask("nope")).status, 404);
 });

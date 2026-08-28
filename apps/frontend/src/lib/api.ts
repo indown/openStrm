@@ -18,8 +18,15 @@ import type {
 /* ------------------------------- 类型 ------------------------------- */
 
 export type TaskStatus = "pending" | "processing";
-/** GET /api/task 的行：任务定义 + 运行状态。strmType 是表单存的附加字段 */
-export type TaskRow = TaskDefinition & { status: TaskStatus; strmType?: string };
+/** GET /api/task 的行：任务定义 + 运行状态 + 上次执行 + 下次定时。strmType 是表单存的附加字段 */
+export type TaskRow = TaskDefinition & {
+  status: TaskStatus;
+  strmType?: string;
+  /** 最近一次执行（不带日志）；从没跑过是 null */
+  lastRun: TaskExecutionSummary | null;
+  /** 定时任务的下次触发时间（ISO）；没有定时是 null */
+  nextRunAt: string | null;
+};
 /** 表单提交的任务字段；必填项由后端 schema 把关，这里只描述形状 */
 export type TaskInput = Partial<Omit<TaskDefinition, "id">> & { strmType?: string };
 
@@ -28,6 +35,8 @@ export type StartTaskResult = {
   taskId?: string;
   extraFilesCount?: number;
   willDeleteExtraFiles?: boolean;
+  /** 比如"远端为空，已跳过清理"这类不算失败但该让人知道的事 */
+  warning?: string;
 };
 
 export interface ShareFileItem {

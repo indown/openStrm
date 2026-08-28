@@ -150,7 +150,7 @@ async function loadRemoteTree(
   const { account, originPath } = task;
 
   if (accountInfo.accountType === "115") {
-    if (!accountInfo.cookie) return { fail: fail(500, `Missing cookie for 115 account: ${account}`) };
+    if (!accountInfo.cookie) return { fail: fail(500, `115 账号 ${account} 没有 cookie`) };
     try {
       const idRes = await fsDirGetId(originPath, { accountInfo });
       const data = await exportDirParse({
@@ -172,13 +172,14 @@ async function loadRemoteTree(
       if (blocked) {
         return { fail: fail(403, "115账号被封控", "账号访问被阿里云阻断，请检查账号状态或稍后重试") };
       }
-      return { fail: fail(500, "Failed to parse 115 directory", msg) };
+      // ensureOk 的 message 自带"115："前缀，这里外面还有一层"读取 115 目录失败"，别叠成"…失败：115：…"
+      return { fail: fail(500, "读取 115 目录失败", msg.replace(/^115：/, "")) };
     }
   }
 
   if (accountInfo.accountType === "openlist") {
     if (!accountInfo.account || !accountInfo.password || !accountInfo.url) {
-      return { fail: fail(500, "Missing openlist credentials") };
+      return { fail: fail(500, "OpenList 账号缺少地址或用户名/密码") };
     }
     let token = accountInfo.token;
     if (!token || (accountInfo.expiresAt && Date.now() / 1000 > accountInfo.expiresAt)) {
@@ -187,13 +188,13 @@ async function loadRemoteTree(
         { username: accountInfo.account, password: accountInfo.password },
         { timeout: DEFAULT_TIMEOUT_MS },
       );
-      if (lr.data.code !== 200) return { fail: fail(500, "Openlist login failed") };
+      if (lr.data.code !== 200) return { fail: fail(500, `OpenList 登录失败：${lr.data.message ?? lr.data.code}`) };
       token = lr.data.data.token;
       accountInfo.token = token;
       accountInfo.expiresAt = Math.floor(Date.now() / 1000) + 47 * 3600;
       updateAccount(accountInfo.name, { token, expiresAt: accountInfo.expiresAt });
     }
-    if (!token) return { fail: fail(500, "Openlist login failed") };
+    if (!token) return { fail: fail(500, "OpenList 登录失败：没有拿到 token") };
     return { tree: buildTree(await getOpenlistTreeData(accountInfo.url, token, originPath)) };
   }
 
@@ -209,10 +210,36 @@ export async function startTask(taskId: string): Promise<StartTaskResult> {
   // 第一个 await 之前就占住：拉远端目录树可能要几分钟，只查 running 表挡不住这期间的第二次启动
   if (!reserveTaskStart(taskId)) return fail(409, "Task is already running");
   try {
-    return await launch(task);
+    const result = await launch(task);
+    if (result.status !== 200) recordFailedStart(task, result.body);
+    return result;
+  } catch (err) {
+    recordFailedStart(task, { message: err instanceof Error ? err.message : String(err) });
+    throw err;
   } finally {
     // 到这里要么已经注册进 running，要么是提前失败返回；占位都可以放掉了
     releaseTaskStart(taskId);
+  }
+}
+
+/**
+ * 起不来也要进历史。cookie 失效、封控、目录不存在这些最常见的失败都发生在拉目录树阶段，
+ * 以前只在响应里说一句，历史页看不到"为什么没跑"——定时触发的更是无人知晓。
+ * "无事可做"的 200 不算失败，照旧不留记录，不然每 30 分钟一条空记录。
+ */
+function recordFailedStart(task: TaskDefinition, body: Record<string, unknown>): void {
+  const message = typeof body.message === "string" && body.message ? body.message : "启动失败";
+  const details = typeof body.details === "string" && body.details ? `：${body.details}` : "";
+  try {
+    const execution = createTaskExecution(task.id, {
+      account: task.account,
+      originPath: task.originPath,
+      targetPath: task.targetPath,
+      removeExtraFiles: task.removeExtraFiles,
+    });
+    completeTaskExecution(execution.id, "failed", { errorMessage: `${message}${details}` });
+  } catch (err) {
+    log.warn({ err, taskId: task.id }, "写入失败的执行记录失败");
   }
 }
 
@@ -220,7 +247,7 @@ async function launch(task: TaskDefinition): Promise<StartTaskResult> {
   const { id, account, originPath, targetPath, strmPrefix } = task;
   const accounts = listAccounts();
   const accountInfo = accounts.find((a) => a.name === account);
-  if (!accountInfo) return fail(500, `No account found: ${account}`);
+  if (!accountInfo) return fail(500, `账号不存在：${account}`);
 
   const saveDir = resolveInDataDir(targetPath);
   if (!saveDir) return fail(400, `targetPath 越出了数据目录: ${targetPath}`);

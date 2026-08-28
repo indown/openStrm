@@ -475,7 +475,7 @@ export async function request115<T = unknown>(
       maxConcurrent ?? downloadConfig.linkMaxConcurrent ?? 2
     );
     const respData = await firstValueFrom(obs$);
-    if (shouldEnsureOk) ensureOk(respData as unknown as Record<string, unknown>);
+    if (shouldEnsureOk) ensureOk(respData as unknown as Record<string, unknown>, url);
     return respData;
   } catch (error) {
     if (!rawError && axios.isAxiosError(error) && error.response) {
@@ -775,10 +775,18 @@ function defaultUA() {
   return "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/116.0.5845.89 Mobile/15E148 Safari/604.1";
 }
 
-function ensureOk<T>(resp: T): NonNullable<T> {
-  const r = resp as { errno?: unknown; state?: boolean } | null | undefined;
+/**
+ * 2xx 但 state=false / errno≠0 的响应。以前把整个响应体 JSON.stringify 进 message，
+ * 界面上弹出来的是一坨 {"state":false,"errNo":990001,...}；115 的 error 字段本来就是给人看的中文。
+ */
+export function ensureOk<T>(resp: T, url?: string): NonNullable<T> {
+  const r = resp as { errno?: unknown; error?: unknown; state?: boolean; request?: unknown } | null | undefined;
   if (!r || r.errno || r.state === false) {
-    throw new Error(`115 API error: ${JSON.stringify(resp)}`);
+    const reason = typeof r?.error === "string" ? r.error.trim() : "";
+    const where = url ? pathOf(url).trim() : typeof r?.request === "string" ? `(${r.request})` : "";
+    const meta = [r?.errno ? `errno ${r.errno}` : "", where.replace(/^\(|\)$/g, "")].filter(Boolean).join("，");
+    if (reason) throw new Error(`115：${reason}${meta ? `（${meta}）` : ""}`);
+    throw new Error(`115 接口出错${where ? ` ${where}` : ""}: ${summarizeBody(resp)}`);
   }
   return resp as NonNullable<T>;
 }
