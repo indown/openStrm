@@ -25,6 +25,23 @@ const app = Fastify({
    * Emby 的长连会被掐断。
    */
   requestTimeout: 300_000,
+  /**
+   * 代理上每张海报、每条字幕都是一个请求，Fastify 默认的 incoming/completed 两行
+   * 几小时就把 10 MB × 3 的日志轮转塞满，真正要看的 302 诊断反而被冲掉。
+   * 拦截路由自己会记 302 / 改写 / 回源的结果，这里只补记出错的。
+   */
+  disableRequestLogging: true,
+});
+
+app.addHook("onResponse", (request, reply, done) => {
+  const status = reply.statusCode;
+  if (status >= 400) {
+    const detail = { method: request.method, url: request.url, status, ms: Math.round(reply.elapsedTime) };
+    // 4xx 多半是 Emby 对缺图之类的正常回答，排查时开 debug 再看
+    if (status >= 500) request.log.warn(detail, "代理请求失败");
+    else request.log.debug(detail, "代理请求 4xx");
+  }
+  done();
 });
 
 /**

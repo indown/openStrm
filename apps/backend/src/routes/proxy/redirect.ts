@@ -117,7 +117,8 @@ async function redirectWithLookup(
 
   const cached = linkCache.get(cacheKey);
   if (cached) {
-    request.log.info({ itemId }, "302 缓存命中");
+    // 每次拖进度条都命中一次，info 太吵；首次解析那条仍是 info
+    request.log.debug({ itemId }, "302 缓存命中");
     return reply.redirect(cached, 302);
   }
 
