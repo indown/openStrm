@@ -1,7 +1,9 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-// Resolve project root from this file's location: apps/backend/src/paths.ts → 3 levels up
-const PROJECT_ROOT = process.env.PROJECT_ROOT || path.resolve(new URL(".", import.meta.url).pathname, "../../../");
+// 项目根目录：apps/backend/src/paths.ts 往上三层。
+// 必须用 fileURLToPath 而不是 URL.pathname：后者是百分号编码的，仓库放在带空格或中文的目录下就会指到不存在的路径
+const PROJECT_ROOT = process.env.PROJECT_ROOT || fileURLToPath(new URL("../../../", import.meta.url));
 
 export const CONFIG_DIR = process.env.CONFIG_DIR || path.join(PROJECT_ROOT, "config");
 export const DATA_DIR = process.env.DATA_DIR || path.join(PROJECT_ROOT, "data");
