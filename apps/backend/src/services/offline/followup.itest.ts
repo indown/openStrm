@@ -9,6 +9,7 @@ import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { setOfflineTransport, type OfflineListPage, type OfflineTask, type OfflineTransport } from "../cloud-115/offline.js";
+import type { NotifyEvent } from "../telegram/notify.js";
 import {
   __test_resetOffline,
   addOfflineTasks,
@@ -30,7 +31,7 @@ let pages: OfflineTask[][] = [[]];
 let listError: Error | null = null;
 const listCalls: number[] = [];
 const generated: GenerateParams[] = [];
-const notified: string[] = [];
+const notified: NotifyEvent[] = [];
 let generateError: Error | null = null;
 
 const row = (over: Partial<OfflineTask>): OfflineTask => ({
@@ -73,7 +74,7 @@ before(() => {
       if (generateError) throw generateError;
       return { generatedCount: 3, skippedCount: 1 };
     },
-    notify: async (m) => { notified.push(m); },
+    notify: async (ev) => { notified.push(ev); },
   });
 });
 
@@ -121,7 +122,8 @@ test("完成（目录）：用 115 给的产物 id 生成 strm，回执 done，�
   assert.match(f.detail, /已生成 3 个 strm（跳过 1 个）/);
   assert.equal(f.name, "Show.S01", "名字用列表里的最新值");
   assert.equal(notified.length, 1);
-  assert.match(notified[0], /Show\.S01/);
+  assert.equal(notified[0].type, "offline-done");
+  assert.equal((notified[0] as { name: string }).name, "Show.S01");
   assert.equal(getOfflineWatcherStatus().pending, 0);
 });
 

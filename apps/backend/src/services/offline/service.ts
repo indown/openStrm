@@ -37,7 +37,7 @@ import { resolveTaskAccount115 } from "../library/save-to-task.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
 import { generateStrmForSelected, type GenerateResult, type SelectedItem } from "../strm/share-strm.js";
-import { sendTelegramNotification } from "../telegram.js";
+import { notify, type NotifyEvent } from "../telegram/notify.js";
 
 const log = moduleLogger("offline");
 
@@ -119,7 +119,7 @@ interface Deps {
   /** 把 115 路径解析成目录 id；找不到抛 HttpError */
   resolveDirId: (accountInfo: AccountInfo, path: string) => Promise<string>;
   generate: (p: GenerateParams) => Promise<GenerateResult>;
-  notify: (message: string) => Promise<void>;
+  notify: (event: NotifyEvent) => Promise<unknown>;
 }
 
 async function resolveDirIdReal(accountInfo: AccountInfo, dirPath: string): Promise<string> {
@@ -141,7 +141,7 @@ const realDeps: Deps = {
   resolveDirId: resolveDirIdReal,
   generate: ({ task, accountInfo, settings, subPath, item }) =>
     generateStrmForSelected({ task, selectedItems: [item], accountInfo, settings, subPath }),
-  notify: (message) => sendTelegramNotification(message, "complete"),
+  notify,
 };
 
 let deps: Deps = { ...realDeps };
@@ -415,10 +415,7 @@ function finish(f: OfflineFollowup, status: "done" | "failed", detail: string): 
   f.status = status;
   f.detail = detail;
   f.doneAt = Date.now();
-}
-
-function esc(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  if (status === "failed") void deps.notify({ type: "offline-failed", name: f.name, detail }).catch(() => {});
 }
 
 /**
@@ -498,7 +495,7 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
     log.info(`云下载完成：${t.name} → ${f.detail}`);
     if (r.generatedCount > 0) scheduleEmbyRefresh();
     void deps
-      .notify(`云下载完成：<b>${esc(t.name)}</b>\n${esc(f.detail)}\n目录：${esc(task.originPath)}${f.subPath ? `/${esc(f.subPath)}` : ""}`)
+      .notify({ type: "offline-done", name: t.name, detail: f.detail, target: `${task.originPath}${f.subPath ? `/${f.subPath}` : ""}` })
       .catch(() => {});
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

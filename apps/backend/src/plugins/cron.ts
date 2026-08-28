@@ -19,7 +19,7 @@ export const cronPlugin = fp(async (fastify) => {
     const job = new CronJob(cronExpression, async () => {
       fastify.log.info(`[CRON] Triggering task ${taskId} (${cronExpression})`);
       try {
-        const result = await startTask(taskId);
+        const result = await startTask(taskId, { trigger: "cron" });
         // 状态码不够看：成功时也可能是「无文件可下载」，失败原因都在 body 里
         if (result.status === 200) {
           fastify.log.info(`[CRON] Task ${taskId} triggered: ${JSON.stringify(result.body)}`);

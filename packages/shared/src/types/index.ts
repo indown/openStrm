@@ -3,6 +3,8 @@ export type {
   LifeMonitorSettings,
   LifePullMode,
   LifeEventMode,
+  TelegramSettings,
+  TelegramNotifySettings,
 } from "./settings.js";
 export type { AccountInfo, Account115, AccountOpenlist } from "./account.js";
 export type {

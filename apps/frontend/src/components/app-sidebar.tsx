@@ -1,5 +1,5 @@
 "use client"
-import { Home, Inbox, Settings, Github, History, Library, Radar, Bot, Users, CloudDownload } from "lucide-react";
+import { Home, Inbox, Settings, Github, History, Library, Radar, Bot, CloudDownload } from "lucide-react";
 import Image from "next/image";
 
 import {
@@ -47,6 +47,11 @@ const items = [
     icon: CloudDownload,
   },
   {
+    title: "Telegram",
+    url: "/telegram",
+    icon: Bot,
+  },
+  {
     title: "设置",
     url: "/settings",
     icon: Settings,
@@ -55,19 +60,6 @@ const items = [
     title: "历史",
     url: "/history",
     icon: History,
-  },
-];
-
-const telegramItems = [
-  {
-    title: "Telegram",
-    url: "/telegram",
-    icon: Bot,
-  },
-  {
-    title: "授权用户",
-    url: "/telegram/users",
-    icon: Users,
   },
 ];
 
@@ -111,27 +103,7 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-        
-        <SidebarGroup>
-          <SidebarGroupLabel>Telegram</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {telegramItems.map((item) => {
-                const isActive = pathname === item.url;
-                return (
-                  <SidebarMenuItem key={item.title} className={isActive ? "bg-muted" : ""}>
-                    <SidebarMenuButton asChild tooltip={item.title}>
-                      <Link href={item.url}>
-                        <item.icon />
-                        <span>{item.title}</span>
-                      </Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+
       </SidebarContent>
       <SidebarSeparator className="ml-0 mr-2 w-auto group-data-[collapsible=icon]:mx-0" />
       <SidebarFooter>

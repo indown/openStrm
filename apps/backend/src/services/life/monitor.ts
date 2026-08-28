@@ -11,6 +11,7 @@ import type { AccountInfo, LifeEventMode, LifePullMode } from "@openstrm/shared"
 import type { AccountInfo as Cloud115Account } from "../cloud-115/client.js";
 import { KEY } from "../../db/keys.js";
 import { moduleLogger } from "../../lib/logger.js";
+import { notify } from "../telegram/notify.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { listAccounts } from "../../db/repositories/accounts.js";
 import { listTasks } from "../../db/repositories/tasks.js";
@@ -366,6 +367,8 @@ async function doStart(): Promise<{ ok: boolean; message: string }> {
         const msg = err instanceof Error ? err.message : String(err);
         lastError = msg;
         log("error", `轮询失败：${msg}`);
+        // cookie 失效 / 被封控才值得打扰人；notify 自己会认，认不出的不发，同一原因一小时只发一次
+        void notify({ type: "account-alert", account: account.name, reason: msg, source: "网盘监控" });
         if (signal.aborted) break;
         log("info", `${ERROR_BACKOFF_MS / 1000}s 后重试`);
         await sleepInterruptible(ERROR_BACKOFF_MS);

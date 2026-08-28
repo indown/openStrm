@@ -1,16 +1,15 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
+import { Bot, Loader2, Play, RefreshCw, RotateCcw, Send, Square, Trash2, UserPlus } from "lucide-react";
 import { toast } from "sonner";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import type { TelegramNotifySettings } from "@openstrm/shared";
+import { Badge } from "@/components/ui/badge";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,517 +20,350 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Bot, Settings, MessageSquare, CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square, Users, ShieldCheck } from "lucide-react";
+import { api, type TelegramBotStatus, type TelegramPermissions } from "@/lib/api";
 import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
-import { api, type TelegramBotInfo as BotInfo, type TelegramWebhookInfo as WebhookInfo } from "@/lib/api";
 
-interface TelegramConfig {
-  botToken?: string;
-  chatId?: string;
-  webhookUrl?: string;
-}
+const PERMISSIONS: Array<{ key: keyof TelegramPermissions; label: string; hint: string }> = [
+  { key: "allowTaskStart", label: "允许从 Telegram 启动 / 取消任务", hint: "/tasks 里的「运行」按钮会真的跑同步任务。" },
+  { key: "allowOfflineAdd", label: "允许添加云下载", hint: "发磁力 / ed2k / http 链接给机器人，交给 115 云下载；选任务目录的话下完自动生成 strm。" },
+  { key: "allowShareReceive", label: "允许转存分享", hint: "发 115 分享链接给机器人，整个分享转存到某个任务的目录并触发同步。" },
+];
+
+const NOTIFY: Array<{ key: keyof TelegramNotifySettings; label: string; hint: string }> = [
+  { key: "taskDone", label: "任务完成", hint: "同步跑完：文件数、用时。" },
+  { key: "taskFailed", label: "任务失败", hint: "有文件失败、启动失败（定时触发的也算），带原因。" },
+  { key: "accountAlert", label: "115 账号异常", hint: "cookie 失效或被封控时提醒，同一原因一小时只发一次。" },
+  { key: "offline", label: "云下载", hint: "从任务目录下载完成并生成 strm，或回执失败。" },
+  { key: "taskStart", label: "任务开始", hint: "每次同步开始都发一条，比较吵，默认关。" },
+];
 
 export default function TelegramPage() {
-  const [config, setConfig] = useState<TelegramConfig>({});
-  const [botInfo, setBotInfo] = useState<BotInfo | null>(null);
-  const [webhookInfo, setWebhookInfo] = useState<WebhookInfo | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-  const [pollingStatus, setPollingStatus] = useState<{ polling: boolean; message: string } | null>(null);
-  // 是否允许 Bot 的"启动"按钮真的跑任务（settings.telegram.allowTaskStart，默认关）
-  const [allowTaskStart, setAllowTaskStart] = useState(false);
-  const [allowTaskStartSaving, setAllowTaskStartSaving] = useState(false);
-  const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
+  const [status, setStatus] = useState<TelegramBotStatus | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [botToken, setBotToken] = useState("");
+  const [chatId, setChatId] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [newUserId, setNewUserId] = useState("");
+  const [removeOpen, setRemoveOpen] = useState(false);
 
-  // 加载当前配置
-  useEffect(() => {
-    loadBotInfo();
-    checkPollingStatus();
-    loadAllowTaskStart();
+  const load = useCallback(async (silent = false) => {
+    try {
+      const s = await api.telegram.status();
+      setStatus(s);
+      setBotToken(s.botToken);
+      setChatId(s.chatId);
+    } catch (err) {
+      if (!silent) toast.error(apiErrorMessage(err, "加载 Telegram 配置失败"));
+    } finally {
+      setLoaded(true);
+    }
   }, []);
 
-  const loadBotInfo = async () => {
-    try {
-      setLoading(true);
-      const status = await api.telegram.bot.get();
-      if (status.configured) {
-        setBotInfo(status.bot.result);
-        setWebhookInfo(status.webhook.result ?? null);
-        setConfig({
-          botToken: status.botToken || '',
-          chatId: status.chatId || '',
-          webhookUrl: status.webhook.result?.url || ''
-        });
-      }
-    } catch (error) {
-      toast.error(apiErrorMessage(error, "加载 Bot 配置失败"));
-    } finally {
-      setLoading(false);
-    }
-  };
+  useEffect(() => {
+    void load();
+  }, [load]);
 
-  const handleSave = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      setSuccess(null);
-
-      const response = await api.telegram.bot.configure({
-        botToken: config.botToken ?? "",
-        chatId: config.chatId,
-        webhookUrl: config.webhookUrl
-      });
-
-      if (response.success) {
-        setSuccess('Telegram bot configured successfully!');
-        // 直接设置 botInfo，因为后端返回的是完整的 bot 信息
-        setBotInfo(response.bot);
-        // 更新配置显示
-        // 配置接口不回 token/webhook，沿用刚提交的值；随后的 loadBotInfo 会拿到完整信息
-        setConfig({
-          botToken: config.botToken || '',
-          chatId: response.chatId || '',
-          webhookUrl: config.webhookUrl || ''
-        });
-        // 重新加载完整信息以获取 webhook 信息
-        await loadBotInfo();
-      }
-    } catch (error) {
-      const { message, details } = apiErrorBody(error);
-      const errorMessage = message || 'Failed to configure bot';
-      setError(details ? `${errorMessage}: ${details}` : errorMessage);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      setSuccess(null);
-
-      await api.telegram.bot.remove();
-      setSuccess('Telegram bot configuration removed successfully!');
-      setBotInfo(null);
-      setWebhookInfo(null);
-      setConfig({});
-    } catch (error) {
-      setError(apiErrorMessage(error, 'Failed to remove bot configuration'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 检查轮询状态
-  const checkPollingStatus = async () => {
-    try {
-      setPollingStatus(await api.telegram.polling.status());
-    } catch (error) {
-      toast.error(apiErrorMessage(error, "获取轮询状态失败"));
-    }
-  };
-
-  const loadAllowTaskStart = async () => {
-    try {
-      const settings = await api.settings.get();
-      setAllowTaskStart(Boolean(settings.telegram?.allowTaskStart));
-    } catch (error) {
-      toast.error(apiErrorMessage(error, "加载设置失败"));
-    }
-  };
-
-  // 勾选即保存；PUT 是整组替换，patchGroup 会先把 telegram 组里的其它字段带上
-  const toggleAllowTaskStart = async (next: boolean) => {
-    setAllowTaskStart(next);
-    setAllowTaskStartSaving(true);
-    try {
-      await api.settings.patchGroup("telegram", { allowTaskStart: next });
-      toast.success(next ? "已允许从 Telegram 启动任务" : "已禁止从 Telegram 启动任务");
-    } catch (error) {
-      setAllowTaskStart(!next);
-      toast.error(apiErrorMessage(error, "保存失败"));
-    } finally {
-      setAllowTaskStartSaving(false);
-    }
-  };
-
-  // 启动轮询
-  const startPolling = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      setSuccess(null);
-
-      const response = await api.telegram.polling.start();
-      if (response.success) {
-        setSuccess('Polling started successfully!');
-        await checkPollingStatus();
-      }
-    } catch (error) {
-      setError(apiErrorMessage(error, 'Failed to start polling'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 停止轮询
-  const stopPolling = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      setSuccess(null);
-
-      const response = await api.telegram.polling.stop();
-      if (response.success) {
-        setSuccess('Polling stopped successfully!');
-        await checkPollingStatus();
-      }
-    } catch (error) {
-      setError(apiErrorMessage(error, 'Failed to stop polling'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const testBot = async () => {
-    if (!config.chatId) {
-      setError('Please set a Chat ID first');
+  const save = async () => {
+    if (!botToken.trim()) {
+      toast.error("请填 bot token");
       return;
     }
-
+    setSaving(true);
     try {
-      setLoading(true);
-      setError(null);
-      setSuccess(null);
-
-      await api.telegram.send({ message: '🤖 Test message from OpenStrm!', type: 'info' });
-
-      setSuccess('Test message sent successfully!');
-    } catch (error) {
-      setError(apiErrorMessage(error, 'Failed to send test message'));
+      await api.telegram.configure({ botToken: botToken.trim(), chatId: chatId.trim() });
+      toast.success("已保存");
+      await load(true);
+    } catch (err) {
+      const body = apiErrorBody(err);
+      toast.error(body.details ? `${body.message}：${body.details}` : apiErrorMessage(err, "保存失败"));
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
+  const run = async (key: string, fn: () => Promise<unknown>, okText: string) => {
+    setBusy(key);
+    try {
+      await fn();
+      toast.success(okText);
+      await load(true);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "操作失败"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** 权限和通知开关：勾选即保存。PUT 是按组替换，patchGroup 会先把组里其它字段带上 */
+  const patch = async (partial: Record<string, unknown>, okText: string) => {
+    try {
+      await api.settings.patchGroup("telegram", partial);
+      toast.success(okText);
+      await load(true);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "保存失败"));
+      await load(true);
+    }
+  };
+
+  const addUser = async () => {
+    const id = newUserId.trim();
+    if (!/^-?\d+$/.test(id)) {
+      toast.error("用户 id 是一串数字，给机器人发 /start 就能看到");
+      return;
+    }
+    await run("add-user", () => api.telegram.users.add(id), `已加入白名单：${id}`);
+    setNewUserId("");
+  };
+
+  if (!loaded) return <div>Loading...</div>;
+  const configured = Boolean(status?.configured);
+
   return (
-    <div className="container mx-auto p-6 space-y-6">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center space-x-2">
+    <div className="mx-auto max-w-3xl space-y-8">
+      <div>
+        <h1 className="text-2xl font-semibold flex items-center gap-2">
           <Bot className="h-6 w-6" />
-          <h1 className="text-3xl font-bold">Telegram Bot Management</h1>
-        </div>
-        <Button variant="outline" asChild>
-          <Link href="/telegram/users">
-            <Users className="h-4 w-4 mr-2" />
-            管理授权用户
-          </Link>
-        </Button>
+          Telegram 机器人
+        </h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          出事第一时间收到通知；手机上把链接发给机器人就能云下载或转存。只回应白名单里的人。
+        </p>
       </div>
 
-      {error && (
-        <Alert variant="destructive">
-          <XCircle className="h-4 w-4" />
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      {success && (
-        <Alert>
-          <CheckCircle className="h-4 w-4" />
-          <AlertDescription>{success}</AlertDescription>
-        </Alert>
-      )}
-
-      <div className="grid gap-6 md:grid-cols-2">
-        {/* Bot Configuration */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <Settings className="h-5 w-5" />
-              <span>Bot Configuration</span>
-            </CardTitle>
-            <CardDescription>
-              Configure your Telegram bot settings
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="botToken">Bot Token</Label>
-              <Input
-                id="botToken"
-                type="password"
-                placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
-                value={config.botToken || ''}
-                onChange={(e) => setConfig({ ...config, botToken: e.target.value })}
-              />
-              <p className="text-xs text-muted-foreground">已保存的 token 只显示末 4 位；原样提交等于不改，输入新值即替换</p>
-              <p className="text-sm text-muted-foreground">
-                Get your bot token from @BotFather. Format: 数字:35位字符
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="chatId">Chat ID</Label>
-              <Input
-                id="chatId"
-                placeholder="Enter your chat ID"
-                value={config.chatId || ''}
-                onChange={(e) => setConfig({ ...config, chatId: e.target.value })}
-              />
-              <p className="text-sm text-muted-foreground">
-                Send a message to your bot and check the webhook logs to get your chat ID
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="webhookUrl">Webhook URL (Optional)</Label>
-              <Input
-                id="webhookUrl"
-                placeholder="https://yourdomain.com/api/telegram/webhook"
-                value={config.webhookUrl || ''}
-                onChange={(e) => setConfig({ ...config, webhookUrl: e.target.value })}
-              />
-              <p className="text-sm text-muted-foreground">
-                Leave empty to use polling instead of webhook
-              </p>
-            </div>
-
-            <div className="flex space-x-2">
-              <Button onClick={handleSave} disabled={loading || !config.botToken}>
-                {loading ? 'Saving...' : 'Save Configuration'}
-              </Button>
-              {botInfo && (
-                <Button variant="outline" onClick={() => setRemoveDialogOpen(true)} disabled={loading}>
-                  Remove Configuration
-                </Button>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Bot Status */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <Bot className="h-5 w-5" />
-              <span>Bot Status</span>
-            </CardTitle>
-            <CardDescription>
-              Current bot information and status
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {botInfo ? (
-              <>
-                <div className="flex items-center space-x-2">
-                  <Badge variant="outline" className="bg-green-50 text-green-700">
-                    <CheckCircle className="h-3 w-3 mr-1" />
-                    Connected
-                  </Badge>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex justify-between">
-                    <span className="text-sm font-medium">Bot Name:</span>
-                    <span className="text-sm">{botInfo.first_name}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-sm font-medium">Username:</span>
-                    <span className="text-sm">@{botInfo.username}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-sm font-medium">Bot ID:</span>
-                    <span className="text-sm">{botInfo.id}</span>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-2">
-                  <h4 className="text-sm font-medium">Capabilities:</h4>
-                  <div className="space-y-1">
-                    <div className="flex items-center space-x-2">
-                      {botInfo.can_join_groups ? (
-                        <CheckCircle className="h-3 w-3 text-green-500" />
-                      ) : (
-                        <XCircle className="h-3 w-3 text-red-500" />
-                      )}
-                      <span className="text-xs">Can join groups</span>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      {botInfo.can_read_all_group_messages ? (
-                        <CheckCircle className="h-3 w-3 text-green-500" />
-                      ) : (
-                        <XCircle className="h-3 w-3 text-red-500" />
-                      )}
-                      <span className="text-xs">Can read all group messages</span>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      {botInfo.supports_inline_queries ? (
-                        <CheckCircle className="h-3 w-3 text-green-500" />
-                      ) : (
-                        <XCircle className="h-3 w-3 text-red-500" />
-                      )}
-                      <span className="text-xs">Supports inline queries</span>
-                    </div>
-                  </div>
-                </div>
-
-                <Button onClick={testBot} disabled={loading} className="w-full">
-                  <MessageSquare className="h-4 w-4 mr-2" />
-                  Send Test Message
-                </Button>
-              </>
-            ) : (
-              <div className="text-center py-8">
-                <AlertCircle className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
-                <p className="text-sm text-muted-foreground">
-                  No bot configured. Please configure your bot first.
-                </p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Polling Control */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center space-x-2">
-            <RefreshCw className="h-5 w-5" />
-            <span>Polling Control</span>
-          </CardTitle>
-          <CardDescription>
-            Control the bot&apos;s polling mode for receiving messages
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {pollingStatus && (
-            <div className="flex items-center space-x-2">
-              <Badge variant={pollingStatus.polling ? "default" : "outline"}>
-                {pollingStatus.polling ? "Polling Active" : "Webhook Mode"}
-              </Badge>
-              <span className="text-sm text-muted-foreground">{pollingStatus.message}</span>
-            </div>
-          )}
-
-          <div className="flex space-x-2">
-            <Button 
-              onClick={startPolling} 
-              disabled={loading || (pollingStatus?.polling === true)}
-              variant="outline"
-            >
-              <Play className="h-4 w-4 mr-2" />
-              Start Polling
-            </Button>
-            <Button 
-              onClick={stopPolling} 
-              disabled={loading || (pollingStatus?.polling === false)}
-              variant="outline"
-            >
-              <Square className="h-4 w-4 mr-2" />
-              Stop Polling
-            </Button>
-            <Button 
-              onClick={checkPollingStatus} 
-              disabled={loading}
-              variant="outline"
-            >
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Refresh Status
-            </Button>
-          </div>
-
-          <div className="text-sm text-muted-foreground">
-            <p><strong>Polling Mode:</strong> Bot checks for new messages every 5 seconds (reduced frequency to avoid conflicts)</p>
-            <p><strong>Webhook Mode:</strong> Telegram sends messages directly to your server</p>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Bot 权限 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center space-x-2">
-            <ShieldCheck className="h-5 w-5" />
-            <span>Bot 权限</span>
-          </CardTitle>
-          <CardDescription>
-            只有授权用户能使用 Bot 命令；是否允许 Bot 直接启动同步任务单独控制
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <label className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
-            <Checkbox
-              checked={allowTaskStart}
-              disabled={allowTaskStartSaving}
-              onCheckedChange={(v) => void toggleAllowTaskStart(v === true)}
-              className="mt-0.5"
+      {/* ---------------- 连接 ---------------- */}
+      <section className="space-y-4">
+        <h2 className="text-base font-medium">连接</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="botToken">Bot token</Label>
+            <Input
+              id="botToken"
+              type="password"
+              value={botToken}
+              onChange={(e) => setBotToken(e.target.value)}
+              placeholder="123456789:ABC…（找 @BotFather 创建机器人获得）"
             />
-            <span>
-              <span className="text-sm font-medium">允许从 Telegram 启动任务</span>
-              <span className="block text-xs text-muted-foreground">
-                默认关闭。开启后，授权用户点 Bot 消息里的「启动」按钮会真的跑一次同步任务；关闭时按钮只会提示未开启。
-              </span>
-            </span>
-          </label>
-          <div className="text-sm text-muted-foreground">
-            授权用户列表在
-            <Link href="/telegram/users" className="underline mx-1">授权用户</Link>
-            页面维护。
           </div>
-        </CardContent>
-      </Card>
+          <div className="space-y-2">
+            <Label htmlFor="chatId">Chat id（通知发到这里）</Label>
+            <Input id="chatId" value={chatId} onChange={(e) => setChatId(e.target.value)} placeholder="例如 123456789 或群的 -100…" />
+            <p className="text-xs text-muted-foreground">给机器人发 <code>/id</code> 就能看到。填群 id 的话机器人只在这个群里响应命令。</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button onClick={save} disabled={saving}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+            保存
+          </Button>
+          {configured && (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => run("test", () => api.telegram.test(), "测试消息已发出，看看 Telegram")}
+                disabled={busy === "test"}
+              >
+                {busy === "test" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                发测试消息
+              </Button>
+              <Button variant="ghost" className="text-destructive" onClick={() => setRemoveOpen(true)}>
+                <Trash2 className="h-4 w-4" />
+                清除配置
+              </Button>
+            </>
+          )}
+        </div>
 
-      <AlertDialog open={removeDialogOpen} onOpenChange={setRemoveDialogOpen}>
+        {configured && (
+          <div className="rounded-lg border p-4 space-y-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              {status?.bot ? (
+                <Badge variant="outline">
+                  @{status.bot.username ?? status.bot.first_name}
+                </Badge>
+              ) : (
+                <Badge variant="destructive">连不上 Telegram{status?.botError ? `：${status.botError}` : ""}</Badge>
+              )}
+              <Badge variant={status?.polling ? "default" : "secondary"}>{status?.polling ? "轮询运行中" : "轮询未运行"}</Badge>
+              <div className="ml-auto flex items-center gap-2">
+                {status?.polling ? (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => run("restart", () => api.telegram.polling.restart(), "轮询已重启")}
+                      disabled={busy === "restart"}
+                    >
+                      {busy === "restart" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                      重启
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => run("stop", () => api.telegram.polling.stop(), "轮询已停止")}
+                      disabled={busy === "stop"}
+                    >
+                      {busy === "stop" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
+                      停止
+                    </Button>
+                  </>
+                ) : (
+                  <Button size="sm" onClick={() => run("start", () => api.telegram.polling.start(), "轮询已启动")} disabled={busy === "start"}>
+                    {busy === "start" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                    启动轮询
+                  </Button>
+                )}
+                <Button variant="ghost" size="sm" onClick={() => load()} title="刷新">
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              轮询是机器人收消息的方式（不需要公网地址）。不开轮询也能收到通知，只是命令和链接没人处理。开着的话重启服务后会自动恢复。
+            </p>
+          </div>
+        )}
+      </section>
+
+      <Separator />
+
+      {/* ---------------- 白名单 ---------------- */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-base font-medium">白名单</h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            只有这些用户 id 能使用机器人。陌生人私聊机器人会收到自己的 id，把它加进来即可；群里的陌生人一律不理。
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {(status?.allowedUsers ?? []).length === 0 && <span className="text-sm text-muted-foreground">还没有人</span>}
+          {(status?.allowedUsers ?? []).map((id) => (
+            <Badge key={id} variant="outline" className="gap-1 pr-1 font-mono">
+              {id}
+              <button
+                type="button"
+                className="rounded p-0.5 hover:bg-destructive/10 hover:text-destructive"
+                title="移出白名单"
+                onClick={() => run(`rm-${id}`, () => api.telegram.users.remove(id), `已移除 ${id}`)}
+              >
+                <Trash2 className="h-3 w-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 max-w-sm">
+          <Input
+            value={newUserId}
+            onChange={(e) => setNewUserId(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && addUser()}
+            placeholder="用户 id"
+          />
+          <Button variant="outline" onClick={addUser} disabled={busy === "add-user"}>
+            <UserPlus className="h-4 w-4" />
+            添加
+          </Button>
+        </div>
+      </section>
+
+      <Separator />
+
+      {/* ---------------- 权限 ---------------- */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-base font-medium">权限</h2>
+          <p className="text-xs text-muted-foreground mt-1">这些动作会真的改动网盘或跑任务，默认全关，需要的再打开。</p>
+        </div>
+        <div className="space-y-2">
+          {PERMISSIONS.map((p) => (
+            <label key={p.key} className="flex items-start gap-3 rounded-md border p-3 cursor-pointer">
+              <Checkbox
+                checked={status?.permissions[p.key] === true}
+                onCheckedChange={(v) => patch({ [p.key]: v === true }, v === true ? `已开启：${p.label}` : `已关闭：${p.label}`)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-sm font-medium">{p.label}</span>
+                <span className="block text-xs text-muted-foreground">{p.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
+
+      <Separator />
+
+      {/* ---------------- 通知 ---------------- */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-base font-medium">通知</h2>
+          <p className="text-xs text-muted-foreground mt-1">发到上面填的 chat id。</p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {NOTIFY.map((n) => (
+            <label key={n.key} className="flex items-start gap-3 rounded-md border p-3 cursor-pointer">
+              <Checkbox
+                checked={status?.notify[n.key] === true}
+                onCheckedChange={(v) =>
+                  patch({ notify: { ...(status?.notify ?? {}), [n.key]: v === true } }, v === true ? `已开启：${n.label}` : `已关闭：${n.label}`)
+                }
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-sm font-medium">{n.label}</span>
+                <span className="block text-xs text-muted-foreground">{n.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
+
+      <Separator />
+
+      {/* ---------------- 用法 ---------------- */}
+      <section className="space-y-3">
+        <h2 className="text-base font-medium">怎么用</h2>
+        <div className="rounded-lg border p-4 text-sm space-y-3">
+          <div>
+            <div className="font-medium">直接发链接</div>
+            <ul className="mt-1 space-y-1 text-muted-foreground">
+              <li>• 磁力 / ed2k / http(s) / ftp 链接（可多行）→ 选下到哪个任务目录，或 115 默认目录</li>
+              <li>• 115 分享链接 → 看一眼内容，选转存到哪个任务目录</li>
+            </ul>
+          </div>
+          <div>
+            <div className="font-medium">命令</div>
+            <ul className="mt-1 space-y-1 text-muted-foreground">
+              {(status?.commands ?? []).map((c) => (
+                <li key={c.command}>
+                  <code className="text-foreground">/{c.command}</code> {c.description}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <AlertDialog open={removeOpen} onOpenChange={setRemoveOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>移除 Bot 配置</AlertDialogTitle>
-            <AlertDialogDescription>
-              确定要移除 Telegram Bot 配置吗？Bot Token、Chat ID 和 Webhook 设置都会被清掉。
-            </AlertDialogDescription>
+            <AlertDialogTitle>清除 Telegram 配置</AlertDialogTitle>
+            <AlertDialogDescription>会停掉轮询并删除 token、chat id、白名单和所有开关，无法恢复。</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void handleDelete()}>移除</AlertDialogAction>
+            <AlertDialogAction
+              className={buttonVariants({ variant: "destructive" })}
+              onClick={() => {
+                setRemoveOpen(false);
+                void run("remove", () => api.telegram.remove(), "已清除");
+              }}
+            >
+              清除
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      {/* Webhook Information */}
-      {webhookInfo && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Webhook Information</CardTitle>
-            <CardDescription>
-              Current webhook configuration and status
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <div className="flex justify-between">
-                <span className="text-sm font-medium">Webhook URL:</span>
-                <span className="text-sm font-mono">{webhookInfo.url || 'Not set'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-sm font-medium">Pending Updates:</span>
-                <Badge variant={webhookInfo.pending_update_count > 0 ? "destructive" : "outline"}>
-                  {webhookInfo.pending_update_count}
-                </Badge>
-              </div>
-              {webhookInfo.last_error_message && (
-                <div className="space-y-1">
-                  <span className="text-sm font-medium text-red-600">Last Error:</span>
-                  <p className="text-sm text-red-600">{webhookInfo.last_error_message}</p>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }

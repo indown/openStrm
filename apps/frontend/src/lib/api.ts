@@ -13,6 +13,7 @@ import type {
   TaskDefinition,
   TaskExecutionHistory,
   TaskExecutionSummary,
+  TelegramNotifySettings,
 } from "@openstrm/shared";
 
 /* ------------------------------- 类型 ------------------------------- */
@@ -260,34 +261,22 @@ export interface OfflineDownPath {
   selected: boolean;
 }
 
-export interface TelegramBotInfo {
-  id: number;
-  is_bot: boolean;
-  first_name: string;
-  username: string;
-  can_join_groups: boolean;
-  can_read_all_group_messages: boolean;
-  supports_inline_queries: boolean;
+export type TelegramNotifyPrefs = Required<TelegramNotifySettings>;
+export type TelegramPermissions = { allowTaskStart: boolean; allowOfflineAdd: boolean; allowShareReceive: boolean };
+export interface TelegramBotStatus {
+  configured: boolean;
+  /** 掩码后的 token，原样提交等于不改 */
+  botToken: string;
+  chatId: string;
+  allowedUsers: number[];
+  permissions: TelegramPermissions;
+  notify: TelegramNotifyPrefs;
+  notifyDefaults: TelegramNotifyPrefs;
+  polling: boolean;
+  commands: { command: string; description: string }[];
+  bot: { id: number; first_name: string; username?: string } | null;
+  botError: string | null;
 }
-export interface TelegramWebhookInfo {
-  url: string;
-  has_custom_certificate: boolean;
-  pending_update_count: number;
-  last_error_date?: number;
-  last_error_message?: string;
-  max_connections?: number;
-  allowed_updates?: string[];
-}
-export type TelegramBotStatus =
-  | { configured: false }
-  | {
-      configured: true;
-      bot: { result: TelegramBotInfo };
-      webhook: { result?: TelegramWebhookInfo };
-      chatId: string;
-      botToken: string;
-    };
-export type TelegramPollingStatus = { polling: boolean; webhook?: TelegramWebhookInfo; message: string };
 
 /* ------------------------------- 客户端 ------------------------------- */
 
@@ -434,25 +423,21 @@ export const api = {
   },
 
   telegram: {
-    bot: {
-      get: () => data(axiosInstance.get<TelegramBotStatus>("/api/telegram/bot")),
-      configure: (input: { botToken: string; chatId?: string; webhookUrl?: string }) =>
-        data(axiosInstance.post<{ success: boolean; bot: TelegramBotInfo; chatId: string; message: string }>("/api/telegram/bot", input)),
-      remove: () => data(axiosInstance.delete<{ success: boolean; message: string }>("/api/telegram/bot")),
-    },
+    status: () => data(axiosInstance.get<TelegramBotStatus>("/api/telegram/bot")),
+    configure: (input: { botToken: string; chatId?: string }) =>
+      data(axiosInstance.post<{ success: boolean; message: string }>("/api/telegram/bot", input)),
+    remove: () => data(axiosInstance.delete<{ success: boolean; message: string }>("/api/telegram/bot")),
+    test: () => data(axiosInstance.post<{ success: boolean }>("/api/telegram/test")),
     polling: {
-      status: () => data(axiosInstance.get<TelegramPollingStatus>("/api/telegram/polling")),
       start: () => data(axiosInstance.post<{ success: boolean; message: string }>("/api/telegram/polling")),
       stop: () => data(axiosInstance.delete<{ success: boolean; message: string }>("/api/telegram/polling")),
+      restart: () => data(axiosInstance.put<{ success: boolean; message: string }>("/api/telegram/polling")),
     },
     users: {
-      list: () => data(axiosInstance.get<{ users: { id: number }[] }>("/api/telegram/users")),
       add: (userId: string | number) => data(axiosInstance.post<{ success: boolean; message: string }>("/api/telegram/users", { userId })),
       remove: (userId: number) =>
         data(axiosInstance.delete<{ success: boolean; message: string }>(`/api/telegram/users?userId=${userId}`)),
     },
-    send: (body: { message?: string; type?: string; data?: unknown }) =>
-      data(axiosInstance.post<{ success: boolean }>("/api/telegram/send", body)),
   },
 
   system: {

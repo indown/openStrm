@@ -83,7 +83,7 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
     }
   }
 
-  const result = await startTask(task.id);
+  const result = await startTask(task.id, { trigger: "share" });
   if (result.status !== 200) return { mode: "async", error: result.body };
   const body = result.body as { taskId?: string; message?: string };
   return { mode: "async", taskId: body.taskId, message: body.message };
