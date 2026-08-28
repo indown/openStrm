@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   getLifeMonitorStatus,
+  isLifeMonitorRunning,
   probeLifeEvents,
   startLifeMonitor,
   stopLifeMonitor,
@@ -26,6 +27,8 @@ export default async function (fastify: FastifyInstance) {
     const { config } = parse(startSchema, request.body);
     if (config) {
       writeAppSetting("lifeMonitor", { ...(readAppSetting("lifeMonitor") ?? {}), ...config, enabled: true });
+      // 账号、拉取模式、间隔都是启动时定下来的：已在跑就先停再起，不然改了等于没改
+      if (isLifeMonitorRunning()) await stopLifeMonitor();
     }
     const res = await startLifeMonitor();
     if (!res.ok) throw new HttpError(400, res.message);
