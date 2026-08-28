@@ -68,6 +68,9 @@ EXPOSE 3000 8091
 ENV NODE_ENV=production
 # entrypoint 用它决定 API 进程的端口；写成镜像 ENV 是为了让 HEALTHCHECK 也能读到
 ENV BACKEND_PORT=3000
+# release 工作流传入 git tag，/api/health 会报出来；本地构建没有就是 dev
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
 
 # /api/health 不鉴权，只验证进程活着且库能读；代理进程退出时 entrypoint 会让整个容器退出
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

@@ -24,11 +24,11 @@ fi
 # 两个进程各跑各的：代理和管理端隔离，管理端崩了不影响播放。
 # 任一进程退出就让容器整体退出，交给 restart 策略拉起来。
 echo "Starting API + web UI on :$BACKEND_PORT..."
-$run_as node /app/backend/dist/index.js &
+$run_as node --enable-source-maps /app/backend/dist/index.js &
 backend_pid=$!
 
 echo "Starting Emby proxy..."
-$run_as node /app/backend/dist/proxy.js &
+$run_as node --enable-source-maps /app/backend/dist/proxy.js &
 proxy_pid=$!
 
 stopping=0

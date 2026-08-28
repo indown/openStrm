@@ -1,30 +1,28 @@
 **/node_modules
 .DS_Store
 *.log
-**/logs
-**/data
-**/account.json
-**/tasks.json
-**/config.json
-**/settings.json
 
-# SQLite database + WAL/SHM sidecars
+# 本地运行时状态：库（里面有 cookie 和密钥）、生成的 strm、日志
+/config/
+/data/
+/logs/
 **/openstrm.db
 **/openstrm.db-journal
 **/openstrm.db-wal
 **/openstrm.db-shm
 
-# JSON-to-SQLite migration backups
-**/*.json.migrated
+# 参考用的外部仓库
+/p115client/
 
-cache
-p115client/
-
-# Build outputs
+# 构建产物
 **/dist
 apps/frontend/.next
 apps/frontend/out
+**/*.tsbuildinfo
 
 # Compose 会自动加载同级的 .env，JWT_SECRET 之类容易被放进去
 .env
 .env.local
+
+# 个人的 Claude Code 权限设置
+.claude/settings.local.json

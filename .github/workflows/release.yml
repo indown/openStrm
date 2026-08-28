@@ -53,7 +53,6 @@ jobs:
             suffix: arm64
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v7
 
@@ -80,6 +79,8 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
           outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}
@@ -102,9 +103,9 @@ jobs:
     name: Merge manifest and release
     runs-on: ubuntu-latest
     needs: build
+    # 镜像推的是 Docker Hub，用不到 packages 权限；contents: write 是给建 GitHub Release 的
     permissions:
       contents: write
-      packages: write
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -147,17 +148,23 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
 
+      # 标签名是推 tag 的人定的，不能用 ${{ }} 直接拼进脚本（一个引号就能改写命令）；走环境变量
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
+        env:
+          META_JSON: ${{ steps.meta.outputs.json }}
+          IMAGE: ${{ steps.image.outputs.name }}
         run: |
           docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< '${{ steps.meta.outputs.json }}') \
-            $(printf '${{ steps.image.outputs.name }}@sha256:%s ' *)
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$META_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
 
       - name: Verify manifest
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          docker buildx imagetools inspect \
-            ${{ steps.image.outputs.name }}:${{ steps.meta.outputs.version }}
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
