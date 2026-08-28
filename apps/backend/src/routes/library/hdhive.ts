@@ -21,12 +21,22 @@ const unlockSchema = z.object({ slug: z.string().trim().min(1, "slug 不能为�
 
 type HdhiveFailure = Error & { status?: number; code?: string | number; retryAfterSeconds?: number };
 
-/** HDHive 的失败带着它自己的状态码和限流提示，原样转给前端 */
-function hdhiveError(err: unknown, fallback: string, data?: unknown): HttpError {
+/**
+ * HDHive 的失败带着它自己的状态码和限流提示，转给前端。
+ * 上游的 401/403 是 HDHive 在拒绝我们的 key（填错、过期），不是用户的会话失效——
+ * 原样返回 401 会触发前端的全局拦截，把管理员直接踢回登录页。这两种改成 502，原状态码放进 upstreamStatus。
+ */
+export function hdhiveError(err: unknown, fallback: string, data?: unknown): HttpError {
   const e = err as HdhiveFailure;
-  const status = e.status && e.status >= 400 ? e.status : 502;
-  return new HttpError(status, e.message || fallback, {
+  const upstream = e.status && e.status >= 400 ? e.status : undefined;
+  const status = upstream === undefined || upstream === 401 || upstream === 403 ? 502 : upstream;
+  const message =
+    upstream === 401 || upstream === 403
+      ? `HDHive 拒绝了当前的 API Key（${upstream}）：${e.message || fallback}`
+      : e.message || fallback;
+  return new HttpError(status, message, {
     code: e.code ?? status,
+    upstreamStatus: upstream,
     retry_after_seconds: e.retryAfterSeconds,
     ...(data !== undefined ? { data } : {}),
   });
