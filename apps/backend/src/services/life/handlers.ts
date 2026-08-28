@@ -24,7 +24,8 @@ import {
 } from "../cloud-115/path-resolver.js";
 import { dropSubtree, repathSubtree } from "../../db/repositories/life.js";
 import { resolveInDataDir } from "../../paths.js";
-import { toStrmPath } from "../strm/naming.js";
+import { strmContent, toStrmPath } from "../strm/naming.js";
+import { safeDecode } from "../resolve/direct-link.js";
 import { isDirectoryEntry, pathExists } from "../../lib/fs.js";
 
 export interface LifeContext {
@@ -108,10 +109,6 @@ function localPathFor(match: TaskMatch, ctx: LifeContext, relFile: string): stri
  */
 function strmUrlFor(task: TaskDefinition, relFile: string): string {
   return `${task.originPath}/${relFile}`;
-}
-
-function strmContentPrefix(task: TaskDefinition, rel: string): string {
-  return `${task.strmPrefix ?? ""}/${strmUrlFor(task, rel)}`;
 }
 
 async function removeEmptyParents(dir: string, stopAt: string): Promise<void> {
@@ -243,20 +240,42 @@ async function materializeFolder(
   return counters;
 }
 
+/** 按段解码：某一段里有解不开的 `%` 也不影响其它段 */
+function decodeSegments(content: string): string {
+  return content.split("/").map(safeDecode).join("/");
+}
+
 /**
- * 目录被移动/改名后，其下所有 strm 里写的还是旧网盘路径。
- * strm 内容形如 `${strmPrefix}/${panPath}`（可能整体 encodeURI 过），
- * encodeURI 不转义 `/`，所以直接做前缀替换在两种情况下都成立。
+ * 目录被移动/改名后，其下所有 strm 里写的还是旧网盘路径，要把前缀换掉。
+ *
+ * 匹配先按原样比（没开编码的任务就是这种），比不上就把内容按段解码再比：
+ * 旧版整体 encodeURI 写的文件（`&`、`:` 这些没转）和新版按段 encodeURIComponent 写的都能对上。
+ * 命中后按新任务的开关整体重写，旧写法的文件顺手规范成新的。
  */
 async function rewriteStrmPrefixUnder(
   dir: string,
-  oldPrefix: string,
-  newPrefix: string,
-  encoded: boolean,
+  oldTask: TaskDefinition,
+  oldRel: string,
+  newTask: TaskDefinition,
+  newRel: string,
 ): Promise<number> {
-  const from = encoded ? encodeURI(oldPrefix) : oldPrefix;
-  const to = encoded ? encodeURI(newPrefix) : newPrefix;
-  if (from === to) return 0;
+  const oldPlain = `${oldTask.strmPrefix ?? ""}/${strmUrlFor(oldTask, oldRel)}`;
+  const newRemote = strmUrlFor(newTask, newRel);
+  const encode = !!newTask.enablePathEncoding;
+  if (oldPlain === `${newTask.strmPrefix ?? ""}/${newRemote}` && !!oldTask.enablePathEncoding === encode) return 0;
+
+  const matches = (c: string) => c === oldPlain || c.startsWith(`${oldPlain}/`);
+  const rewrite = (content: string): string | null => {
+    // 没开编码：先按原样比，这就是以前的逻辑；只有原样比不上（文件是编码写法）才去解码。
+    // 开着编码：只认解码后的内容——拿原样的尾巴再编一次会把 %20 变成 %2520
+    if (!encode && matches(content)) {
+      return strmContent(newTask.strmPrefix, `${newRemote}${content.slice(oldPlain.length)}`, false);
+    }
+    const decoded = decodeSegments(content);
+    if (!matches(decoded)) return null;
+    return strmContent(newTask.strmPrefix, `${newRemote}${decoded.slice(oldPlain.length)}`, encode);
+  };
+
   let n = 0;
   // 挪的是整个剧集目录时这里可能是几千个 strm，同步读写会把监控循环所在的事件循环卡住
   const walk = async (cur: string): Promise<void> => {
@@ -275,8 +294,9 @@ async function rewriteStrmPrefixUnder(
       if (!it.name.endsWith(".strm")) continue;
       try {
         const content = await fsp.readFile(full, "utf8");
-        if (!content.startsWith(from)) continue;
-        await fsp.writeFile(full, to + content.slice(from.length), "utf8");
+        const next = rewrite(content);
+        if (next === null || next === content) continue;
+        await fsp.writeFile(full, next, "utf8");
         n++;
       } catch {
         /* 单个文件失败不影响其余 */
@@ -480,12 +500,7 @@ async function relocate(ctx: LifeContext, ev: LifeEvent, label: string): Promise
       ),
     );
   } else if (isDir) {
-    const rewritten = await rewriteStrmPrefixUnder(
-      to,
-      strmContentPrefix(oldMatch.task, oldMatch.relPath),
-      strmContentPrefix(newMatch.task, newMatch.relPath),
-      !!newMatch.task.enablePathEncoding,
-    );
+    const rewritten = await rewriteStrmPrefixUnder(to, oldMatch.task, oldMatch.relPath, newMatch.task, newMatch.relPath);
     ctx.log("info", `${label}目录后重写了 ${rewritten} 个 strm 的网盘路径`);
   }
 

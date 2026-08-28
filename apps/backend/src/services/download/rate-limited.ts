@@ -7,7 +7,7 @@ import { defer, firstValueFrom, Observable, retry, Subscription, timer } from "r
 import { getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
 import type { AccountInfo } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
-import { toStrmPath } from "../strm/naming.js";
+import { strmContent, toStrmPath } from "../strm/naming.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { DEFAULT_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, guardIdleStream } from "../../lib/http.js";
 
@@ -196,8 +196,7 @@ export function downloadOrCreateStrm(url: string, savePath: string, opts?: Downl
       // 异步写：全量任务一次会订阅几万个，同步 writeFileSync 就是几万次阻塞写挤在一个 tick 里
       (async () => {
         await fsp.mkdir(dir, { recursive: true });
-        const fullPath = `${strmPrefix}/${url}`;
-        await fsp.writeFile(toStrmPath(savePath), enablePathEncoding ? encodeURI(fullPath) : fullPath, "utf8");
+        await fsp.writeFile(toStrmPath(savePath), strmContent(strmPrefix, url, enablePathEncoding), "utf8");
         observer.next({ percent: 100, filePath: displayPath });
         observer.complete();
       })().catch((err) => observer.error(err));

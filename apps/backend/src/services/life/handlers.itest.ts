@@ -14,6 +14,7 @@ import type { TaskDefinition } from "@openstrm/shared";
 import { DATA_DIR } from "../../paths.js";
 import { rememberPath } from "../cloud-115/path-resolver.js";
 import type { LifeEvent } from "../cloud-115/life.js";
+import { strmContent } from "../strm/naming.js";
 import {
   handleCreate,
   handleMove,
@@ -118,4 +119,34 @@ test("新建目录事件不触发媒体库刷新", async () => {
   const r = await handleNewFolder(ctx, ev({ type: 17, file_category: 0, file_id: "4000", file_name: "NewDir" }));
   assert.equal(r.status, "done");
   assert.equal(r.changed, false, "只写缓存不该触发刷新");
+});
+
+test("目录改名：旧版 encodeURI 写的 strm 和新版按段编码的都能改写，并统一成新写法", async () => {
+  const encTask: TaskDefinition = {
+    id: "t-enc", account: "115", accountType: "115", originPath: "enc", targetPath: "enc",
+    strmPrefix: "http://h:5244/d", enablePathEncoding: true,
+  };
+  const ctxEnc: LifeContext = { ...ctx, tasks: [encTask] };
+  rememberPath({ fileId: "6000", parentId: "0", name: "enc", path: "/enc", isDir: true, accountName: "115" });
+  rememberPath({ fileId: "6001", parentId: "6000", name: "Tom & Jerry", path: "/enc/Tom & Jerry", isDir: true, accountName: "115" });
+  const oldDir = path.join(DATA_DIR, "enc", "Tom & Jerry");
+  const newDir = path.join(DATA_DIR, "enc", "Tom & Jerry (1940)");
+  fs.mkdirSync(oldDir, { recursive: true });
+  // 旧版整体 encodeURI（& 没转）；新版按段 encodeURIComponent
+  fs.writeFileSync(path.join(oldDir, "ep1 a.strm"), encodeURI("http://h:5244/d/enc/Tom & Jerry/ep1 a.mkv"));
+  fs.writeFileSync(path.join(oldDir, "ep2 b.strm"), strmContent("http://h:5244/d", "enc/Tom & Jerry/ep2 b.mkv", true));
+
+  try {
+    const r = await handleRename(
+      ctxEnc,
+      ev({ type: 20, file_category: 0, file_id: "6001", parent_id: "6000", file_name: "Tom & Jerry (1940)" }),
+    );
+    assert.equal(r.status, "done", r.detail);
+    assert.ok(fs.existsSync(newDir) && !fs.existsSync(oldDir), "目录应已改名");
+    const expect = (name: string) => `http://h:5244/d/enc/Tom%20%26%20Jerry%20(1940)/${name}`;
+    assert.equal(fs.readFileSync(path.join(newDir, "ep1 a.strm"), "utf8"), expect("ep1%20a.mkv"), "旧写法的文件也要改写，且改成新编码");
+    assert.equal(fs.readFileSync(path.join(newDir, "ep2 b.strm"), "utf8"), expect("ep2%20b.mkv"));
+  } finally {
+    fs.rmSync(path.join(DATA_DIR, "enc"), { recursive: true, force: true });
+  }
 });
