@@ -2,7 +2,7 @@ import fp from "fastify-plugin";
 import { SignJWT, jwtVerify } from "jose";
 import type { FastifyRequest, FastifyReply } from "fastify";
 
-import { isUsingDefaultPassword, resolveJwtSecret } from "../db/repositories/auth.js";
+import { isUsingDefaultPassword, passwordVersion, resolveJwtSecret } from "../db/repositories/auth.js";
 import { HttpError } from "../lib/http-error.js";
 
 /** 前端据此把用户引导到改密码页，不要改动字面量。 */
@@ -17,9 +17,9 @@ export const authPlugin = fp(async (fastify) => {
     fastify.log.warn("[auth] 仍在使用默认密码，除修改密码外的接口一律拒绝");
   }
 
-  // JWT sign helper
+  // JWT sign helper。pv 是当前口令的指纹：改密码后老 token 失效，泄露的 token 才真的能被轮换掉
   fastify.decorate("signJwt", async (payload: Record<string, unknown>) => {
-    return new SignJWT(payload)
+    return new SignJWT({ ...payload, pv: passwordVersion() })
       .setProtectedHeader({ alg: "HS256" })
       .setExpirationTime("24h")
       .sign(JWT_SECRET);
@@ -41,6 +41,10 @@ export const authPlugin = fp(async (fastify) => {
       request.user = await fastify.verifyJwt(authHeader.slice(7));
     } catch {
       throw new HttpError(401, "Invalid or expired token", { code: "UNAUTHORIZED" });
+    }
+    // 密码改过之后签发的 token 才算数：没有这一步，24 小时内泄露的 token 改密码也收不回来
+    if (request.user.pv !== passwordVersion()) {
+      throw new HttpError(401, "密码已更改，请重新登录", { code: "UNAUTHORIZED" });
     }
 
     // 默认口令是公开的，此时拿到 token 不代表这个人有权限。除改密码本身外

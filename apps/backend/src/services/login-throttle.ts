@@ -20,6 +20,8 @@ interface Bucket {
   failures: number;
   locks: number;
   lockedUntil: number;
+  /** 最后一次失败的时间：闲置超过 maxLockMs 的桶没有保留价值 */
+  lastFailureAt: number;
 }
 
 export function createLoginThrottle(opts: {
@@ -35,11 +37,13 @@ export function createLoginThrottle(opts: {
   const buckets = new Map<string, Bucket>();
 
   function prune(): void {
-    // 桶只会在失败时创建；解锁且没有新失败的桶留着没意义
+    // 桶只会在失败时创建。以前只清"解锁且失败数为 0"的桶：失败一两次就停手的来源永远留着，
+    // 分布式慢速试口令（TRUST_PROXY 下 X-Forwarded-For 还能随便造）能把这张表撑到无限大。
+    // 现在按闲置时间清：最后一次失败距今超过 maxLockMs 且已解锁的都扔掉
     if (buckets.size < 1000) return;
     const t = now();
     for (const [key, b] of buckets) {
-      if (b.lockedUntil <= t && b.failures === 0) buckets.delete(key);
+      if (b.lockedUntil <= t && t - b.lastFailureAt > maxLockMs) buckets.delete(key);
     }
   }
 
@@ -52,7 +56,8 @@ export function createLoginThrottle(opts: {
     },
     recordFailure(key) {
       prune();
-      const b = buckets.get(key) ?? { failures: 0, locks: 0, lockedUntil: 0 };
+      const b = buckets.get(key) ?? { failures: 0, locks: 0, lockedUntil: 0, lastFailureAt: 0 };
+      b.lastFailureAt = now();
       b.failures += 1;
       if (b.failures >= maxFailures) {
         b.locks += 1;

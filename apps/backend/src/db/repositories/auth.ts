@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { eq, like, sql } from "drizzle-orm";
 import { db } from "../client.js";
 import { settings } from "../schema.js";
@@ -83,6 +83,15 @@ export function isUsingDefaultPassword(): boolean {
   const stored = typeof config.password === "string" ? config.password : "";
   if (!isHashed(stored)) return stored === DEFAULT_AUTH.password;
   return config.mustChangePassword === true;
+}
+
+/**
+ * 当前口令的短指纹，签进 JWT 的 pv claim：改了密码，之前签发的 token 立刻失效。
+ * 取的是库里存的哈希的哈希，不暴露任何口令信息；读的是每个请求本来就在读的 auth 配置，不额外开销。
+ */
+export function passwordVersion(): string {
+  const stored = String(readAuthConfig().password ?? "");
+  return createHash("sha256").update(stored).digest("base64url").slice(0, 12);
 }
 
 /** 传明文。哈希是这里做的，调用方没有机会忘记。 */

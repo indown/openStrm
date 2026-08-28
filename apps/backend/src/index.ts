@@ -88,7 +88,10 @@ if (interrupted > 0) app.log.warn(`[history] ${interrupted} 条执行记录因�
 startHousekeeping();
 
 // Global plugins
-await app.register(cors, { origin: true, credentials: true });
+// 生产是同源（API 进程托管前端），开发走 next dev 的 rewrites，两种情况都用不到跨域；
+// 留着 origin:true 只是给把 NEXT_PUBLIC_API_URL 指到别处的开发方式兜底。
+// 不开 credentials：凭据是请求头里的 Bearer token，没有 cookie，反射任意 origin 再带凭据是给将来埋雷
+await app.register(cors, { origin: true });
 await app.register(compress);
 
 // Core plugins (order matters)
