@@ -149,10 +149,6 @@ async function redirectWithLookup(
       return toEmby(request, reply);
     }
 
-    if (!resolved.url) {
-      request.log.warn({ itemId }, "解析成功但没有直链，回源");
-      return toEmby(request, reply);
-    }
     target = safeLocation(resolved.url);
     linkCache.set(cacheKey, target);
     request.log.info({ itemId, account: resolved.accountName }, "302 到 115 直链");

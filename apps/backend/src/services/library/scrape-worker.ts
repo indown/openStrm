@@ -21,7 +21,6 @@ let lastRequestAt = 0;
 let activeCount = 0;
 const queue: string[] = [];
 const queued = new Set<string>();
-const recentlyCompleted = new Map<string, number>();
 let tickScheduled = false;
 
 async function throttle(): Promise<void> {
@@ -42,14 +41,6 @@ function scheduleTick() {
   });
 }
 
-function markCompleted(id: string) {
-  recentlyCompleted.set(id, Date.now());
-  const cutoff = Date.now() - 60_000;
-  for (const [k, t] of recentlyCompleted) {
-    if (t < cutoff) recentlyCompleted.delete(k);
-  }
-}
-
 function coerceMediaType(mt: string | undefined): MediaType {
   if (mt === "movie" || mt === "tv") return mt;
   return "unknown";
@@ -67,7 +58,6 @@ async function processOne(id: string) {
 
     if (!apiKey) {
       setScrapeStatus(id, "done");
-      markCompleted(id);
       return;
     }
 
@@ -77,7 +67,6 @@ async function processOne(id: string) {
 
     if (!query) {
       updateScrape(id, { status: "failed", notesAppend: "TMDB 查询失败：无标题" });
-      markCompleted(id);
       return;
     }
 
@@ -110,14 +99,12 @@ async function processOne(id: string) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : "TMDB 请求失败";
       updateScrape(id, { status: "failed", notesAppend: `TMDB 请求失败：${msg}` });
-      markCompleted(id);
       return;
     }
 
     const top = results[0];
     if (!top) {
       updateScrape(id, { status: "failed", notesAppend: `TMDB 无匹配：${query}` });
-      markCompleted(id);
       return;
     }
 
@@ -130,7 +117,6 @@ async function processOne(id: string) {
       mediaType: coerceMediaType(top.mediaType),
       overview: top.overview,
     });
-    markCompleted(id);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     try {
@@ -138,7 +124,6 @@ async function processOne(id: string) {
     } catch {
       // ignore
     }
-    markCompleted(id);
   }
 }
 
@@ -182,16 +167,8 @@ export function start(): void {
 export interface ScrapeWorkerStatus {
   queued: number;
   active: number;
-  pending: number;
-  recentlyCompleted: string[];
 }
 
 export function status(): ScrapeWorkerStatus {
-  const pending = getPending();
-  return {
-    queued: queue.length,
-    active: activeCount,
-    pending: pending.length,
-    recentlyCompleted: Array.from(recentlyCompleted.keys()),
-  };
+  return { queued: queue.length, active: activeCount };
 }

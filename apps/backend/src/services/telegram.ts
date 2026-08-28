@@ -5,11 +5,6 @@ import { moduleLogger } from "../lib/logger.js";
 
 const log = moduleLogger("telegram");
 
-export interface TelegramConfig {
-  botToken: string;
-  chatId?: string; // 可选，用于发送消息到特定聊天
-}
-
 export interface TelegramMessage {
   chat_id: string;
   text: string;
@@ -59,16 +54,6 @@ export interface TelegramResponse {
   error_code?: number;
   description?: string;
   error?: string;
-}
-
-export interface TelegramBotInfo {
-  id: number;
-  is_bot: boolean;
-  first_name: string;
-  username: string;
-  can_join_groups: boolean;
-  can_read_all_group_messages: boolean;
-  supports_inline_queries: boolean;
 }
 
 /** Bot API 地址。默认官方；连不上 api.telegram.org 的环境可以用 TELEGRAM_API_BASE 指到自己的反代 */
@@ -246,14 +231,6 @@ class TelegramBot {
 // 创建机器人实例的工厂函数
 export function createTelegramBot(botToken: string): TelegramBot {
   return new TelegramBot(botToken);
-}
-
-// 验证 Telegram 配置
-export function validateTelegramConfig(config: unknown): config is TelegramConfig {
-  return config !== null && typeof config === 'object' && 
-         'botToken' in config && 
-         typeof (config as { botToken: unknown }).botToken === 'string' && 
-         (config as { botToken: string }).botToken.length > 0;
 }
 
 // 格式化任务状态消息

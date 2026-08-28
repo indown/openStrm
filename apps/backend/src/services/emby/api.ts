@@ -80,14 +80,6 @@ export function clientApiKey(
   return "";
 }
 
-/** 客户端自己带的 key 优先，兜底用配置里的管理员 key。 */
-export function pickApiKey(
-  query: Record<string, unknown> | undefined,
-  headers?: IncomingHeaders,
-): string {
-  return clientApiKey(query, headers) || configuredApiKey();
-}
-
 /**
  * Emby ≥4.9 的 MediaSourceId 是 `mediasource_447039` 这种格式，
  * 前缀后面那串才是能直接查的 id。
