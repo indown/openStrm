@@ -82,12 +82,14 @@ function safeLocation(url: string): string {
  * 需要"两跳"的客户端。
  *
  * 115 直链和换链时用的 User-Agent 严格绑定（实测：用 A 换的链接拿 B 去取，CDN 直接 403）。
- * 我们按到达代理的那个 UA 换链，前提是客户端跟随 302 去 CDN 时还用同一个 UA。
- * Infuse 不是：拖进度条时到代理的 UA 和到 CDN 的 UA 不一样，拿着按前者绑定的缓存直链
- * 反复 403、反复重试（日志里就是一串"缓存命中"），把那个文件打到 115 临时限流。
+ * 我们按到达代理的那个 UA 换链，前提是拿着直链去 CDN 的是同一个 UA。
+ * Infuse 不是：起播前用 API 客户端的身份（另一个 UA）请求流地址、把 302 的结果交给播放内核
+ * （UA 是 Infuse-Direct/x）去取，拿着按前者绑定的直链反复 403、反复重试
+ * （日志里就是一串"缓存命中"），把那个文件打到 115 临时限流。
  *
- * 处理办法是先 302 回代理自己同一路径（带 _hop=2），客户端跟随这一跳时用的 UA
- * 才是它随后去 CDN 用的 UA，按那个换链再 302 出去。v1 里给 Infuse 转到 Alist /d/ 再跳一次的
+ * 处理办法是先 302 回代理自己同一路径（带 _hop=2）：探测者拿到的跳转结果是代理自己，
+ * 真正去取流的那个 UA 跟随这一跳时才换链，链接自然和它绑定。真机验证（Infuse 8.5.2）
+ * 两跳的 UA 都是 Infuse-Direct，拖动正常。v1 里给 Infuse 转到 Alist /d/ 再跳一次的
  * clientSelfAlistRule 是同一个原理。
  */
 const SECOND_HOP_CLIENTS = [/infuse/i];
@@ -144,8 +146,9 @@ async function redirectWithLookup(
     return toEmby(request, reply);
   }
 
+  // 不记日志：Infuse 播放时每个分片都重新请求一次流地址，每次都是两跳，
+  // 记下来就是每秒两行。换链那一次（info，带 ua）和缓存命中（debug）足够定位问题
   if (needsSecondHop(userAgent) && !isSecondHop(request.query)) {
-    request.log.debug({ itemId, ua: userAgent }, "该客户端跟随重定向时会换 UA，先跳回代理自己一次再换链");
     return reply.redirect(secondHopLocation(request, apiKey), 302);
   }
 
