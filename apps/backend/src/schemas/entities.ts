@@ -123,6 +123,7 @@ export const settingsPatchSchema = z.looseObject({
           offline: z.boolean().optional(),
           accountAlert: z.boolean().optional(),
           follow: z.boolean().optional(),
+          embyNew: z.boolean().optional(),
         })
         .optional(),
     })
