@@ -35,6 +35,7 @@ const NOTIFY: Array<{ key: keyof TelegramNotifySettings; label: string; hint: st
   { key: "accountAlert", label: "115 账号异常", hint: "cookie 失效或被封控时提醒，同一原因一小时只发一次。" },
   { key: "offline", label: "云下载", hint: "从任务目录下载完成并生成 strm，或回执失败。" },
   { key: "follow", label: "分享追更", hint: "追更到新文件、分享失效、长期没更新时提醒。" },
+  { key: "embyNew", label: "Emby 入库", hint: "Emby 把新条目收进媒体库时提醒（按剧聚合），需要配好 Emby 地址和 API Key。" },
   { key: "taskStart", label: "任务开始", hint: "每次同步开始都发一条，比较吵，默认关。" },
 ];
 

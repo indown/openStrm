@@ -38,6 +38,8 @@ export type NotifyEvent =
   | { type: "follow-expired"; name: string; reason: string }
   /** 太久没更新，订阅已自动暂停 */
   | { type: "follow-stale"; name: string; days: number }
+  /** Emby 把新条目收进媒体库了；groups 为空表示这批太多、只报总数 */
+  | { type: "emby-new"; groups: EmbyNewGroup[]; total: number }
   /** 115 账号层面的问题（cookie 失效、被封控）；reason 里认不出这两种就不发 */
   | { type: "account-alert"; account: string; reason: string; source: string };
 
@@ -48,10 +50,22 @@ export const DEFAULT_NOTIFY: Required<TelegramNotifySettings> = {
   offline: true,
   accountAlert: true,
   follow: true,
+  embyNew: true,
 };
 
 export function notifyPrefs(settings: AppSettings): Required<TelegramNotifySettings> {
   return { ...DEFAULT_NOTIFY, ...(settings.telegram?.notify ?? {}) };
+}
+
+/** Emby 入库通知里的一组：一部剧的一季，或一部电影 */
+export interface EmbyNewGroup {
+  kind: "tv" | "movie";
+  name: string;
+  year?: number;
+  season?: number;
+  /** 已排序去重的集号；specials 可能拿不到集号，count 才是准数 */
+  episodes: number[];
+  count: number;
 }
 
 export type AccountIssue = "cookie" | "blocked";
@@ -96,6 +110,28 @@ function accountAlertText(account: string, issue: AccountIssue, source: string, 
   return `${head}\n来源：${esc(source)}\n<code>${esc(reason.slice(0, 200))}</code>`;
 }
 
+/** 连号折叠：5,6,7,9 → E05-E07、E09 */
+function fmtEpisodes(eps: number[]): string {
+  const one = (n: number) => `E${String(n).padStart(2, "0")}`;
+  const parts: string[] = [];
+  for (let i = 0; i < eps.length; ) {
+    let j = i;
+    while (j + 1 < eps.length && eps[j + 1] === eps[j] + 1) j++;
+    parts.push(j > i ? `${one(eps[i])}-${one(eps[j])}` : one(eps[i]));
+    i = j + 1;
+  }
+  return parts.join("、");
+}
+
+function embyNewLine(g: EmbyNewGroup): string {
+  if (g.kind === "tv") {
+    const season = g.season != null ? ` S${String(g.season).padStart(2, "0")}` : "";
+    const eps = g.episodes.length > 0 ? `：${fmtEpisodes(g.episodes)}` : "";
+    return `《${esc(g.name)}》${season} 新增 ${g.count} 集${eps}`;
+  }
+  return `《${esc(g.name)}》${g.year != null ? `(${g.year})` : ""}`;
+}
+
 function render(event: NotifyEvent): string {
   switch (event.type) {
     case "task-start":
@@ -124,6 +160,12 @@ function render(event: NotifyEvent): string {
       return `⚠️ <b>追更已停止</b>\n${esc(event.name)}\n分享已经打不开了：${esc(event.reason)}\n需要的话到「追更」页换个链接再继续。`;
     case "follow-stale":
       return `💤 <b>追更已暂停</b>\n${esc(event.name)}\n${event.days} 天没有更新，先停下不再检查；要继续到「追更」页点「继续」。`;
+    case "emby-new": {
+      if (event.groups.length === 0) return `📥 <b>Emby 入库</b>\n新增 ${event.total} 个条目（数量太多，不逐条列了）`;
+      const lines = event.groups.slice(0, 12).map(embyNewLine);
+      if (event.groups.length > 12) lines.push(`…还有 ${event.groups.length - 12} 部`);
+      return `📥 <b>Emby 入库</b>\n${lines.join("\n")}`;
+    }
     case "account-alert": {
       const issue = classifyAccountIssue(event.reason);
       return issue ? accountAlertText(event.account, issue, event.source, event.reason) : "";
@@ -199,6 +241,10 @@ export async function notify(event: NotifyEvent): Promise<boolean> {
       case "follow-failed":
         if (!prefs.follow) return false;
         if (throttled(`follow-failed:${event.id}`)) return false;
+        text = render(event);
+        break;
+      case "emby-new":
+        if (!prefs.embyNew) return false;
         text = render(event);
         break;
       case "account-alert": {

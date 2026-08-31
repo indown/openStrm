@@ -54,6 +54,9 @@ import { startOfflineWatcher, stopOfflineWatcher } from "./services/offline/serv
 import followRoute from "./routes/follow/index.js";
 import { startFollowWatcher, stopFollowWatcher } from "./services/follow/service.js";
 
+// Emby 入库通知
+import { startEmbyNewWatcher, stopEmbyNewWatcher } from "./services/emby/library-new.js";
+
 // Library routes
 import libraryRoute from "./routes/library/index.js";
 import libraryTmdbRoute from "./routes/library/tmdb.js";
@@ -191,6 +194,8 @@ try {
   startOfflineWatcher();
   // 分享追更：有开着的订阅就接着按周期检查
   startFollowWatcher();
+  // Emby 入库通知：循环常驻，开关和配置每轮现查
+  startEmbyNewWatcher();
   // Telegram 轮询同理：上次是开着的就自动恢复，别让每次重启都得有人去界面上再按一次
   if (settings.telegram?.pollingEnabled) {
     startPolling()
@@ -211,6 +216,7 @@ async function shutdown() {
   try { await stopLifeMonitor(); } catch { /* ignore */ }
   try { await stopOfflineWatcher(); } catch { /* ignore */ }
   try { await stopFollowWatcher(); } catch { /* ignore */ }
+  try { await stopEmbyNewWatcher(); } catch { /* ignore */ }
   try { flushEmbyRefresh(); } catch { /* ignore */ }
   try { cancelAllRunningTasks(); } catch { /* ignore */ }
 

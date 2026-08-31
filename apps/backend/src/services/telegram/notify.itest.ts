@@ -79,3 +79,18 @@ test("云下载：完成与失败", async () => {
   replaceAppSettings({ ...baseline, telegram: { botToken: "t", chatId: "-100", notify: { offline: false } } });
   assert.equal(await notify({ type: "offline-done", name: "y", detail: "", target: "" }), false);
 });
+
+test("Emby 入库：按剧聚合、连号折叠、电影带年份；批量只报总数；开关可关", async () => {
+  const groups = [
+    { kind: "tv" as const, name: "怪奇物语", season: 5, episodes: [5, 6, 7, 9], count: 4 },
+    { kind: "movie" as const, name: "沙丘 2", year: 2024, episodes: [], count: 1 },
+  ];
+  assert.equal(await notify({ type: "emby-new", groups, total: 5 }), true);
+  assert.match(sent[0].text, /📥 <b>Emby 入库<\/b>\n《怪奇物语》 S05 新增 4 集：E05-E07、E09\n《沙丘 2》\(2024\)/);
+
+  assert.equal(await notify({ type: "emby-new", groups: [], total: 120 }), true);
+  assert.match(sent[1].text, /新增 120 个条目（数量太多，不逐条列了）/);
+
+  replaceAppSettings({ ...baseline, telegram: { botToken: "t", chatId: "-100", notify: { embyNew: false } } });
+  assert.equal(await notify({ type: "emby-new", groups, total: 5 }), false);
+});

@@ -10,6 +10,7 @@ import axios from "axios";
 import { readAppSettings } from "../db/repositories/settings.js";
 import { moduleLogger } from "../lib/logger.js";
 import { DEFAULT_TIMEOUT_MS } from "../lib/http.js";
+import { nudgeEmbyNewWatch } from "./emby/library-new.js";
 
 /** 安静多久后触发刷新（秒） */
 const DEFAULT_QUIET_SECONDS = 30;
@@ -30,7 +31,11 @@ export function refreshEmbyNow(reason = "manual"): void {
   if (!url) return;
   axios
     .post(url, undefined, { timeout: DEFAULT_TIMEOUT_MS })
-    .then(() => log.info(`Emby 刷新已触发（${reason}）`))
+    .then(() => {
+      log.info(`Emby 刷新已触发（${reason}）`);
+      // 刷新之后往往就是入库：让入库通知的循环 30 秒后加急看一眼
+      nudgeEmbyNewWatch();
+    })
     .catch((err) => log.warn(`Emby 刷新失败（${reason}）：${err instanceof Error ? err.message : err}`));
 }
 

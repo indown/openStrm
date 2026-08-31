@@ -30,6 +30,8 @@ export type TelegramNotifySettings = {
   accountAlert?: boolean;
   /** 分享追更：转存了新文件、分享失效、长期没更新 */
   follow?: boolean;
+  /** Emby 入库：新条目被收进媒体库（按剧聚合） */
+  embyNew?: boolean;
 };
 
 export type TelegramSettings = {
