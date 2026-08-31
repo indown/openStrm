@@ -30,6 +30,14 @@ export type NotifyEvent =
   | { type: "task-start-failed"; task: TaskRef; reason: string; trigger?: TaskTrigger }
   | { type: "offline-done"; name: string; detail: string; target: string }
   | { type: "offline-failed"; name: string; detail: string }
+  /** 追更转存了新文件 */
+  | { type: "follow-added"; name: string; added: string[]; generated: number; target: string }
+  /** 追更连续几次检查失败；按订阅 id 一小时只说一次 */
+  | { type: "follow-failed"; id: string; name: string; detail: string }
+  /** 分享已经打不开了，订阅已停 */
+  | { type: "follow-expired"; name: string; reason: string }
+  /** 太久没更新，订阅已自动暂停 */
+  | { type: "follow-stale"; name: string; days: number }
   /** 115 账号层面的问题（cookie 失效、被封控）；reason 里认不出这两种就不发 */
   | { type: "account-alert"; account: string; reason: string; source: string };
 
@@ -39,6 +47,7 @@ export const DEFAULT_NOTIFY: Required<TelegramNotifySettings> = {
   taskFailed: true,
   offline: true,
   accountAlert: true,
+  follow: true,
 };
 
 export function notifyPrefs(settings: AppSettings): Required<TelegramNotifySettings> {
@@ -104,6 +113,17 @@ function render(event: NotifyEvent): string {
       return `☁️ <b>云下载完成</b>\n${esc(event.name)}\n${esc(event.detail)}\n→ ${esc(event.target)}`;
     case "offline-failed":
       return `❌ <b>云下载未能生成 strm</b>\n${esc(event.name)}\n${esc(event.detail)}`;
+    case "follow-added": {
+      const shown = event.added.slice(0, 8).map(esc).join("、");
+      const more = event.added.length > 8 ? ` 等 ${event.added.length} 个` : "";
+      return `📺 <b>追更：新增 ${event.added.length} 个</b>\n${esc(event.name)}\n${shown}${more}\n→ ${esc(event.target)}，已生成 ${event.generated} 个 strm`;
+    }
+    case "follow-failed":
+      return `❌ <b>追更检查失败</b>\n${esc(event.name)}\n${esc(event.detail)}`;
+    case "follow-expired":
+      return `⚠️ <b>追更已停止</b>\n${esc(event.name)}\n分享已经打不开了：${esc(event.reason)}\n需要的话到「追更」页换个链接再继续。`;
+    case "follow-stale":
+      return `💤 <b>追更已暂停</b>\n${esc(event.name)}\n${event.days} 天没有更新，先停下不再检查；要继续到「追更」页点「继续」。`;
     case "account-alert": {
       const issue = classifyAccountIssue(event.reason);
       return issue ? accountAlertText(event.account, issue, event.source, event.reason) : "";
@@ -168,6 +188,17 @@ export async function notify(event: NotifyEvent): Promise<boolean> {
       case "offline-done":
       case "offline-failed":
         if (!prefs.offline) return false;
+        text = render(event);
+        break;
+      case "follow-added":
+      case "follow-expired":
+      case "follow-stale":
+        if (!prefs.follow) return false;
+        text = render(event);
+        break;
+      case "follow-failed":
+        if (!prefs.follow) return false;
+        if (throttled(`follow-failed:${event.id}`)) return false;
         text = render(event);
         break;
       case "account-alert": {

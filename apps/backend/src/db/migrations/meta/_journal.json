@@ -64,6 +64,13 @@
       "when": 1787925414486,
       "tag": "0008_lean_blue_shield",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788187329772,
+      "tag": "0009_share_follows",
+      "breakpoints": true
     }
   ]
 }

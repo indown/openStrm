@@ -53,7 +53,8 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
 
   const fullOriginPath = subPath ? `${task.originPath}/${subPath}` : task.originPath;
   const idRes = (await fsDirGetId(fullOriginPath, { accountInfo })) as { id?: number | string };
-  if (idRes?.id == null) {
+  // getid 对不存在的路径回 id=0，而 0 是网盘根目录：不拦住就把东西转存进根目录里了
+  if (idRes?.id == null || String(idRes.id) === "" || String(idRes.id) === "0") {
     throw new HttpError(400, `无法在 115 上找到保存目录：${fullOriginPath}`);
   }
 

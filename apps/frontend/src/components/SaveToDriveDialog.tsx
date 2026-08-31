@@ -18,7 +18,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ChevronRight, FolderOpen } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { api, type DirectoryNode } from "@/lib/api";
+import { DEFAULT_FOLLOW_INTERVAL, FOLLOW_INTERVALS } from "@/lib/follow";
 import { toast } from "sonner";
 
 export interface TaskOption {
@@ -33,6 +35,8 @@ export interface SaveToTaskChoice {
   taskId: string;
   subPath: string;
   mode: "sync" | "async";
+  /** 勾了「转存后追更」才有 */
+  follow?: { intervalMinutes: number };
 }
 
 interface SaveToDriveDialogProps {
@@ -40,6 +44,8 @@ interface SaveToDriveDialogProps {
   onOpenChange: (open: boolean) => void;
   onConfirm: (choice: SaveToTaskChoice) => void;
   selectedCount: number;
+  /** 给一段追更范围的说明就会显示「转存后追更」选项；不给则隐藏 */
+  followHint?: string;
 }
 
 type RemoteDir = DirectoryNode;
@@ -49,6 +55,7 @@ export function SaveToDriveDialog({
   onOpenChange,
   onConfirm,
   selectedCount,
+  followHint,
 }: SaveToDriveDialogProps) {
   const [tasks, setTasks] = useState<TaskOption[]>([]);
   const [loading, setLoading] = useState(false);
@@ -57,6 +64,8 @@ export function SaveToDriveDialog({
   const [subSegments, setSubSegments] = useState<string[]>([]);
   const [subdirs, setSubdirs] = useState<RemoteDir[]>([]);
   const [subdirLoading, setSubdirLoading] = useState(false);
+  const [followChecked, setFollowChecked] = useState(false);
+  const [followInterval, setFollowInterval] = useState(String(DEFAULT_FOLLOW_INTERVAL));
 
   // 任务列表只在打开时拉一次；默认选中用函数式更新，别把 selectedTaskId 放进依赖里反复重拉
   useEffect(() => {
@@ -64,6 +73,7 @@ export function SaveToDriveDialog({
     let cancelled = false;
     setLoading(true);
     setSubSegments([]);
+    setFollowChecked(false);
     api.tasks
       .list()
       .then((rows) => {
@@ -131,7 +141,12 @@ export function SaveToDriveDialog({
       toast.error("所选任务缺少 targetPath 或 strmPrefix 配置");
       return;
     }
-    onConfirm({ taskId: selectedTaskId, subPath, mode });
+    onConfirm({
+      taskId: selectedTaskId,
+      subPath,
+      mode,
+      ...(followHint && followChecked ? { follow: { intervalMinutes: Number(followInterval) } } : {}),
+    });
   };
 
   return (
@@ -274,6 +289,39 @@ export function SaveToDriveDialog({
               </label>
             </div>
           </div>
+
+          {followHint && (
+            <div className="space-y-2 rounded-md border p-3">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <Checkbox
+                  checked={followChecked}
+                  onCheckedChange={(v) => setFollowChecked(v === true)}
+                  className="mt-0.5"
+                />
+                <div>
+                  <div className="text-sm font-medium">转存后追更</div>
+                  <div className="text-xs text-muted-foreground">{followHint}</div>
+                </div>
+              </label>
+              {followChecked && (
+                <div className="flex items-center gap-2 pl-6">
+                  <span className="text-xs text-muted-foreground">检查间隔</span>
+                  <Select value={followInterval} onValueChange={setFollowInterval}>
+                    <SelectTrigger className="h-8 w-36">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {FOLLOW_INTERVALS.map((o) => (
+                        <SelectItem key={o.value} value={String(o.value)}>
+                          {o.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <DialogFooter>

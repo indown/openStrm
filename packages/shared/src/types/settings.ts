@@ -28,6 +28,8 @@ export type TelegramNotifySettings = {
   offline?: boolean;
   /** 115 cookie 失效 / 被封控 */
   accountAlert?: boolean;
+  /** 分享追更：转存了新文件、分享失效、长期没更新 */
+  follow?: boolean;
 };
 
 export type TelegramSettings = {

@@ -1,5 +1,5 @@
 "use client"
-import { Home, Inbox, Settings, Github, History, Library, Radar, Bot, CloudDownload } from "lucide-react";
+import { Home, Inbox, Settings, Github, History, Library, Radar, Bot, CloudDownload, Rss } from "lucide-react";
 import Image from "next/image";
 
 import {
@@ -30,6 +30,11 @@ const items = [
     title: "影库",
     url: "/library",
     icon: Library,
+  },
+  {
+    title: "追更",
+    url: "/follow",
+    icon: Rss,
   },
   {
     title: "账户",

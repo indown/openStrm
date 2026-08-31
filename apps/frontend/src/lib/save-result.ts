@@ -1,5 +1,6 @@
 import { toast } from "sonner";
 import type { ShareReceiveResult } from "./api";
+import { intervalLabel } from "./follow";
 
 /**
  * 「保存到任务目录」的结果提示：同步模式报生成数量，异步模式给一个跳到进度页的入口。
@@ -20,4 +21,15 @@ export function notifySaveToTaskResult(
   } else {
     toast.success("保存成功");
   }
+}
+
+/** 勾了「转存后追更」时的第二条提示：订阅建没建成（转存本身已成功） */
+export function notifyFollowResult(
+  choice: { follow?: { intervalMinutes: number } },
+  result: ShareReceiveResult | undefined,
+): void {
+  if (!choice.follow) return;
+  const data = result ?? {};
+  if (data.follow) toast.success(`已开启追更：${intervalLabel(data.follow.intervalMinutes)}检查一次新增`);
+  else if (typeof data.followError === "string") toast.error(`追更未开启：${data.followError}`);
 }

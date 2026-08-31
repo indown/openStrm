@@ -131,3 +131,44 @@ export const lifeEvents = sqliteTable(
 
 export type PathCacheRow = typeof pathCache.$inferSelect;
 export type LifeEventRow = typeof lifeEvents.$inferSelect;
+
+/**
+ * 分享追更订阅：一条 = 分享里的某个目录 → 某个同步任务的子目录。
+ * 快照 known 是 JSON：一部剧几百条，放行里比再开一张表省事，列表接口不带它。
+ * 时间戳里 last_checked_at / last_change_at / next_check_at 是毫秒（直接和 Date.now() 比），
+ * created_at / updated_at 和其它表一样是秒。
+ */
+export const shareFollows = sqliteTable(
+  "share_follows",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull().default(""),
+    libraryId: text("library_id"),
+    shareUrl: text("share_url").notNull().default(""),
+    shareCode: text("share_code").notNull(),
+    receiveCode: text("receive_code").notNull().default(""),
+    watchCid: text("watch_cid").notNull().default("0"),
+    watchPath: text("watch_path").notNull().default(""),
+    scope: text("scope").notNull().default('[""]'),
+    taskId: text("task_id").notNull(),
+    subPath: text("sub_path").notNull().default(""),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    intervalMinutes: integer("interval_minutes").notNull().default(360),
+    status: text("status").notNull().default("idle"),
+    lastError: text("last_error").notNull().default(""),
+    errorStreak: integer("error_streak").notNull().default(0),
+    lastCheckedAt: integer("last_checked_at"),
+    lastChangeAt: integer("last_change_at"),
+    nextCheckAt: integer("next_check_at").notNull().default(0),
+    known: text("known").notNull().default("[]"),
+    recent: text("recent").notNull().default("[]"),
+    createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+    updatedAt: integer("updated_at").notNull().default(sql`(unixepoch())`),
+  },
+  (t) => ({
+    // 同一个分享目录只允许一条订阅：两条盯同一处会各转存一份
+    shareWatchUniq: uniqueIndex("share_follows_share_watch_uniq").on(t.shareCode, t.watchCid),
+    dueIdx: index("share_follows_due_idx").on(t.enabled, t.nextCheckAt),
+    taskIdx: index("share_follows_task_id_idx").on(t.taskId),
+  }),
+);

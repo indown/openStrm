@@ -9,13 +9,15 @@ import {
   receiveToMyDrive,
 } from "../../services/cloud-115/share.js";
 import { resolveTaskAccount115, saveSelectionToTask } from "../../services/library/save-to-task.js";
+import { createFollowAfterSave } from "../../services/follow/service.js";
+import { scopeFromSelection } from "../../services/follow/diff.js";
 import { listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { normalizeSubPath } from "../../services/strm/naming.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
-import { cidSchema } from "../../schemas/entities.js";
+import { cidSchema, followOptionSchema } from "../../schemas/entities.js";
 
 const idSchema = z.union([z.string(), z.number()]);
 
@@ -37,6 +39,11 @@ const bodySchema = z.looseObject({
   selectedItems: z.array(z.object({ name: z.string(), isDir: z.boolean() })).optional(),
   subPath: z.string().optional(),
   toPid: cidSchema.optional(),
+  /** receive 到任务目录时：转存完顺手建追更订阅，盯的是 cid 这一层 */
+  follow: followOptionSchema.optional(),
+  /** 建订阅用：被盯目录在分享里的路径（展示）和订阅名 */
+  watchPath: z.string().optional(),
+  name: z.string().optional(),
 });
 
 export default async function (fastify: FastifyInstance) {
@@ -105,7 +112,22 @@ export default async function (fastify: FastifyInstance) {
             settings: readAppSettings(),
           });
           // async 模式下引擎拒绝启动时仍是 200：转存已经成功，只是没排上后台同步
-          return { strmGenerated: !("error" in result), ...result };
+          const strmGenerated = !("error" in result);
+          if (!body.follow) return { strmGenerated, ...result };
+          // 订阅建不成也不影响这次转存：只把原因带回去
+          const extra = await createFollowAfterSave({
+            shareUrl: body.url,
+            shareCode,
+            receiveCode,
+            watchCid: body.cid ?? 0,
+            watchPath: body.watchPath,
+            scope: scopeFromSelection(selectedItems),
+            taskId: task.id,
+            subPath,
+            intervalMinutes: body.follow.intervalMinutes,
+            name: body.name,
+          });
+          return { strmGenerated, ...result, ...extra };
         }
 
         return receiveToMyDrive(account115, shareCode, receiveCode, fileIds, body.toPid ?? 0);

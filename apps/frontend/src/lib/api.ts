@@ -10,6 +10,8 @@ import type {
   AppSettings,
   LifeMonitorSettings,
   MediaLibraryEntry,
+  ShareFollowRun,
+  ShareFollowSummary,
   TaskDefinition,
   TaskExecutionHistory,
   TaskExecutionSummary,
@@ -57,6 +59,9 @@ export type ShareReceiveResult = Record<string, unknown> & {
   generatedCount?: number;
   skippedCount?: number;
   strmGenerated?: boolean;
+  /** 带 follow 参数时：建成的订阅，或没建成的原因（转存本身已成功） */
+  follow?: ShareFollowSummary;
+  followError?: string;
 };
 
 /** 115 网盘文件列表条目（原始字段名） */
@@ -96,7 +101,13 @@ export type SettingsGroupKey = {
       ? K
       : never;
 }[keyof AppSettings];
-export type SaveToTaskChoice = { taskId: string; subPath: string; mode: "sync" | "async" };
+export type SaveToTaskChoice = {
+  taskId: string;
+  subPath: string;
+  mode: "sync" | "async";
+  /** 勾了「转存后追更」就带上；后端转存成功后顺手建订阅 */
+  follow?: { intervalMinutes: number };
+};
 
 export interface TmdbSearchResult {
   id: number;
@@ -261,6 +272,39 @@ export interface OfflineDownPath {
   selected: boolean;
 }
 
+/* ------------------------------- 分享追更 ------------------------------- */
+
+export interface FollowWatcherStatus {
+  running: boolean;
+  lastTickAt: number | null;
+  lastError: string | null;
+  /** 正在检查的订阅 id */
+  checking: string[];
+}
+export type FollowListResponse = { follows: ShareFollowSummary[]; watcher: FollowWatcherStatus };
+export type FollowCheckResult = { follow: ShareFollowSummary; run: ShareFollowRun | null };
+export type FollowCreateInput = {
+  shareUrl?: string;
+  shareCode?: string;
+  receiveCode?: string;
+  watchCid?: string | number;
+  watchPath?: string;
+  scope?: string[];
+  taskId: string;
+  subPath?: string;
+  intervalMinutes?: number;
+  name?: string;
+  libraryId?: string;
+};
+export type FollowPatch = Partial<{
+  name: string;
+  enabled: boolean;
+  intervalMinutes: number;
+  taskId: string;
+  subPath: string;
+  receiveCode: string;
+}>;
+
 export type TelegramNotifyPrefs = Required<TelegramNotifySettings>;
 export type TelegramPermissions = { allowTaskStart: boolean; allowOfflineAdd: boolean; allowShareReceive: boolean };
 export interface TelegramBotStatus {
@@ -355,7 +399,19 @@ export const api = {
     scrapeStatus: () => data(axiosInstance.get<ScrapeStatusSummary>("/api/library/scrape-status")),
     scrape: (id: string) => data(axiosInstance.post<{ id: string; status: string }>(`/api/library/${id}/scrape`)),
     saveToTask: (id: string, choice: SaveToTaskChoice) =>
-      data(axiosInstance.post<ShareReceiveResult>(`/api/library/${id}/save-to-task`, choice)),
+      data(axiosInstance.post<ShareReceiveResult>(`/api/library/${id}/save-to-task`, choice, { timeout: 180_000 })),
+  },
+
+  follow: {
+    list: () => data(axiosInstance.get<FollowListResponse>("/api/follow")),
+    create: (input: FollowCreateInput) =>
+      data(axiosInstance.post<ShareFollowSummary>("/api/follow", input, { timeout: 180_000 })),
+    update: (id: string, patch: FollowPatch) =>
+      data(axiosInstance.put<ShareFollowSummary>(`/api/follow/${encodeURIComponent(id)}`, patch)),
+    remove: (id: string) => data(axiosInstance.delete<{ success: true }>(`/api/follow/${encodeURIComponent(id)}`)),
+    /** 立即检查：要递归列分享目录，有新增还要转存，可能要等几十秒 */
+    check: (id: string) =>
+      data(axiosInstance.post<FollowCheckResult>(`/api/follow/${encodeURIComponent(id)}/check`, undefined, { timeout: 180_000 })),
   },
 
   share: {
@@ -363,6 +419,7 @@ export const api = {
     list: (url: string, cid: string | number = 0, page?: { limit: number; offset: number }) =>
       data(axiosInstance.post<ShareListPage>("/api/115/share", { action: "list", url, cid, ...page })),
     /** 转存到任务目录（带 taskId）或网盘目录（带 toPid） */
+    /** 同步生成 + 建追更订阅都可能要等一会，超时放宽 */
     receive: (body: {
       url: string;
       fileIds: string[];
@@ -371,7 +428,12 @@ export const api = {
       mode?: "sync" | "async";
       selectedItems?: { name: string; isDir: boolean }[];
       toPid?: string | number;
-    }) => data(axiosInstance.post<ShareReceiveResult>("/api/115/share", { action: "receive", ...body })),
+      /** 追更盯的目录（当前浏览的这一层）及其展示路径 / 订阅名 */
+      cid?: string | number;
+      follow?: { intervalMinutes: number };
+      watchPath?: string;
+      name?: string;
+    }) => data(axiosInstance.post<ShareReceiveResult>("/api/115/share", { action: "receive", ...body }, { timeout: 180_000 })),
   },
 
   drive115: {

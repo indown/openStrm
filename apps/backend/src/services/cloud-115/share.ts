@@ -88,7 +88,8 @@ function normalizeShareAttr(item: Record<string, unknown>): ShareAttr {
       is_dir: isDir,
       parent_id: normalizeShareId(item.pid ?? item.cid ?? 0),
       size: item.s != null ? Number(item.s) : undefined,
-      sha1: item.sha1 as string | undefined,
+      // web 接口的字段叫 sha，个别接口叫 sha1
+      sha1: (item.sha1 ?? item.sha) as string | undefined,
       ...item,
     };
   }
@@ -103,16 +104,33 @@ function normalizeShareAttr(item: Record<string, unknown>): ShareAttr {
       is_dir: isDir,
       parent_id: pid,
       size: item.file_size != null ? Number(item.file_size) : undefined,
-      sha1: item.sha1 as string | undefined,
+      sha1: (item.sha1 ?? item.sha) as string | undefined,
       ...item,
     };
   }
   return item as ShareAttr;
 }
 
+/**
+ * 115 分享接口回了 state=false：分享已取消 / 过期、提取码不对、登录失效之类都走这里，
+ * 和网络错误（Cloud115Error）分开——追更靠这个区分"分享没了"和"这轮没连上"。
+ */
+export class ShareApiError extends Error {
+  constructor(
+    message: string,
+    readonly errno?: number,
+  ) {
+    super(message);
+    this.name = "ShareApiError";
+  }
+}
+
 function checkShareResponse<T extends { state?: boolean; errno?: number; error?: string }>(resp: T): T {
   if (resp.state === false || (typeof resp.errno === "number" && resp.errno !== 0)) {
-    throw new Error(resp.error || `115 share API error: errno=${resp.errno}`);
+    throw new ShareApiError(
+      resp.error || `115 share API error: errno=${resp.errno}`,
+      typeof resp.errno === "number" ? resp.errno : undefined,
+    );
   }
   return resp;
 }
