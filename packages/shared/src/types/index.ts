@@ -13,3 +13,10 @@ export type {
   TaskExecutionSummary,
 } from "./task.js";
 export type { MediaLibraryEntry, ScrapeStatus, MediaType } from "./media-library.js";
+export type {
+  ShareFollow,
+  ShareFollowEntry,
+  ShareFollowRun,
+  ShareFollowStatus,
+  ShareFollowSummary,
+} from "./follow.js";

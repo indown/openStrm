@@ -16,10 +16,10 @@ import { Badge } from "@/components/ui/badge";
 import { Film, Edit, Trash2, Search, FileText, Loader2, AlertCircle, CloudUpload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import type { MediaLibraryEntry } from "@openstrm/shared";
+import type { MediaLibraryEntry, ShareFollowSummary } from "@openstrm/shared";
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
-import { notifySaveToTaskResult } from "@/lib/save-result";
+import { notifyFollowResult, notifySaveToTaskResult } from "@/lib/save-result";
 import { useShareDetail } from "@/hooks/use-share-detail";
 import { ShareDetailDialog } from "@/components/ShareDetailDialog";
 import { AddToLibraryDialog, type AddToLibraryInitial } from "@/components/AddToLibraryDialog";
@@ -37,6 +37,7 @@ export default function LibraryPage() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<MediaLibraryEntry | null>(null);
 
+  const [follows, setFollows] = useState<ShareFollowSummary[]>([]);
   const [saveToTaskEntry, setSaveToTaskEntry] = useState<MediaLibraryEntry | null>(null);
   const [saveToTaskOpen, setSaveToTaskOpen] = useState(false);
   const [savingToTask, setSavingToTask] = useState(false);
@@ -54,8 +55,17 @@ export default function LibraryPage() {
     }
   };
 
+  const fetchFollows = async () => {
+    try {
+      setFollows((await api.follow.list()).follows);
+    } catch {
+      // 追更列表拿不到不影响影库本身
+    }
+  };
+
   useEffect(() => {
     fetchEntries();
+    void fetchFollows();
   }, []);
 
   useEffect(() => {
@@ -113,6 +123,11 @@ export default function LibraryPage() {
       clearInterval(interval);
     };
   }, [hasPending]);
+
+  // 卡片上的「追更中」徽标：按 (shareCode, 被盯目录) 对上号
+  const followedKeys = new Set(follows.map((f) => `${f.shareCode}:${f.watchCid}`));
+  const followKeyOf = (entry: MediaLibraryEntry) =>
+    `${entry.shareCode}:${entry.shareRootCid && entry.shareRootCid !== "0" ? entry.shareRootCid : "0"}`;
 
   const filtered = query.trim()
     ? entries.filter((e) => {
@@ -185,7 +200,10 @@ export default function LibraryPage() {
     setSaveToTaskOpen(false);
     setSavingToTask(true);
     try {
-      notifySaveToTaskResult(await api.library.saveToTask(saveToTaskEntry.id, choice), router);
+      const result = await api.library.saveToTask(saveToTaskEntry.id, choice);
+      notifySaveToTaskResult(result, router);
+      notifyFollowResult(choice, result);
+      if (choice.follow) void fetchFollows();
     } catch (err) {
       toast.error(apiErrorMessage(err, "保存失败"));
     } finally {
@@ -236,6 +254,7 @@ export default function LibraryPage() {
             <LibraryCard
               key={entry.id}
               entry={entry}
+              followed={followedKeys.has(followKeyOf(entry))}
               savingToTask={savingToTask && saveToTaskEntry?.id === entry.id}
               onOpen={() => openEntry(entry)}
               onEdit={() => openEditor(entry)}
@@ -263,6 +282,7 @@ export default function LibraryPage() {
         }}
         onConfirm={handleSaveToTaskChoice}
         selectedCount={1}
+        followHint={`之后定期检查「${saveToTaskEntry?.title || saveToTaskEntry?.rawName || "该分享"}」对应的分享目录里新增的文件，自动转存到同一位置并生成 strm。`}
       />
 
       <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
@@ -285,6 +305,7 @@ export default function LibraryPage() {
 
 interface LibraryCardProps {
   entry: MediaLibraryEntry;
+  followed: boolean;
   savingToTask: boolean;
   onOpen: () => void;
   onEdit: () => void;
@@ -292,7 +313,7 @@ interface LibraryCardProps {
   onDelete: () => void;
 }
 
-function LibraryCard({ entry, savingToTask, onOpen, onEdit, onSaveToTask, onDelete }: LibraryCardProps) {
+function LibraryCard({ entry, followed, savingToTask, onOpen, onEdit, onSaveToTask, onDelete }: LibraryCardProps) {
   const label = entry.title || entry.rawName || entry.shareCode;
   const pathLabel = entry.sharePath ? entry.sharePath.replace(/^\//, "") : "整个分享";
   const pending = entry.scrapeStatus === "pending";
@@ -335,6 +356,11 @@ function LibraryCard({ entry, savingToTask, onOpen, onEdit, onSaveToTask, onDele
         {entry.year && (
           <Badge variant="secondary" className="absolute top-2 right-2 text-[10px]">
             {entry.year}
+          </Badge>
+        )}
+        {followed && (
+          <Badge className="absolute bottom-2 left-2 text-[10px]" variant="default">
+            追更中
           </Badge>
         )}
         {entry.fileCount > 0 && (

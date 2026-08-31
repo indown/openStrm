@@ -21,7 +21,7 @@ import { File, ChevronRight, FolderOpen, Download, ChevronLeft, ChevronsLeft, Ch
 import { toast } from "sonner";
 import { api, type ShareFileItem } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
-import { notifySaveToTaskResult } from "@/lib/save-result";
+import { notifyFollowResult, notifySaveToTaskResult } from "@/lib/save-result";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DirectoryPickerDialog } from "@/components/DirectoryPickerDialog";
@@ -193,6 +193,8 @@ export function ShareDetailDialog({
     setSaving(true);
     try {
       const items = Array.from(selectedItems.entries()).map(([, v]) => ({ name: v.name, isDir: v.isDir }));
+      const current = breadcrumb[breadcrumb.length - 1];
+      const watchPath = breadcrumb.slice(1).map((b) => b.name).join("/");
       const result = await api.share.receive({
         url: shareLink.trim(),
         fileIds: Array.from(selectedItems.keys()),
@@ -200,8 +202,13 @@ export function ShareDetailDialog({
         subPath: choice.subPath,
         mode: choice.mode,
         selectedItems: items,
+        // 追更盯的是当前浏览的这一层目录
+        ...(choice.follow
+          ? { follow: choice.follow, cid: current.id, watchPath, name: watchPath ? `${title} / ${watchPath}` : title }
+          : {}),
       });
       notifySaveToTaskResult(result, router);
+      notifyFollowResult(choice, result);
       setSelectedItems(new Map());
     } catch (err) {
       toast.error(apiErrorMessage(err, "保存失败"));
@@ -302,7 +309,16 @@ export function ShareDetailDialog({
 
   const displayList = open ? currentList : [];
   const isLoading = initialLoading || loading;
-  const selectedDirCount = Array.from(selectedItems.values()).filter((v) => v.isDir).length;
+  const selectedValues = Array.from(selectedItems.values());
+  const selectedDirCount = selectedValues.filter((v) => v.isDir).length;
+  // 和后端 scopeFromSelection 一致：勾了文件（或没勾）追当前目录，只勾目录就只追那些目录
+  const followScope =
+    selectedValues.some((v) => !v.isDir) || selectedDirCount === 0
+      ? `「${breadcrumb[breadcrumb.length - 1].name}」这一层`
+      : selectedDirCount === 1
+        ? `「${selectedValues.find((v) => v.isDir)?.name}」目录`
+        : `勾选的 ${selectedDirCount} 个目录`;
+  const followHint = `之后定期检查${followScope}里新增的文件，自动转存到同一位置并生成 strm；这次没勾的现有文件不会补转存。`;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -497,6 +513,7 @@ export function ShareDetailDialog({
         onOpenChange={setShowSaveToTask}
         onConfirm={handleTaskSaveChoice}
         selectedCount={selectedItems.size}
+        followHint={followHint}
       />
     </Dialog>
   );

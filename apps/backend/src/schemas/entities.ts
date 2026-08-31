@@ -34,6 +34,32 @@ export const taskInputSchema = z.looseObject({
 
 export const taskPatchSchema = taskInputSchema.partial().extend({ id: z.string().min(1) });
 
+/** 转存接口顺手建追更订阅时的选项；间隔的上下限在 services/follow/service.ts 里夹 */
+export const followOptionSchema = z.object({ intervalMinutes: z.number().int().optional() });
+
+export const shareFollowCreateSchema = z.object({
+  shareUrl: z.string().optional(),
+  shareCode: z.string().optional(),
+  receiveCode: z.string().optional(),
+  watchCid: cidSchema.optional(),
+  watchPath: z.string().optional(),
+  scope: z.array(z.string()).optional(),
+  taskId: z.string().min(1, "taskId is required"),
+  subPath: z.string().optional(),
+  intervalMinutes: z.number().int().optional(),
+  name: z.string().optional(),
+  libraryId: z.string().optional(),
+});
+
+export const shareFollowPatchSchema = z.object({
+  name: z.string().optional(),
+  enabled: z.boolean().optional(),
+  intervalMinutes: z.number().int().optional(),
+  taskId: z.string().min(1).optional(),
+  subPath: z.string().optional(),
+  receiveCode: z.string().optional(),
+});
+
 const account115Schema = z.looseObject({
   accountType: z.literal("115"),
   name: z.string().min(1),
@@ -96,6 +122,7 @@ export const settingsPatchSchema = z.looseObject({
           taskFailed: z.boolean().optional(),
           offline: z.boolean().optional(),
           accountAlert: z.boolean().optional(),
+          follow: z.boolean().optional(),
         })
         .optional(),
     })

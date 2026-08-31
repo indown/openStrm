@@ -10,12 +10,15 @@ import { normalizeSubPath } from "../../services/strm/naming.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
-import { idParamsSchema } from "../../schemas/entities.js";
+import { followOptionSchema, idParamsSchema } from "../../schemas/entities.js";
+import { createFollowAfterSave } from "../../services/follow/service.js";
 
 const bodySchema = z.object({
   taskId: z.string().trim().min(1, "taskId is required"),
   subPath: z.string().optional(),
   mode: z.enum(["sync", "async"]).optional(),
+  /** 转存完顺手建追更订阅：盯这条影库条目对应的分享目录 */
+  follow: followOptionSchema.optional(),
 });
 
 export default async function (fastify: FastifyInstance) {
@@ -84,6 +87,23 @@ export default async function (fastify: FastifyInstance) {
       mode,
       settings,
     });
-    return result;
+    if (!body.follow) return result;
+    // 子目录条目转存的是目录本身，落在 subPath/目录名 下，追更就盯那个目录、落到同一处；
+    // 整个分享的条目盯分享根目录
+    const dirName = isShareSubtreeEntry ? selectedItems[0].name : "";
+    const extra = await createFollowAfterSave({
+      shareUrl: entry.shareUrl,
+      shareCode: entry.shareCode,
+      receiveCode: entry.receiveCode,
+      watchCid: isShareSubtreeEntry ? String(fileIds[0]) : "0",
+      watchPath: trimmedSharePath || dirName,
+      scope: [""],
+      taskId: task.id,
+      subPath: dirName ? `${subPath}/${dirName}` : subPath,
+      intervalMinutes: body.follow.intervalMinutes,
+      name: entry.title || entry.rawName,
+      libraryId: entry.id,
+    });
+    return { ...result, ...extra };
   });
 }
