@@ -11,7 +11,7 @@ import path from "node:path";
 import axios from "axios";
 import { catchError, EMPTY, from, merge, mergeMap, Subject, Subscription, tap } from "rxjs";
 import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
-import { listAccounts, updateAccount } from "../../db/repositories/accounts.js";
+import { listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { resolveInDataDir } from "../../paths.js";
@@ -20,6 +20,7 @@ import { moduleLogger } from "../../lib/logger.js";
 import { mapLimit } from "../../lib/async.js";
 import { isDirectoryEntry } from "../../lib/fs.js";
 import { Cloud115Error, exportDirParse, fsDirGetId } from "../cloud-115/client.js";
+import { openlistLogin } from "../openlist/client.js";
 import {
   downloadOrCreateStrm,
   downloadOrCreateStrmLimited,
@@ -181,20 +182,12 @@ async function loadRemoteTree(
     if (!accountInfo.account || !accountInfo.password || !accountInfo.url) {
       return { fail: fail(500, "OpenList 账号缺少地址或用户名/密码") };
     }
-    let token = accountInfo.token;
-    if (!token || (accountInfo.expiresAt && Date.now() / 1000 > accountInfo.expiresAt)) {
-      const lr = await axios.post(
-        `${accountInfo.url}/api/auth/login`,
-        { username: accountInfo.account, password: accountInfo.password },
-        { timeout: DEFAULT_TIMEOUT_MS },
-      );
-      if (lr.data.code !== 200) return { fail: fail(500, `OpenList 登录失败：${lr.data.message ?? lr.data.code}`) };
-      token = lr.data.data.token;
-      accountInfo.token = token;
-      accountInfo.expiresAt = Math.floor(Date.now() / 1000) + 47 * 3600;
-      updateAccount(accountInfo.name, { token, expiresAt: accountInfo.expiresAt });
+    let token: string;
+    try {
+      token = await openlistLogin(accountInfo);
+    } catch (err) {
+      return { fail: fail(500, err instanceof Error ? err.message : "OpenList 登录失败") };
     }
-    if (!token) return { fail: fail(500, "OpenList 登录失败：没有拿到 token") };
     return { tree: buildTree(await getOpenlistTreeData(accountInfo.url, token, originPath)) };
   }
 

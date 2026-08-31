@@ -138,4 +138,7 @@ export const settingsPatchSchema = z.looseObject({
     })
     .optional(),
   lifeMonitor: lifeMonitorSchema.optional(),
+  openlistCopy: z
+    .looseObject({ account: z.string().optional(), srcDir: z.string().optional(), dstDir: z.string().optional() })
+    .optional(),
 }) satisfies z.ZodType<Partial<AppSettings>>;

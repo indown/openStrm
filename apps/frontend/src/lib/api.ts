@@ -208,8 +208,10 @@ export interface OfflineTask {
   pickCode: string;
 }
 export type OfflineFollowupStatus = "pending" | "done" | "failed";
-/** 「下载完成后生成 strm」的回执 */
+/** 下载完成后的回执：生成 strm（缺省），或让 OpenList 复制走 */
 export interface OfflineFollowup {
+  /** 老记录没有这个字段，当 "strm" 看 */
+  kind?: "strm" | "openlist-copy";
   infoHash: string;
   account: string;
   taskId: string;
@@ -221,6 +223,11 @@ export interface OfflineFollowup {
   doneAt?: number;
   attempts: number;
   misses: number;
+  copyWaits?: number;
+  copyTaskId?: string;
+  copySubmittedAt?: number;
+  /** openlist-copy：复制目标目录 */
+  copyDstDir?: string;
 }
 export interface OfflineWatcherStatus {
   running: boolean;
@@ -265,6 +272,8 @@ export interface OfflineAddInput {
   taskId?: string;
   subPath?: string;
   generateStrm?: boolean;
+  /** 只能配合 115 默认目录（不带 dirId / taskId） */
+  copyToOpenlist?: boolean;
 }
 export interface OfflineDownPath {
   id: string;

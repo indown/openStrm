@@ -5,6 +5,13 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
@@ -20,6 +27,7 @@ export default function SettingsPage() {
   const [downloadExtensionsInput, setDownloadExtensionsInput] = useState("");
   const [mediaMountPathInput, setMediaMountPathInput] = useState("");
   const [backingUp, setBackingUp] = useState(false);
+  const [openlistAccounts, setOpenlistAccounts] = useState<string[]>([]);
 
   useEffect(() => {
     api.settings.get()
@@ -31,6 +39,11 @@ export default function SettingsPage() {
       })
       .catch((err) => toast.error(apiErrorMessage(err, "加载设置失败")))
       .finally(() => setLoading(false));
+    // 「复制到 OpenList」里的账号下拉；拉不到就只剩空提示，不拦别的设置
+    api.accounts
+      .list()
+      .then((rows) => setOpenlistAccounts(rows.filter((a) => a.accountType === "openlist").map((a) => a.name)))
+      .catch(() => {});
   }, []);
 
   const onSave = async () => {
@@ -69,6 +82,7 @@ export default function SettingsPage() {
         download: data.download,
         tmdb: data.tmdb,
         hdhive: data.hdhive,
+        openlistCopy: data.openlistCopy,
       };
 
       await api.settings.patch(saveData);
@@ -379,6 +393,79 @@ export default function SettingsPage() {
               }
               placeholder="https://hdhive.com"
             />
+          </div>
+        </div>
+      </section>
+
+      <Separator />
+
+      <section className="space-y-4">
+        <h2 className="text-base font-medium">复制到 OpenList</h2>
+        <p className="text-sm text-muted-foreground">
+          三项都配好后，「云下载」页添加任务（下载到 115 默认目录）时可以勾选
+          「下载完成后让 OpenList 复制走」：115 下完，就通知 OpenList
+          把产物从挂载的 115 存储复制到目标目录（比如挂载的本地磁盘）。
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label>OpenList 账号</Label>
+            {openlistAccounts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                还没有 openlist 账号，先到「账户」页添加一个。
+              </p>
+            ) : (
+              <Select
+                value={data.openlistCopy?.account || ""}
+                onValueChange={(v) =>
+                  setData({
+                    ...data,
+                    openlistCopy: { ...(data.openlistCopy || {}), account: v },
+                  })
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="选择账号" />
+                </SelectTrigger>
+                <SelectContent>
+                  {openlistAccounts.map((name) => (
+                    <SelectItem key={name} value={name}>
+                      {name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            <p className="text-xs text-muted-foreground">用这个账号调 OpenList 的接口</p>
+          </div>
+          <div className="space-y-2">
+            <Label>源目录</Label>
+            <Input
+              value={data.openlistCopy?.srcDir || ""}
+              onChange={(e) =>
+                setData({
+                  ...data,
+                  openlistCopy: { ...(data.openlistCopy || {}), srcDir: e.target.value },
+                })
+              }
+              placeholder="/115/云下载"
+            />
+            <p className="text-xs text-muted-foreground">
+              115 默认下载目录在 OpenList 里的完整路径（挂载路径 + 目录）
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label>目标目录</Label>
+            <Input
+              value={data.openlistCopy?.dstDir || ""}
+              onChange={(e) =>
+                setData({
+                  ...data,
+                  openlistCopy: { ...(data.openlistCopy || {}), dstDir: e.target.value },
+                })
+              }
+              placeholder="/local/downloads"
+            />
+            <p className="text-xs text-muted-foreground">复制到 OpenList 的哪个目录（另一个存储里的路径）</p>
           </div>
         </div>
       </section>
