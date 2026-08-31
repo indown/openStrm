@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { Cloud115Error, fsDirGetId, listDirEntries } from "../../services/cloud-115/client.js";
+import { OpenlistError, openlistListDir } from "../../services/openlist/client.js";
 import { getAccount } from "../../db/repositories/accounts.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
@@ -20,7 +21,23 @@ export default async function (fastify: FastifyInstance) {
 
     const accountInfo = getAccount(account);
     if (!accountInfo) throw new HttpError(404, `account not found: ${account}`);
-    if (accountInfo.accountType !== "115") throw new HttpError(400, "only 115 accounts are supported");
+
+    // openlist 账号：id 就是完整路径，前端按 name 逐层拼路径来导航
+    if (accountInfo.accountType === "openlist") {
+      let entries;
+      try {
+        entries = await openlistListDir(accountInfo, path || "/");
+      } catch (err) {
+        if (err instanceof OpenlistError) throw new HttpError(502, err.message, { upstreamStatus: err.code });
+        throw upstreamFailure(err, "列目录失败");
+      }
+      const base = path.replace(/\/+$/, "");
+      return entries
+        .filter((e) => e.is_dir)
+        .map((e) => ({ name: e.name, id: `${base}/${e.name}`, isDir: true, hasChildren: true }));
+    }
+    // AccountInfo 目前只有 115 / openlist 两种；将来加类型时这行会把没接的挡下来
+    if (accountInfo.accountType !== "115") throw new HttpError(400, "unsupported account type");
 
     const userAgent = readAppSettings()["user-agent"] || undefined;
 
