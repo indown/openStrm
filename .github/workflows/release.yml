@@ -73,6 +73,15 @@ jobs:
         run: |
           echo "name=${REGISTRY}/$(echo "$REPO" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
+      # APP_VERSION 要的是裸版本号：本地退回的 package.json 就是这个格式，侧栏显示时才补 v。
+      # tag 本身带 v，原样传进去侧栏会显示成 vv2.0.0，这里先去掉。
+      - name: Resolve app version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          echo "value=${TAG#v}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v7
@@ -80,7 +89,7 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           build-args: |
-            APP_VERSION=${{ github.ref_name }}
+            APP_VERSION=${{ steps.version.outputs.value }}
           outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}
