@@ -321,6 +321,12 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
   }
 
   const ok = results.filter((r) => r.ok && r.infoHash);
+  /**
+   * 「任务已存在」也带 info_hash：任务真实存在，往往正在下甚至已经下完（测试时反复
+   * 提交同一个磁力必然踩中）。复制回执照登，让循环把它接管；strm 回执不跟——
+   * 已存在的任务可能压根不在这个任务目录里，按任务前缀生成的 strm 会指向不存在的路径。
+   */
+  const dup = results.filter((r) => !r.ok && r.infoHash && /已存在|errno=10008/.test(r.message ?? ""));
   const now = Date.now();
   const strmFollowup = Boolean(task) && opts.generateStrm !== false && ok.length > 0;
   if (strmFollowup && task) {
@@ -340,11 +346,12 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
     );
     startOfflineWatcher();
   }
-  const copyFollowup = Boolean(copyCfg) && ok.length > 0;
+  const copyTargets = [...ok, ...dup];
+  const copyFollowup = Boolean(copyCfg) && copyTargets.length > 0;
   if (copyFollowup && copyCfg) {
     const copyDst = normDir(opts.copyDstDir) || copyCfg.dstDir;
     addFollowups(
-      ok.map((r) => ({
+      copyTargets.map((r) => ({
         kind: "openlist-copy" as const,
         infoHash: r.infoHash!,
         account: account.name,

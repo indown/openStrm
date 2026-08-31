@@ -687,7 +687,7 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
     return;
   }
   if (checkAccess(settings, q.from, chat) !== "ok") {
-    await bot.answerCallback(q.id, "没有权限");
+    await bot.answerCallback(q.id, "没有权限", { alert: true });
     return;
   }
   const chatId = String(chat.id);
@@ -750,17 +750,17 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
         // 顺带修掉一个老毛病：以前先 take 再验用户，白名单里别人一点就把你的操作弄没了
         const pending = peekPending(token);
         if (!pending || pending.action.kind !== kind) {
-          await bot.answerCallback(q.id, "已过期，请重新发一次链接");
+          await bot.answerCallback(q.id, "已过期，请重新发一次链接", { alert: true });
           return;
         }
         if (pending.userId !== q.from.id) {
-          await bot.answerCallback(q.id, "这不是你发起的操作");
+          await bot.answerCallback(q.id, "这不是你发起的操作", { alert: true });
           return;
         }
         // 权限可能在贴链接和点按钮之间被关掉了，点的时候再查一次
         const denied = browsePerm(settings, kind);
         if (denied) {
-          await bot.answerCallback(q.id, denied);
+          await bot.answerCallback(q.id, denied, { alert: true });
           return;
         }
         if (kind === "offline" && dest === "default") {
@@ -772,7 +772,7 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
         if (kind === "offline" && dest === "defcopy") {
           // 先从设置页的 dstDir 出发选「这次复制到哪」，选完（就复制到这里）才提交
           if (!openlistCopyReady(settings)) {
-            await bot.answerCallback(q.id, "「复制到 OpenList」的配置不完整，去设置页看看");
+            await bot.answerCallback(q.id, "「复制到 OpenList」的配置不完整，去设置页看看", { alert: true });
             return;
           }
           await bot.answerCallback(q.id, "读取目录…");
@@ -796,16 +796,16 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
         const pending = peekPending(token);
         const browse = pending?.action.browse;
         if (!pending || !browse) {
-          await bot.answerCallback(q.id, "已过期，请重新发一次链接");
+          await bot.answerCallback(q.id, "已过期，请重新发一次链接", { alert: true });
           return;
         }
         if (pending.userId !== q.from.id) {
-          await bot.answerCallback(q.id, "这不是你发起的操作");
+          await bot.answerCallback(q.id, "这不是你发起的操作", { alert: true });
           return;
         }
         const denied = browsePerm(settings, pending.action.kind);
         if (denied) {
-          await bot.answerCallback(q.id, denied);
+          await bot.answerCallback(q.id, denied, { alert: true });
           return;
         }
         // OpenList 目的地浏览没有任务；任务目录浏览才查任务还在不在
@@ -871,7 +871,7 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
     }
   } catch (err) {
     log.error({ err, data }, "处理 Telegram 按钮失败");
-    await bot.answerCallback(q.id, "出错了");
+    await bot.answerCallback(q.id, "出错了", { alert: true });
     await bot.sendMessage(chatId, `❌ 操作失败：${esc(err instanceof Error ? err.message : String(err))}`);
   }
 }

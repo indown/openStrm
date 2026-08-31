@@ -68,7 +68,8 @@ export interface SendOptions {
 export interface BotLike {
   sendMessage(chatId: string | number, text: string, opts?: SendOptions): Promise<TelegramResponse<{ message_id?: number }>>;
   editMessage(chatId: string | number, messageId: number, text: string, buttons?: InlineKeyboard): Promise<TelegramResponse>;
-  answerCallback(callbackId: string, text?: string): Promise<TelegramResponse>;
+  /** alert=true 弹对话框而不是顶部一闪而过的 toast：给"看不到就等于没发生"的回应用 */
+  answerCallback(callbackId: string, text?: string, opts?: { alert?: boolean }): Promise<TelegramResponse>;
 }
 
 /** Bot API 地址。默认官方；连不上 api.telegram.org 的环境可以用 TELEGRAM_API_BASE 指到自己的反代 */
@@ -120,8 +121,12 @@ export class TelegramBot implements BotLike {
     });
   }
 
-  answerCallback(callbackId: string, text?: string) {
-    return this.call("answerCallbackQuery", { callback_query_id: callbackId, ...(text ? { text } : {}) });
+  answerCallback(callbackId: string, text?: string, opts: { alert?: boolean } = {}) {
+    return this.call("answerCallbackQuery", {
+      callback_query_id: callbackId,
+      ...(text ? { text } : {}),
+      ...(opts.alert ? { show_alert: true } : {}),
+    });
   }
 
   getMe() {
