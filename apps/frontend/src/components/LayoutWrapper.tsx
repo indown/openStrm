@@ -9,6 +9,7 @@ import { Settings, Github, Share2, Search } from "lucide-react";
 import { apiErrorBody, clearToken } from "@/lib/axios";
 import { api, type HdhiveResourceItem, type HdhiveTmdbItem } from "@/lib/api";
 import { useShareDetail } from "@/hooks/use-share-detail";
+import { FEATURES } from "@/lib/features";
 import {
   Menubar,
   MenubarContent,
@@ -136,23 +137,26 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
                   {share.loading ? "加载中..." : "查看"}
                 </Button>
               </div>
-              <div className="flex items-center gap-2 flex-1 min-w-[200px] max-w-md">
-                <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <Input
-                  placeholder="搜索影视资源（TMDB → HDHive）"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && runHdhiveSearch()}
-                  className="h-8 text-sm"
-                />
-                <Button
-                  size="sm"
-                  onClick={() => runHdhiveSearch()}
-                  disabled={hdhiveLoading}
-                >
-                  {hdhiveLoading ? "搜索中..." : "搜索"}
-                </Button>
-              </div>
+              {/* 影巢搜索入口暂时隐藏（lib/features.ts） */}
+              {FEATURES.hdhiveSearch && (
+                <div className="flex items-center gap-2 flex-1 min-w-[200px] max-w-md">
+                  <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <Input
+                    placeholder="搜索影视资源（TMDB → HDHive）"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && runHdhiveSearch()}
+                    className="h-8 text-sm"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={() => runHdhiveSearch()}
+                    disabled={hdhiveLoading}
+                  >
+                    {hdhiveLoading ? "搜索中..." : "搜索"}
+                  </Button>
+                </div>
+              )}
               <div className="ml-auto flex items-center gap-1">
                 <a
                   href="https://github.com/indown/OpenStrm"
@@ -179,21 +183,23 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
           </div>
       </SidebarProvider>
       <ShareDetailDialog {...share.dialogProps} />
-      <HdhiveSearchDialog
-        open={hdhiveOpen}
-        onOpenChange={setHdhiveOpen}
-        loading={hdhiveLoading}
-        query={searchQuery}
-        tmdb={hdhiveTmdb}
-        alternatives={hdhiveAlternatives}
-        resources={hdhiveResources}
-        total={hdhiveTotal}
-        errorMessage={hdhiveError}
-        onPickAlternative={(item) =>
-          runHdhiveSearch({ tmdbId: item.id, mediaType: item.mediaType })
-        }
-        onPan115Unlocked={handle115UnlockedFromHdhive}
-      />
+      {FEATURES.hdhiveSearch && (
+        <HdhiveSearchDialog
+          open={hdhiveOpen}
+          onOpenChange={setHdhiveOpen}
+          loading={hdhiveLoading}
+          query={searchQuery}
+          tmdb={hdhiveTmdb}
+          alternatives={hdhiveAlternatives}
+          resources={hdhiveResources}
+          total={hdhiveTotal}
+          errorMessage={hdhiveError}
+          onPickAlternative={(item) =>
+            runHdhiveSearch({ tmdbId: item.id, mediaType: item.mediaType })
+          }
+          onPan115Unlocked={handle115UnlockedFromHdhive}
+        />
+      )}
     </>
   );
 }

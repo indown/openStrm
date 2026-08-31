@@ -15,6 +15,7 @@ import {
   SidebarSeparator,
 } from "@/components/ui/sidebar";
 import Link from "next/link";
+import { FEATURES } from "@/lib/features";
 import { usePathname } from "next/navigation"; // 新增
 // 构建时由 next.config.ts 注入（APP_VERSION 或 package.json 的版本）
 const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? "";
@@ -26,11 +27,16 @@ const items = [
     url: "/home",
     icon: Home,
   },
-  {
-    title: "影库",
-    url: "/library",
-    icon: Library,
-  },
+  // 影库入口暂时隐藏（lib/features.ts）；直接访问 /library 仍可用
+  ...(FEATURES.libraryEntry
+    ? [
+        {
+          title: "影库",
+          url: "/library",
+          icon: Library,
+        },
+      ]
+    : []),
   {
     title: "追更",
     url: "/follow",
