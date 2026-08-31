@@ -3,13 +3,17 @@
  *
  *   - 加任务：目标要么是任意 115 目录 id，要么是「同步任务的 originPath（+ 子目录）」——
  *     后者按路径解析成目录 id，并按需登记一条回执：115 下完之后为产物生成 strm。
+ *   - 下载到 115 默认目录时可以改登记另一种回执（kind = "openlist-copy"）：
+ *     115 下完之后，通知 OpenList 把产物从挂载的 115 存储复制到目标目录（如本地磁盘），
+ *     并继续盯 OpenList 的复制任务直到成功/失败。配置在设置页的 openlistCopy。
  *   - 回执落在 settings 表的 `offline.followups` 键里，进程重启不丢。
  *   - 一个后台循环盯着有回执的账号：每 30 秒翻一遍 115 的任务列表，
- *     完成 → 生成 strm（目录用 115 给的产物 id 直接导出目录树，不按名字猜）；
+ *     完成 → 生成 strm（目录用 115 给的产物 id 直接导出目录树，不按名字猜）
+ *            或提交 OpenList 复制；
  *     失败 → 记下 115 的说法；列表里连续几轮找不到 → 当作被人删了。
  *     没有待办时循环自己停掉，不白打接口。
  */
-import type { Account115, AppSettings, TaskDefinition } from "@openstrm/shared";
+import type { Account115, AccountOpenlist, AppSettings, TaskDefinition } from "@openstrm/shared";
 import { getAccount, listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -35,6 +39,13 @@ import {
 } from "../cloud-115/offline.js";
 import { resolveTaskAccount115 } from "../library/save-to-task.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
+import {
+  copyStateSucceeded,
+  openlistCopy,
+  openlistCopyTasks,
+  openlistListDir,
+  type OpenlistTaskInfo,
+} from "../openlist/client.js";
 import { normalizeSubPath } from "../strm/naming.js";
 import { generateStrmForSelected, type GenerateResult, type SelectedItem } from "../strm/share-strm.js";
 import { notify, type NotifyEvent } from "../telegram/notify.js";
@@ -45,9 +56,15 @@ const log = moduleLogger("offline");
 
 export type OfflineFollowupStatus = "pending" | "done" | "failed";
 
+/** strm=下载完成后生成 strm；openlist-copy=下载完成后让 OpenList 复制走 */
+export type OfflineFollowupKind = "strm" | "openlist-copy";
+
 export interface OfflineFollowup {
+  /** 存量记录没有这个字段，按 strm 算（见 kindOf） */
+  kind?: OfflineFollowupKind;
   infoHash: string;
   account: string;
+  /** strm 回执指向的同步任务；openlist-copy 回执是空串 */
   taskId: string;
   /** 相对 task.originPath 的子目录，已 normalize；空串表示就在 originPath 下 */
   subPath: string;
@@ -58,11 +75,21 @@ export interface OfflineFollowup {
   status: OfflineFollowupStatus;
   detail: string;
   doneAt?: number;
-  /** 生成 strm 的尝试次数 */
+  /** 生成 strm / 提交 OpenList 复制的尝试次数 */
   attempts: number;
-  /** 115 列表里连续没找到的轮数 */
+  /** 连续几轮没在列表里找到：提交复制前对 115 的任务列表，提交后对 OpenList 的复制任务列表 */
   misses: number;
+  /** openlist-copy：115 下完后，产物连续几轮没出现在 OpenList 的源目录里 */
+  copyWaits?: number;
+  /** openlist-copy：提交给 OpenList 的复制任务 id；设上就代表进入了「盯复制」阶段 */
+  copyTaskId?: string;
+  /** openlist-copy：提交复制的时间（ms），用来把 OpenList done 列表里的陈年同名任务滤掉 */
+  copySubmittedAt?: number;
+  /** openlist-copy：复制目标目录，给界面和通知看 */
+  copyDstDir?: string;
 }
+
+const kindOf = (f: OfflineFollowup): OfflineFollowupKind => f.kind ?? "strm";
 
 const FOLLOWUP_KEY = KEY.offlineFollowups;
 /** 已完成/失败的回执留 7 天给界面看，之后清掉 */
@@ -75,6 +102,8 @@ const POLL_MS = 30_000;
 const MAX_PAGES = 5;
 const MAX_ATTEMPTS = 3;
 const MAX_MISSES = 3;
+/** 115 报完成到产物在 OpenList 里可见有延迟，多等几轮（约 5 分钟）再放弃 */
+const MAX_COPY_WAIT_ROUNDS = 10;
 
 export function listFollowups(): OfflineFollowup[] {
   const rows = readKv<OfflineFollowup[]>(FOLLOWUP_KEY);
@@ -120,6 +149,14 @@ interface Deps {
   resolveDirId: (accountInfo: AccountInfo, path: string) => Promise<string>;
   generate: (p: GenerateParams) => Promise<GenerateResult>;
   notify: (event: NotifyEvent) => Promise<unknown>;
+  openlist: {
+    /** 刷新 srcDir 的缓存并返回其中的条目名 */
+    listNames: (cfg: OpenlistCopyConfig) => Promise<string[]>;
+    /** 提交复制单个条目；同存储立即完成时没有任务，返回 null */
+    copy: (cfg: OpenlistCopyConfig, name: string) => Promise<OpenlistTaskInfo | null>;
+    /** 复制任务的进行中 + 已结束列表 */
+    copyTasks: (cfg: OpenlistCopyConfig) => Promise<{ undone: OpenlistTaskInfo[]; done: OpenlistTaskInfo[] }>;
+  };
 }
 
 async function resolveDirIdReal(accountInfo: AccountInfo, dirPath: string): Promise<string> {
@@ -142,6 +179,11 @@ const realDeps: Deps = {
   generate: ({ task, accountInfo, settings, subPath, item }) =>
     generateStrmForSelected({ task, selectedItems: [item], accountInfo, settings, subPath }),
   notify,
+  openlist: {
+    listNames: async (cfg) => (await openlistListDir(cfg.account, cfg.srcDir, { refresh: true })).map((e) => e.name),
+    copy: async (cfg, name) => (await openlistCopy(cfg.account, cfg.srcDir, cfg.dstDir, [name]))[0] ?? null,
+    copyTasks: (cfg) => openlistCopyTasks(cfg.account),
+  },
 };
 
 let deps: Deps = { ...realDeps };
@@ -170,6 +212,36 @@ function upstream(err: unknown, fallback: string): HttpError {
   return new HttpError(502, err instanceof Error && err.message ? err.message : fallback);
 }
 
+/* ------------------------------- 复制到 OpenList ------------------------------- */
+
+export interface OpenlistCopyConfig {
+  account: AccountOpenlist;
+  srcDir: string;
+  dstDir: string;
+}
+
+/** 去掉尾斜杠、补上头斜杠；空的还它空串，让调用方按「没配置」处理 */
+function normDir(input?: string): string {
+  const t = (input ?? "").trim().replace(/\/+$/, "");
+  if (!t) return input?.trim() === "/" ? "/" : "";
+  return t.startsWith("/") ? t : `/${t}`;
+}
+
+/** 设置页的 openlistCopy + 账号表 → 可用的配置；缺什么直接说什么 */
+export function resolveOpenlistCopyConfig(): OpenlistCopyConfig {
+  const cfg = readAppSettings().openlistCopy ?? {};
+  const srcDir = normDir(cfg.srcDir);
+  const dstDir = normDir(cfg.dstDir);
+  if (!cfg.account || !srcDir || !dstDir) {
+    throw new HttpError(400, "「复制到 OpenList」还没配置好：请在设置页填上 OpenList 账号、源目录和目标目录");
+  }
+  const acc = getAccount(cfg.account);
+  if (!acc) throw new HttpError(400, `OpenList 账号不存在：${cfg.account}`);
+  if (acc.accountType !== "openlist") throw new HttpError(400, `${cfg.account} 不是 openlist 账号`);
+  if (!acc.url || !acc.account || !acc.password) throw new HttpError(400, `OpenList 账号 ${cfg.account} 缺少地址或用户名/密码`);
+  return { account: acc, srcDir, dstDir };
+}
+
 /* ------------------------------- 路由用的动作 ------------------------------- */
 
 export interface AddOfflineOptions {
@@ -182,6 +254,11 @@ export interface AddOfflineOptions {
   subPath?: string;
   /** 任务目录模式下，下载完成后是否自动生成 strm，默认开 */
   generateStrm?: boolean;
+  /**
+   * 下载完成后让 OpenList 把产物复制到设置页配置的目标目录。
+   * 只能配合 115 默认下载目录（不带 taskId 也不带 dirId）：srcDir 是按默认目录配置的
+   */
+  copyToOpenlist?: boolean;
 }
 
 export interface AddOfflineResponse {
@@ -194,7 +271,7 @@ export interface AddOfflineResponse {
   /** 115 不认的链接（thunder:// 之类），没有提交 */
   invalid: string[];
   results: OfflineAddResult[];
-  /** 是否登记了"完成后生成 strm"的回执 */
+  /** 是否登记了回执（完成后生成 strm，或复制到 OpenList） */
   followup: boolean;
 }
 
@@ -227,6 +304,13 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
     if (opts.dirId != null && String(opts.dirId).trim() !== "") dirId = String(opts.dirId).trim();
   }
 
+  // 复制回执的 srcDir 是按 115 默认下载目录配置的，下到别处复制必然落空，提交前就拦下
+  let copyCfg: OpenlistCopyConfig | null = null;
+  if (opts.copyToOpenlist) {
+    if (task || dirId != null) throw new HttpError(400, "「复制到 OpenList」只支持下载到 115 默认目录");
+    copyCfg = resolveOpenlistCopyConfig();
+  }
+
   let results: OfflineAddResult[];
   try {
     results = await offlineAddUrls(account, urls, { dirId: dirId ?? undefined });
@@ -235,9 +319,9 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
   }
 
   const ok = results.filter((r) => r.ok && r.infoHash);
-  const followup = Boolean(task) && opts.generateStrm !== false && ok.length > 0;
-  if (followup && task) {
-    const now = Date.now();
+  const now = Date.now();
+  const strmFollowup = Boolean(task) && opts.generateStrm !== false && ok.length > 0;
+  if (strmFollowup && task) {
     addFollowups(
       ok.map((r) => ({
         infoHash: r.infoHash!,
@@ -254,6 +338,27 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
     );
     startOfflineWatcher();
   }
+  const copyFollowup = Boolean(copyCfg) && ok.length > 0;
+  if (copyFollowup && copyCfg) {
+    addFollowups(
+      ok.map((r) => ({
+        kind: "openlist-copy" as const,
+        infoHash: r.infoHash!,
+        account: account.name,
+        taskId: "",
+        subPath: "",
+        name: r.name || r.url,
+        addedAt: now,
+        status: "pending" as const,
+        detail: "等待 115 下载完成",
+        attempts: 0,
+        misses: 0,
+        copyDstDir: copyCfg.dstDir,
+      })),
+    );
+    startOfflineWatcher();
+  }
+  const followup = strmFollowup || copyFollowup;
   log.info(`账号 ${account.name} 添加云下载 ${ok.length}/${urls.length} 条${dirPath ? `，目录 ${dirPath}` : ""}`);
   return {
     account: account.name,
@@ -329,11 +434,20 @@ export async function restartOfflineTask(accountName: string | undefined, infoHa
   } catch (err) {
     throw upstream(err, "重试云下载任务失败");
   }
-  // 之前因为 115 下载失败而作废的回执，重试后重新盯
+  // 之前因为 115 下载失败而作废的回执，重试后重新盯；复制回执连提交记录一起清，从头走
   const rows = listFollowups();
   const hit = rows.find((f) => f.account === account.name && f.infoHash === infoHash && f.status === "failed");
   if (hit) {
-    Object.assign(hit, { status: "pending", detail: "已重试，等待 115 下载完成", attempts: 0, misses: 0, doneAt: undefined });
+    Object.assign(hit, {
+      status: "pending",
+      detail: "已重试，等待 115 下载完成",
+      attempts: 0,
+      misses: 0,
+      doneAt: undefined,
+      copyWaits: undefined,
+      copyTaskId: undefined,
+      copySubmittedAt: undefined,
+    });
     saveFollowups(rows);
     startOfflineWatcher();
   }
@@ -415,7 +529,13 @@ function finish(f: OfflineFollowup, status: "done" | "failed", detail: string): 
   f.status = status;
   f.detail = detail;
   f.doneAt = Date.now();
-  if (status === "failed") void deps.notify({ type: "offline-failed", name: f.name, detail }).catch(() => {});
+  if (status === "failed") {
+    const event: NotifyEvent =
+      kindOf(f) === "openlist-copy"
+        ? { type: "offline-copy-failed", name: f.name, detail }
+        : { type: "offline-failed", name: f.name, detail };
+    void deps.notify(event).catch(() => {});
+  }
 }
 
 /**
@@ -428,8 +548,18 @@ export async function tickFollowups(): Promise<void> {
   if (pending.length === 0) return;
   const persist = () => saveFollowups(all);
 
+  // 已提交 OpenList 的复制回执不再看 115 列表（115 那边清掉任务也无所谓），直接盯复制任务
+  const copying = pending.filter((f) => kindOf(f) === "openlist-copy" && f.copyTaskId != null);
+  if (copying.length > 0) {
+    await pollOpenlistCopies(copying);
+    persist();
+  }
+
   const byAccount = new Map<string, OfflineFollowup[]>();
-  for (const f of pending) byAccount.set(f.account, [...(byAccount.get(f.account) ?? []), f]);
+  for (const f of pending) {
+    if (kindOf(f) === "openlist-copy" && f.copyTaskId != null) continue;
+    byAccount.set(f.account, [...(byAccount.get(f.account) ?? []), f]);
+  }
 
   for (const [accountName, items] of byAccount) {
     const accountInfo = getAccount(accountName);
@@ -473,7 +603,8 @@ export async function tickFollowups(): Promise<void> {
         if (Date.now() - f.addedAt > PENDING_MAX_AGE_MS) finish(f, "failed", "等了 7 天还没下完，不再跟踪");
         continue;
       }
-      await completeFollowup(f, t, accountInfo);
+      if (kindOf(f) === "openlist-copy") await submitOpenlistCopy(f, t);
+      else await completeFollowup(f, t, accountInfo);
       persist();
     }
     persist();
@@ -502,6 +633,117 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
     if (f.attempts >= MAX_ATTEMPTS) finish(f, "failed", `生成 strm 失败：${msg}`);
     else f.detail = `生成 strm 失败，稍后重试（${f.attempts}/${MAX_ATTEMPTS}）：${msg}`;
     log.warn({ err }, `云下载 ${t.name} 生成 strm 失败（第 ${f.attempts} 次）`);
+  }
+}
+
+/* ------------------------------- 复制到 OpenList：两个阶段 ------------------------------- */
+
+/**
+ * 115 下完了：先刷 OpenList 对源目录的缓存确认产物可见（不刷的话 fs/copy 会按缓存
+ * 找不到对象），然后提交复制。产物暂时不可见不算失败，多等几轮；接口报错才计 attempts。
+ */
+async function submitOpenlistCopy(f: OfflineFollowup, t: OfflineTask): Promise<void> {
+  let cfg: OpenlistCopyConfig;
+  try {
+    cfg = resolveOpenlistCopyConfig();
+  } catch (err) {
+    finish(f, "failed", err instanceof Error ? err.message : String(err));
+    return;
+  }
+  const name = t.resultName || t.name;
+  try {
+    const names = await deps.openlist.listNames(cfg);
+    if (!names.includes(name)) {
+      // 不能记在 misses 上：上面 115 列表每轮都能找到任务，每轮都会把 misses 清零
+      f.copyWaits = (f.copyWaits ?? 0) + 1;
+      if (f.copyWaits >= MAX_COPY_WAIT_ROUNDS) {
+        finish(f, "failed", `刷新后 OpenList 的 ${cfg.srcDir} 里始终没有出现「${name}」，请检查源目录配置`);
+      } else {
+        f.detail = `115 已下完，等「${name}」出现在 OpenList（${f.copyWaits}/${MAX_COPY_WAIT_ROUNDS}）`;
+      }
+      return;
+    }
+    f.misses = 0;
+    const copyTask = await deps.openlist.copy(cfg, name);
+    f.name = name;
+    f.copyDstDir = cfg.dstDir;
+    f.copySubmittedAt = Date.now();
+    if (!copyTask?.id) {
+      // 同存储或极小文件会立即完成、没有任务可盯；OpenList 既然收下了就当办成了
+      finish(f, "done", `OpenList 已复制到 ${cfg.dstDir}`);
+      void deps.notify({ type: "offline-copied", name, target: cfg.dstDir }).catch(() => {});
+      return;
+    }
+    f.copyTaskId = copyTask.id;
+    f.detail = "已提交 OpenList 复制";
+    log.info(`云下载完成：${name} → 已提交 OpenList 复制到 ${cfg.dstDir}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    f.attempts += 1;
+    if (f.attempts >= MAX_ATTEMPTS) finish(f, "failed", `提交 OpenList 复制失败：${msg}`);
+    else f.detail = `提交 OpenList 复制失败，稍后重试（${f.attempts}/${MAX_ATTEMPTS}）：${msg}`;
+    log.warn({ err }, `云下载 ${name} 提交 OpenList 复制失败（第 ${f.attempts} 次）`);
+  }
+}
+
+/**
+ * 盯复制进度。OpenList 复制目录是「父任务展开逐文件子任务」，父任务很快就结束，
+ * 所以不能只看提交时拿到的那个任务 id：undone 里凡是任务名带着产物名的都算这次复制的一部分，
+ * 全部离开 undone 后再到 done 里对成败（按 endedAt 滤掉陈年同名任务）。
+ */
+async function pollOpenlistCopies(items: OfflineFollowup[]): Promise<void> {
+  let cfg: OpenlistCopyConfig;
+  try {
+    cfg = resolveOpenlistCopyConfig();
+  } catch (err) {
+    for (const f of items) finish(f, "failed", err instanceof Error ? err.message : String(err));
+    return;
+  }
+  let tasks: { undone: OpenlistTaskInfo[]; done: OpenlistTaskInfo[] };
+  try {
+    tasks = await deps.openlist.copyTasks(cfg);
+  } catch (err) {
+    // 这一轮任务列表拿不到（OpenList 重启中、断网）：什么都不改，下轮再来
+    lastError = err instanceof Error ? err.message : String(err);
+    log.warn({ err }, "读取 OpenList 复制任务列表失败，回执下轮再对");
+    return;
+  }
+
+  for (const f of items) {
+    if (Date.now() - f.addedAt > PENDING_MAX_AGE_MS) {
+      finish(f, "failed", "等了 7 天还没复制完，不再跟踪");
+      continue;
+    }
+    const mine = (rows: OpenlistTaskInfo[]) =>
+      rows.filter((r) => r.id === f.copyTaskId || (f.name !== "" && r.name.includes(f.name)));
+    const active = mine(tasks.undone);
+    if (active.length > 0) {
+      f.misses = 0;
+      const own = active.find((r) => r.id === f.copyTaskId) ?? active[0];
+      f.detail =
+        active.length > 1
+          ? `OpenList 复制中，还剩 ${active.length} 个任务`
+          : `OpenList 复制中 ${Math.round(own.progress)}%`;
+      continue;
+    }
+    // 提交之前就躺在 done 列表里的同名任务不算这次的；OpenList 和本机的钟可能有偏差，放宽 10 分钟
+    const since = (f.copySubmittedAt ?? f.addedAt) - 600_000;
+    const settled = mine(tasks.done).filter((r) => r.id === f.copyTaskId || r.endedAt == null || r.endedAt >= since);
+    if (settled.length === 0) {
+      f.misses += 1;
+      if (f.misses >= MAX_MISSES) finish(f, "failed", "OpenList 的任务列表里找不到这次复制（可能被手动清掉了）");
+      else f.detail = `OpenList 任务列表里暂时没找到这次复制（${f.misses}/${MAX_MISSES}）`;
+      continue;
+    }
+    const failed = settled.filter((r) => !copyStateSucceeded(r.state));
+    if (failed.length > 0) {
+      const suffix = failed.length > 1 ? `（共 ${failed.length} 个任务失败）` : "";
+      finish(f, "failed", `OpenList 复制失败：${failed[0].error || "未知原因"}${suffix}`);
+      continue;
+    }
+    finish(f, "done", `OpenList 已复制到 ${f.copyDstDir ?? cfg.dstDir}`);
+    log.info(`云下载复制完成：${f.name} → ${f.copyDstDir ?? cfg.dstDir}`);
+    void deps.notify({ type: "offline-copied", name: f.name, target: f.copyDstDir ?? cfg.dstDir }).catch(() => {});
   }
 }
 

@@ -59,6 +59,9 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
   const [submitting, setSubmitting] = useState(false);
   const [results, setResults] = useState<OfflineAddResult[] | null>(null);
   const [invalid, setInvalid] = useState<string[]>([]);
+  const [copyToOpenlist, setCopyToOpenlist] = useState(false);
+  /** 设置页的「复制到 OpenList」配齐了才显示勾选框；null = 还没查到 */
+  const [openlistCopyTarget, setOpenlistCopyTarget] = useState<string | null>(null);
 
   // 每次打开都从头来：清链接、回到任务目录、重新拉这个账号的任务和 115 的默认目录
   useEffect(() => {
@@ -71,6 +74,16 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
     setDirId("");
     setDirPath("");
     setGenerateStrm(true);
+    setCopyToOpenlist(false);
+    setOpenlistCopyTarget(null);
+    api.settings
+      .get()
+      .then((s) => {
+        if (cancelled) return;
+        const c = s.openlistCopy;
+        setOpenlistCopyTarget(c?.account && c?.srcDir && c?.dstDir ? c.dstDir : null);
+      })
+      .catch(() => {});
     setTasksLoading(true);
     api.tasks
       .list()
@@ -150,14 +163,19 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
           ? { taskId, subPath: subSegments.join("/"), generateStrm }
           : dirId
             ? { dirId }
-            : {};
+            : copyToOpenlist && openlistCopyTarget
+              ? { copyToOpenlist: true }
+              : {};
       const res = await api.offline.add({ account, urls, ...target });
       setResults(res.results);
       setInvalid(res.invalid);
       if (res.added > 0) {
-        toast.success(
-          `已添加 ${res.added} 个云下载任务${res.followup ? "，下载完成后会自动生成 strm" : ""}`,
-        );
+        const suffix = !res.followup
+          ? ""
+          : mode === "task"
+            ? "，下载完成后会自动生成 strm"
+            : "，下载完成后会让 OpenList 复制走";
+        toast.success(`已添加 ${res.added} 个云下载任务${suffix}`);
         onAdded();
       }
       if (res.failed === 0 && res.invalid.length === 0) {
@@ -356,6 +374,22 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
                     </Button>
                   )}
                 </div>
+              )}
+
+              {mode === "dir" && !dirId && openlistCopyTarget && (
+                <label className="ml-6 flex items-start gap-2 cursor-pointer text-sm">
+                  <Checkbox
+                    checked={copyToOpenlist}
+                    onCheckedChange={(v) => setCopyToOpenlist(v === true)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    下载完成后让 OpenList 复制走
+                    <span className="block text-xs text-muted-foreground">
+                      复制到 {openlistCopyTarget}（在设置页配置）
+                    </span>
+                  </span>
+                </label>
               )}
             </div>
           </div>

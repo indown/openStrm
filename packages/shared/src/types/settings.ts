@@ -87,4 +87,16 @@ export type AppSettings = {
   };
   /** 115 生活事件监控（增量监测网盘文件变动） */
   lifeMonitor?: LifeMonitorSettings;
+  /** 云下载完成后，让 OpenList 把产物复制到另一个存储（如挂载的本地磁盘） */
+  openlistCopy?: OpenlistCopySettings;
 } & Record<string, unknown>;
+
+/** 「复制到 OpenList」：三项都填了才算配置完成 */
+export type OpenlistCopySettings = {
+  /** 用哪个 openlist 账号调 API（「账户」页里的账号名） */
+  account?: string;
+  /** 115 默认下载目录在 OpenList 里的完整路径，如 /115/云下载 */
+  srcDir?: string;
+  /** 复制目标目录（另一个存储里的路径），如 /local/downloads */
+  dstDir?: string;
+};

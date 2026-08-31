@@ -80,6 +80,16 @@ test("云下载：完成与失败", async () => {
   assert.equal(await notify({ type: "offline-done", name: "y", detail: "", target: "" }), false);
 });
 
+test("云下载：复制到 OpenList 的成败共用 offline 开关", async () => {
+  assert.equal(await notify({ type: "offline-copied", name: "Show <S01>", target: "/local/dl" }), true);
+  assert.match(sent[0].text, /📦 <b>已复制到 OpenList<\/b>\nShow &lt;S01&gt;\n→ \/local\/dl/);
+  assert.equal(await notify({ type: "offline-copy-failed", name: "x", detail: "OpenList 复制失败：存储空间不足" }), true);
+  assert.match(sent[1].text, /❌ <b>云下载未能复制到 OpenList<\/b>\nx\nOpenList 复制失败：存储空间不足/);
+  replaceAppSettings({ ...baseline, telegram: { botToken: "t", chatId: "-100", notify: { offline: false } } });
+  assert.equal(await notify({ type: "offline-copied", name: "y", target: "" }), false);
+  assert.equal(await notify({ type: "offline-copy-failed", name: "y", detail: "" }), false);
+});
+
 test("Emby 入库：按剧聚合、连号折叠、电影带年份；批量只报总数；开关可关", async () => {
   const groups = [
     { kind: "tv" as const, name: "怪奇物语", season: 5, episodes: [5, 6, 7, 9], count: 4 },

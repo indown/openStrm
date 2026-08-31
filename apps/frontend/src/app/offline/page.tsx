@@ -313,7 +313,7 @@ export default function OfflinePage() {
         )}
         {data && <Badge variant="outline">共 {data.count} 个任务</Badge>}
         {data?.watcher.pending ? (
-          <Badge variant="secondary">{data.watcher.pending} 个下载完成后待生成 strm</Badge>
+          <Badge variant="secondary">{data.watcher.pending} 个回执待兑现（生成 strm / 复制到 OpenList）</Badge>
         ) : null}
         {data?.watcher.lastError && (
           <span className="text-xs text-destructive break-all">回执循环最近一次出错：{data.watcher.lastError}</span>
@@ -538,21 +538,26 @@ export default function OfflinePage() {
 }
 
 function FollowupLine({ followup, originPath }: { followup: OfflineFollowup; originPath?: string }) {
-  const target = `${originPath ?? followup.taskId}${followup.subPath ? `/${followup.subPath}` : ""}`;
+  const isCopy = followup.kind === "openlist-copy";
+  const target = isCopy
+    ? (followup.copyDstDir ?? "")
+    : `${originPath ?? followup.taskId}${followup.subPath ? `/${followup.subPath}` : ""}`;
   const badge =
     followup.status === "done"
-      ? { variant: "default" as const, label: "strm 已生成" }
+      ? { variant: "default" as const, label: isCopy ? "已复制到 OpenList" : "strm 已生成" }
       : followup.status === "failed"
-        ? { variant: "destructive" as const, label: "strm 未生成" }
-        : { variant: "outline" as const, label: "完成后生成 strm" };
+        ? { variant: "destructive" as const, label: isCopy ? "OpenList 复制失败" : "strm 未生成" }
+        : { variant: "outline" as const, label: isCopy ? "完成后复制到 OpenList" : "完成后生成 strm" };
   return (
     <div className="mt-1 flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
       <Badge variant={badge.variant} className="text-[10px] px-1.5 py-0">
         {badge.label}
       </Badge>
-      <span className="truncate max-w-[220px]" title={target}>
-        → {target}
-      </span>
+      {target && (
+        <span className="truncate max-w-[220px]" title={target}>
+          → {target}
+        </span>
+      )}
       {followup.detail && <span className="break-all">{followup.detail}</span>}
     </div>
   );

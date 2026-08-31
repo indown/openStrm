@@ -22,6 +22,7 @@ const addSchema = z.object({
   taskId: z.string().optional(),
   subPath: z.string().optional(),
   generateStrm: z.boolean().optional(),
+  copyToOpenlist: z.boolean().optional(),
 });
 
 const removeSchema = z.object({
