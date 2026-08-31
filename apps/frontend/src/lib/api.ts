@@ -274,6 +274,8 @@ export interface OfflineAddInput {
   generateStrm?: boolean;
   /** 只能配合 115 默认目录（不带 dirId / taskId） */
   copyToOpenlist?: boolean;
+  /** 这次复制到哪（OpenList 完整路径）；不给用设置页的 dstDir */
+  copyDstDir?: string;
 }
 export interface OfflineDownPath {
   id: string;

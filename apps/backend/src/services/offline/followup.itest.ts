@@ -103,8 +103,8 @@ before(() => {
         if (olListError) throw olListError;
         return olNames;
       },
-      copy: async (cfg, name) => {
-        olCopyCalls.push({ srcDir: cfg.srcDir, dstDir: cfg.dstDir, name });
+      copy: async (cfg, name, dstDir) => {
+        olCopyCalls.push({ srcDir: cfg.srcDir, dstDir, name });
         if (olCopyError) throw olCopyError;
         return olCopyResult;
       },
@@ -355,6 +355,26 @@ test("复制回执走全程：下完 → 出现在 OpenList → 提交复制 →
   assert.equal(notified.length, 1);
   assert.deepEqual(notified[0], { type: "offline-copied", name: "Show.S01", target: "/local/dl" });
   assert.equal(getOfflineWatcherStatus().pending, 0);
+});
+
+test("加任务时选了目的子目录：整条链路用它，不用设置里的 dstDir", async () => {
+  const r = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", copyToOpenlist: true, copyDstDir: "/local/dl/movies/" });
+  await stopOfflineWatcher();
+  assert.equal(r.followup, true);
+  assert.equal(listFollowups()[0].copyDstDir, "/local/dl/movies", "尾斜杠在登记时就归一化");
+
+  pages = [[row({})]];
+  olNames = ["Show.S01"];
+  olCopyResult = olTask({ id: "tid1" });
+  await tickFollowups();
+  assert.deepEqual(olCopyCalls, [{ srcDir: "/115/云下载", dstDir: "/local/dl/movies", name: "Show.S01" }]);
+
+  olTasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: Date.now() })] };
+  await tickFollowups();
+  const [f] = listFollowups();
+  assert.equal(f.status, "done");
+  assert.match(f.detail, /OpenList 已复制到 \/local\/dl\/movies/);
+  assert.deepEqual(notified.at(-1), { type: "offline-copied", name: "Show.S01", target: "/local/dl/movies" });
 });
 
 test("115 下载失败的复制回执：作废并用复制的通知文案", async () => {

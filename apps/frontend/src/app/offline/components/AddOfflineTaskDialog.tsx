@@ -60,8 +60,12 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
   const [results, setResults] = useState<OfflineAddResult[] | null>(null);
   const [invalid, setInvalid] = useState<string[]>([]);
   const [copyToOpenlist, setCopyToOpenlist] = useState(false);
-  /** 设置页的「复制到 OpenList」配齐了才显示勾选框；null = 还没查到 */
-  const [openlistCopyTarget, setOpenlistCopyTarget] = useState<string | null>(null);
+  /** 设置页的「复制到 OpenList」配齐了才显示勾选框；null = 没配置或还没查到 */
+  const [openlistCopy, setOpenlistCopy] = useState<{ account: string; dstDir: string } | null>(null);
+  /** 相对设置页 dstDir 已进入的子目录段：这次复制到 dstDir/…segments */
+  const [copySegments, setCopySegments] = useState<string[]>([]);
+  const [copySubdirs, setCopySubdirs] = useState<DirectoryNode[]>([]);
+  const [copySubdirLoading, setCopySubdirLoading] = useState(false);
 
   // 每次打开都从头来：清链接、回到任务目录、重新拉这个账号的任务和 115 的默认目录
   useEffect(() => {
@@ -75,13 +79,16 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
     setDirPath("");
     setGenerateStrm(true);
     setCopyToOpenlist(false);
-    setOpenlistCopyTarget(null);
+    setCopySegments([]);
+    setOpenlistCopy(null);
     api.settings
       .get()
       .then((s) => {
         if (cancelled) return;
         const c = s.openlistCopy;
-        setOpenlistCopyTarget(c?.account && c?.srcDir && c?.dstDir ? c.dstDir : null);
+        if (!c?.account || !c.srcDir?.trim() || !c.dstDir?.trim()) return;
+        const dst = c.dstDir.trim().replace(/\/+$/, "");
+        setOpenlistCopy({ account: c.account, dstDir: dst.startsWith("/") ? dst : `/${dst}` });
       })
       .catch(() => {});
     setTasksLoading(true);
@@ -140,6 +147,29 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
     };
   }, [open, mode, taskId, taskAccount, taskOriginPath, subSegments]);
 
+  // OpenList 目的地浏览：勾上「复制走」后从设置页的 dstDir 出发列子目录
+  const copyBase = openlistCopy?.dstDir;
+  const copyAccount = openlistCopy?.account;
+  useEffect(() => {
+    if (!open || mode !== "dir" || dirId || !copyToOpenlist || !copyBase || !copyAccount) return;
+    let cancelled = false;
+    setCopySubdirLoading(true);
+    api.directory
+      .remote(copyAccount, [copyBase, ...copySegments].join("/"))
+      .then((dirs) => {
+        if (!cancelled) setCopySubdirs(dirs ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setCopySubdirs([]);
+      })
+      .finally(() => {
+        if (!cancelled) setCopySubdirLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, mode, dirId, copyToOpenlist, copyBase, copyAccount, copySegments]);
+
   const lineCount = urls
     .split(/\r?\n/)
     .map((s) => s.trim())
@@ -158,13 +188,14 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
     setResults(null);
     setInvalid([]);
     try {
+      const copyDst = openlistCopy ? [openlistCopy.dstDir, ...copySegments].join("/") : "";
       const target =
         mode === "task"
           ? { taskId, subPath: subSegments.join("/"), generateStrm }
           : dirId
             ? { dirId }
-            : copyToOpenlist && openlistCopyTarget
-              ? { copyToOpenlist: true }
+            : copyToOpenlist && openlistCopy
+              ? { copyToOpenlist: true, ...(copySegments.length ? { copyDstDir: copyDst } : {}) }
               : {};
       const res = await api.offline.add({ account, urls, ...target });
       setResults(res.results);
@@ -174,7 +205,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
           ? ""
           : mode === "task"
             ? "，下载完成后会自动生成 strm"
-            : "，下载完成后会让 OpenList 复制走";
+            : `，下载完成后会让 OpenList 复制到 ${copyDst}`;
         toast.success(`已添加 ${res.added} 个云下载任务${suffix}`);
         onAdded();
       }
@@ -376,20 +407,81 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
                 </div>
               )}
 
-              {mode === "dir" && !dirId && openlistCopyTarget && (
-                <label className="ml-6 flex items-start gap-2 cursor-pointer text-sm">
-                  <Checkbox
-                    checked={copyToOpenlist}
-                    onCheckedChange={(v) => setCopyToOpenlist(v === true)}
-                    className="mt-0.5"
-                  />
-                  <span>
-                    下载完成后让 OpenList 复制走
-                    <span className="block text-xs text-muted-foreground">
-                      复制到 {openlistCopyTarget}（在设置页配置）
+              {mode === "dir" && !dirId && openlistCopy && (
+                <div className="ml-6 space-y-2">
+                  <label className="flex items-start gap-2 cursor-pointer text-sm">
+                    <Checkbox
+                      checked={copyToOpenlist}
+                      onCheckedChange={(v) => {
+                        setCopyToOpenlist(v === true);
+                        setCopySegments([]);
+                      }}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      下载完成后让 OpenList 复制走
+                      <span className="block text-xs text-muted-foreground">
+                        复制到 {[openlistCopy.dstDir, ...copySegments].join("/")}（根目录在设置页配置）
+                      </span>
                     </span>
-                  </span>
-                </label>
+                  </label>
+
+                  {copyToOpenlist && (
+                    <div className="border rounded-md overflow-hidden">
+                      <div className="flex items-center gap-1 px-3 py-2 text-xs bg-muted/40 border-b flex-wrap min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => setCopySegments([])}
+                          className={`hover:text-foreground truncate max-w-[240px] ${
+                            copySegments.length === 0 ? "font-medium text-foreground cursor-default" : "underline cursor-pointer"
+                          }`}
+                          title={openlistCopy.dstDir}
+                        >
+                          {openlistCopy.dstDir}
+                        </button>
+                        {copySegments.map((seg, idx) => (
+                          <span key={idx} className="flex items-center gap-1 min-w-0">
+                            <ChevronRight className="h-3 w-3 shrink-0" />
+                            <button
+                              type="button"
+                              onClick={() => setCopySegments((prev) => prev.slice(0, idx + 1))}
+                              className={`hover:text-foreground truncate max-w-[120px] ${
+                                idx === copySegments.length - 1
+                                  ? "font-medium text-foreground cursor-default"
+                                  : "underline cursor-pointer"
+                              }`}
+                              title={seg}
+                            >
+                              {seg}
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                      <div className="max-h-[160px] overflow-auto">
+                        {copySubdirLoading ? (
+                          <div className="p-3 text-center text-xs text-muted-foreground">加载中...</div>
+                        ) : copySubdirs.length === 0 ? (
+                          <div className="p-3 text-center text-xs text-muted-foreground">此目录下没有子文件夹</div>
+                        ) : (
+                          <ul className="py-1">
+                            {copySubdirs.map((d) => (
+                              <li key={d.id}>
+                                <button
+                                  type="button"
+                                  onClick={() => setCopySegments((prev) => [...prev, d.name])}
+                                  className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left text-sm"
+                                >
+                                  <FolderOpen className="h-4 w-4 text-sky-500 shrink-0" />
+                                  <span className="truncate">{d.name}</span>
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>

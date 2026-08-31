@@ -23,6 +23,7 @@ const addSchema = z.object({
   subPath: z.string().optional(),
   generateStrm: z.boolean().optional(),
   copyToOpenlist: z.boolean().optional(),
+  copyDstDir: z.string().optional(),
 });
 
 const removeSchema = z.object({

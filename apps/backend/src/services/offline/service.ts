@@ -152,8 +152,8 @@ interface Deps {
   openlist: {
     /** 刷新 srcDir 的缓存并返回其中的条目名 */
     listNames: (cfg: OpenlistCopyConfig) => Promise<string[]>;
-    /** 提交复制单个条目；同存储立即完成时没有任务，返回 null */
-    copy: (cfg: OpenlistCopyConfig, name: string) => Promise<OpenlistTaskInfo | null>;
+    /** 提交复制单个条目到 dstDir；同存储立即完成时没有任务，返回 null */
+    copy: (cfg: OpenlistCopyConfig, name: string, dstDir: string) => Promise<OpenlistTaskInfo | null>;
     /** 复制任务的进行中 + 已结束列表 */
     copyTasks: (cfg: OpenlistCopyConfig) => Promise<{ undone: OpenlistTaskInfo[]; done: OpenlistTaskInfo[] }>;
   };
@@ -181,7 +181,7 @@ const realDeps: Deps = {
   notify,
   openlist: {
     listNames: async (cfg) => (await openlistListDir(cfg.account, cfg.srcDir, { refresh: true })).map((e) => e.name),
-    copy: async (cfg, name) => (await openlistCopy(cfg.account, cfg.srcDir, cfg.dstDir, [name]))[0] ?? null,
+    copy: async (cfg, name, dstDir) => (await openlistCopy(cfg.account, cfg.srcDir, dstDir, [name]))[0] ?? null,
     copyTasks: (cfg) => openlistCopyTasks(cfg.account),
   },
 };
@@ -255,10 +255,12 @@ export interface AddOfflineOptions {
   /** 任务目录模式下，下载完成后是否自动生成 strm，默认开 */
   generateStrm?: boolean;
   /**
-   * 下载完成后让 OpenList 把产物复制到设置页配置的目标目录。
+   * 下载完成后让 OpenList 把产物复制到目标目录。
    * 只能配合 115 默认下载目录（不带 taskId 也不带 dirId）：srcDir 是按默认目录配置的
    */
   copyToOpenlist?: boolean;
+  /** 这次复制到哪（OpenList 完整路径）；不给就用设置页的 dstDir。目录在加任务时冻结进回执 */
+  copyDstDir?: string;
 }
 
 export interface AddOfflineResponse {
@@ -340,6 +342,7 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
   }
   const copyFollowup = Boolean(copyCfg) && ok.length > 0;
   if (copyFollowup && copyCfg) {
+    const copyDst = normDir(opts.copyDstDir) || copyCfg.dstDir;
     addFollowups(
       ok.map((r) => ({
         kind: "openlist-copy" as const,
@@ -353,7 +356,7 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
         detail: "等待 115 下载完成",
         attempts: 0,
         misses: 0,
-        copyDstDir: copyCfg.dstDir,
+        copyDstDir: copyDst,
       })),
     );
     startOfflineWatcher();
@@ -664,19 +667,21 @@ async function submitOpenlistCopy(f: OfflineFollowup, t: OfflineTask): Promise<v
       return;
     }
     f.misses = 0;
-    const copyTask = await deps.openlist.copy(cfg, name);
+    // 目录在加任务时冻结在回执上；老回执或没带就退回设置页的 dstDir
+    const dstDir = f.copyDstDir || cfg.dstDir;
+    const copyTask = await deps.openlist.copy(cfg, name, dstDir);
     f.name = name;
-    f.copyDstDir = cfg.dstDir;
+    f.copyDstDir = dstDir;
     f.copySubmittedAt = Date.now();
     if (!copyTask?.id) {
       // 同存储或极小文件会立即完成、没有任务可盯；OpenList 既然收下了就当办成了
-      finish(f, "done", `OpenList 已复制到 ${cfg.dstDir}`);
-      void deps.notify({ type: "offline-copied", name, target: cfg.dstDir }).catch(() => {});
+      finish(f, "done", `OpenList 已复制到 ${dstDir}`);
+      void deps.notify({ type: "offline-copied", name, target: dstDir }).catch(() => {});
       return;
     }
     f.copyTaskId = copyTask.id;
     f.detail = "已提交 OpenList 复制";
-    log.info(`云下载完成：${name} → 已提交 OpenList 复制到 ${cfg.dstDir}`);
+    log.info(`云下载完成：${name} → 已提交 OpenList 复制到 ${dstDir}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     f.attempts += 1;

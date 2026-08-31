@@ -17,7 +17,15 @@ import { listAccounts } from "../../db/repositories/accounts.js";
 import { getAllTaskHistory, getLatestExecutions, getTaskHistory } from "../task-history.js";
 import { cancelRunningTask, getRunningTask, listRunningTaskIds } from "../task/registry.js";
 import { startTask } from "../task/runner.js";
-import { addOfflineTasks, getOfflineWatcherStatus, listOfflineTasks, resolveAccount115, type AddOfflineResponse } from "../offline/service.js";
+import {
+  addOfflineTasks,
+  getOfflineWatcherStatus,
+  listOfflineTasks,
+  resolveAccount115,
+  resolveOpenlistCopyConfig,
+  type AddOfflineResponse,
+} from "../offline/service.js";
+import { openlistListDir } from "../openlist/client.js";
 import { getLifeMonitorStatus } from "../life/monitor.js";
 import { normalizeOfflineUrls } from "../cloud-115/offline.js";
 import { fsDirGetId, listDirEntries } from "../cloud-115/client.js";
@@ -71,7 +79,15 @@ export interface CommandDeps {
   runningPercent(taskId: string): string | null;
   startTask(taskId: string): Promise<{ ok: boolean; message: string }>;
   cancelTask(taskId: string): boolean;
-  addOffline(input: { urls: string; taskId?: string; subPath?: string; copyToOpenlist?: boolean }): Promise<AddOfflineResponse>;
+  addOffline(input: {
+    urls: string;
+    taskId?: string;
+    subPath?: string;
+    copyToOpenlist?: boolean;
+    copyDstDir?: string;
+  }): Promise<AddOfflineResponse>;
+  /** OpenList 目的地浏览：path 下的子目录名（用「复制到 OpenList」配置的账号） */
+  listOpenlistDirs(path: string): Promise<string[]>;
   listOffline(): Promise<{ tasks: OfflineRow[]; count: number; quota: number | null; total: number | null }>;
   offlinePending(): number;
   lifeStatus(): { running: boolean; account: string | null; lastError: string | null };
@@ -126,6 +142,10 @@ const realDeps: CommandDeps = {
   },
   cancelTask: (taskId) => cancelRunningTask(taskId, "Telegram 取消"),
   addOffline: (input) => addOfflineTasks(input),
+  listOpenlistDirs: async (path) => {
+    const cfg = resolveOpenlistCopyConfig();
+    return (await openlistListDir(cfg.account, path)).filter((e) => e.is_dir).map((e) => e.name);
+  },
   listOffline: async () => {
     const page = await listOfflineTasks(undefined, 1);
     return {
@@ -458,6 +478,13 @@ function openlistCopyReady(settings: AppSettings): boolean {
   return Boolean(c?.account && c.srcDir?.trim() && c.dstDir?.trim());
 }
 
+/** 去尾斜杠、补头斜杠（和 offline/service 的 normDir 同规则，输入已保证非空） */
+function normDirInput(input: string): string {
+  const t = input.trim().replace(/\/+$/, "");
+  if (!t) return "/";
+  return t.startsWith("/") ? t : `/${t}`;
+}
+
 async function finishOffline(
   bot: BotLike,
   chatId: string,
@@ -466,6 +493,7 @@ async function finishOffline(
   task: TaskDefinition | undefined,
   subPath: string,
   copyToOpenlist = false,
+  copyDstDir?: string,
 ): Promise<void> {
   let text: string;
   try {
@@ -474,9 +502,15 @@ async function finishOffline(
       ...(task ? { taskId: task.id } : {}),
       ...(task && subPath ? { subPath } : {}),
       ...(copyToOpenlist ? { copyToOpenlist: true } : {}),
+      ...(copyToOpenlist && copyDstDir ? { copyDstDir } : {}),
     });
     const target = task ? `${task.originPath}${subPath ? `/${subPath}` : ""}` : "";
-    const defaultDirNote = `\n目录：115 默认目录${copyToOpenlist && r.followup ? "，下完让 OpenList 复制走" : ""}`;
+    const copyNote = !(copyToOpenlist && r.followup)
+      ? ""
+      : copyDstDir
+        ? `，下完让 OpenList 复制到 ${esc(copyDstDir)}`
+        : "，下完让 OpenList 复制走";
+    const defaultDirNote = `\n目录：115 默认目录${copyNote}`;
     const lines = [`☁️ 已添加 ${r.added} 个云下载${task ? `\n目录：${esc(target)}${r.followup ? "，下完自动生成 strm" : ""}` : defaultDirNote}`];
     const failed = r.results.filter((x) => !x.ok);
     if (failed.length) lines.push("", `未接受 ${failed.length} 条：`, ...failed.slice(0, 5).map((x) => `• ${esc(shortName(x.url, 40))} — ${esc(x.message ?? "115 未接受")}`));
@@ -567,21 +601,25 @@ function browsePerm(settings: AppSettings, kind: "offline" | "share"): string | 
 function renderBrowse(
   token: string,
   action: PendingAction,
-  task: TaskDefinition,
+  /** 浏览的根：任务的 originPath，或 OpenList 目的地浏览的 dstDir */
+  root: string,
   browse: BrowseState,
 ): { text: string; buttons: InlineKeyboard } {
+  const copy = browse.openlistBase != null;
   const offline = action.kind === "offline";
-  const target = [task.originPath, ...browse.segments].join("/");
+  const target = [root, ...browse.segments].join("/");
   const pages = Math.max(1, Math.ceil(browse.dirs.length / BROWSE_PAGE_SIZE));
   const page = Math.min(browse.page, pages - 1);
   const lines = [
     offline ? `☁️ ${action.urls.length} 条链接` : `📦 <b>${esc(action.name)}</b>`,
-    `${offline ? "下载到" : "转存到"}：<b>${esc(target)}</b>`,
+    `${copy ? "115 下完后，OpenList 复制到" : offline ? "下载到" : "转存到"}：<b>${esc(target)}</b>`,
     browse.dirs.length === 0
       ? "这一层没有子文件夹。"
       : `子文件夹 ${browse.dirs.length} 个${pages > 1 ? `（第 ${page + 1}/${pages} 页）` : ""}，点进去，或者就放这一层：`,
   ];
-  const buttons: InlineKeyboard = [[{ text: offline ? "⬇️ 就放这里" : "⬇️ 就存这里", callback_data: `go:${token}` }]];
+  const buttons: InlineKeyboard = [
+    [{ text: copy ? "⬇️ 就复制到这里" : offline ? "⬇️ 就放这里" : "⬇️ 就存这里", callback_data: `go:${token}` }],
+  ];
   const start = page * BROWSE_PAGE_SIZE;
   for (let i = start; i < Math.min(start + BROWSE_PAGE_SIZE, browse.dirs.length); i++) {
     buttons.push([{ text: `📁 ${shortName(browse.dirs[i], 40)}`, callback_data: `nav:${token}:${i}` }]);
@@ -610,7 +648,24 @@ async function showBrowse(
   const dirs = await deps.listSubdirs(task, segments);
   const browse: BrowseState = { taskId: task.id, segments, dirs, page: 0 };
   updatePending(token, { ...action, browse });
-  const { text, buttons } = renderBrowse(token, action, task, browse);
+  const { text, buttons } = renderBrowse(token, action, task.originPath, browse);
+  await edit(bot, chatId, messageId, text, buttons);
+}
+
+/** OpenList 目的地浏览的对应物：根是进入浏览那一刻设置页的 dstDir，冻结在 browse 状态里 */
+async function showCopyBrowse(
+  bot: BotLike,
+  chatId: string,
+  messageId: number | undefined,
+  token: string,
+  action: PendingAction,
+  base: string,
+  segments: string[],
+): Promise<void> {
+  const dirs = await deps.listOpenlistDirs([base, ...segments].join("/"));
+  const browse: BrowseState = { taskId: "", openlistBase: base, segments, dirs, page: 0 };
+  updatePending(token, { ...action, browse });
+  const { text, buttons } = renderBrowse(token, action, base, browse);
   await edit(bot, chatId, messageId, text, buttons);
 }
 
@@ -708,10 +763,20 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
           await bot.answerCallback(q.id, denied);
           return;
         }
-        if (kind === "offline" && (dest === "default" || dest === "defcopy")) {
+        if (kind === "offline" && dest === "default") {
           takePending(token);
           await bot.answerCallback(q.id, "提交中…");
-          await finishOffline(bot, chatId, messageId, (pending.action as { urls: string[] }).urls, undefined, "", dest === "defcopy");
+          await finishOffline(bot, chatId, messageId, (pending.action as { urls: string[] }).urls, undefined, "");
+          return;
+        }
+        if (kind === "offline" && dest === "defcopy") {
+          // 先从设置页的 dstDir 出发选「这次复制到哪」，选完（就复制到这里）才提交
+          if (!openlistCopyReady(settings)) {
+            await bot.answerCallback(q.id, "「复制到 OpenList」的配置不完整，去设置页看看");
+            return;
+          }
+          await bot.answerCallback(q.id, "读取目录…");
+          await showCopyBrowse(bot, chatId, messageId, token, pending.action, normDirInput(settings.openlistCopy!.dstDir!), []);
           return;
         }
         const task = deps.listTasks().find((t) => t.id === dest);
@@ -743,23 +808,30 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
           await bot.answerCallback(q.id, denied);
           return;
         }
-        const task = deps.listTasks().find((t) => t.id === browse.taskId);
-        if (!task) {
+        // OpenList 目的地浏览没有任务；任务目录浏览才查任务还在不在
+        const copyBase = browse.openlistBase ?? null;
+        const task = copyBase != null ? undefined : deps.listTasks().find((t) => t.id === browse.taskId);
+        if (copyBase == null && !task) {
           takePending(token);
           await bot.answerCallback(q.id, "任务不存在");
           await edit(bot, chatId, messageId, "这个任务已经不存在了，请重新发一次链接。");
           return;
         }
+        const root = copyBase ?? task!.originPath;
         if (action === "go") {
           // 提交才取走：连点两下不会重复提交
           takePending(token);
           const subPath = browse.segments.join("/");
           if (pending.action.kind === "offline") {
             await bot.answerCallback(q.id, "提交中…");
-            await finishOffline(bot, chatId, messageId, pending.action.urls, task, subPath);
+            if (copyBase != null) {
+              await finishOffline(bot, chatId, messageId, pending.action.urls, undefined, "", true, [root, ...browse.segments].join("/"));
+            } else {
+              await finishOffline(bot, chatId, messageId, pending.action.urls, task, subPath);
+            }
           } else {
             await bot.answerCallback(q.id, "转存中…");
-            await finishShare(bot, chatId, messageId, pending.action, task, subPath);
+            await finishShare(bot, chatId, messageId, pending.action, task!, subPath);
           }
           return;
         }
@@ -772,7 +844,7 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
           }
           const next: BrowseState = { ...browse, page };
           updatePending(token, { ...pending.action, browse: next });
-          const { text, buttons } = renderBrowse(token, pending.action, task, next);
+          const { text, buttons } = renderBrowse(token, pending.action, root, next);
           await bot.answerCallback(q.id);
           await edit(bot, chatId, messageId, text, buttons);
           return;
@@ -790,7 +862,8 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
           segments = [...browse.segments, name];
         }
         await bot.answerCallback(q.id, "读取目录…");
-        await showBrowse(bot, chatId, messageId, token, pending.action, task, segments);
+        if (copyBase != null) await showCopyBrowse(bot, chatId, messageId, token, pending.action, copyBase, segments);
+        else await showBrowse(bot, chatId, messageId, token, pending.action, task!, segments);
         return;
       }
       default:

@@ -5,10 +5,16 @@
  */
 import { randomBytes } from "node:crypto";
 
-/** 选完任务后的目录浏览状态：往哪个任务的哪一层放、当前层有哪些子目录（按钮按序号引用，中文目录名塞不进 callback_data 的 64 字节） */
+/** 选完目的地后的目录浏览状态：往哪一层放、当前层有哪些子目录（按钮按序号引用，中文目录名塞不进 callback_data 的 64 字节） */
 export interface BrowseState {
+  /** 浏览任务目录时的任务 id；OpenList 目的地浏览（openlistBase 模式）下是空串 */
   taskId: string;
-  /** 已进入的子目录段，相对 task.originPath */
+  /**
+   * 「115 默认目录 + OpenList 复制走」的目的地浏览：根是进入浏览时设置页的 dstDir，
+   * 冻结在这里；设上就代表在浏览 OpenList，segments 相对它
+   */
+  openlistBase?: string;
+  /** 已进入的子目录段，相对 task.originPath / openlistBase */
   segments: string[];
   /** 当前层的子目录名 */
   dirs: string[];

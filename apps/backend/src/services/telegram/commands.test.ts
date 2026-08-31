@@ -46,6 +46,8 @@ let running: string[] = [];
 /** 桩 115 目录树：segments.join("/") → 子目录名 */
 let subdirTree: Record<string, string[]> = {};
 let subdirError: Error | null = null;
+/** 桩 OpenList 目录树：完整路径 → 子目录名 */
+let olDirTree: Record<string, string[]> = {};
 
 const deps: Partial<CommandDeps> = {
   settings: () => settings,
@@ -77,6 +79,10 @@ const deps: Partial<CommandDeps> = {
     if (subdirError) throw subdirError;
     return subdirTree[segments.join("/")] ?? [];
   },
+  listOpenlistDirs: async (path) => {
+    calls.push({ fn: "listOpenlistDirs", args: path });
+    return olDirTree[path] ?? [];
+  },
 };
 
 const msg = (text: string, o: { user?: number; chat?: number; type?: string } = {}): TelegramUpdate => ({
@@ -106,6 +112,7 @@ beforeEach(() => {
   sent.length = 0; edited.length = 0; answered.length = 0; calls.length = 0; running = [];
   subdirTree = { "": ["某剧", "另一部"], "某剧": ["Season 1"], "某剧/Season 1": [] };
   subdirError = null;
+  olDirTree = {};
   __test_clearPending();
   setCommandDeps(deps);
 });
@@ -232,23 +239,38 @@ test("贴磁力链接：选任务后先浏览子目录，可逐层进入，「�
   assert.equal(answered.at(-1), "已过期，请重新发一次链接");
 });
 
-test("贴磁力链接：配置了 OpenList 复制才多一个目的地按钮，点了带 copyToOpenlist 提交", async () => {
+test("贴磁力链接：配置了 OpenList 复制才多一个目的地按钮，可进目的子目录再提交", async () => {
   settings.telegram!.allowOfflineAdd = true;
   await handleUpdate(bot, msg("magnet:?xt=urn:btih:aaa"));
   assert.equal(findButton("OpenList 复制走"), undefined, "没配置就不给按钮");
 
-  settings.openlistCopy = { account: "ol", srcDir: "/115/云下载", dstDir: "/local/dl" };
+  settings.openlistCopy = { account: "ol", srcDir: "/115/云下载", dstDir: "/local/dl/" };
+  olDirTree = { "/local/dl": ["movies", "tv"], "/local/dl/movies": [] };
   sent.length = 0;
   await handleUpdate(bot, msg("magnet:?xt=urn:btih:aaa"));
   const btn = findButton("OpenList 复制走")!;
   assert.match(btn.callback_data, /^ofl:[\w-]+:defcopy$/);
 
+  // 点按钮 → 从设置的 dstDir 出发浏览（尾斜杠归一化）
   calls.length = 0;
   await handleUpdate(bot, cb(btn.callback_data));
-  assert.deepEqual(calls, [{ fn: "addOffline", args: { urls: "magnet:?xt=urn:btih:aaa", copyToOpenlist: true } }]);
-  assert.match(edited[0].text, /已添加 1 个云下载[\s\S]*目录：115 默认目录，下完让 OpenList 复制走/);
+  assert.deepEqual(calls, [{ fn: "listOpenlistDirs", args: "/local/dl" }]);
+  assert.match(edited[0].text, /115 下完后，OpenList 复制到：<b>\/local\/dl<\/b>[\s\S]*子文件夹 2 个/);
+  const flat0 = edited[0].buttons!.flat();
+  assert.ok(flat0.some((b) => b.text.includes("就复制到这里")));
 
-  await handleUpdate(bot, cb(btn.callback_data));
+  // 进 movies → 就复制到这里 → 带 copyDstDir 提交
+  await handleUpdate(bot, cb(flat0.find((b) => b.text.includes("movies"))!.callback_data));
+  assert.match(edited[1].text, /OpenList 复制到：<b>\/local\/dl\/movies<\/b>[\s\S]*没有子文件夹/);
+  const go = edited[1].buttons!.flat().find((b) => b.text.includes("就复制到这里"))!;
+  calls.length = 0;
+  await handleUpdate(bot, cb(go.callback_data));
+  assert.deepEqual(calls, [
+    { fn: "addOffline", args: { urls: "magnet:?xt=urn:btih:aaa", copyToOpenlist: true, copyDstDir: "/local/dl/movies" } },
+  ]);
+  assert.match(edited[2].text, /已添加 1 个云下载[\s\S]*目录：115 默认目录，下完让 OpenList 复制到 \/local\/dl\/movies/);
+
+  await handleUpdate(bot, cb(go.callback_data));
   assert.equal(calls.length, 1, "提交后 token 已取走，再点不会重复提交");
 });
 
