@@ -60,7 +60,13 @@ const transport: OfflineTransport = {
   async web() { throw new Error("回执测试里不该走 web 传输层"); },
   async ssp(_acc, _ac, payload) {
     const urls = Object.keys(payload).filter((k) => k.startsWith("url[")).map((k) => String(payload[k]));
-    return { state: true, data: { result: urls.map((url, i) => ({ state: true, info_hash: `hash${i}`, name: `name${i}`, url })) } };
+    // 链接里带 "dup" 的模拟 115 的「任务已存在」：state=false 但仍回 info_hash
+    const result = urls.map((url, i) =>
+      url.includes("dup")
+        ? { state: false, error_msg: "任务已存在", info_hash: `hash${i}`, url }
+        : { state: true, info_hash: `hash${i}`, name: `name${i}`, url },
+    );
+    return { state: true, data: { result } };
   },
   async downPath() { return { state: true, data: [] }; },
 };
@@ -375,6 +381,31 @@ test("加任务时选了目的子目录：整条链路用它，不用设置里�
   assert.equal(f.status, "done");
   assert.match(f.detail, /OpenList 已复制到 \/local\/dl\/movies/);
   assert.deepEqual(notified.at(-1), { type: "offline-copied", name: "Show.S01", target: "/local/dl/movies" });
+});
+
+test("重复提交（任务已存在）：复制回执照登并由循环接管，strm 回执不登", async () => {
+  const r = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:dup", copyToOpenlist: true });
+  await stopOfflineWatcher();
+  assert.equal(r.added, 0, "115 没接受新任务");
+  assert.equal(r.followup, true, "但复制回执要登上");
+  const [f] = listFollowups();
+  assert.equal(f.kind, "openlist-copy");
+  assert.equal(f.infoHash, "hash0");
+
+  // 已存在的任务往往已经下完：下一轮直接提交复制
+  pages = [[row({})]];
+  olNames = ["Show.S01"];
+  olCopyResult = olTask({ id: "tid1" });
+  await tickFollowups();
+  assert.equal(olCopyCalls.length, 1);
+  assert.equal(listFollowups()[0].copyTaskId, "tid1");
+
+  // strm 模式的重复不登：已存在的任务可能不在任务目录里，生成的 strm 路径会是错的
+  await __test_resetOffline();
+  const r2 = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:dup", taskId: "t1" });
+  await stopOfflineWatcher();
+  assert.equal(r2.followup, false);
+  assert.equal(listFollowups().length, 0);
 });
 
 test("115 下载失败的复制回执：作废并用复制的通知文案", async () => {
