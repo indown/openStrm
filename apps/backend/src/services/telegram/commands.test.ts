@@ -60,7 +60,8 @@ const deps: Partial<CommandDeps> = {
   cancelTask: (taskId) => { calls.push({ fn: "cancelTask", args: taskId }); return running.includes(taskId); },
   addOffline: async (input) => {
     calls.push({ fn: "addOffline", args: input });
-    return { account: "115", dirId: "9", dirPath: "tv", added: 1, failed: 1, invalid: [], followup: Boolean(input.taskId),
+    return { account: "115", dirId: "9", dirPath: "tv", added: 1, failed: 1, invalid: [],
+      followup: Boolean(input.taskId) || input.copyToOpenlist === true,
       results: [{ url: "magnet:?xt=urn:btih:aaa", ok: true, infoHash: "h" }, { url: "magnet:?xt=urn:btih:bbb", ok: false, message: "任务已存在" }] };
   },
   listOffline: async () => ({ tasks: [{ name: "Show.mkv", state: "done", statusText: "下载成功", percent: 100 }], count: 1, quota: 5, total: 10 }),
@@ -229,6 +230,26 @@ test("贴磁力链接：选任务后先浏览子目录，可逐层进入，「�
   await handleUpdate(bot, cb(go.callback_data));
   assert.equal(calls.length, 1, "提交后 token 已取走，再点不会重复提交");
   assert.equal(answered.at(-1), "已过期，请重新发一次链接");
+});
+
+test("贴磁力链接：配置了 OpenList 复制才多一个目的地按钮，点了带 copyToOpenlist 提交", async () => {
+  settings.telegram!.allowOfflineAdd = true;
+  await handleUpdate(bot, msg("magnet:?xt=urn:btih:aaa"));
+  assert.equal(findButton("OpenList 复制走"), undefined, "没配置就不给按钮");
+
+  settings.openlistCopy = { account: "ol", srcDir: "/115/云下载", dstDir: "/local/dl" };
+  sent.length = 0;
+  await handleUpdate(bot, msg("magnet:?xt=urn:btih:aaa"));
+  const btn = findButton("OpenList 复制走")!;
+  assert.match(btn.callback_data, /^ofl:[\w-]+:defcopy$/);
+
+  calls.length = 0;
+  await handleUpdate(bot, cb(btn.callback_data));
+  assert.deepEqual(calls, [{ fn: "addOffline", args: { urls: "magnet:?xt=urn:btih:aaa", copyToOpenlist: true } }]);
+  assert.match(edited[0].text, /已添加 1 个云下载[\s\S]*目录：115 默认目录，下完让 OpenList 复制走/);
+
+  await handleUpdate(bot, cb(btn.callback_data));
+  assert.equal(calls.length, 1, "提交后 token 已取走，再点不会重复提交");
 });
 
 test("浏览：翻页不重新列目录，返回上一级重列，列目录失败原地重试", async () => {

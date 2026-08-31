@@ -71,7 +71,7 @@ export interface CommandDeps {
   runningPercent(taskId: string): string | null;
   startTask(taskId: string): Promise<{ ok: boolean; message: string }>;
   cancelTask(taskId: string): boolean;
-  addOffline(input: { urls: string; taskId?: string; subPath?: string }): Promise<AddOfflineResponse>;
+  addOffline(input: { urls: string; taskId?: string; subPath?: string; copyToOpenlist?: boolean }): Promise<AddOfflineResponse>;
   listOffline(): Promise<{ tasks: OfflineRow[]; count: number; quota: number | null; total: number | null }>;
   offlinePending(): number;
   lifeStatus(): { running: boolean; account: string | null; lastError: string | null };
@@ -443,10 +443,19 @@ async function beginOffline(bot: BotLike, chatId: string, userId: number, urls: 
     .slice(0, 15)
     .map((t) => [{ text: `📁 ${shortName(t.originPath, 40)}`, callback_data: `ofl:${token}:${t.id}` }]);
   buttons.push([{ text: "☁️ 115 默认目录（不生成 strm）", callback_data: `ofl:${token}:default` }]);
+  if (openlistCopyReady(settings)) {
+    buttons.push([{ text: "☁️ 115 默认目录，下完让 OpenList 复制走", callback_data: `ofl:${token}:defcopy` }]);
+  }
   buttons.push([{ text: "取消", callback_data: `drop:${token}` }]);
   const preview = urls.slice(0, 5).map((u) => `• ${esc(shortName(u, 60))}`);
   if (urls.length > 5) preview.push(`…共 ${urls.length} 条`);
   await bot.sendMessage(chatId, clamp([`收到 ${urls.length} 条链接，下载到哪里？`, ...preview, "", "选任务目录后还能进它的子文件夹；下完会自动生成 strm。"].join("\n")), { buttons });
+}
+
+/** 设置页的「复制到 OpenList」三项都填了才给这个目的地按钮；账号本身好不好使留到提交时报错 */
+function openlistCopyReady(settings: AppSettings): boolean {
+  const c = settings.openlistCopy;
+  return Boolean(c?.account && c.srcDir?.trim() && c.dstDir?.trim());
 }
 
 async function finishOffline(
@@ -456,6 +465,7 @@ async function finishOffline(
   urls: string[],
   task: TaskDefinition | undefined,
   subPath: string,
+  copyToOpenlist = false,
 ): Promise<void> {
   let text: string;
   try {
@@ -463,9 +473,11 @@ async function finishOffline(
       urls: urls.join("\n"),
       ...(task ? { taskId: task.id } : {}),
       ...(task && subPath ? { subPath } : {}),
+      ...(copyToOpenlist ? { copyToOpenlist: true } : {}),
     });
     const target = task ? `${task.originPath}${subPath ? `/${subPath}` : ""}` : "";
-    const lines = [`☁️ 已添加 ${r.added} 个云下载${task ? `\n目录：${esc(target)}${r.followup ? "，下完自动生成 strm" : ""}` : "\n目录：115 默认目录"}`];
+    const defaultDirNote = `\n目录：115 默认目录${copyToOpenlist && r.followup ? "，下完让 OpenList 复制走" : ""}`;
+    const lines = [`☁️ 已添加 ${r.added} 个云下载${task ? `\n目录：${esc(target)}${r.followup ? "，下完自动生成 strm" : ""}` : defaultDirNote}`];
     const failed = r.results.filter((x) => !x.ok);
     if (failed.length) lines.push("", `未接受 ${failed.length} 条：`, ...failed.slice(0, 5).map((x) => `• ${esc(shortName(x.url, 40))} — ${esc(x.message ?? "115 未接受")}`));
     if (r.invalid.length) lines.push(`不支持的链接 ${r.invalid.length} 条`);
@@ -696,10 +708,10 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
           await bot.answerCallback(q.id, denied);
           return;
         }
-        if (kind === "offline" && dest === "default") {
+        if (kind === "offline" && (dest === "default" || dest === "defcopy")) {
           takePending(token);
           await bot.answerCallback(q.id, "提交中…");
-          await finishOffline(bot, chatId, messageId, (pending.action as { urls: string[] }).urls, undefined, "");
+          await finishOffline(bot, chatId, messageId, (pending.action as { urls: string[] }).urls, undefined, "", dest === "defcopy");
           return;
         }
         const task = deps.listTasks().find((t) => t.id === dest);
