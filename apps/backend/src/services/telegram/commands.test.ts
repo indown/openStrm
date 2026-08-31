@@ -43,6 +43,9 @@ const run = (over: Partial<TaskExecutionSummary>): TaskExecutionSummary => ({
 let settings: AppSettings;
 const calls: Array<{ fn: string; args: unknown }> = [];
 let running: string[] = [];
+/** 桩 115 目录树：segments.join("/") → 子目录名 */
+let subdirTree: Record<string, string[]> = {};
+let subdirError: Error | null = null;
 
 const deps: Partial<CommandDeps> = {
   settings: () => settings,
@@ -68,6 +71,11 @@ const deps: Partial<CommandDeps> = {
     return { shareCode: "sc", receiveCode: "rc", name: "剧集合集", count: 2, items: [{ id: "1", name: "S01", isDir: true }, { id: "2", name: "readme.txt", isDir: false }] };
   },
   receiveShare: async (input) => { calls.push({ fn: "receiveShare", args: input }); return { ok: true, message: "已转存，后台同步已启动" }; },
+  listSubdirs: async (task, segments) => {
+    calls.push({ fn: "listSubdirs", args: { taskId: task.id, segments } });
+    if (subdirError) throw subdirError;
+    return subdirTree[segments.join("/")] ?? [];
+  },
 };
 
 const msg = (text: string, o: { user?: number; chat?: number; type?: string } = {}): TelegramUpdate => ({
@@ -95,6 +103,8 @@ const findButton = (needle: string) => lastButtons().flat().find((b) => b.text.i
 beforeEach(() => {
   settings = { telegram: { botToken: "t", chatId: "-100", allowedUsers: [42], allowTaskStart: false, allowOfflineAdd: false, allowShareReceive: false } };
   sent.length = 0; edited.length = 0; answered.length = 0; calls.length = 0; running = [];
+  subdirTree = { "": ["某剧", "另一部"], "某剧": ["Season 1"], "某剧/Season 1": [] };
+  subdirError = null;
   __test_clearPending();
   setCommandDeps(deps);
 });
@@ -177,7 +187,7 @@ test("/history、记录按钮、/offline", async () => {
   assert.match(sent[3].text, /共 1，配额剩余 5\/10[\s\S]*✅ Show\.mkv · 下载成功/);
 });
 
-test("贴磁力链接：未开启时提示；开启后给目的地按钮，点任务目录后调 addOffline 并改写原消息", async () => {
+test("贴磁力链接：选任务后先浏览子目录，可逐层进入，「就放这里」才提交 addOffline", async () => {
   await handleUpdate(bot, msg("magnet:?xt=urn:btih:aaa\nmagnet:?xt=urn:btih:bbb"));
   assert.match(sent[0].text, /云下载功能未开启/);
 
@@ -190,15 +200,69 @@ test("贴磁力链接：未开启时提示；开启后给目的地按钮，点�
   assert.equal(findButton("anime"), undefined, "openlist 账号的任务不能当云下载目的地");
   assert.ok(findButton("115 默认目录"));
 
+  // 选任务 → 列 originPath 这一层，消息被改成浏览界面
   await handleUpdate(bot, cb(dest.callback_data));
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0], { fn: "addOffline", args: { urls: "magnet:?xt=urn:btih:aaa\nmagnet:?xt=urn:btih:bbb", taskId: "t1" } });
-  assert.equal(edited.length, 1, "结果写回原消息，按钮摘掉");
-  assert.match(edited[0].text, /已添加 1 个云下载[\s\S]*目录：tv，下完自动生成 strm[\s\S]*未接受 1 条[\s\S]*任务已存在/);
+  assert.deepEqual(calls, [{ fn: "listSubdirs", args: { taskId: "t1", segments: [] } }]);
+  assert.match(edited[0].text, /下载到：<b>tv<\/b>[\s\S]*子文件夹 2 个/);
+  const flat0 = edited[0].buttons!.flat();
+  assert.ok(flat0.some((b) => b.text.includes("就放这里")));
+  assert.equal(flat0.some((b) => b.text.includes("返回上一级")), false, "根上没有返回");
 
-  await handleUpdate(bot, cb(dest.callback_data));
-  assert.equal(calls.length, 1, "同一个按钮再点一次不会重复提交");
+  // 进入 某剧 → 再进 Season 1（空目录）
+  calls.length = 0;
+  await handleUpdate(bot, cb(flat0.find((b) => b.text.includes("某剧"))!.callback_data));
+  assert.deepEqual(calls, [{ fn: "listSubdirs", args: { taskId: "t1", segments: ["某剧"] } }]);
+  assert.match(edited[1].text, /下载到：<b>tv\/某剧<\/b>/);
+  await handleUpdate(bot, cb(edited[1].buttons!.flat().find((b) => b.text.includes("Season 1"))!.callback_data));
+  assert.match(edited[2].text, /tv\/某剧\/Season 1[\s\S]*没有子文件夹/);
+  assert.ok(edited[2].buttons!.flat().some((b) => b.text.includes("返回上一级")));
+
+  // 就放这里 → 带 subPath 提交，结果写回原消息
+  const go = edited[2].buttons!.flat().find((b) => b.text.includes("就放这里"))!;
+  calls.length = 0;
+  await handleUpdate(bot, cb(go.callback_data));
+  assert.deepEqual(calls, [
+    { fn: "addOffline", args: { urls: "magnet:?xt=urn:btih:aaa\nmagnet:?xt=urn:btih:bbb", taskId: "t1", subPath: "某剧/Season 1" } },
+  ]);
+  assert.match(edited[3].text, /已添加 1 个云下载[\s\S]*目录：tv\/某剧\/Season 1，下完自动生成 strm[\s\S]*未接受 1 条[\s\S]*任务已存在/);
+
+  await handleUpdate(bot, cb(go.callback_data));
+  assert.equal(calls.length, 1, "提交后 token 已取走，再点不会重复提交");
   assert.equal(answered.at(-1), "已过期，请重新发一次链接");
+});
+
+test("浏览：翻页不重新列目录，返回上一级重列，列目录失败原地重试", async () => {
+  settings.telegram!.allowOfflineAdd = true;
+  subdirTree = { "": Array.from({ length: 12 }, (_, i) => `第 ${i + 1} 部`), "第 1 部": [] };
+  await handleUpdate(bot, msg("magnet:?xt=urn:btih:aaa"));
+  await handleUpdate(bot, cb(findButton("tv")!.callback_data));
+
+  // 12 个子目录：第一页 10 个 + 下一页
+  let flat = edited[0].buttons!.flat();
+  assert.match(edited[0].text, /子文件夹 12 个（第 1\/2 页）/);
+  assert.ok(flat.some((b) => b.text.includes("第 10 部")));
+  assert.equal(flat.some((b) => b.text.includes("第 11 部")), false);
+  calls.length = 0;
+  await handleUpdate(bot, cb(flat.find((b) => b.text.includes("下一页"))!.callback_data));
+  assert.equal(calls.length, 0, "翻页不重新列目录");
+  flat = edited[1].buttons!.flat();
+  assert.ok(flat.some((b) => b.text.includes("第 11 部")));
+  assert.ok(flat.some((b) => b.text.includes("上一页")));
+
+  // 从第二页进目录再返回：回到第一页视角
+  await handleUpdate(bot, cb(flat.find((b) => b.text.includes("第 11 部"))!.callback_data));
+  assert.match(edited[2].text, /下载到：<b>tv\/第 11 部<\/b>/);
+  await handleUpdate(bot, cb(edited[2].buttons!.flat().find((b) => b.text.includes("返回上一级"))!.callback_data));
+  assert.match(edited[3].text, /下载到：<b>tv<\/b>/);
+
+  // 列目录失败：报错但 token 没被取走，重点一次就是重试
+  subdirError = new Error("115 接口超时");
+  const into = edited[3].buttons!.flat().find((b) => b.text.includes("第 1 部"))!;
+  await handleUpdate(bot, cb(into.callback_data));
+  assert.match(sent.at(-1)!.text, /操作失败[\s\S]*115 接口超时/);
+  subdirError = null;
+  await handleUpdate(bot, cb(into.callback_data));
+  assert.match(edited.at(-1)!.text, /下载到：<b>tv\/第 1 部<\/b>/);
 });
 
 test("贴磁力链接：默认目录不带 taskId；别人不能点我的按钮；「取消」把消息改成已取消", async () => {
@@ -209,7 +273,7 @@ test("贴磁力链接：默认目录不带 taskId；别人不能点我的按钮�
   await handleUpdate(bot, cb(dflt.callback_data, { user: 7 }));
   assert.equal(calls.length, 0);
   await handleUpdate(bot, cb(dflt.callback_data));
-  assert.deepEqual(calls[0], { fn: "addOffline", args: { urls: "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", taskId: undefined } });
+  assert.deepEqual(calls[0], { fn: "addOffline", args: { urls: "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } });
 
   sent.length = 0; edited.length = 0;
   await handleUpdate(bot, msg("magnet:?xt=urn:btih:ccc"));
@@ -219,7 +283,7 @@ test("贴磁力链接：默认目录不带 taskId；别人不能点我的按钮�
   void drop;
 });
 
-test("贴 115 分享链接：读分享、列前几项、选任务后走 receiveShare", async () => {
+test("贴 115 分享链接：读分享、选任务 → 浏览子目录 → 「就存这里」带 subPath 走 receiveShare", async () => {
   await handleUpdate(bot, msg("https://115cdn.com/s/swhk9bx3wwq?password=sff1"));
   assert.match(sent[0].text, /分享转存功能未开启/);
 
@@ -231,13 +295,21 @@ test("贴 115 分享链接：读分享、列前几项、选任务后走 receiveS
   const dest = findButton("转存到 tv")!;
   calls.length = 0;
   await handleUpdate(bot, cb(dest.callback_data));
+  assert.deepEqual(calls, [{ fn: "listSubdirs", args: { taskId: "t1", segments: [] } }]);
+  assert.match(edited[0].text, /📦 <b>剧集合集<\/b>\n转存到：<b>tv<\/b>/);
+
+  await handleUpdate(bot, cb(edited[0].buttons!.flat().find((b) => b.text.includes("某剧"))!.callback_data));
+  const go = edited[1].buttons!.flat().find((b) => b.text.includes("就存这里"))!;
+  calls.length = 0;
+  await handleUpdate(bot, cb(go.callback_data));
   assert.equal(calls[0].fn, "receiveShare");
   // deepEqual 的断言签名把 calls 收窄成了 args: string，这里要先绕回 unknown
-  const args = calls[0].args as unknown as { task: TaskDefinition; shareCode: string; fileIds: string[] };
+  const args = calls[0].args as unknown as { task: TaskDefinition; shareCode: string; fileIds: string[]; subPath: string };
   assert.equal(args.task.id, "t1");
   assert.equal(args.shareCode, "sc");
   assert.deepEqual(args.fileIds, ["1", "2"]);
-  assert.match(edited[0].text, /✅ <b>剧集合集<\/b>\n目录：tv\n已转存，后台同步已启动/);
+  assert.equal(args.subPath, "某剧");
+  assert.match(edited[2].text, /✅ <b>剧集合集<\/b>\n目录：tv\/某剧\n已转存，后台同步已启动/);
 });
 
 test("其它文本：不认识的链接和闲聊各有提示；/help 说明当前开关状态；/id 回 chat id", async () => {

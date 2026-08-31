@@ -20,10 +20,11 @@ import { startTask } from "../task/runner.js";
 import { addOfflineTasks, getOfflineWatcherStatus, listOfflineTasks, resolveAccount115, type AddOfflineResponse } from "../offline/service.js";
 import { getLifeMonitorStatus } from "../life/monitor.js";
 import { normalizeOfflineUrls } from "../cloud-115/offline.js";
+import { fsDirGetId, listDirEntries } from "../cloud-115/client.js";
 import { getShareData, getShareDirList, shareExtractPayload } from "../cloud-115/share.js";
 import { resolveTaskAccount115, saveSelectionToTask } from "../library/save-to-task.js";
 import { moduleLogger } from "../../lib/logger.js";
-import { createPending, takePending, type PendingAction } from "./session.js";
+import { createPending, peekPending, takePending, updatePending, type BrowseState, type PendingAction } from "./session.js";
 import { clamp, describeRun, esc, fmtTime, shortName, taskLabel } from "./format.js";
 import type { BotCommand, BotLike, InlineKeyboard, TelegramCallbackQuery, TelegramChat, TelegramMessage, TelegramUpdate, TelegramUser } from "./bot.js";
 
@@ -70,7 +71,7 @@ export interface CommandDeps {
   runningPercent(taskId: string): string | null;
   startTask(taskId: string): Promise<{ ok: boolean; message: string }>;
   cancelTask(taskId: string): boolean;
-  addOffline(input: { urls: string; taskId?: string }): Promise<AddOfflineResponse>;
+  addOffline(input: { urls: string; taskId?: string; subPath?: string }): Promise<AddOfflineResponse>;
   listOffline(): Promise<{ tasks: OfflineRow[]; count: number; quota: number | null; total: number | null }>;
   offlinePending(): number;
   lifeStatus(): { running: boolean; account: string | null; lastError: string | null };
@@ -81,7 +82,11 @@ export interface CommandDeps {
     receiveCode: string;
     fileIds: string[];
     items: Array<{ name: string; isDir: boolean }>;
+    /** 相对 task.originPath 的子目录，空串是任务根目录 */
+    subPath: string;
   }): Promise<{ ok: boolean; message: string }>;
+  /** 任务 115 目录（originPath/segments…）下的子目录名，目的地浏览用 */
+  listSubdirs(task: TaskDefinition, segments: string[]): Promise<string[]>;
 }
 
 /** 后端 startTask 的 message 是固定的英文句式，这里说成人话（和任务页保持一致） */
@@ -150,7 +155,7 @@ const realDeps: CommandDeps = {
       items: list.map((it) => ({ id: String(it.id), name: it.name, isDir: it.is_dir })),
     };
   },
-  receiveShare: async ({ task, shareCode, receiveCode, fileIds, items }) => {
+  receiveShare: async ({ task, shareCode, receiveCode, fileIds, items, subPath }) => {
     try {
       const accountInfo = resolveTaskAccount115(listAccounts(), task);
       const r = await saveSelectionToTask({
@@ -160,7 +165,7 @@ const realDeps: CommandDeps = {
         receiveCode,
         fileIds,
         selectedItems: items,
-        subPath: "",
+        subPath,
         mode: "async",
         settings: readAppSettings(),
       });
@@ -173,6 +178,20 @@ const realDeps: CommandDeps = {
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : String(err) };
     }
+  },
+  listSubdirs: async (task, segments) => {
+    const accountInfo = resolveTaskAccount115(listAccounts(), task);
+    const ua = readAppSettings()["user-agent"];
+    const userAgent = typeof ua === "string" && ua ? ua : undefined;
+    const path = [task.originPath, ...segments].join("/");
+    const idRes = (await fsDirGetId(path, { userAgent, accountInfo })) as { id?: number | string };
+    // getid 对不存在的路径回 id=0（网盘根目录），不能拿去列
+    if (idRes?.id == null || String(idRes.id) === "" || String(idRes.id) === "0") {
+      throw new Error(`目录不存在：${path}`);
+    }
+    const entries = await listDirEntries(idRes.id, { userAgent, accountInfo });
+    // 目录没有 sha；文件不进列表
+    return entries.filter((e) => !e.sha).map((e) => e.n);
   },
 };
 
@@ -287,8 +306,8 @@ function helpText(settings: AppSettings): string {
     "<b>OpenStrm 机器人</b>",
     "",
     "<b>直接发链接：</b>",
-    `• 磁力 / ed2k / http 链接 → 交给 115 云下载，可选下到某个任务的目录，下完自动生成 strm（${onOff(p.offlineAdd)}）`,
-    `• 115 分享链接 → 转存到某个任务的目录并同步（${onOff(p.shareReceive)}）`,
+    `• 磁力 / ed2k / http 链接 → 交给 115 云下载，可选下到某个任务目录（能进子文件夹），下完自动生成 strm（${onOff(p.offlineAdd)}）`,
+    `• 115 分享链接 → 转存到某个任务目录（能进子文件夹）并同步（${onOff(p.shareReceive)}）`,
     "",
     "<b>命令：</b>",
     `/tasks 任务列表，带「运行」按钮（${onOff(p.taskStart)}）`,
@@ -427,19 +446,26 @@ async function beginOffline(bot: BotLike, chatId: string, userId: number, urls: 
   buttons.push([{ text: "取消", callback_data: `drop:${token}` }]);
   const preview = urls.slice(0, 5).map((u) => `• ${esc(shortName(u, 60))}`);
   if (urls.length > 5) preview.push(`…共 ${urls.length} 条`);
-  await bot.sendMessage(chatId, clamp([`收到 ${urls.length} 条链接，下载到哪里？`, ...preview, "", "选任务目录的话，下完会自动生成 strm。"].join("\n")), { buttons });
+  await bot.sendMessage(chatId, clamp([`收到 ${urls.length} 条链接，下载到哪里？`, ...preview, "", "选任务目录后还能进它的子文件夹；下完会自动生成 strm。"].join("\n")), { buttons });
 }
 
-async function finishOffline(bot: BotLike, chatId: string, messageId: number | undefined, urls: string[], dest: string): Promise<void> {
-  const task = dest === "default" ? undefined : deps.listTasks().find((t) => t.id === dest);
-  if (dest !== "default" && !task) {
-    await edit(bot, chatId, messageId, "这个任务已经不存在了，请重新发一次链接。");
-    return;
-  }
+async function finishOffline(
+  bot: BotLike,
+  chatId: string,
+  messageId: number | undefined,
+  urls: string[],
+  task: TaskDefinition | undefined,
+  subPath: string,
+): Promise<void> {
   let text: string;
   try {
-    const r = await deps.addOffline({ urls: urls.join("\n"), taskId: task?.id });
-    const lines = [`☁️ 已添加 ${r.added} 个云下载${task ? `\n目录：${esc(task.originPath)}${r.followup ? "，下完自动生成 strm" : ""}` : "\n目录：115 默认目录"}`];
+    const r = await deps.addOffline({
+      urls: urls.join("\n"),
+      ...(task ? { taskId: task.id } : {}),
+      ...(task && subPath ? { subPath } : {}),
+    });
+    const target = task ? `${task.originPath}${subPath ? `/${subPath}` : ""}` : "";
+    const lines = [`☁️ 已添加 ${r.added} 个云下载${task ? `\n目录：${esc(target)}${r.followup ? "，下完自动生成 strm" : ""}` : "\n目录：115 默认目录"}`];
     const failed = r.results.filter((x) => !x.ok);
     if (failed.length) lines.push("", `未接受 ${failed.length} 条：`, ...failed.slice(0, 5).map((x) => `• ${esc(shortName(x.url, 40))} — ${esc(x.message ?? "115 未接受")}`));
     if (r.invalid.length) lines.push(`不支持的链接 ${r.invalid.length} 条`);
@@ -488,7 +514,7 @@ async function beginShare(bot: BotLike, chatId: string, userId: number, link: st
   buttons.push([{ text: "取消", callback_data: `drop:${token}` }]);
   await bot.sendMessage(
     chatId,
-    clamp([`📦 <b>${esc(info.name)}</b>`, ...listing, "", "整个分享转存到哪个任务的目录？转存后会触发该任务的后台同步。"].join("\n")),
+    clamp([`📦 <b>${esc(info.name)}</b>`, ...listing, "", "整个分享转存到哪个任务的目录？选完还能进子文件夹；转存后会触发该任务的后台同步。"].join("\n")),
     { buttons },
   );
 }
@@ -498,26 +524,92 @@ async function finishShare(
   chatId: string,
   messageId: number | undefined,
   pending: Extract<PendingAction, { kind: "share" }>,
-  taskId: string,
+  task: TaskDefinition,
+  subPath: string,
 ): Promise<void> {
-  const task = deps.listTasks().find((t) => t.id === taskId);
-  if (!task) {
-    await edit(bot, chatId, messageId, "这个任务已经不存在了，请重新发一次链接。");
-    return;
-  }
-  const r = await deps.receiveShare({ task, shareCode: pending.shareCode, receiveCode: pending.receiveCode, fileIds: pending.fileIds, items: pending.items });
+  const r = await deps.receiveShare({
+    task,
+    shareCode: pending.shareCode,
+    receiveCode: pending.receiveCode,
+    fileIds: pending.fileIds,
+    items: pending.items,
+    subPath,
+  });
+  const target = `${task.originPath}${subPath ? `/${subPath}` : ""}`;
   const head = r.ok ? `✅ <b>${esc(pending.name)}</b>` : `❌ <b>${esc(pending.name)}</b> 转存失败`;
-  await edit(bot, chatId, messageId, clamp(`${head}\n目录：${esc(task.originPath)}\n${esc(r.message)}`));
+  await edit(bot, chatId, messageId, clamp(`${head}\n目录：${esc(target)}\n${esc(r.message)}`));
+}
+
+/* ------------------------------- 目的地浏览（云下载 / 转存共用） ------------------------------- */
+
+const BROWSE_PAGE_SIZE = 10;
+
+function browsePerm(settings: AppSettings, kind: "offline" | "share"): string | null {
+  const p = perms(settings);
+  if (kind === "offline" && !p.offlineAdd) return "云下载功能已关闭";
+  if (kind === "share" && !p.shareReceive) return "分享转存功能已关闭";
+  return null;
+}
+
+/** 浏览界面：往哪放 + 子目录按钮（分页，按序号回调）+ 就放这里 / 返回 / 取消 */
+function renderBrowse(
+  token: string,
+  action: PendingAction,
+  task: TaskDefinition,
+  browse: BrowseState,
+): { text: string; buttons: InlineKeyboard } {
+  const offline = action.kind === "offline";
+  const target = [task.originPath, ...browse.segments].join("/");
+  const pages = Math.max(1, Math.ceil(browse.dirs.length / BROWSE_PAGE_SIZE));
+  const page = Math.min(browse.page, pages - 1);
+  const lines = [
+    offline ? `☁️ ${action.urls.length} 条链接` : `📦 <b>${esc(action.name)}</b>`,
+    `${offline ? "下载到" : "转存到"}：<b>${esc(target)}</b>`,
+    browse.dirs.length === 0
+      ? "这一层没有子文件夹。"
+      : `子文件夹 ${browse.dirs.length} 个${pages > 1 ? `（第 ${page + 1}/${pages} 页）` : ""}，点进去，或者就放这一层：`,
+  ];
+  const buttons: InlineKeyboard = [[{ text: offline ? "⬇️ 就放这里" : "⬇️ 就存这里", callback_data: `go:${token}` }]];
+  const start = page * BROWSE_PAGE_SIZE;
+  for (let i = start; i < Math.min(start + BROWSE_PAGE_SIZE, browse.dirs.length); i++) {
+    buttons.push([{ text: `📁 ${shortName(browse.dirs[i], 40)}`, callback_data: `nav:${token}:${i}` }]);
+  }
+  const pager: InlineKeyboard[number] = [];
+  if (page > 0) pager.push({ text: "⬅️ 上一页", callback_data: `nav:${token}:p${page - 1}` });
+  if (page < pages - 1) pager.push({ text: "➡️ 下一页", callback_data: `nav:${token}:p${page + 1}` });
+  if (pager.length > 0) buttons.push(pager);
+  const tail: InlineKeyboard[number] = [];
+  if (browse.segments.length > 0) tail.push({ text: "↩️ 返回上一级", callback_data: `nav:${token}:up` });
+  tail.push({ text: "取消", callback_data: `drop:${token}` });
+  buttons.push(tail);
+  return { text: clamp(lines.join("\n")), buttons };
+}
+
+/** 列出这一层、把状态写回 pending、改写消息。列目录失败会抛出去：pending 没动，重点一次就是重试 */
+async function showBrowse(
+  bot: BotLike,
+  chatId: string,
+  messageId: number | undefined,
+  token: string,
+  action: PendingAction,
+  task: TaskDefinition,
+  segments: string[],
+): Promise<void> {
+  const dirs = await deps.listSubdirs(task, segments);
+  const browse: BrowseState = { taskId: task.id, segments, dirs, page: 0 };
+  updatePending(token, { ...action, browse });
+  const { text, buttons } = renderBrowse(token, action, task, browse);
+  await edit(bot, chatId, messageId, text, buttons);
 }
 
 /* ------------------------------- 按钮回调 ------------------------------- */
 
-async function edit(bot: BotLike, chatId: string, messageId: number | undefined, text: string): Promise<void> {
+async function edit(bot: BotLike, chatId: string, messageId: number | undefined, text: string, buttons?: InlineKeyboard): Promise<void> {
   if (messageId != null) {
-    const r = await bot.editMessage(chatId, messageId, text);
+    const r = await bot.editMessage(chatId, messageId, text, buttons);
     if (r.ok) return;
   }
-  await bot.sendMessage(chatId, text);
+  await bot.sendMessage(chatId, text, buttons ? { buttons } : undefined);
 }
 
 async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<void> {
@@ -586,8 +678,11 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
       case "ofl":
       case "shr": {
         const [token, dest] = arg.split(":");
-        const pending = takePending(token);
-        if (!pending || pending.action.kind !== (action === "ofl" ? "offline" : "share")) {
+        const kind = action === "ofl" ? "offline" : "share";
+        // 只看不取：选完任务还要逐层进目录，token 要一直用到「就放这里」。
+        // 顺带修掉一个老毛病：以前先 take 再验用户，白名单里别人一点就把你的操作弄没了
+        const pending = peekPending(token);
+        if (!pending || pending.action.kind !== kind) {
           await bot.answerCallback(q.id, "已过期，请重新发一次链接");
           return;
         }
@@ -596,21 +691,94 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
           return;
         }
         // 权限可能在贴链接和点按钮之间被关掉了，点的时候再查一次
-        if (action === "ofl") {
-          if (!perms(settings).offlineAdd) {
-            await bot.answerCallback(q.id, "云下载功能已关闭");
-            return;
-          }
-          await bot.answerCallback(q.id, "提交中…");
-          await finishOffline(bot, chatId, messageId, (pending.action as { urls: string[] }).urls, dest);
-        } else {
-          if (!perms(settings).shareReceive) {
-            await bot.answerCallback(q.id, "分享转存功能已关闭");
-            return;
-          }
-          await bot.answerCallback(q.id, "转存中…");
-          await finishShare(bot, chatId, messageId, pending.action as Extract<typeof pending.action, { kind: "share" }>, dest);
+        const denied = browsePerm(settings, kind);
+        if (denied) {
+          await bot.answerCallback(q.id, denied);
+          return;
         }
+        if (kind === "offline" && dest === "default") {
+          takePending(token);
+          await bot.answerCallback(q.id, "提交中…");
+          await finishOffline(bot, chatId, messageId, (pending.action as { urls: string[] }).urls, undefined, "");
+          return;
+        }
+        const task = deps.listTasks().find((t) => t.id === dest);
+        if (!task) {
+          takePending(token);
+          await bot.answerCallback(q.id, "任务不存在");
+          await edit(bot, chatId, messageId, "这个任务已经不存在了，请重新发一次链接。");
+          return;
+        }
+        await bot.answerCallback(q.id, "读取目录…");
+        await showBrowse(bot, chatId, messageId, token, pending.action, task, []);
+        return;
+      }
+      case "nav":
+      case "go": {
+        const [token, move] = arg.split(":");
+        const pending = peekPending(token);
+        const browse = pending?.action.browse;
+        if (!pending || !browse) {
+          await bot.answerCallback(q.id, "已过期，请重新发一次链接");
+          return;
+        }
+        if (pending.userId !== q.from.id) {
+          await bot.answerCallback(q.id, "这不是你发起的操作");
+          return;
+        }
+        const denied = browsePerm(settings, pending.action.kind);
+        if (denied) {
+          await bot.answerCallback(q.id, denied);
+          return;
+        }
+        const task = deps.listTasks().find((t) => t.id === browse.taskId);
+        if (!task) {
+          takePending(token);
+          await bot.answerCallback(q.id, "任务不存在");
+          await edit(bot, chatId, messageId, "这个任务已经不存在了，请重新发一次链接。");
+          return;
+        }
+        if (action === "go") {
+          // 提交才取走：连点两下不会重复提交
+          takePending(token);
+          const subPath = browse.segments.join("/");
+          if (pending.action.kind === "offline") {
+            await bot.answerCallback(q.id, "提交中…");
+            await finishOffline(bot, chatId, messageId, pending.action.urls, task, subPath);
+          } else {
+            await bot.answerCallback(q.id, "转存中…");
+            await finishShare(bot, chatId, messageId, pending.action, task, subPath);
+          }
+          return;
+        }
+        // 翻页只是换一页按钮，不重新列目录
+        if (move.startsWith("p")) {
+          const page = Number(move.slice(1));
+          if (!Number.isInteger(page) || page < 0) {
+            await bot.answerCallback(q.id);
+            return;
+          }
+          const next: BrowseState = { ...browse, page };
+          updatePending(token, { ...pending.action, browse: next });
+          const { text, buttons } = renderBrowse(token, pending.action, task, next);
+          await bot.answerCallback(q.id);
+          await edit(bot, chatId, messageId, text, buttons);
+          return;
+        }
+        // 返回上一级 / 进入某个子目录：重新列那一层
+        let segments: string[];
+        if (move === "up") {
+          segments = browse.segments.slice(0, -1);
+        } else {
+          const name = browse.dirs[Number(move)];
+          if (!name) {
+            await bot.answerCallback(q.id, "列表变了，重新点一下");
+            return;
+          }
+          segments = [...browse.segments, name];
+        }
+        await bot.answerCallback(q.id, "读取目录…");
+        await showBrowse(bot, chatId, messageId, token, pending.action, task, segments);
         return;
       }
       default:

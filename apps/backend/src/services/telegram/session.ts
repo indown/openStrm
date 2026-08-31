@@ -5,8 +5,19 @@
  */
 import { randomBytes } from "node:crypto";
 
+/** 选完任务后的目录浏览状态：往哪个任务的哪一层放、当前层有哪些子目录（按钮按序号引用，中文目录名塞不进 callback_data 的 64 字节） */
+export interface BrowseState {
+  taskId: string;
+  /** 已进入的子目录段，相对 task.originPath */
+  segments: string[];
+  /** 当前层的子目录名 */
+  dirs: string[];
+  /** 当前显示的页码（0 起） */
+  page: number;
+}
+
 export type PendingAction =
-  | { kind: "offline"; urls: string[] }
+  | { kind: "offline"; urls: string[]; browse?: BrowseState }
   | {
       kind: "share";
       link: string;
@@ -15,6 +26,7 @@ export type PendingAction =
       name: string;
       fileIds: string[];
       items: Array<{ name: string; isDir: boolean }>;
+      browse?: BrowseState;
     };
 
 export interface Pending {
@@ -52,6 +64,18 @@ export function takePending(token: string): Pending | null {
   const p = store.get(token) ?? null;
   if (p) store.delete(token);
   return p;
+}
+
+/** 看一眼但不取走：选任务 → 逐层进目录是多步交互，同一个 token 要用到「就放这里」 */
+export function peekPending(token: string): Pending | null {
+  prune();
+  return store.get(token) ?? null;
+}
+
+/** 更新交互状态。createdAt 不刷新：整套操作限在 10 分钟内做完 */
+export function updatePending(token: string, action: PendingAction): void {
+  const p = store.get(token);
+  if (p) p.action = action;
 }
 
 export function __test_clearPending(): void {
