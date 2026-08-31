@@ -44,7 +44,7 @@ RUN rm -rf node_modules/.pnpm/@types+* node_modules/@types && \
 FROM deps AS frontend-builder
 COPY packages/shared packages/shared
 COPY apps/frontend apps/frontend
-# 版本号编进前端包（侧栏显示）；release 工作流传 git tag，本地构建就是 dev
+# 版本号编进前端包（侧栏显示）；release 工作流传去掉 v 前缀的 git tag，本地构建就是 dev
 ARG APP_VERSION=dev
 ENV APP_VERSION=$APP_VERSION
 RUN pnpm --filter @openstrm/frontend build
@@ -71,7 +71,7 @@ EXPOSE 3000 8091
 ENV NODE_ENV=production
 # entrypoint 用它决定 API 进程的端口；写成镜像 ENV 是为了让 HEALTHCHECK 也能读到
 ENV BACKEND_PORT=3000
-# release 工作流传入 git tag，/api/health 会报出来；本地构建没有就是 dev
+# release 工作流传入去掉 v 前缀的 git tag，/api/health 会报出来；本地构建没有就是 dev
 ARG APP_VERSION=dev
 ENV APP_VERSION=$APP_VERSION
 
