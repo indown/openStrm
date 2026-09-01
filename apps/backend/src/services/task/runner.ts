@@ -318,9 +318,13 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
     const pct = Math.min(100, Math.max(0, p.percent ?? 0));
     sumPercent += pct - (perFile.get(fp) ?? 0);
     perFile.set(fp, pct);
-    if (pct === 100) finished.add(fp);
     pushLog({ filePath: fp, kind, percent: pct, overallPercent: overall() });
   };
+  /**
+   * 完成以流 complete 为准，不看 percent 到没到 100：下载流在最后一个 chunk 到手时就发 100，
+   * 那时 .part 还没改名；改名失败会再走 failOne，按 percent 算的话同一个文件既算完成又算失败
+   */
+  const finishOne = (filePath: string) => finished.add(filePath);
   /**
    * 单个文件失败：记一行、计数，任务继续。
    * 以前下载那条流没有接住，一个文件 404 会把整条 merge 炸掉：剩下的下载全部中止，
@@ -370,7 +374,7 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
           strmPrefix,
           enablePathEncoding: task.enablePathEncoding,
         }).pipe(
-          tap((p) => report(p, "strm")),
+          tap({ next: (p) => report(p, "strm"), complete: () => finishOne(filePath) }),
           catchError((err: unknown) => failOne(filePath, "strm", err)),
         ),
       32,
@@ -388,7 +392,7 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
               displayPath: filePath,
             }),
           ),
-          tap((p) => report(p, "download")),
+          tap({ next: (p) => report(p, "download"), complete: () => finishOne(filePath) }),
           catchError((err: unknown) => failOne(filePath, "download", err)),
         ),
       10,
