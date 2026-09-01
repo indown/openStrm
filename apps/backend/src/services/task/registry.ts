@@ -47,6 +47,15 @@ export interface RunningTask {
 const running = new Map<string, RunningTask>();
 /** 正在准备启动（拉远端目录树等）、还没注册进 running 的任务 */
 const starting = new Set<string>();
+/** 启动期间就来看日志的 SSE 连接：等启动阶段结束（注册进 running 或起不来）再决定推什么 */
+const startWaiters = new Map<string, Set<(outcome?: StartOutcome) => void>>();
+
+/** 启动阶段的结果，就是 startTask 的响应：200 是起来了或无事可做，其余是没起来的原因 */
+export interface StartOutcome {
+  status: number;
+  message: string;
+  details?: string;
+}
 
 export function getRunningTask(id: string): RunningTask | undefined {
   return running.get(id);
@@ -71,8 +80,34 @@ export function reserveTaskStart(id: string): boolean {
   return true;
 }
 
-export function releaseTaskStart(id: string): void {
+/** 启动阶段结束：放掉占位，把结果交给等在 waitForTaskStart 上的人（起来了的话此时 running 里已经有了） */
+export function releaseTaskStart(id: string, outcome?: StartOutcome): void {
   starting.delete(id);
+  const waiters = startWaiters.get(id);
+  if (!waiters) return;
+  startWaiters.delete(id);
+  for (const settle of waiters) settle(outcome);
+}
+
+/**
+ * 等一个正在启动的任务把启动阶段走完。不在启动阶段立刻返回 undefined；
+ * signal 中止（客户端断开）也返回 undefined 并把自己从等待者里摘掉。
+ * 返回后调用方再查 getRunningTask：有就是起来了，没有就按 outcome 说明原因。
+ */
+export function waitForTaskStart(id: string, signal?: AbortSignal): Promise<StartOutcome | undefined> {
+  if (!starting.has(id) || signal?.aborted) return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    const waiters = startWaiters.get(id) ?? new Set();
+    startWaiters.set(id, waiters);
+    const settle = (outcome?: StartOutcome) => {
+      signal?.removeEventListener("abort", onAbort);
+      waiters.delete(settle);
+      resolve(outcome);
+    };
+    const onAbort = () => settle(undefined);
+    waiters.add(settle);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export function registerRunningTask(id: string, task: RunningTask): void {

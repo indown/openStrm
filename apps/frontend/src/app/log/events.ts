@@ -16,6 +16,8 @@ export interface FileRow {
 }
 
 export type LogEvent =
+  /** 启动阶段：正在读取远端目录，文件清单还没出来（只有实时流会发） */
+  | { type: "starting"; at: number | null }
   | { type: "start"; total: number; strmTotal: number; downloadTotal: number; at: number | null }
   | { type: "progress"; path: string; kind: FileKind; percent: number; overall: number | null }
   | { type: "file-error"; path: string; kind: FileKind; error: string }
@@ -32,6 +34,8 @@ export type LogEvent =
     };
 
 export interface LogState {
+  /** 还在启动阶段（读取远端目录）：开始事件一到就结束 */
+  starting: boolean;
   total: number | null;
   strmTotal: number | null;
   downloadTotal: number | null;
@@ -50,6 +54,7 @@ export interface LogState {
 
 export function createLogState(): LogState {
   return {
+    starting: false,
     total: null,
     strmTotal: null,
     downloadTotal: null,
@@ -86,6 +91,7 @@ export function normalizeEvent(raw: unknown): LogEvent | null {
     return null;
   }
 
+  if (obj.starting === true) return { type: "starting", at: num(obj.at) };
   if (obj.start === true) {
     return {
       type: "start",
@@ -136,7 +142,11 @@ export function applyEvents(state: LogState, events: LogEvent[]): LogState {
   const next: LogState = { ...state, files: new Map(state.files) };
   for (const ev of events) {
     switch (ev.type) {
+      case "starting":
+        next.starting = true;
+        break;
       case "start":
+        next.starting = false;
         next.total = ev.total;
         next.strmTotal = ev.strmTotal;
         next.downloadTotal = ev.downloadTotal;
@@ -168,6 +178,7 @@ export function applyEvents(state: LogState, events: LogEvent[]): LogState {
         next.fatalError = ev.error;
         break;
       case "done":
+        next.starting = false;
         next.status = ev.status;
         next.finalMessage = ev.message;
         if (ev.total != null) next.total = ev.total;

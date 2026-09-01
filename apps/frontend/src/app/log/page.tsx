@@ -319,12 +319,13 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
           {statusMeta ? (
             <Badge className={`border-0 ${statusMeta.className}`}>
               {running && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
-              {statusMeta.label}
+              {state.starting ? "启动中" : statusMeta.label}
             </Badge>
           ) : (
             <Badge variant="outline">未运行</Badge>
           )}
-          {running && (
+          {running && state.starting && <span className="text-xs text-muted-foreground">读取目录阶段暂不能取消</span>}
+          {running && !state.starting && (
             <Button variant="destructive" size="sm" onClick={cancelTask} disabled={cancelling}>
               {cancelling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
               <span className="ml-1">取消任务</span>
@@ -394,6 +395,12 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
               {state.finalMessage ?? "任务已取消"}
             </Banner>
           )}
+          {/* 启动阶段就结束的"无事可做"：正常跑完的结束事件不带 message */}
+          {state.status === "completed" && state.finalMessage && (
+            <Banner tone="info" icon={<CheckCircle2 className="h-4 w-4" />}>
+              {state.finalMessage}
+            </Banner>
+          )}
 
           <div className="rounded-lg border overflow-hidden">
             <div className="flex items-center gap-1 border-b bg-muted/40 px-3 py-2 text-xs">
@@ -419,7 +426,14 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
                       ? "没有这一类的文件"
                       : connection === "history"
                         ? "这条记录没有文件级日志"
-                        : "还没有文件开始处理"}
+                        : state.starting
+                          ? (
+                            <span className="inline-flex items-center gap-2">
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              正在读取远端目录，拿到文件清单后开始处理…
+                            </span>
+                          )
+                          : "还没有文件开始处理"}
                 </div>
               ) : (
                 rows.map((f) => <FileLine key={f.path} file={f} running={running} />)
@@ -444,11 +458,13 @@ function Stat({ label, value, hint, tone }: { label: string; value: string | num
   );
 }
 
-function Banner({ tone, icon, children }: { tone: "bad" | "warn"; icon: React.ReactNode; children: React.ReactNode }) {
+function Banner({ tone, icon, children }: { tone: "bad" | "warn" | "info"; icon: React.ReactNode; children: React.ReactNode }) {
   const cls =
     tone === "bad"
       ? "border-destructive/40 bg-destructive/5 text-destructive"
-      : "border-yellow-300 bg-yellow-50 text-yellow-800";
+      : tone === "warn"
+        ? "border-yellow-300 bg-yellow-50 text-yellow-800"
+        : "border-border bg-muted/40 text-muted-foreground";
   return (
     <div className={`flex items-start gap-2 rounded-md border p-3 text-sm break-all ${cls}`}>
       <span className="mt-0.5 shrink-0">{icon}</span>
