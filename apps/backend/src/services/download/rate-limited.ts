@@ -7,7 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { defer, lastValueFrom, Observable, retry, Subscription, throwError, timer } from "rxjs";
 import { Cloud115Error, getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
 import type { AccountInfo } from "@openstrm/shared";
-import { PermanentError } from "../../lib/errors.js";
+import { isAbortError, PermanentError } from "../../lib/errors.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { strmContent, toStrmPath } from "../strm/naming.js";
 import { moduleLogger } from "../../lib/logger.js";
@@ -362,8 +362,7 @@ export function downloadOrCreateStrmLimited(
  * 其余——网络断、超时、5xx、115 限流——都值得再试。
  */
 function isPermanentFailure(err: unknown): boolean {
-  if (err instanceof PermanentError || axios.isCancel(err)) return true;
-  if (typeof err === "object" && err !== null && (err as { name?: string }).name === "AbortError") return true;
+  if (err instanceof PermanentError || isAbortError(err)) return true;
   const status = axios.isAxiosError(err)
     ? err.response?.status
     : err instanceof Cloud115Error

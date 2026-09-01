@@ -27,6 +27,8 @@ function redactUrl(url: string | undefined, baseURL: string | undefined): string
  * pino 默认的 err 序列化会把 Error 上所有可枚举属性都带上。AxiosError 挂着整个
  * config（headers 里是 115 的 Cookie、URL 里是 Telegram 的 bot token）、request 和 response：
  * 一次网络错误就把凭据写进日志，而且动辄几十 KB。这里只留下定位问题需要的几项。
+ * DOMException（signal.throwIfAborted() 抛的 AbortError 就是）则会把原型上 INDEX_SIZE_ERR…
+ * 二十几个常量一并枚举进来，stack 指向的还是 abort() 的调用处而不是抛出处，只留 type 和 message。
  *
  * Fastify 会把 loggerInstance 上的 serializers 合并进它自己的 child logger，
  * 所以 app.log / request.log / 各 service 的 moduleLogger 都经过这里。
@@ -42,6 +44,7 @@ export function serializeError(err: unknown): unknown {
       url: redactUrl(err.config?.url, err.config?.baseURL),
     };
   }
+  if (err instanceof DOMException) return { type: err.name, message: err.message };
   return pino.stdSerializers.err(err as Error);
 }
 

@@ -4,7 +4,7 @@ import { encrypt, decrypt } from "./crypto.js";
 import { LRUCache } from "lru-cache";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { scheduleForAccount } from "../download/rate-limited.js";
-import { PermanentError } from "../../lib/errors.js";
+import { isAbortError, PermanentError } from "../../lib/errors.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { TreeBuilder } from "../task/tree.js";
 import { DEFAULT_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, guardIdleStream } from "../../lib/http.js";
@@ -248,7 +248,10 @@ export async function getIdToPath(options: {
     log.debug({ files: fileNames }, `[getIdToPath] Available files in ${dirPath}`);
     throw new PermanentError(`File not found: ${fileName} in directory: ${dirPath}. Available files: ${fileNames.join(', ')}`);
   } catch (error) {
-    log.error({ err: error }, `[getIdToPath] Error getting directory ID for ${dirPath}`);
+    // 取消任务时，排在限流器里的查询会以 AbortError 落到这里（正在飞的则是 axios 的 CanceledError）：
+    // 那是调用方自己掐的，不是错误，别按 error 打一整段栈
+    if (signal?.aborted || isAbortError(error)) log.debug(`[getIdToPath] Aborted while resolving ${path}`);
+    else log.error({ err: error }, `[getIdToPath] Error getting directory ID for ${dirPath}`);
     throw error;
   }
 }

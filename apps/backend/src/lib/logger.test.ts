@@ -1,6 +1,6 @@
 /**
  * 钉住：AxiosError 进日志时不带 config/request/response——那里面是 115 的 Cookie 和
- * Telegram 的 bot token；普通 Error 照旧带 stack。
+ * Telegram 的 bot token；普通 Error 照旧带 stack；DOMException 不带常量表和 stack。
  *
  *   pnpm test:file src/lib/logger.test.ts
  */
@@ -81,6 +81,17 @@ test("普通 Error 走 pino 默认序列化，stack 还在", () => {
   assert.equal(out.type, "Error");
   assert.equal(out.message, "plain");
   assert.match(out.stack, /plain/);
+});
+
+test("DOMException 只留 type 和 message：AbortError 不带 INDEX_SIZE_ERR 那串常量，也不带 stack", () => {
+  const { lines, logger } = capture();
+  const ac = new AbortController();
+  ac.abort();
+  logger.error({ err: ac.signal.reason }, "aborted");
+  const line = lines.join("");
+  assert.doesNotMatch(line, /INDEX_SIZE_ERR|ABORT_ERR|stack/);
+  const { err: out } = JSON.parse(line);
+  assert.deepEqual(out, { type: "AbortError", message: "This operation was aborted" });
 });
 
 test("Fastify 用这个实例时，request.log 和错误处理器里的 err 也经过同一个 serializer", async () => {
