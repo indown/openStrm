@@ -1,5 +1,5 @@
 /**
- * 下载流中途卡住要被掐断并报错，而不是永远占着限流槽位。
+ * 下载流：中途卡住要被掐断并报错，而不是永远占着限流槽位；进度按整数百分比去重。
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/services/download/rate-limited.itest.ts
  */
@@ -8,7 +8,7 @@ import { after, test } from "node:test";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { lastValueFrom } from "rxjs";
+import { lastValueFrom, tap } from "rxjs";
 import { downloadOrCreateStrm } from "./rate-limited.js";
 
 let stalled: http.ServerResponse | null = null;
@@ -17,6 +17,19 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "content-type": "application/octet-stream", "content-length": "1000" });
     res.write("first-chunk");
     stalled = res; // 之后什么都不再发
+    return;
+  }
+  if (req.url === "/chunky") {
+    // 1000 字节分 200 次发、每次隔 1ms：客户端收到的 chunk 远多于 100 个
+    res.writeHead(200, { "content-type": "application/octet-stream", "content-length": "1000" });
+    let sent = 0;
+    const tick = () => {
+      res.write("abcde");
+      sent += 5;
+      if (sent >= 1000) res.end();
+      else setTimeout(tick, 1);
+    };
+    tick();
     return;
   }
   res.writeHead(200, { "content-length": "5" });
@@ -48,4 +61,20 @@ test("响应头到了但 body 卡住：空闲超时后以错误结束，错误�
     (err: Error) => /stall\.bin：0\.15 秒内没有收到数据/.test(err.message),
   );
   assert.ok(Date.now() - t0 < 2000, "应在空闲窗口后很快失败，而不是等到 axios 的 30 秒");
+});
+
+test("进度按整数百分比去重：几百个 chunk 只发一百来条，100 只在改名后发一次", async () => {
+  const savePath = path.join(dir, "chunky.bin");
+  const events: number[] = [];
+  const last = await lastValueFrom(
+    downloadOrCreateStrm(`${base}/chunky`, savePath, { displayPath: "chunky.bin" }).pipe(
+      tap((p) => events.push(p.percent!)),
+    ),
+  );
+  assert.equal(last.percent, 100);
+  assert.ok(events.length <= 101, `事件数 ${events.length} 不该超过 101`);
+  assert.ok(events.every((p) => Number.isInteger(p)), `百分比应是整数：${events.join(",")}`);
+  assert.ok(events.every((p, i) => i === 0 || p > events[i - 1]), `应严格递增、没有重复：${events.join(",")}`);
+  assert.equal(events.filter((p) => p === 100).length, 1, "100 只发一次");
+  assert.equal(fs.statSync(savePath).size, 1000);
 });

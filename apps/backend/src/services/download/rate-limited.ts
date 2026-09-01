@@ -3,7 +3,7 @@ import Bottleneck from "bottleneck";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import { defer, firstValueFrom, Observable, retry, Subscription, throwError, timer } from "rxjs";
+import { defer, firstValueFrom, lastValueFrom, Observable, retry, Subscription, throwError, timer } from "rxjs";
 import { getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
 import type { AccountInfo } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -53,19 +53,47 @@ function getSharedLimiter(account: string): Bottleneck {
   return sharedLimiters.get(accountType)!;
 }
 
+/**
+ * 账号 + 通道一把并发限流器，链在账号级的每秒配额上。
+ * 并发数只在第一次建的时候生效，改了设置要 clearRateLimiters 才按新值重建。
+ */
+function getLimiter(accountKey: string, maxConcurrent: number): Bottleneck {
+  let limiter = limiters.get(accountKey);
+  if (!limiter) {
+    limiter = new Bottleneck({ maxConcurrent });
+    limiter.chain(getSharedLimiter(accountKey.split(":")[0]));
+    limiters.set(accountKey, limiter);
+  }
+  return limiter;
+}
+
+/**
+ * 单次请求的账号限流（取直链、115 接口）。Bottleneck 本来就是 Promise 接口：
+ * 槽位随 Promise 落定归还，没有订阅 / 退订那一层。signal 已中止的任务轮到时直接拒绝，不再发请求。
+ */
+export function scheduleForAccount<T>(
+  accountKey: string,
+  fn: () => Promise<T>,
+  maxConcurrent = 2,
+  signal?: AbortSignal,
+): Promise<T> {
+  return getLimiter(accountKey, maxConcurrent).schedule(async () => {
+    signal?.throwIfAborted();
+    return fn();
+  });
+}
+
+/**
+ * 会发进度的流排进账号限流器（下载用；单次请求用 scheduleForAccount）。
+ * 限流器在订阅时才取：clearRateLimiters 之后再订阅的拿到新建的，而不是已经 stop 的旧限流器。
+ */
 export function enqueueForAccount<T>(
   accountKey: string,
   fn: () => Observable<T>,
   maxConcurrent = 2
 ): Observable<T> {
-  const account = accountKey.split(":")[0];
-  if (!limiters.has(accountKey)) {
-    const limiter = new Bottleneck({ maxConcurrent });
-    limiter.chain(getSharedLimiter(account));
-    limiters.set(accountKey, limiter);
-  }
-  const limiter = limiters.get(accountKey)!;
   return new Observable<T>((observer) => {
+    const limiter = getLimiter(accountKey, maxConcurrent);
     let cancelled = false;
     let inner: Subscription | null = null;
     /** 任务已开始时，调它就是把限流器的槽位还回去 */
@@ -90,9 +118,9 @@ export function enqueueForAccount<T>(
     return () => {
       cancelled = true;
       inner?.unsubscribe();
-      // 订阅方退订了也要还槽位——不只是任务取消：request115 用 firstValueFrom，拿到第一个值就退订，
-      // 内层随后的 complete 送不到这里。只靠 complete 来 resolve 的话，一个账号的两个槽位
-      // 两次请求就全部漏光，第三次起所有 115 调用永远排队（rc.9 就是这样挂死的）
+      // 订阅方退订了也要还槽位——不只是任务取消：firstValueFrom 这类"拿到第一个值就退订"的消费者
+      // 退订之后，内层随后的 complete 送不到这里。只靠 complete 来 resolve 的话，一个账号的两个槽位
+      // 两次请求就全部漏光，第三次起所有调用永远排队（rc.9 的 request115 就是这样挂死的）
       release?.();
     };
   });
@@ -238,13 +266,18 @@ export function downloadOrCreateStrm(url: string, savePath: string, opts?: Downl
         }
         const total = parseInt(response.headers["content-length"] || "0", 10);
         let received = 0;
+        // 进度只在整数百分比变化时发一次：一个大文件几万个 chunk，每个都发一条会把 SSE 和日志缓冲灌满。
+        // 最多报到 99——100 只在改名完成后发一次，收到 100 就等于文件已经就位
+        let lastStep = -1;
         writer = fs.createWriteStream(partPath);
         // 卡住的下载会被销毁并走到 failWith，由 downloadOrCreateStrmLimited 的 retry 重来
         guardIdleStream(response.data, idleTimeoutMs, `下载 ${displayPath}`);
         response.data.on("data", (chunk: Buffer) => {
           received += chunk.length;
-          const percent = total ? (received / total) * 100 : 0;
-          observer.next({ percent: Math.min(percent, 100), filePath: displayPath });
+          const step = total ? Math.min(Math.floor((received / total) * 100), 99) : 0;
+          if (step === lastStep) return;
+          lastStep = step;
+          observer.next({ percent: step, filePath: displayPath });
         });
         response.data.on("error", failWith);
         writer.on("error", failWith);
@@ -269,6 +302,27 @@ export function downloadOrCreateStrm(url: string, savePath: string, opts?: Downl
       void discardPart();
     };
   });
+}
+
+/** 写一个 strm（Promise 版）。要进度流的全量任务用 downloadOrCreateStrm，其它调用方用这个 */
+export async function writeStrm(
+  remotePath: string,
+  savePath: string,
+  opts?: Pick<DownloadOptions, "displayPath" | "strmPrefix" | "enablePathEncoding">,
+): Promise<void> {
+  await lastValueFrom(downloadOrCreateStrm(remotePath, savePath, { ...opts, asStrm: true }));
+}
+
+/**
+ * 下载一个文件到 savePath（Promise 版），.part 改名完成才 resolve。
+ * 下载流是多值的（每个整数百分比一条），别在它上面用 firstValueFrom：拿到第一条就退订会把下载掐掉
+ */
+export async function downloadFile(
+  url: string,
+  savePath: string,
+  opts?: Pick<DownloadOptions, "displayPath" | "idleTimeoutMs">,
+): Promise<void> {
+  await lastValueFrom(downloadOrCreateStrm(url, savePath, { ...opts, asStrm: false }));
 }
 
 export function downloadOrCreateStrmLimited(

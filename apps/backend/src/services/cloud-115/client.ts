@@ -1,10 +1,9 @@
 // 115 export-dir end-to-end implementation using real 115 APIs.
 import axios, { type AxiosRequestConfig } from "axios";
-import { defer, firstValueFrom, Observable } from "rxjs";
 import { encrypt, decrypt } from "./crypto.js";
 import { LRUCache } from "lru-cache";
 import { readAppSettings } from "../../db/repositories/settings.js";
-import { enqueueForAccount } from "../download/rate-limited.js";
+import { scheduleForAccount } from "../download/rate-limited.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { TreeBuilder } from "../task/tree.js";
 import { DEFAULT_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, guardIdleStream } from "../../lib/http.js";
@@ -463,18 +462,12 @@ export async function request115<T = unknown>(
       config.transformResponse = [(d: unknown) => d];
     }
     const accountKey = accountInfo?.name + ':' + limiterChannel;
-    const obs$ = enqueueForAccount(accountKey, () =>
-      defer(() => new Observable<T>((observer) => {
-        axios(config)
-          .then((response) => {
-            observer.next(response.data as T);
-            observer.complete();
-          })
-          .catch((err) => observer.error(err));
-      })),
-      maxConcurrent ?? downloadConfig.linkMaxConcurrent ?? 2
+    // 单次请求走 Promise 版限流：没有订阅 / 退订那一层，也就没有"退订后槽位漏掉"（rc.9）那类坑
+    const respData = await scheduleForAccount(
+      accountKey,
+      async () => (await axios(config)).data as T,
+      maxConcurrent ?? downloadConfig.linkMaxConcurrent ?? 2,
     );
-    const respData = await firstValueFrom(obs$);
     if (shouldEnsureOk) ensureOk(respData as unknown as Record<string, unknown>, url);
     return respData;
   } catch (error) {
