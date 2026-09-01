@@ -9,11 +9,10 @@
 import type { Dirent } from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { lastValueFrom } from "rxjs";
 import type { AppSettings, LifeEventMode, TaskDefinition } from "@openstrm/shared";
 import type { AccountInfo } from "../cloud-115/client.js";
 import { getDownloadUrlWeb } from "../cloud-115/client.js";
-import { downloadOrCreateStrm } from "../download/rate-limited.js";
+import { downloadFile, writeStrm } from "../download/rate-limited.js";
 import { listDir, type LifeEvent } from "../cloud-115/life.js";
 import {
   joinPanPath,
@@ -148,14 +147,11 @@ async function materializeFile(
   const savePath = path.join(match.saveDir, relFile);
 
   if (strmExts(ctx).has(ext)) {
-    await lastValueFrom(
-      downloadOrCreateStrm(strmUrlFor(match.task, relFile), savePath, {
-        asStrm: true,
-        displayPath: relFile,
-        strmPrefix: match.task.strmPrefix,
-        enablePathEncoding: match.task.enablePathEncoding,
-      }),
-    );
+    await writeStrm(strmUrlFor(match.task, relFile), savePath, {
+      displayPath: relFile,
+      strmPrefix: match.task.strmPrefix,
+      enablePathEncoding: match.task.enablePathEncoding,
+    });
     return "strm";
   }
 
@@ -169,11 +165,7 @@ async function materializeFile(
       accountInfo: ctx.accountInfo,
     });
     if (!url) return "skip";
-    // 下载流每收一个 chunk 就发一次进度，必须等到 complete（.part 改名完成）。
-    // firstValueFrom 拿到第一条进度就退订，退订会中止请求并删掉 .part：文件永远落不了盘，这里却报成功
-    await lastValueFrom(
-      downloadOrCreateStrm(url, savePath, { asStrm: false, displayPath: relFile }),
-    );
+    await downloadFile(url, savePath, { displayPath: relFile });
     return "download";
   }
 
@@ -500,18 +492,11 @@ async function relocate(ctx: LifeContext, ev: LifeEvent, label: string): Promise
 
   // strm 内容里写的是网盘绝对路径，挪了位置就要重写
   if (!isDir && to.endsWith(".strm")) {
-    await lastValueFrom(
-      downloadOrCreateStrm(
-        strmUrlFor(newMatch.task, newMatch.relPath),
-        path.join(newMatch.saveDir, newMatch.relPath),
-        {
-          asStrm: true,
-          displayPath: newMatch.relPath,
-          strmPrefix: newMatch.task.strmPrefix,
-          enablePathEncoding: newMatch.task.enablePathEncoding,
-        },
-      ),
-    );
+    await writeStrm(strmUrlFor(newMatch.task, newMatch.relPath), path.join(newMatch.saveDir, newMatch.relPath), {
+      displayPath: newMatch.relPath,
+      strmPrefix: newMatch.task.strmPrefix,
+      enablePathEncoding: newMatch.task.enablePathEncoding,
+    });
   } else if (isDir) {
     const rewritten = await rewriteStrmPrefixUnder(to, oldMatch.task, oldMatch.relPath, newMatch.task, newMatch.relPath);
     ctx.log("info", `${label}目录后重写了 ${rewritten} 个 strm 的网盘路径`);

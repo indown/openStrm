@@ -1,10 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import { lastValueFrom } from "rxjs";
 import type { TaskDefinition, AppSettings } from "@openstrm/shared";
 import type { AccountInfo } from "../cloud-115/client.js";
 import { exportDirParse, fsDirGetId } from "../cloud-115/client.js";
-import { downloadOrCreateStrm } from "../download/rate-limited.js";
+import { writeStrm } from "../download/rate-limited.js";
 import { buildTree, collectFilesAndTopEmptyDirs } from "../task/tree.js";
 import { resolveInDataDir } from "../../paths.js";
 import { toStrmPath } from "./naming.js";
@@ -27,14 +26,11 @@ async function writeOneStrm(
   task: TaskDefinition,
 ): Promise<"generated" | "skipped"> {
   if (fs.existsSync(toStrmPath(localPath))) return "skipped";
-  await lastValueFrom(
-    downloadOrCreateStrm(remotePath, localPath, {
-      asStrm: true,
-      displayPath: remotePath,
-      strmPrefix: task.strmPrefix,
-      enablePathEncoding: task.enablePathEncoding,
-    }),
-  );
+  await writeStrm(remotePath, localPath, {
+    displayPath: remotePath,
+    strmPrefix: task.strmPrefix,
+    enablePathEncoding: task.enablePathEncoding,
+  });
   return "generated";
 }
 

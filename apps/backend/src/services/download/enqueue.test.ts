@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { firstValueFrom, Observable } from "rxjs";
-import { clearRateLimiters, enqueueForAccount } from "./rate-limited.js";
+import { clearRateLimiters, enqueueForAccount, scheduleForAccount } from "./rate-limited.js";
 
 const timeout = <T>(p: Promise<T>, ms: number, what: string) =>
   Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${what}：${ms}ms 内没有完成`)), ms))]);
@@ -71,4 +71,46 @@ test("还没排到就被取消的任务：轮到时直接放过，不执行", as
   await timeout(first, 2000, "第一个任务");
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(ran, 1, "排队时被取消的任务不该执行");
+});
+
+test("scheduleForAccount：并发数生效，失败的任务也归还槽位", async () => {
+  clearRateLimiters();
+  const key = "enqueue-test:promise";
+  let running = 0;
+  let peak = 0;
+  const job = async (fail: boolean) => {
+    running++;
+    peak = Math.max(peak, running);
+    await new Promise((r) => setTimeout(r, 10));
+    running--;
+    if (fail) throw new Error("boom");
+    return 1;
+  };
+  const results = await timeout(
+    Promise.allSettled([
+      scheduleForAccount(key, () => job(true), 1),
+      scheduleForAccount(key, () => job(false), 1),
+      scheduleForAccount(key, () => job(false), 1),
+    ]),
+    3000,
+    "三个任务",
+  );
+  assert.equal(peak, 1, "并发 1 不能同时跑两个");
+  assert.deepEqual(results.map((r) => r.status), ["rejected", "fulfilled", "fulfilled"]);
+});
+
+test("scheduleForAccount：轮到时 signal 已中止的任务不执行，直接拒绝", async () => {
+  clearRateLimiters();
+  const key = "enqueue-test:abort";
+  const ac = new AbortController();
+  let ran = 0;
+  const first = scheduleForAccount(key, () => new Promise<number>((r) => setTimeout(() => r(1), 30)), 1);
+  const queued = scheduleForAccount(key, async () => { ran++; return 2; }, 1, ac.signal).then(
+    () => "resolved",
+    (err: Error) => err.name,
+  );
+  ac.abort(); // 还在队列里就中止
+  assert.equal(await timeout(first, 2000, "第一个任务"), 1);
+  assert.equal(await timeout(queued, 2000, "排队的任务"), "AbortError");
+  assert.equal(ran, 0, "已中止的不该执行");
 });
