@@ -213,6 +213,9 @@ export function downloadOrCreateStrm(url: string, savePath: string, opts?: Downl
     const failWith = (err: unknown) => {
       if (settled) return;
       settled = true;
+      // 写盘失败（磁盘满等）也要把请求掐掉：不然下面挂着的 data 监听会让旧响应把整个 body 拉完，
+      // 而 retry 那边已经开始下一次尝试了。对已经出错 / 已中止的请求，abort 是空操作
+      controller.abort();
       writer?.destroy();
       void discardPart();
       observer.error(err);
