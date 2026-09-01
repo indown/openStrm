@@ -9,7 +9,7 @@
 import type { Dirent } from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { firstValueFrom } from "rxjs";
+import { lastValueFrom } from "rxjs";
 import type { AppSettings, LifeEventMode, TaskDefinition } from "@openstrm/shared";
 import type { AccountInfo } from "../cloud-115/client.js";
 import { getDownloadUrlWeb } from "../cloud-115/client.js";
@@ -27,6 +27,17 @@ import { resolveInDataDir } from "../../paths.js";
 import { strmContent, toStrmPath } from "../strm/naming.js";
 import { safeDecode } from "../resolve/direct-link.js";
 import { isDirectoryEntry, pathExists } from "../../lib/fs.js";
+
+interface Deps {
+  /** pick_code → 下载直链。真实现打 115 接口，测试换成本地桩 */
+  getDownloadUrl: typeof getDownloadUrlWeb;
+}
+const realDeps: Deps = { getDownloadUrl: getDownloadUrlWeb };
+let deps: Deps = { ...realDeps };
+/** 测试用：传 null 恢复真实现 */
+export function setLifeHandlerDeps(partial: Partial<Deps> | null): void {
+  deps = partial ? { ...realDeps, ...partial } : { ...realDeps };
+}
 
 export interface LifeContext {
   accountInfo: AccountInfo;
@@ -137,7 +148,7 @@ async function materializeFile(
   const savePath = path.join(match.saveDir, relFile);
 
   if (strmExts(ctx).has(ext)) {
-    await firstValueFrom(
+    await lastValueFrom(
       downloadOrCreateStrm(strmUrlFor(match.task, relFile), savePath, {
         asStrm: true,
         displayPath: relFile,
@@ -153,12 +164,14 @@ async function materializeFile(
       ctx.log("warn", `缺少 pick_code，跳过下载: ${panPath}`);
       return "skip";
     }
-    const url = await getDownloadUrlWeb(pickCode, {
+    const url = await deps.getDownloadUrl(pickCode, {
       userAgent: ctx.settings["user-agent"],
       accountInfo: ctx.accountInfo,
     });
     if (!url) return "skip";
-    await firstValueFrom(
+    // 下载流每收一个 chunk 就发一次进度，必须等到 complete（.part 改名完成）。
+    // firstValueFrom 拿到第一条进度就退订，退订会中止请求并删掉 .part：文件永远落不了盘，这里却报成功
+    await lastValueFrom(
       downloadOrCreateStrm(url, savePath, { asStrm: false, displayPath: relFile }),
     );
     return "download";
@@ -487,7 +500,7 @@ async function relocate(ctx: LifeContext, ev: LifeEvent, label: string): Promise
 
   // strm 内容里写的是网盘绝对路径，挪了位置就要重写
   if (!isDir && to.endsWith(".strm")) {
-    await firstValueFrom(
+    await lastValueFrom(
       downloadOrCreateStrm(
         strmUrlFor(newMatch.task, newMatch.relPath),
         path.join(newMatch.saveDir, newMatch.relPath),

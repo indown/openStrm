@@ -8,6 +8,7 @@
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { before, test } from "node:test";
 import type { TaskDefinition } from "@openstrm/shared";
@@ -21,6 +22,7 @@ import {
   handleNewFolder,
   handleRemove,
   handleRename,
+  setLifeHandlerDeps,
   type LifeContext,
 } from "./handlers.js";
 
@@ -148,5 +150,30 @@ test("目录改名：旧版 encodeURI 写的 strm 和新版按段编码的都能
     assert.equal(fs.readFileSync(path.join(newDir, "ep2 b.strm"), "utf8"), expect("ep2%20b.mkv"));
   } finally {
     fs.rmSync(path.join(DATA_DIR, "enc"), { recursive: true, force: true });
+  }
+});
+
+test("下载类文件（nfo）整个落盘：不是收到第一块进度就报完成", async () => {
+  // 直链换成本地桩；body 分两块发——收到第一块就 resolve 并退订的实现会把下载掐断、删掉 .part
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/plain", "content-length": "20" });
+    res.write("0123456789");
+    setTimeout(() => res.end("abcdefghij"), 20);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const nfo = path.join(tvDir, "TestShow", "ep1.nfo");
+  setLifeHandlerDeps({ getDownloadUrl: async () => `${base}/ep1.nfo` });
+  try {
+    const r = await handleCreate(ctx, ev({ file_id: "9010", file_name: "ep1.nfo", pick_code: "pc-nfo" }));
+    assert.equal(r.status, "done", r.detail);
+    assert.match(r.detail, /^download: /);
+    assert.equal(fs.readFileSync(nfo, "utf8"), "0123456789abcdefghij", "整个 body 都要写进正式文件");
+    assert.ok(!fs.existsSync(`${nfo}.part`), "不能留下 .part");
+    assert.equal(r.changed, true);
+  } finally {
+    setLifeHandlerDeps(null);
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
   }
 });

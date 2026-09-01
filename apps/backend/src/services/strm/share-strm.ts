@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { firstValueFrom } from "rxjs";
+import { lastValueFrom } from "rxjs";
 import type { TaskDefinition, AppSettings } from "@openstrm/shared";
 import type { AccountInfo } from "../cloud-115/client.js";
 import { exportDirParse, fsDirGetId } from "../cloud-115/client.js";
@@ -27,7 +27,7 @@ async function writeOneStrm(
   task: TaskDefinition,
 ): Promise<"generated" | "skipped"> {
   if (fs.existsSync(toStrmPath(localPath))) return "skipped";
-  await firstValueFrom(
+  await lastValueFrom(
     downloadOrCreateStrm(remotePath, localPath, {
       asStrm: true,
       displayPath: remotePath,
