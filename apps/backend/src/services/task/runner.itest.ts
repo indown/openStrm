@@ -15,7 +15,7 @@ import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js
 import { deleteTask, insertTask, updateTask } from "../../db/repositories/tasks.js";
 import { deleteTaskExecution, getTaskExecution, getTaskHistory } from "../task-history.js";
 import { clearRateLimiters } from "../download/rate-limited.js";
-import { cancelRunningTask, isTaskRunning } from "./registry.js";
+import { cancelRunningTask, isTaskRunning, waitForTaskStart } from "./registry.js";
 import { startTask } from "./runner.js";
 
 const TASK = "runner-itest";
@@ -235,8 +235,12 @@ test("起不来也进历史：账号不存在 → 500，历史里有一条 faile
   const id = `${TASK}-noacc`;
   insertTask({ id, account: "ghost", accountType: "openlist", originPath: ORIGIN, targetPath: `${TASK}/noacc`, strmPrefix: "x" });
   try {
-    const res = await startTask(id);
+    const pending = startTask(id);
+    // 启动期间就连上日志流的人（SSE 路由）靠这个知道任务最后是起来了还是没起来
+    const outcome = waitForTaskStart(id);
+    const res = await pending;
     assert.equal(res.status, 500);
+    assert.deepEqual(await outcome, { status: 500, message: "账号不存在：ghost" });
     const [h] = getTaskHistory(id);
     assert.ok(h, "启动阶段失败也要留一条执行记录");
     assert.equal(h.status, "failed");

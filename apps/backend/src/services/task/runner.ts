@@ -43,6 +43,7 @@ import {
   unregisterRunningTask,
   type DownloadProgress,
   type RunningTask,
+  type StartOutcome,
 } from "./registry.js";
 import { LogBatcher } from "./log-batch.js";
 import { flattenTree, planSync } from "./plan.js";
@@ -207,16 +208,26 @@ export async function startTask(taskId: string, opts: StartTaskOptions = {}): Pr
   if (!task) return fail(404, "Task not found");
   // 第一个 await 之前就占住：拉远端目录树可能要几分钟，只查 running 表挡不住这期间的第二次启动
   if (!reserveTaskStart(taskId)) return fail(409, "Task is already running");
+  let outcome: StartOutcome = { status: 500, message: "启动失败" };
   try {
     const result = await launch(task, opts.trigger);
     if (result.status !== 200) recordFailedStart(task, result.body, opts.trigger);
+    const details = typeof result.body.details === "string" ? result.body.details : undefined;
+    outcome = {
+      status: result.status,
+      message: typeof result.body.message === "string" ? result.body.message : outcome.message,
+      ...(details ? { details } : {}),
+    };
     return result;
   } catch (err) {
-    recordFailedStart(task, { message: err instanceof Error ? err.message : String(err) }, opts.trigger);
+    const message = err instanceof Error ? err.message : String(err);
+    recordFailedStart(task, { message }, opts.trigger);
+    outcome = { status: 500, message };
     throw err;
   } finally {
-    // 到这里要么已经注册进 running，要么是提前失败返回；占位都可以放掉了
-    releaseTaskStart(taskId);
+    // 到这里要么已经注册进 running，要么是提前失败返回；占位都可以放掉了。
+    // 结果一并交给 registry：启动期间就连上日志流的人靠它知道任务是起来了还是没起来
+    releaseTaskStart(taskId, outcome);
   }
 }
 
