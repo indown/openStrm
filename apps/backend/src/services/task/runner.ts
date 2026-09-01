@@ -9,7 +9,7 @@ import type { Dirent } from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import axios from "axios";
-import { catchError, EMPTY, from, merge, mergeMap, Subject, Subscription, tap } from "rxjs";
+import { catchError, defer, EMPTY, finalize, from, merge, mergeMap, Subject, Subscription, tap } from "rxjs";
 import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
 import { listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
@@ -385,7 +385,13 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
   const download$ = from(downloadFiles).pipe(
     mergeMap(
       (filePath) =>
-        from(getRealDownloadLink(`${originPath}/${filePath}`, account, accounts)).pipe(
+        defer(() => {
+          // 取直链是 Promise，本身不认退订；挂上 signal，取消时进行中的接口请求掐断、排在限流器里的不再发
+          const abort = new AbortController();
+          return from(
+            getRealDownloadLink(`${originPath}/${filePath}`, account, accounts, { signal: abort.signal }),
+          ).pipe(finalize(() => abort.abort()));
+        }).pipe(
           mergeMap((url) =>
             downloadOrCreateStrmLimited(url, path.join(saveDir, filePath), account, {
               asStrm: false,
