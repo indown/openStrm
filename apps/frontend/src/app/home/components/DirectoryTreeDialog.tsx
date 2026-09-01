@@ -23,7 +23,7 @@ interface DirectoryTreeDialogProps {
   onSelectWithTargetPath?: (originPath: string, targetPath: string) => void;
 }
 
-/** 115 网盘目录选择（按账号浏览） */
+/** 远程目录选择：115 网盘和 OpenList 都走这里，按账号浏览，后端按账号类型分流 */
 export function DirectoryTreeDialog({ open, onOpenChange, account, onSelect, onSelectWithTargetPath }: DirectoryTreeDialogProps) {
   const [pendingPath, setPendingPath] = React.useState<string | null>(null);
   const load = React.useCallback((path: string) => api.directory.remote(account, path), [account]);

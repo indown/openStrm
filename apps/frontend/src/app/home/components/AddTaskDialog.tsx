@@ -189,6 +189,8 @@ export function AddTaskDialog({
 
   const accountType = accounts.find((acc) => acc.name === account)?.accountType ?? "";
   const is115Account = accountType === "115";
+  /** 115 和 OpenList 都能列目录（/api/directory/remote/list 按账号类型分流），远程路径旁边给个浏览按钮 */
+  const canBrowseRemote = account !== "" && (is115Account || accountType === "openlist");
   const prefixIsHttp = /^https?:\/\//i.test(strmPrefix.trim());
   const encoding = pathEncodingHint(prefixIsHttp, is115Account && enable302);
 
@@ -315,13 +317,13 @@ export function AddTaskDialog({
                     <FormControl>
                       <Input {...field} placeholder="例如：tv 或 kuake/tv" className="flex-1" />
                     </FormControl>
-                    {is115Account && account && (
+                    {canBrowseRemote && (
                       <Button
                         type="button"
                         variant="outline"
                         size="icon"
                         onClick={() => setDirectoryDialogOpen(true)}
-                        title="浏览网盘目录"
+                        title="浏览远程目录"
                       >
                         <FolderOpen className="w-4 h-4" />
                       </Button>
@@ -481,7 +483,7 @@ export function AddTaskDialog({
           </form>
         </Form>
 
-        {is115Account && account && (
+        {canBrowseRemote && (
           <DirectoryTreeDialog
             open={directoryDialogOpen}
             onOpenChange={setDirectoryDialogOpen}
