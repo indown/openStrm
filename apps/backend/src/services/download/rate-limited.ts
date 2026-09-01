@@ -3,9 +3,11 @@ import Bottleneck from "bottleneck";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import { defer, firstValueFrom, lastValueFrom, Observable, retry, Subscription, throwError, timer } from "rxjs";
-import { getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
+import { setTimeout as sleep } from "node:timers/promises";
+import { defer, lastValueFrom, Observable, retry, Subscription, throwError, timer } from "rxjs";
+import { Cloud115Error, getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
 import type { AccountInfo } from "@openstrm/shared";
+import { PermanentError } from "../../lib/errors.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { strmContent, toStrmPath } from "../strm/naming.js";
 import { moduleLogger } from "../../lib/logger.js";
@@ -126,80 +128,82 @@ export function enqueueForAccount<T>(
   });
 }
 
+export interface LinkOptions {
+  maxRetries?: number;
+  retryDelay?: number;
+  /** 任务取消时中止：进行中的接口请求掐断，排在限流器里的不再发 */
+  signal?: AbortSignal;
+}
+
+/**
+ * 文件的下载直链。网络断、5xx、限流这类临时失败隔 retryDelay 重试，最多 maxRetries 次；
+ * 远端明确说没有这个文件、凭据缺失这类 PermanentError 直接失败——以前也重试三次，一个不存在的文件白等六秒。
+ */
 export async function getRealDownloadLink(
   filePath: string,
   account: string,
   accounts: AccountInfo[],
-  maxRetries = 3,
-  retryDelay = 2000
+  { maxRetries = 3, retryDelay = 2000, signal }: LinkOptions = {},
 ): Promise<string> {
   const settings = readAppSettings();
   const accountInfo = accounts.find((acc) => acc.name === account);
   if (!accountInfo) throw new Error(`No cookie found for account: ${account}`);
 
-  const createRetryObservable = (fn: () => Observable<string>) =>
-    defer(fn).pipe(
-      retry({
-        count: maxRetries,
-        delay: (_err, i) => {
-          log.warn(`获取下载链接失败，正在重试 ${i}/${maxRetries}`);
-          return timer(retryDelay);
-        },
-      })
-    );
-
-  const createAccountObservable = (): Observable<string> => {
+  const fetchLink = (): Promise<string> => {
+    // 115 的每一次接口调用在 request115 里各自限流；openlist 在这里按账号限流
     if (accountInfo.accountType === "115") {
-      const userAgent = settings["user-agent"];
-      return new Observable<string>((observer) => {
-        getRealDownloadLinkDirect115(filePath, accountInfo, userAgent)
-          .then((url) => { observer.next(url); observer.complete(); })
-          .catch((err) => observer.error(err));
-      });
+      return getRealDownloadLinkDirect115(filePath, accountInfo, settings["user-agent"], signal);
     }
-    // openlist / other
-    return enqueueForAccount(
+    return scheduleForAccount(
       account,
-      () =>
-        new Observable<string>((observer) => {
-          getRealDownloadLinkDirect(filePath, accountInfo)
-            .then((url) => { observer.next(url); observer.complete(); })
-            .catch((err) => observer.error(err));
-        }),
-      settings.download?.linkMaxConcurrent || 2
+      () => getRealDownloadLinkDirect(filePath, accountInfo, signal),
+      settings.download?.linkMaxConcurrent || 2,
+      signal,
     );
   };
 
-  return firstValueFrom(createRetryObservable(createAccountObservable));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetchLink();
+    } catch (err) {
+      if (attempt >= maxRetries || isPermanentFailure(err)) throw err;
+      log.warn(`获取下载链接失败，正在重试 ${attempt + 1}/${maxRetries}`);
+      await sleep(retryDelay, undefined, { signal });
+    }
+  }
 }
 
 async function getRealDownloadLinkDirect115(
   filePath: string,
   accountInfo: { name: string; cookie: string; accountType?: string },
   userAgent: string | undefined,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const pickcode = await getIdToPath({ path: filePath, userAgent, accountInfo });
-  if (!pickcode) throw new Error(`No pickcode found for file: ${filePath}`);
-  return getDownloadUrlWeb(pickcode, { userAgent, accountInfo });
+  const pickcode = await getIdToPath({ path: filePath, userAgent, accountInfo, signal });
+  if (!pickcode) throw new PermanentError(`No pickcode found for file: ${filePath}`);
+  return getDownloadUrlWeb(pickcode, { userAgent, accountInfo, signal });
 }
 
 async function getRealDownloadLinkDirect(
   filePath: string,
-  accountInfo: { name: string; accountType?: string; url?: string; token?: string }
+  accountInfo: { name: string; accountType?: string; url?: string; token?: string },
+  signal?: AbortSignal,
 ): Promise<string> {
   if (accountInfo.accountType === "openlist") {
     if (!accountInfo.url || !accountInfo.token)
-      throw new Error(`Missing openlist credentials for account: ${accountInfo.name}`);
+      throw new PermanentError(`Missing openlist credentials for account: ${accountInfo.name}`);
     const response = await axios.post(`${accountInfo.url}/api/fs/get`, { path: filePath }, {
       headers: { Authorization: accountInfo.token },
       timeout: DEFAULT_TIMEOUT_MS,
+      signal,
     });
     const result = response.data;
-    if (result.code !== 200) throw new Error(`Failed to get file info: ${result.message}`);
-    if (!result.data.raw_url) throw new Error(`No raw_url found for file: ${filePath}`);
+    // OpenList 已经明确答复了（多半是 object not found），两秒后再问答案也一样
+    if (result.code !== 200) throw new PermanentError(`Failed to get file info: ${result.message}`);
+    if (!result.data.raw_url) throw new PermanentError(`No raw_url found for file: ${filePath}`);
     return result.data.raw_url;
   }
-  throw new Error(`Unsupported account type: ${accountInfo.accountType}`);
+  throw new PermanentError(`Unsupported account type: ${accountInfo.accountType}`);
 }
 
 export interface DownloadOptions {
@@ -353,7 +357,17 @@ export function downloadOrCreateStrmLimited(
   );
 }
 
+/**
+ * 换多少次都一样的失败：标了 PermanentError 的、被 signal 中止的、HTTP 404 / 410（链接指向的文件已经没了）。
+ * 其余——网络断、超时、5xx、115 限流——都值得再试。
+ */
 function isPermanentFailure(err: unknown): boolean {
-  const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+  if (err instanceof PermanentError || axios.isCancel(err)) return true;
+  if (typeof err === "object" && err !== null && (err as { name?: string }).name === "AbortError") return true;
+  const status = axios.isAxiosError(err)
+    ? err.response?.status
+    : err instanceof Cloud115Error
+      ? err.status
+      : undefined;
   return status === 404 || status === 410;
 }

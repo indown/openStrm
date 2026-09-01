@@ -4,6 +4,7 @@ import { encrypt, decrypt } from "./crypto.js";
 import { LRUCache } from "lru-cache";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { scheduleForAccount } from "../download/rate-limited.js";
+import { PermanentError } from "../../lib/errors.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { TreeBuilder } from "../task/tree.js";
 import { DEFAULT_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, guardIdleStream } from "../../lib/http.js";
@@ -19,7 +20,7 @@ export interface AccountInfo {
   token?: string;
 }
 
-type RequestCtx = { userAgent?: string; accountInfo: AccountInfo };
+type RequestCtx = { userAgent?: string; accountInfo: AccountInfo; signal?: AbortSignal };
 
 /**
  * 115 接口回了非 2xx。
@@ -176,11 +177,13 @@ export async function getIdToPath(options: {
   path: string;
   userAgent?: string;
   accountInfo?: AccountInfo;
+  signal?: AbortSignal;
 }) {
   const {
     path,
     userAgent = defaultUA(),
     accountInfo,
+    signal,
   } = options || {};
 
   if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
@@ -198,7 +201,7 @@ export async function getIdToPath(options: {
   // 如果是单层路径，直接查找
   if (pathParts.length === 1) {
     log.debug(`[getIdToPath] Searching in root directory for: ${pathParts[0]}`);
-    const files = await listDirEntries(0, { userAgent, accountInfo });
+    const files = await listDirEntries(0, { userAgent, accountInfo, signal });
     
     for (const file of files) {
       if (file.n === pathParts[0]) {
@@ -206,7 +209,7 @@ export async function getIdToPath(options: {
         return file.cid;
       }
     }
-    throw new Error(`File not found: ${pathParts[0]}`);
+    throw new PermanentError(`File not found: ${pathParts[0]}`);
   }
 
   // 多层路径：先获取目录路径的 ID
@@ -217,24 +220,24 @@ export async function getIdToPath(options: {
   
   // 使用 fsDirGetId 获取目录 ID
   try {
-    const dirResp = await fsDirGetId(dirPath, { userAgent, accountInfo });
+    const dirResp = await fsDirGetId(dirPath, { userAgent, accountInfo, signal });
     const dirId = dirResp.id;
     
     if (!dirId) {
-      throw new Error(`Directory not found: ${dirPath}`);
+      throw new PermanentError(`Directory not found: ${dirPath}`);
     }
 
     log.debug(`[getIdToPath] Directory ID for ${dirPath}: ${dirId}`);
 
     // 列出目录中的文件
-    const files = await listDirEntries(dirId, { userAgent, accountInfo });
+    const files = await listDirEntries(dirId, { userAgent, accountInfo, signal });
     log.debug(`[getIdToPath] Found ${files.length} files in directory ${dirPath}`);
     
     // 查找目标文件
     for (const file of files) {
       if (file.n === fileName) {
         log.debug(`[getIdToPath] Found target file: ${fileName}, fid: ${file.fid}`);
-        const pickcode = await getPickcodeToId(file.fid, { userAgent, accountInfo });
+        const pickcode = await getPickcodeToId(file.fid, { userAgent, accountInfo, signal });
         log.debug(`[getIdToPath] Successfully got pickcode for ${path}: ${pickcode}`);
         return pickcode;
       }
@@ -243,7 +246,7 @@ export async function getIdToPath(options: {
     // 列出目录中的所有文件以便调试
     const fileNames = files.map((f) => f.n);
     log.debug({ files: fileNames }, `[getIdToPath] Available files in ${dirPath}`);
-    throw new Error(`File not found: ${fileName} in directory: ${dirPath}. Available files: ${fileNames.join(', ')}`);
+    throw new PermanentError(`File not found: ${fileName} in directory: ${dirPath}. Available files: ${fileNames.join(', ')}`);
   } catch (error) {
     log.error({ err: error }, `[getIdToPath] Error getting directory ID for ${dirPath}`);
     throw error;
@@ -251,7 +254,7 @@ export async function getIdToPath(options: {
 }
 
 // 通过路径获取目录 ID
-export async function fsDirGetId(path: string, { userAgent, accountInfo }: { userAgent?: string; app?: string; accountInfo?: AccountInfo }) {
+export async function fsDirGetId(path: string, { userAgent, accountInfo, signal }: { userAgent?: string; app?: string; accountInfo?: AccountInfo; signal?: AbortSignal }) {
   if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
   
   // 生成缓存键
@@ -273,6 +276,7 @@ export async function fsDirGetId(path: string, { userAgent, accountInfo }: { use
     ensureOk: true,
     useCommonHeaders: true,
     accountInfo,
+    signal,
   });
   
   // 缓存结果
@@ -281,12 +285,13 @@ export async function fsDirGetId(path: string, { userAgent, accountInfo }: { use
 }
 
 // 获取目录中的文件列表
-export async function fsFiles(cid: number | string, { userAgent, limit = 1000, offset = 0, accountInfo }: { 
+export async function fsFiles(cid: number | string, { userAgent, limit = 1000, offset = 0, accountInfo, signal }: {
   userAgent?: string; 
   app?: string; 
   limit?: number; 
   offset?: number; 
   accountInfo?: AccountInfo;
+  signal?: AbortSignal;
 }) {
   if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
   
@@ -313,6 +318,7 @@ export async function fsFiles(cid: number | string, { userAgent, limit = 1000, o
     ensureOk: true,
     useCommonHeaders: true,
     accountInfo,
+    signal,
   });
   
   // 缓存结果
@@ -419,6 +425,8 @@ export async function request115<T = unknown>(
     /** 覆盖限流通道；默认 `${account}:normal` */
     limiterChannel?: string;
     maxConcurrent?: number;
+    /** 中止：进行中的请求掐断，排在限流器里的不再发 */
+    signal?: AbortSignal;
   }
 ) {
   const {
@@ -434,6 +442,7 @@ export async function request115<T = unknown>(
     rawText = false,
     limiterChannel = "normal",
     maxConcurrent,
+    signal,
   } = options || {};
   const settings = readAppSettings();
   const downloadConfig = settings.download ?? {};
@@ -457,6 +466,7 @@ export async function request115<T = unknown>(
     };
     if (data !== undefined) config.data = data;
     if (responseType) config.responseType = responseType;
+    if (signal) config.signal = signal;
     if (rawText) {
       config.responseType = "text";
       config.transformResponse = [(d: unknown) => d];
@@ -467,6 +477,7 @@ export async function request115<T = unknown>(
       accountKey,
       async () => (await axios(config)).data as T,
       maxConcurrent ?? downloadConfig.linkMaxConcurrent ?? 2,
+      signal,
     );
     if (shouldEnsureOk) ensureOk(respData as unknown as Record<string, unknown>, url);
     return respData;
@@ -479,7 +490,7 @@ export async function request115<T = unknown>(
 }
 // POST https://proapi.115.com/android/2.0/ufile/download
 // Use the same getUrl function as the Node.js script
-export async function getDownloadUrlWeb(pickcode: string | number, { userAgent, accountInfo }: RequestCtx) {
+export async function getDownloadUrlWeb(pickcode: string | number, { userAgent, accountInfo, signal }: RequestCtx) {
   const data = `data=${encodeURIComponent(encrypt(`{"pick_code":"${pickcode}"}`))}`;
     const response = await request115<{ data: string }>(
       `https://proapi.115.com/android/2.0/ufile/download`,
@@ -490,13 +501,14 @@ export async function getDownloadUrlWeb(pickcode: string | number, { userAgent, 
         userAgent,
         useCommonHeaders: false,
         accountInfo,
+        signal,
       }
     );
     const decryptedData = JSON.parse(decrypt(response.data));
     return decryptedData.url;
 }
 
-export async function getPickcodeToId(id: number, { userAgent = defaultUA(), accountInfo }: { userAgent?: string; accountInfo?: AccountInfo }) {
+export async function getPickcodeToId(id: number, { userAgent = defaultUA(), accountInfo, signal }: { userAgent?: string; accountInfo?: AccountInfo; signal?: AbortSignal }) {
   if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
   
   // 生成缓存键
@@ -518,6 +530,7 @@ export async function getPickcodeToId(id: number, { userAgent = defaultUA(), acc
       userAgent,
       useCommonHeaders: false,
       accountInfo,
+      signal,
     }
   );
   
