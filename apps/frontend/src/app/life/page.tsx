@@ -1,6 +1,6 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
-import { Activity, Loader2, Play, Square, RefreshCw, Search } from "lucide-react";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import { Activity, Loader2, Play, RotateCw, Square, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,11 +28,12 @@ import { api, type LifeEventMode as EventMode, type LifeEventRow, type LifeMonit
 import { apiErrorMessage } from "@/lib/axios";
 
 /**
- * 只放配置项，故意不含 enabled。
+ * 只放配置项，故意不含 enabled 和旧的单账号字段 account。
  * enabled 是「是否随服务自启」的运行态，由启动/停止按钮独占，
  * 表单若也带着它，保存时会用挂载那一刻的旧值把启停结果覆盖掉。
+ * account 是 2.1 之前的单账号配置：加载时并进 accounts，保存时清掉。
  */
-type LifeMonitorConfig = Omit<LifeMonitorSettings, "enabled">;
+type LifeMonitorConfig = Omit<LifeMonitorSettings, "enabled" | "account">;
 
 type Account = { name: string; accountType: string };
 
@@ -92,10 +93,12 @@ export default function LifeMonitorPage() {
   useEffect(() => {
     Promise.all([
       api.settings.get().then((s) => {
-        // 运行态归启停按钮管，别让表单把它带回来
+        // 运行态归启停按钮管，别让表单把它带回来；旧的单账号字段并进 accounts
         const saved = { ...(s.lifeMonitor ?? {}) };
         delete saved.enabled;
-        setCfg(saved);
+        const legacy = saved.account;
+        delete saved.account;
+        setCfg({ ...saved, accounts: saved.accounts ?? (legacy ? [legacy] : []) });
       }),
       api.accounts.list().then((list) => setAccounts((list || []).filter((a) => a.accountType === "115"))),
       loadStatus(),
@@ -118,9 +121,9 @@ export default function LifeMonitorPage() {
   const saveConfig = async () => {
     setSaving(true);
     try {
-      // 只动 lifeMonitor 这一个键；enabled 由启停按钮维护，合并时保留库里的值
+      // 只动 lifeMonitor 这一个键；enabled 由启停按钮维护，合并时保留库里的值；旧字段 account 就此清掉
       const current = (await api.settings.get()).lifeMonitor ?? {};
-      await api.settings.patch({ lifeMonitor: { ...current, ...cfg } });
+      await api.settings.patch({ lifeMonitor: { ...current, ...cfg, account: undefined } });
       toast.success("配置已保存");
       if (status?.running) toast.info("部分参数需要重启监控后生效");
     } catch {
@@ -134,7 +137,9 @@ export default function LifeMonitorPage() {
     setBusy(true);
     try {
       const r = await api.life.start(cfg);
-      toast.success(r.message || "已启动");
+      // 起来了但有账号没起来：按警告提示，别让一条失败原因藏在绿色对勾后面
+      if (r.partial) toast.warning(r.message);
+      else toast.success(r.message || "已启动");
       await loadStatus();
     } catch (err: unknown) {
       toast.error(apiErrorMessage(err, "启动失败"));
@@ -176,16 +181,32 @@ export default function LifeMonitorPage() {
     setCfg({ ...cfg, eventModes: ALL_MODES.map((x) => x.value).filter((v) => cur.has(v)) });
   };
 
+  const toggleAccount = (name: string, on: boolean) => {
+    const cur = new Set(cfg.accounts ?? []);
+    if (on) cur.add(name);
+    else cur.delete(name);
+    // 按账号表的顺序存，勾选的先后不影响结果；已不存在的账号名排最后
+    const known = accounts.map((a) => a.name).filter((n) => cur.has(n));
+    const unknown = [...cur].filter((n) => !accounts.some((a) => a.name === n));
+    setCfg({ ...cfg, accounts: [...known, ...unknown] });
+  };
+
   if (loading) return <div>Loading...</div>;
 
   const modes = new Set<EventMode>(cfg.eventModes ?? ALL_MODES.map((x) => x.value));
+  const selected = new Set(cfg.accounts ?? []);
+  const unknownAccounts = [...selected].filter((n) => !accounts.some((a) => a.name === n));
+  const runningCount = status?.accounts.filter((a) => a.running).length ?? 0;
+  // 只有一个账号时事件表不用多一列账号
+  const showEventAccount =
+    (status?.accounts.length ?? 0) > 1 || new Set(events.map((e) => e.accountName)).size > 1;
 
   return (
     <div className="mx-auto max-w-3xl space-y-8">
       <div>
         <h1 className="text-2xl font-semibold">网盘监控</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          轮询 115 生活事件，网盘一有变动就增量更新本地 strm 库，无需跑全量任务
+          轮询 115 生活事件，网盘一有变动就增量更新本地 strm 库，无需跑全量任务；多个账号各自轮询
         </p>
       </div>
 
@@ -205,10 +226,17 @@ export default function LifeMonitorPage() {
               <RefreshCw className="h-4 w-4" />
             </Button>
             {status?.running ? (
-              <Button variant="destructive" size="sm" onClick={stop} disabled={busy}>
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
-                <span className="ml-1">停止</span>
-              </Button>
+              <>
+                {/* 重启 = 用当前表单配置先停再起：改了账号列表、或某个账号修好 cookie 后重新带上它 */}
+                <Button variant="outline" size="sm" onClick={start} disabled={busy}>
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
+                  <span className="ml-1">重启</span>
+                </Button>
+                <Button variant="destructive" size="sm" onClick={stop} disabled={busy}>
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
+                  <span className="ml-1">停止</span>
+                </Button>
+              </>
             ) : (
               <Button size="sm" onClick={start} disabled={busy}>
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
@@ -220,13 +248,16 @@ export default function LifeMonitorPage() {
 
         <div className="rounded-lg border p-4 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={status?.running ? "default" : "secondary"}>
-              {status?.running ? "运行中" : "已停止"}
-            </Badge>
-            {status?.account && <Badge variant="outline">账号 {status.account}</Badge>}
-            <Badge variant="outline">
-              接口 {status?.api === "web" ? "webapi" : "proapi"}
-            </Badge>
+            {status && (
+              <Badge variant={status.running ? "default" : "secondary"}>
+                {status.running ? "运行中" : "已停止"}
+              </Badge>
+            )}
+            {status && status.accounts.length > 0 && (
+              <Badge variant="outline">
+                {runningCount} / {status.accounts.length} 个账号在跑
+              </Badge>
+            )}
             {status?.embyRefresh?.configured && status.embyRefresh.pendingCount > 0 && (
               <Badge variant="outline">
                 待通知 Emby：{status.embyRefresh.pendingCount} 处变更
@@ -234,17 +265,76 @@ export default function LifeMonitorPage() {
             )}
           </div>
 
-          {status?.lastError && (
-            <p className="text-sm text-destructive break-all">最近错误：{status.lastError}</p>
+          {status === null ? (
+            <p className="text-sm text-muted-foreground">运行状态没能加载，点右上角的刷新按钮重试</p>
+          ) : status.accounts.length > 0 ? (
+            <div className="rounded-md border overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>账号</TableHead>
+                    <TableHead className="w-20">状态</TableHead>
+                    <TableHead className="w-20">接口</TableHead>
+                    <TableHead className="w-16 text-right">轮询</TableHead>
+                    <TableHead className="w-16 text-right">事件</TableHead>
+                    <TableHead className="w-16 text-right">已处理</TableHead>
+                    <TableHead className="w-16 text-right">失败</TableHead>
+                    <TableHead className="w-24">最近轮询</TableHead>
+                    <TableHead className="w-40">游标时间</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {status.accounts.map((a) => (
+                    <Fragment key={a.name}>
+                      <TableRow>
+                        <TableCell className="font-medium">{a.name}</TableCell>
+                        <TableCell>
+                          <Badge variant={a.running ? "default" : "secondary"}>
+                            {a.running ? "运行中" : "已停止"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-xs">{a.api === "web" ? "webapi" : "proapi"}</TableCell>
+                        <TableCell className="text-right">{a.stats.rounds}</TableCell>
+                        <TableCell className="text-right">{a.stats.events}</TableCell>
+                        <TableCell className="text-right">{a.stats.handled}</TableCell>
+                        <TableCell className="text-right">{a.stats.failed}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                          {relative(a.lastPollAt)}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                          {fmtTime(a.cursor.fromTime)}
+                        </TableCell>
+                      </TableRow>
+                      {a.lastError ? (
+                        <TableRow>
+                          <TableCell colSpan={9} className="text-xs text-destructive break-all">
+                            最近错误：{a.lastError}
+                          </TableCell>
+                        </TableRow>
+                      ) : status.running && !a.running ? (
+                        // 状态列表按当前配置生成：监控跑着时才勾上的账号会在这里，但还没被带上
+                        <TableRow>
+                          <TableCell colSpan={9} className="text-xs text-muted-foreground">
+                            启动后才加进配置，重启监控后生效
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </Fragment>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              没有可监控的 115 账号，请先到「账户」页添加带 cookie 的 115 账号
+            </p>
           )}
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-3 text-sm">
             <Stat label="轮询次数" value={status?.stats.rounds ?? 0} />
-            <Stat label="拉到事件" value={status?.stats.events ?? 0} />
             <Stat label="已处理" value={status?.stats.handled ?? 0} />
             <Stat label="失败" value={status?.stats.failed ?? 0} />
             <Stat label="最近轮询" value={relative(status?.lastPollAt ?? null)} />
-            <Stat label="游标时间" value={fmtTime(status?.cursor.fromTime)} />
             <Stat label="事件表" value={status?.db.lifeEvents ?? 0} />
             <Stat label="路径缓存" value={status?.db.pathCache ?? 0} />
           </div>
@@ -268,35 +358,38 @@ export default function LifeMonitorPage() {
       <section className="space-y-4">
         <h2 className="text-base font-medium">配置</h2>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <Label>监控账号</Label>
-            <Select
-              value={cfg.account || ""}
-              onValueChange={(v) => setCfg({ ...cfg, account: v })}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="默认取第一个 115 账号" />
-              </SelectTrigger>
-              <SelectContent>
-                {accounts.length === 0 ? (
-                  <SelectItem value="none" disabled>
-                    暂无 115 账号
-                  </SelectItem>
-                ) : (
-                  accounts.map((a) => (
-                    <SelectItem key={a.name} value={a.name}>
-                      {a.name}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              只监控这一个账号；事件路径按各同步任务的原始路径前缀匹配
-            </p>
-          </div>
+        <div className="space-y-2">
+          <Label>监控账号</Label>
+          {accounts.length === 0 && unknownAccounts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">暂无 115 账号，请先到「账户」页添加</p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {accounts.map((a) => (
+                <label key={a.name} className="flex items-center gap-2 rounded-md border p-3 cursor-pointer">
+                  <Checkbox
+                    checked={selected.has(a.name)}
+                    onCheckedChange={(v) => toggleAccount(a.name, v === true)}
+                  />
+                  <span className="text-sm font-medium">{a.name}</span>
+                </label>
+              ))}
+              {unknownAccounts.map((name) => (
+                <label key={name} className="flex items-center gap-2 rounded-md border border-dashed p-3 cursor-pointer">
+                  <Checkbox checked onCheckedChange={(v) => toggleAccount(name, v === true)} />
+                  <span className="text-sm">
+                    <span className="font-medium">{name}</span>
+                    <span className="block text-xs text-muted-foreground">账号已不存在，取消勾选后保存</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">
+            勾选的账号各跑一条轮询，互不影响；一个都不勾时监控全部 115 账号。事件路径按该账号同步任务的原始路径前缀匹配
+          </p>
+        </div>
 
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-2">
             <Label>冷启动模式</Label>
             <Select
@@ -318,9 +411,7 @@ export default function LifeMonitorPage() {
               首次启用建议 latest；all 会把历史事件全部补一遍，耗时较长
             </p>
           </div>
-        </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-2">
             <Label>轮询间隔（秒）</Label>
             <Input
@@ -332,7 +423,7 @@ export default function LifeMonitorPage() {
                 setCfg({ ...cfg, intervalSeconds: parseInt(e.target.value) || 15 })
               }
             />
-            <p className="text-xs text-muted-foreground">默认 15 秒，太短容易触发 115 风控</p>
+            <p className="text-xs text-muted-foreground">默认 15 秒，太短容易触发 115 风控；每个账号各算各的</p>
           </div>
         </div>
 
@@ -416,6 +507,7 @@ export default function LifeMonitorPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-40">时间</TableHead>
+                  {showEventAccount && <TableHead className="w-28">账号</TableHead>}
                   <TableHead className="w-28">类型</TableHead>
                   <TableHead>文件</TableHead>
                   <TableHead className="w-20">结果</TableHead>
@@ -427,6 +519,7 @@ export default function LifeMonitorPage() {
                     <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                       {fmtTime(e.updateTime)}
                     </TableCell>
+                    {showEventAccount && <TableCell className="text-xs">{e.accountName}</TableCell>}
                     <TableCell className="text-xs">{e.typeName}</TableCell>
                     <TableCell className="text-xs">
                       <div className="break-all">{e.fileName}</div>

@@ -90,7 +90,7 @@ export interface CommandDeps {
   listOpenlistDirs(path: string): Promise<string[]>;
   listOffline(): Promise<{ tasks: OfflineRow[]; count: number; quota: number | null; total: number | null }>;
   offlinePending(): number;
-  lifeStatus(): { running: boolean; account: string | null; lastError: string | null };
+  lifeStatus(): { running: boolean; accounts: Array<{ name: string; running: boolean; lastError: string | null }> };
   shareInfo(link: string): Promise<ShareSummary>;
   receiveShare(input: {
     task: TaskDefinition;
@@ -158,7 +158,10 @@ const realDeps: CommandDeps = {
   offlinePending: () => getOfflineWatcherStatus().pending,
   lifeStatus: () => {
     const s = getLifeMonitorStatus();
-    return { running: s.running, account: s.account, lastError: s.lastError };
+    return {
+      running: s.running,
+      accounts: s.accounts.map((a) => ({ name: a.name, running: a.running, lastError: a.lastError })),
+    };
   },
   shareInfo: async (link) => {
     const account = resolveAccount115();
@@ -387,9 +390,13 @@ async function sendStatus(bot: BotLike, chatId: string): Promise<void> {
   const pending = deps.offlinePending();
   lines.push("", `云下载：${pending > 0 ? `${pending} 个下载完成后待生成 strm` : "没有待处理的回执"}`);
   const life = deps.lifeStatus();
-  lines.push(
-    `网盘监控：${life.running ? `运行中（账号 ${esc(life.account ?? "")}）` : "未运行"}${life.lastError ? `\n⚠️ 最近错误：${esc(life.lastError)}` : ""}`,
-  );
+  const on = life.accounts.filter((a) => a.running).map((a) => esc(a.name));
+  const off = life.accounts.filter((a) => !a.running).map((a) => esc(a.name));
+  lines.push(`网盘监控：${life.running ? `运行中（账号 ${on.join("、")}）` : "未运行"}`);
+  if (life.running && off.length > 0) lines.push(`未运行：${off.join("、")}`);
+  for (const a of life.accounts) {
+    if (a.lastError) lines.push(`⚠️ ${esc(a.name)}：${esc(a.lastError)}`);
+  }
   await bot.sendMessage(chatId, clamp(lines.join("\n")));
 }
 

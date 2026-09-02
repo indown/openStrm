@@ -29,6 +29,10 @@ export function writeKv(key: string, value: unknown): void {
     .run();
 }
 
+export function deleteKv(key: string): void {
+  db.delete(settings).where(eq(settings.key, key)).run();
+}
+
 /* ------------------------------- path_cache ------------------------------- */
 
 export interface PathCacheInput {

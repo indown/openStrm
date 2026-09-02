@@ -72,7 +72,7 @@ import directoryRemoteRoute from "./routes/directory/remote.js";
 
 // 115 life-event monitor (incremental cloud-drive change detection)
 import lifeMonitorRoute from "./routes/life/index.js";
-import { startLifeMonitor, stopLifeMonitor } from "./services/life/monitor.js";
+import { migrateLegacyLifeMonitorState, startLifeMonitor, stopLifeMonitor } from "./services/life/monitor.js";
 import { flushEmbyRefresh } from "./services/media-server.js";
 
 // System routes
@@ -183,11 +183,12 @@ try {
   app.log.info(`API server running on http://${HOST}:${API_PORT}`);
   try { startScrapeWorker(); } catch (err) { app.log.error({ err }, "scrape-worker start failed"); }
 
-  // 生活事件监控：配置里开着就跟随服务一起起来
+  // 生活事件监控：先把 2.1 之前的单账号状态挪到账号名下（界面还没机会改配置），配置里开着就跟随服务一起起来
+  try { migrateLegacyLifeMonitorState(); } catch (err) { app.log.error({ err }, "life monitor state migration failed"); }
   const settings = readAppSettings();
   if (settings.lifeMonitor?.enabled) {
     startLifeMonitor()
-      .then((r) => (r.ok ? app.log.info(r.message) : app.log.warn(r.message)))
+      .then((r) => (r.ok && r.failed.length === 0 ? app.log.info(r.message) : app.log.warn(r.message)))
       .catch((err) => app.log.error({ err }, "life monitor start failed"));
   }
   // 云下载回执：上次关机前还有"下完生成 strm"没兑现的，接着盯

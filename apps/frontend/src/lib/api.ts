@@ -154,23 +154,40 @@ export type HdhiveSearchResult = {
 };
 
 export type LifeEventMode = "create" | "move" | "rename" | "remove";
-export type LifeMonitorStatus = {
+export type LifeMonitorStats = { rounds: number; events: number; handled: number; skipped: number; failed: number };
+/** 一个被监控账号的运行态；起不来的账号 running=false，原因在 lastError */
+export type LifeAccountStatus = {
+  name: string;
   running: boolean;
-  account: string | null;
   cursor: { fromTime: number; fromId: string };
-  interval: number;
-  eventModes: LifeEventMode[];
   api: "web" | "ios" | "android";
   startedAt: number | null;
   lastPollAt: number | null;
   lastError: string | null;
-  stats: { rounds: number; events: number; handled: number; skipped: number; failed: number };
+  stats: LifeMonitorStats;
+};
+export type LifeMonitorStatus = {
+  /** 至少一个账号在跑 */
+  running: boolean;
+  accounts: LifeAccountStatus[];
+  interval: number;
+  eventModes: LifeEventMode[];
+  startedAt: number | null;
+  lastPollAt: number | null;
+  /** 各账号合计 */
+  stats: LifeMonitorStats;
   db: { lifeEvents: number; pathCache: number };
   embyRefresh: { configured: boolean; pendingCount: number; pendingSince: number | null };
   logs: string[];
 };
+export type LifeProbeResult = {
+  ok: boolean;
+  message: string;
+  accounts: Array<{ account: string; ok: boolean; message: string }>;
+};
 export type LifeEventRow = {
   id: string;
+  accountName: string;
   type: number;
   typeName: string;
   fileName: string;
@@ -490,9 +507,15 @@ export const api = {
     status: () => data(axiosInstance.get<LifeMonitorStatus>("/api/life/monitor")),
     events: (limit = 30) => data(axiosInstance.get<{ events: LifeEventRow[] }>(`/api/life/events?limit=${limit}`)),
     start: (config?: LifeMonitorSettings) =>
-      data(axiosInstance.post<{ success: boolean; message: string; status: LifeMonitorStatus }>("/api/life/monitor", { config })),
+      data(
+        axiosInstance.post<{ success: boolean; message: string; partial: boolean; status: LifeMonitorStatus }>(
+          "/api/life/monitor",
+          { config },
+        ),
+      ),
     stop: () => data(axiosInstance.delete<{ success: boolean; message: string }>("/api/life/monitor")),
-    probe: (limit = 5) => data(axiosInstance.post<{ ok: boolean; message: string }>("/api/life/probe", { limit })),
+    probe: (limit = 5, account?: string) =>
+      data(axiosInstance.post<LifeProbeResult>("/api/life/probe", { limit, account })),
   },
 
   telegram: {
