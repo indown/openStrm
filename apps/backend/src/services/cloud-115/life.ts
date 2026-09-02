@@ -175,6 +175,7 @@ export function is405(err: unknown): boolean {
  */
 export async function enableLifeCalendar(
   accountInfo: AccountInfo,
+  signal?: AbortSignal,
 ): Promise<{ ok: boolean; message: string }> {
   const form = new URLSearchParams({ locus: "1", open_life: "1" });
   const resp = await request115<{ state?: boolean; errno?: number; error?: string; message?: string }>(
@@ -185,6 +186,7 @@ export async function enableLifeCalendar(
       useCommonHeaders: true,
       accountInfo,
       limiterChannel: "life",
+      signal,
     },
   );
   const ok = resp?.state !== false && !resp?.errno;
@@ -207,6 +209,7 @@ async function fetchBehaviorDetail(
   accountInfo: AccountInfo,
   params: { limit: number; offset: number; type?: string; date?: string },
   app: LifeApp,
+  signal?: AbortSignal,
 ): Promise<BehaviorDetailResp> {
   const base =
     app === "web"
@@ -226,6 +229,7 @@ async function fetchBehaviorDetail(
     rawError: true,
     rawText: true,
     limiterChannel: "life",
+    signal,
   });
   return parseJsonBigIntSafe<BehaviorDetailResp>(text, `behavior/detail app=${app}`);
 }
@@ -276,7 +280,7 @@ export async function pullLifeEvents(opts: PullOptions): Promise<LifeEvent[]> {
 
   for (let page = 0; page < maxPages; page++) {
     if (signal?.aborted) break;
-    const resp = await fetchBehaviorDetail(accountInfo, { limit, offset }, app);
+    const resp = await fetchBehaviorDetail(accountInfo, { limit, offset }, app, signal);
     if (resp?.state === false || resp?.errno) {
       throw new Error(`115 behavior/detail error: ${resp.error || resp.errno || "unknown"}`);
     }

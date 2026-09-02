@@ -84,6 +84,7 @@ export const accountPatchSchema = z.looseObject({
 
 export const lifeMonitorSchema = z.looseObject({
   enabled: z.boolean().optional(),
+  accounts: z.array(z.string()).optional(),
   account: z.string().optional(),
   pullMode: z.enum(["latest", "all", "last"]).optional(),
   intervalSeconds: z.number().int().positive().optional(),

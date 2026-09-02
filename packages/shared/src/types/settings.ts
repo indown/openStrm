@@ -6,7 +6,9 @@ export type LifeEventMode = "create" | "move" | "rename" | "remove";
 
 export type LifeMonitorSettings = {
   enabled?: boolean;
-  /** 要监控的 115 账号名，为空时取第一个 115 账号 */
+  /** 要监控的 115 账号名；未设置或为空时监控全部带 cookie 的 115 账号，每个账号各跑一条轮询 */
+  accounts?: string[];
+  /** 2.1 之前的单账号字段；只在 accounts 未设置时还按它取一个账号 */
   account?: string;
   /** latest=只处理启动之后的事件；all=全量补齐；last=从上次停止的游标继续 */
   pullMode?: LifePullMode;

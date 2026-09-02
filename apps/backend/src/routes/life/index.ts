@@ -2,7 +2,6 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   getLifeMonitorStatus,
-  isLifeMonitorRunning,
   probeLifeEvents,
   startLifeMonitor,
   stopLifeMonitor,
@@ -15,7 +14,7 @@ import { parse } from "../../lib/validate.js";
 import { lifeMonitorSchema } from "../../schemas/entities.js";
 
 const startSchema = z.object({ config: lifeMonitorSchema.optional() });
-const probeSchema = z.object({ limit: z.number().int().positive().optional() });
+const probeSchema = z.object({ limit: z.number().int().positive().optional(), account: z.string().optional() });
 const eventsQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(500).default(50) });
 
 export default async function (fastify: FastifyInstance) {
@@ -27,12 +26,14 @@ export default async function (fastify: FastifyInstance) {
     const { config } = parse(startSchema, request.body);
     if (config) {
       updateAppSetting("lifeMonitor", (current) => ({ ...(current ?? {}), ...config, enabled: true }));
-      // 账号、拉取模式、间隔都是启动时定下来的：已在跑就先停再起，不然改了等于没改
-      if (isLifeMonitorRunning()) await stopLifeMonitor();
+      // 账号列表、拉取模式、间隔都是启动时定下来的：先停再起，不然改了等于没改。
+      // 不看 isLifeMonitorRunning：正在过门禁的启动 running 还没置位，也得掐掉重来，stop 没在跑时是空操作
+      await stopLifeMonitor();
     }
     const res = await startLifeMonitor();
     if (!res.ok) throw new HttpError(400, res.message);
-    return { success: true, message: res.message, status: getLifeMonitorStatus() };
+    // partial：起来了但有账号没起来，界面按警告而不是成功提示
+    return { success: true, message: res.message, partial: res.failed.length > 0, status: getLifeMonitorStatus() };
   });
 
   /** 停止监控 */
@@ -42,10 +43,10 @@ export default async function (fastify: FastifyInstance) {
     return { success: res.ok, message: res.message };
   });
 
-  /** 只拉不处理，用来确认账号能不能读到生活事件 */
+  /** 只拉不处理，用来确认账号能不能读到生活事件；不指定账号就把配置里的都测一遍，有一个不通就算失败 */
   fastify.post("/api/life/probe", { preHandler: [fastify.authenticate] }, async (request) => {
-    const { limit } = parse(probeSchema, request.body);
-    const res = await probeLifeEvents(limit ?? 20);
+    const { limit, account } = parse(probeSchema, request.body);
+    const res = await probeLifeEvents(limit ?? 20, account);
     if (!res.ok) throw new HttpError(400, res.message);
     return res;
   });

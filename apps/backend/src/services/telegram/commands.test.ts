@@ -68,7 +68,7 @@ const deps: Partial<CommandDeps> = {
   },
   listOffline: async () => ({ tasks: [{ name: "Show.mkv", state: "done", statusText: "下载成功", percent: 100 }], count: 1, quota: 5, total: 10 }),
   offlinePending: () => 2,
-  lifeStatus: () => ({ running: true, account: "115", lastError: null }),
+  lifeStatus: () => ({ running: true, accounts: [{ name: "115", running: true, lastError: null }] }),
   shareInfo: async (link) => {
     calls.push({ fn: "shareInfo", args: link });
     return { shareCode: "sc", receiveCode: "rc", name: "剧集合集", count: 2, items: [{ id: "1", name: "S01", isDir: true }, { id: "2", name: "readme.txt", isDir: false }] };
