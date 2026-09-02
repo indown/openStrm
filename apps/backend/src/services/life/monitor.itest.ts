@@ -17,7 +17,6 @@ import { rememberPath } from "../cloud-115/path-resolver.js";
 import type { LifeEvent, PullOptions } from "../cloud-115/life.js";
 import {
   getLifeMonitorStatus,
-  migrateLegacyLifeMonitorState,
   probeLifeEvents,
   resolveMonitoredAccountNames,
   setLifeMonitorDeps,
@@ -92,8 +91,6 @@ beforeEach(() => {
     deleteKv(KEY.lifeCursor(name));
     deleteKv(KEY.lifeAppFallback(name));
   }
-  deleteKv(KEY.legacyLifeCursor);
-  deleteKv(KEY.legacyLifeAppFallback);
 });
 
 after(async () => {
@@ -103,12 +100,10 @@ after(async () => {
   replaceAccounts(baselineAccounts);
 });
 
-test("resolveMonitoredAccountNames：accounts 优先，其次旧字段 account，都没有就全部；名字不 trim", () => {
+test("resolveMonitoredAccountNames：accounts 非空就是这些，否则全部；名字不 trim", () => {
   const pool = [{ name: "A" }, { name: "B" }];
   assert.deepEqual(resolveMonitoredAccountNames({}, pool), ["A", "B"]);
-  assert.deepEqual(resolveMonitoredAccountNames({ account: "B" }, pool), ["B"], "2.1 之前的单账号配置");
-  assert.deepEqual(resolveMonitoredAccountNames({ accounts: ["B"], account: "A" }, pool), ["B"], "新字段出现后旧字段不再看");
-  assert.deepEqual(resolveMonitoredAccountNames({ accounts: [], account: "A" }, pool), ["A", "B"], "空数组 = 全部，旧字段还在也一样");
+  assert.deepEqual(resolveMonitoredAccountNames({ accounts: [] }, pool), ["A", "B"], "空数组 = 全部");
   assert.deepEqual(resolveMonitoredAccountNames({ accounts: ["B", "B", "", "X"] }, pool), ["B", "X"], "保序去重，不认识的名字也留着");
   assert.deepEqual(resolveMonitoredAccountNames({ accounts: [" B"] }, pool), [" B"], "账号名以账户表为准，带空格也原样比");
 });
@@ -151,7 +146,6 @@ test("两个账号各跑一条循环：事件按账号落库，游标各存各�
 
     assert.equal(readKv<{ fromId: string }>(KEY.lifeCursor("A"))?.fromId, "1001");
     assert.equal(readKv<{ fromId: string }>(KEY.lifeCursor("B"))?.fromId, "2001");
-    assert.equal(readKv(KEY.legacyLifeCursor), null, "不再写不带账号名的旧键");
   } finally {
     await stopLifeMonitor();
   }
@@ -218,50 +212,19 @@ test("同一个 cookie 挂在两个账号名下只监控先出现的那个", asy
   }
 });
 
-test("升级迁移：旧游标/降级状态挪到当时监控的账号名下，配置写成只盯那一个账号", () => {
-  writeKv(KEY.legacyLifeCursor, { fromTime: 123, fromId: "999" });
+test("last 模式从该账号上次的游标继续，并沿用它自己的降级窗口", async () => {
+  writeKv(KEY.lifeCursor("B"), { fromTime: 123, fromId: "999" });
   const webUntil = Date.now() + 3_600_000;
-  writeKv(KEY.legacyLifeAppFallback, { ios405Count: 0, webFallbackUntil: webUntil });
-  // 旧配置：只有 account 字段
-  configure({ account: "B", pullMode: "last" });
-
-  migrateLegacyLifeMonitorState();
-  assert.deepEqual(readAppSettings().lifeMonitor?.accounts, ["B"], "升级后继续只盯原来那一个");
-  assert.equal(readKv(KEY.legacyLifeCursor), null, "旧键已删除");
-  assert.equal(readKv(KEY.legacyLifeAppFallback), null);
-  assert.deepEqual(readKv(KEY.lifeCursor("B")), { fromTime: 123, fromId: "999" });
-  assert.deepEqual(readKv(KEY.lifeAppFallback("B")), { ios405Count: 0, webFallbackUntil: webUntil });
-  assert.equal(readKv(KEY.lifeCursor("A")), null, "别的账号不沾");
-
-  // 再跑一次是空转
-  migrateLegacyLifeMonitorState();
-  assert.deepEqual(readAppSettings().lifeMonitor?.accounts, ["B"]);
-  assert.deepEqual(readKv(KEY.lifeCursor("B")), { fromTime: 123, fromId: "999" });
-});
-
-test("升级迁移：旧版没填账号就是第一个 115 账号；没用过监控的不写 accounts", () => {
-  configure({ enabled: true, pullMode: "latest" });
-  migrateLegacyLifeMonitorState();
-  assert.deepEqual(readAppSettings().lifeMonitor?.accounts, ["A"], "enabled 过 → 按旧行为盯第一个账号");
-
-  configure({ eventModes: ["create"] });
-  migrateLegacyLifeMonitorState();
-  assert.equal(readAppSettings().lifeMonitor?.accounts, undefined, "没开过、没填过账号、没有旧游标 → 保持「不选就全部」");
-});
-
-test("升级迁移后 last 模式从旧游标继续、沿用降级窗口", async () => {
-  writeKv(KEY.legacyLifeCursor, { fromTime: 123, fromId: "999" });
-  const webUntil = Date.now() + 3_600_000;
-  writeKv(KEY.legacyLifeAppFallback, { ios405Count: 0, webFallbackUntil: webUntil });
-  configure({ account: "B", pullMode: "last" });
-  migrateLegacyLifeMonitorState();
+  writeKv(KEY.lifeAppFallback("B"), { ios405Count: 0, webFallbackUntil: webUntil });
+  configure({ accounts: ["A", "B"], pullMode: "last" });
   const r = await startLifeMonitor();
   try {
     assert.equal(r.ok, true, r.message);
-    assert.deepEqual(getLifeMonitorStatus().accounts.map((a) => a.name), ["B"]);
     assert.deepEqual(statusOf("B")?.cursor, { fromTime: 123, fromId: "999" });
-    assert.equal(statusOf("B")?.api, "web", "降级窗口跟着账号一起挪过来");
-    assert.ok(pulls.filter((p) => p.account === "B").every((p) => p.app === "web"));
+    assert.equal(statusOf("B")?.api, "web");
+    assert.ok(pulls.filter((p) => p.account === "B").every((p) => p.app === "web"), "B 走 webapi");
+    assert.ok(pulls.filter((p) => p.account === "A").every((p) => p.app === "ios"), "A 不受 B 的降级窗口影响");
+    assert.notDeepEqual(statusOf("A")?.cursor, { fromTime: 123, fromId: "999" }, "A 没有存过游标，从现在开始");
   } finally {
     await stopLifeMonitor();
   }

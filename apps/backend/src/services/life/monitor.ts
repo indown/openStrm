@@ -20,13 +20,12 @@ import { KEY } from "../../db/keys.js";
 import { isAbortError } from "../../lib/errors.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { notify } from "../telegram/notify.js";
-import { readAppSettings, updateAppSetting } from "../../db/repositories/settings.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
 import { getAccount, listAccounts } from "../../db/repositories/accounts.js";
 import { listTasks } from "../../db/repositories/tasks.js";
 import {
   countLifeEvents,
   countPathCache,
-  deleteKv,
   isLifeEventHandled,
   markLifeEvent,
   readKv,
@@ -233,10 +232,7 @@ function pick115Account(name: string): Cloud115Account | null {
 }
 
 /**
- * 配置里要监控哪些账号：
- *   accounts 已设置（哪怕是空数组）→ 以它为准，空数组 = 全部；
- *   accounts 未设置但旧字段 account 有值 → 只这一个（2.1 之前的单账号配置）；
- *   都没有 → 全部带 cookie 的 115 账号。
+ * 配置里要监控哪些账号：accounts 非空就是这些，否则全部带 cookie 的 115 账号。
  * 名字原样比对，不 trim：账号名以账户表里存的为准。保序去重；对不上账号表的照样返回，
  * 启动时会以「找不到账号」出现在状态里而不是被静默丢掉。
  */
@@ -244,8 +240,7 @@ export function resolveMonitoredAccountNames(
   cfg: LifeMonitorSettings,
   pool: ReadonlyArray<{ name: string }>,
 ): string[] {
-  const chosen = cfg.accounts !== undefined ? cfg.accounts : cfg.account ? [cfg.account] : [];
-  const names = [...new Set(chosen.filter((s) => s !== ""))];
+  const names = [...new Set((cfg.accounts ?? []).filter((s) => s !== ""))];
   return names.length > 0 ? names : pool.map((a) => a.name);
 }
 
@@ -266,39 +261,6 @@ function initialCursor(name: string, mode: LifePullMode): LifeCursor {
     if (saved) return saved;
   }
   return { fromTime: Math.floor(Date.now() / 1000), fromId: "0" };
-}
-
-/**
- * 2.1 之前只监控一个账号：游标和降级状态存在不带账号名的键里，配置里也只有 `account`。
- * 服务启动时调用（界面还没机会改配置），把它们挪到当时监控的那个账号名下：
- *   - KV 旧键 → `life.cursor.<name>` / `life.appFallback.<name>`（已有新键就不覆盖），旧键删掉；
- *   - 配置没有 `accounts` 但以前用过监控（开过、填过 account、或留有旧游标）→ 写 `accounts: [<name>]`，
- *     升级后继续只盯原来那一个账号，不会悄悄把别的账号也拉进来。新装的没这些痕迹，保持「不选就全部」。
- * 之后每次启动都是空转。
- */
-export function migrateLegacyLifeMonitorState(): void {
-  const cfg = readAppSettings().lifeMonitor;
-  const legacyCursor = readKv<unknown>(KEY.legacyLifeCursor);
-  const legacyFallback = readKv<unknown>(KEY.legacyLifeAppFallback);
-  // 旧版没填账号就是账户表里第一个 115 账号
-  const name = cfg?.account || list115Pool()[0]?.name;
-  if (!name) return;
-
-  const pairs: Array<[string, unknown, string]> = [
-    [KEY.legacyLifeCursor, legacyCursor, KEY.lifeCursor(name)],
-    [KEY.legacyLifeAppFallback, legacyFallback, KEY.lifeAppFallback(name)],
-  ];
-  for (const [oldKey, value, newKey] of pairs) {
-    if (value === null) continue;
-    if (readKv<unknown>(newKey) === null) writeKv(newKey, value);
-    deleteKv(oldKey);
-  }
-
-  const usedBefore = !!cfg && (cfg.enabled === true || !!cfg.account || legacyCursor !== null);
-  if (usedBefore && cfg.accounts === undefined) {
-    updateAppSetting("lifeMonitor", (current) => ({ ...(current ?? {}), accounts: [name] }));
-    log("info", `升级：网盘监控沿用原来的单账号配置，只监控 ${name}；要监控更多账号到网盘监控页勾选`);
-  }
 }
 
 /* -------------------------------- 单账号循环 -------------------------------- */

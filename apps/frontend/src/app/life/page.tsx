@@ -28,12 +28,11 @@ import { api, type LifeEventMode as EventMode, type LifeEventRow, type LifeMonit
 import { apiErrorMessage } from "@/lib/axios";
 
 /**
- * 只放配置项，故意不含 enabled 和旧的单账号字段 account。
+ * 只放配置项，故意不含 enabled。
  * enabled 是「是否随服务自启」的运行态，由启动/停止按钮独占，
  * 表单若也带着它，保存时会用挂载那一刻的旧值把启停结果覆盖掉。
- * account 是 2.1 之前的单账号配置：加载时并进 accounts，保存时清掉。
  */
-type LifeMonitorConfig = Omit<LifeMonitorSettings, "enabled" | "account">;
+type LifeMonitorConfig = Omit<LifeMonitorSettings, "enabled">;
 
 type Account = { name: string; accountType: string };
 
@@ -93,12 +92,10 @@ export default function LifeMonitorPage() {
   useEffect(() => {
     Promise.all([
       api.settings.get().then((s) => {
-        // 运行态归启停按钮管，别让表单把它带回来；旧的单账号字段并进 accounts
+        // 运行态归启停按钮管，别让表单把它带回来
         const saved = { ...(s.lifeMonitor ?? {}) };
         delete saved.enabled;
-        const legacy = saved.account;
-        delete saved.account;
-        setCfg({ ...saved, accounts: saved.accounts ?? (legacy ? [legacy] : []) });
+        setCfg(saved);
       }),
       api.accounts.list().then((list) => setAccounts((list || []).filter((a) => a.accountType === "115"))),
       loadStatus(),
@@ -121,9 +118,9 @@ export default function LifeMonitorPage() {
   const saveConfig = async () => {
     setSaving(true);
     try {
-      // 只动 lifeMonitor 这一个键；enabled 由启停按钮维护，合并时保留库里的值；旧字段 account 就此清掉
+      // 只动 lifeMonitor 这一个键；enabled 由启停按钮维护，合并时保留库里的值
       const current = (await api.settings.get()).lifeMonitor ?? {};
-      await api.settings.patch({ lifeMonitor: { ...current, ...cfg, account: undefined } });
+      await api.settings.patch({ lifeMonitor: { ...current, ...cfg } });
       toast.success("配置已保存");
       if (status?.running) toast.info("部分参数需要重启监控后生效");
     } catch {

@@ -18,9 +18,6 @@ export const KEY = {
   seededMarker: "__migrated_from_json__",
   lifeCursor: (account: string) => `life.cursor.${account}`,
   lifeAppFallback: (account: string) => `life.appFallback.${account}`,
-  /** 2.1 之前只监控一个账号时用的键；升级后第一次启动挪到账号名下，之后不再出现 */
-  legacyLifeCursor: "life.cursor",
-  legacyLifeAppFallback: "life.appFallback",
   offlineFollowups: "offline.followups",
   embyNewCursor: "emby.newCursor",
 } as const;
