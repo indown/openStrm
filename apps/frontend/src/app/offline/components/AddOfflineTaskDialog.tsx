@@ -349,7 +349,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
                                   onClick={() => setSubSegments((prev) => [...prev, d.name])}
                                   className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left text-sm"
                                 >
-                                  <FolderOpen className="h-4 w-4 text-amber-500 shrink-0" />
+                                  <FolderOpen className="h-4 w-4 text-warning shrink-0" />
                                   <span className="truncate">{d.name}</span>
                                 </button>
                               </li>
@@ -471,7 +471,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
                                   onClick={() => setCopySegments((prev) => [...prev, d.name])}
                                   className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left text-sm"
                                 >
-                                  <FolderOpen className="h-4 w-4 text-sky-500 shrink-0" />
+                                  <FolderOpen className="h-4 w-4 text-brand shrink-0" />
                                   <span className="truncate">{d.name}</span>
                                 </button>
                               </li>

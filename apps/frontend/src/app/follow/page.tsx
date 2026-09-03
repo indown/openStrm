@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Pause, Pencil, Play, RefreshCw, Rss, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -39,6 +38,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import type { ShareFollowSummary } from "@openstrm/shared";
+import { PageHeader } from "@/components/page-header";
+import { StatusBadge, type StatusTone } from "@/components/status-badge";
+import { EmptyState } from "@/components/empty-state";
+import { TableSkeleton } from "@/components/loading";
 import { api, type FollowListResponse } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import { FOLLOW_INTERVALS, intervalLabel, scopeLabel } from "@/lib/follow";
@@ -69,15 +72,15 @@ function relativeFuture(ms: number): string {
 }
 
 /** enabled + status 合成界面上的一个徽标 */
-function statusMeta(f: ShareFollowSummary): { variant: "default" | "secondary" | "destructive" | "outline"; label: string } {
-  if (f.status === "checking") return { variant: "secondary", label: "检查中" };
+function statusMeta(f: ShareFollowSummary): { tone: StatusTone; label: string; pulse?: boolean } {
+  if (f.status === "checking") return { tone: "info", label: "检查中", pulse: true };
   if (!f.enabled) {
-    if (f.status === "expired") return { variant: "destructive", label: "分享失效" };
-    if (f.status === "stale") return { variant: "outline", label: "已停更" };
-    return { variant: "outline", label: "已暂停" };
+    if (f.status === "expired") return { tone: "danger", label: "分享失效" };
+    if (f.status === "stale") return { tone: "neutral", label: "已停更" };
+    return { tone: "neutral", label: "已暂停" };
   }
-  if (f.status === "error") return { variant: "destructive", label: "出错" };
-  return { variant: "default", label: "追更中" };
+  if (f.status === "error") return { tone: "danger", label: "出错" };
+  return { tone: "brand", label: "追更中" };
 }
 
 export default function FollowPage() {
@@ -205,65 +208,67 @@ export default function FollowPage() {
   const activeCount = follows.filter((f) => f.enabled).length;
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold flex items-center gap-2">
-            <Rss className="h-6 w-6" />
-            追更
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            盯住分享里的剧集目录，定期把新增的文件自动转存到任务目录并生成 strm
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => load()} disabled={refreshing}>
-          <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-        </Button>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        icon={Rss}
+        title="追更"
+        description="盯住分享里的剧集目录，定期把新增的文件自动转存到任务目录并生成 strm"
+        actions={
+          <Button variant="outline" onClick={() => load()} disabled={refreshing}>
+            <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
+            刷新
+          </Button>
+        }
+      >
+        {follows.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 pt-1 text-sm">
+            <StatusBadge tone="neutral" className="tabular-nums">
+              {activeCount} / {follows.length} 条在追
+            </StatusBadge>
+            {data?.watcher.lastError && (
+              <span className="break-all text-xs text-destructive">循环最近一次出错：{data.watcher.lastError}</span>
+            )}
+          </div>
+        )}
+      </PageHeader>
 
-      {follows.length > 0 && (
-        <div className="flex items-center gap-2 flex-wrap text-sm">
-          <Badge variant="outline">
-            {activeCount} / {follows.length} 条在追
-          </Badge>
-          {data?.watcher.lastError && (
-            <span className="text-xs text-destructive break-all">循环最近一次出错：{data.watcher.lastError}</span>
-          )}
-        </div>
-      )}
-
-      {error && !data && loaded && <p className="text-sm text-destructive break-all">{error}</p>}
-
-      <div className="rounded-lg border overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>名称</TableHead>
-              <TableHead className="w-48">目标</TableHead>
-              <TableHead className="w-36">检查</TableHead>
-              <TableHead className="min-w-[160px]">最近动态</TableHead>
-              <TableHead className="w-24">状态</TableHead>
-              <TableHead className="w-32 text-right">操作</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {!loaded ? (
+      {!loaded ? (
+        <TableSkeleton rows={4} />
+      ) : follows.length === 0 ? (
+        error ? (
+          <EmptyState
+            icon={Rss}
+            title="列表加载失败"
+            description={error}
+            action={
+              <Button variant="outline" onClick={() => load()} disabled={refreshing}>
+                <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
+                重试
+              </Button>
+            }
+          />
+        ) : (
+          <EmptyState
+            icon={Rss}
+            title="还没有追更订阅"
+            description="转存分享时（分享详情或影库的「保存到任务目录」）勾选「转存后追更」，新集就会自动跟过来。"
+          />
+        )
+      ) : (
+        <div className="overflow-hidden rounded-xl border bg-card">
+          <Table>
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
-                  <Loader2 className="h-4 w-4 animate-spin inline-block mr-2" />
-                  加载中...
-                </TableCell>
+                <TableHead>名称</TableHead>
+                <TableHead className="w-48">目标</TableHead>
+                <TableHead className="w-36">检查</TableHead>
+                <TableHead className="min-w-[160px]">最近动态</TableHead>
+                <TableHead className="w-24">状态</TableHead>
+                <TableHead className="w-36 text-right">操作</TableHead>
               </TableRow>
-            ) : follows.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground py-10">
-                  {error
-                    ? "列表加载失败"
-                    : "还没有追更订阅。转存分享时（分享详情或影库的「保存到任务目录」）勾选「转存后追更」，新集就会自动跟过来。"}
-                </TableCell>
-              </TableRow>
-            ) : (
-              follows.map((f) => (
+            </TableHeader>
+            <TableBody>
+              {follows.map((f) => (
                 <FollowRow
                   key={f.id}
                   follow={f}
@@ -274,11 +279,11 @@ export default function FollowPage() {
                   onEdit={() => setEditTarget(f)}
                   onDelete={() => setDeleteTarget(f)}
                 />
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
 
       <EditFollowDialog
         target={editTarget}
@@ -306,7 +311,7 @@ export default function FollowPage() {
               }}
               disabled={deleting}
             >
-              {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : "删除"}
+              {deleting ? <Loader2 className="size-4 animate-spin" /> : "删除"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -344,36 +349,36 @@ function FollowRow({
   return (
     <TableRow>
       <TableCell className="min-w-[180px]">
-        <div className="text-sm font-medium break-all">{f.name}</div>
-        <div className="text-xs text-muted-foreground break-all">
+        <div className="break-all text-sm font-medium">{f.name}</div>
+        <div className="break-all text-xs text-muted-foreground">
           {f.watchPath || "分享根目录"}
           {scope !== "整个目录" && ` · 只追：${scope}`}
         </div>
       </TableCell>
-      <TableCell className="text-xs text-muted-foreground break-all">→ {target}</TableCell>
-      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+      <TableCell className="break-all text-xs text-muted-foreground">→ {target}</TableCell>
+      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
         <div>{intervalLabel(f.intervalMinutes)}</div>
         <div title={`上次：${fmtTime(f.lastCheckedAt)}`}>上次 {relativePast(f.lastCheckedAt)}</div>
         {f.enabled && !checking && <div title={fmtTime(f.nextCheckAt)}>下次 {relativeFuture(f.nextCheckAt)}</div>}
       </TableCell>
       <TableCell>
         {last ? (
-          <div className="text-xs space-y-0.5">
+          <div className="space-y-0.5 text-xs">
             {last.added.length > 0 && (
               <div className="break-all">
-                <span className="text-green-600 dark:text-green-500">+{last.added.length}</span>{" "}
+                <span className="font-medium text-success tabular-nums">+{last.added.length}</span>{" "}
                 {last.added.slice(0, 2).join("、")}
                 {last.added.length > 2 ? ` 等 ${last.added.length} 个` : ""}
               </div>
             )}
             {last.skipped.length > 0 && (
-              <div className="text-muted-foreground break-all" title={last.skipped.join("\n")}>
+              <div className="break-all text-muted-foreground" title={last.skipped.join("\n")}>
                 跳过 {last.skipped.length} 项（{last.skipped[0]}
                 {last.skipped.length > 1 ? " 等" : ""}）
               </div>
             )}
             {last.error && (last.added.length > 0 || last.skipped.length > 0) && (
-              <div className="text-destructive break-all">{last.error}</div>
+              <div className="break-all text-destructive">{last.error}</div>
             )}
             <div className="text-muted-foreground">{relativePast(last.at)}</div>
           </div>
@@ -382,26 +387,44 @@ function FollowRow({
         )}
       </TableCell>
       <TableCell>
-        <Badge variant={meta.variant}>{meta.label}</Badge>
+        <StatusBadge tone={meta.tone} pulse={meta.pulse}>
+          {meta.label}
+        </StatusBadge>
         {f.lastError && f.status !== "checking" && (
-          <div className="text-xs text-muted-foreground mt-1 break-all" title={f.lastError}>
+          <div className="mt-1 break-all text-xs text-muted-foreground" title={f.lastError}>
             {f.lastError.length > 60 ? `${f.lastError.slice(0, 60)}…` : f.lastError}
           </div>
         )}
       </TableCell>
-      <TableCell className="text-right whitespace-nowrap">
-        <Button variant="ghost" size="sm" title="立即检查" onClick={onCheck} disabled={busy || checking}>
-          {busy || checking ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-        </Button>
-        <Button variant="ghost" size="sm" title={f.enabled ? "暂停" : "继续"} onClick={onToggle} disabled={busy || checking}>
-          {f.enabled ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-        </Button>
-        <Button variant="ghost" size="sm" title="编辑" onClick={onEdit} disabled={busy}>
-          <Pencil className="h-4 w-4" />
-        </Button>
-        <Button variant="ghost" size="sm" title="删除" onClick={onDelete} disabled={busy}>
-          <Trash2 className="h-4 w-4 text-destructive" />
-        </Button>
+      <TableCell className="whitespace-nowrap text-right">
+        <div className="flex justify-end gap-0.5">
+          <Button variant="ghost" size="icon" className="size-8" title="立即检查" onClick={onCheck} disabled={busy || checking}>
+            {busy || checking ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            title={f.enabled ? "暂停" : "继续"}
+            onClick={onToggle}
+            disabled={busy || checking}
+          >
+            {f.enabled ? <Pause className="size-4" /> : <Play className="size-4" />}
+          </Button>
+          <Button variant="ghost" size="icon" className="size-8" title="编辑" onClick={onEdit} disabled={busy}>
+            <Pencil className="size-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 text-destructive hover:text-destructive"
+            title="删除"
+            onClick={onDelete}
+            disabled={busy}
+          >
+            <Trash2 className="size-4" />
+          </Button>
+        </div>
       </TableCell>
     </TableRow>
   );
@@ -475,7 +498,7 @@ function EditFollowDialog({
             取消
           </Button>
           <Button onClick={() => void save()} disabled={saving}>
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "保存"}
+            {saving ? <Loader2 className="size-4 animate-spin" /> : "保存"}
           </Button>
         </DialogFooter>
       </DialogContent>
