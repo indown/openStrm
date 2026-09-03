@@ -1,12 +1,14 @@
 "use client"
 
-import { Toaster as Sonner, ToasterProps } from "sonner"
+import { useTheme } from "next-themes"
+import { Toaster as Sonner, type ToasterProps } from "sonner"
 
-// 应用本身没有主题切换（始终浅色），toast 也固定浅色，别跟着系统的深色模式变
+// toast 跟着应用主题走（next-themes 解析后的 light / dark），颜色用 popover 的 token
 const Toaster = ({ ...props }: ToasterProps) => {
+  const { resolvedTheme } = useTheme()
   return (
     <Sonner
-      theme="light"
+      theme={(resolvedTheme as ToasterProps["theme"]) ?? "system"}
       className="toaster group"
       style={
         {
