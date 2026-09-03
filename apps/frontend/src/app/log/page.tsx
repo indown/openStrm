@@ -314,8 +314,9 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <Link href="/home" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="size-3" />
+        {/* 顶栏也常驻一个返回键；这里这个做成手指能点中的高度 */}
+        <Link href="/home" className="inline-flex h-9 items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="size-4" />
           返回任务列表
         </Link>
         <PageHeader
@@ -417,7 +418,7 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
           )}
 
           <div className="overflow-hidden rounded-xl border bg-card">
-            <div className="flex items-center gap-1 border-b bg-muted/40 px-3 py-2 text-xs">
+            <div className="flex flex-wrap items-center gap-1 border-b bg-muted/40 px-3 py-2 text-xs">
               <FilterTab active={filter === "all"} onClick={() => setFilter("all")}>
                 全部 {state.files.size}
               </FilterTab>
@@ -505,8 +506,9 @@ function FileLine({ file, running }: { file: FileRow; running: boolean }) {
   // 任务已经结束（取消 / 出错）时还没到 100% 的文件不会再动了，别让它一直转圈
   const interrupted = !failed && !done && !running;
   return (
-    <div className="flex items-center gap-3 border-b px-4 py-2 last:border-b-0">
-      <span className="shrink-0">
+    // 手机上文件名占满一行，类型和进度折到下一行；sm 起恢复成一行
+    <div className="flex items-start gap-3 border-b px-4 py-2 last:border-b-0 sm:items-center">
+      <span className="mt-0.5 shrink-0 sm:mt-0">
         {failed ? (
           <XCircle className="size-4 text-destructive" />
         ) : done ? (
@@ -517,30 +519,34 @@ function FileLine({ file, running }: { file: FileRow; running: boolean }) {
           <Loader2 className="size-4 animate-spin text-brand" />
         )}
       </span>
-      <div className="min-w-0 flex-1">
-        <div className="text-sm break-all">{file.path}</div>
-        {file.error && <div className="text-xs text-destructive break-all">{file.error}</div>}
-      </div>
-      {file.kind !== "unknown" && (
-        <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-xs font-normal text-muted-foreground">
-          {file.kind === "strm" ? "strm" : "下载"}
-        </Badge>
-      )}
-      <div className="w-28 shrink-0 text-right text-xs">
-        {failed ? (
-          <span className="text-destructive">失败</span>
-        ) : done ? (
-          <span className="text-muted-foreground">完成</span>
-        ) : interrupted ? (
-          <span className="text-muted-foreground tabular-nums">中断于 {Math.floor(file.percent)}%</span>
-        ) : (
-          <div className="flex items-center justify-end gap-2">
-            <div className="h-1.5 w-16 overflow-hidden rounded bg-muted">
-              <div className={`h-full ${TONE_CLASS.info.bar}`} style={{ width: `${file.percent}%` }} />
-            </div>
-            <span className="w-9 text-muted-foreground tabular-nums">{Math.floor(file.percent)}%</span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm break-all">{file.path}</div>
+          {file.error && <div className="text-xs text-destructive break-all">{file.error}</div>}
+        </div>
+        <div className="flex items-center gap-2 text-xs sm:shrink-0">
+          {file.kind !== "unknown" && (
+            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-xs font-normal text-muted-foreground">
+              {file.kind === "strm" ? "strm" : "下载"}
+            </Badge>
+          )}
+          <div className="sm:w-28 sm:text-right">
+            {failed ? (
+              <span className="text-destructive">失败</span>
+            ) : done ? (
+              <span className="text-muted-foreground">完成</span>
+            ) : interrupted ? (
+              <span className="text-muted-foreground tabular-nums">中断于 {Math.floor(file.percent)}%</span>
+            ) : (
+              <div className="flex items-center gap-2 sm:justify-end">
+                <div className="h-1.5 w-16 overflow-hidden rounded bg-muted">
+                  <div className={`h-full ${TONE_CLASS.info.bar}`} style={{ width: `${file.percent}%` }} />
+                </div>
+                <span className="w-9 text-muted-foreground tabular-nums">{Math.floor(file.percent)}%</span>
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

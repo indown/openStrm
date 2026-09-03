@@ -329,27 +329,37 @@ export default function OfflinePage() {
         }
       />
 
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        {data?.quota != null && (
-          <StatusBadge tone="neutral" className="tabular-nums">
-            配额剩余 {data.quota}
-            {data.total != null ? ` / ${data.total}` : ""}
-          </StatusBadge>
-        )}
-        {data && (
-          <StatusBadge tone="neutral" className="tabular-nums">
-            共 {data.count} 个任务
-          </StatusBadge>
-        )}
-        {data?.watcher.pending ? (
-          <StatusBadge tone="brand" className="tabular-nums">
-            {data.watcher.pending} 个回执待兑现（生成 strm / 复制到 OpenList）
-          </StatusBadge>
-        ) : null}
-        {data?.watcher.lastError && (
-          <span className="break-all text-xs text-destructive">回执循环最近一次出错：{data.watcher.lastError}</span>
-        )}
-        <div className="ml-auto flex flex-wrap items-center gap-2">
+      {/* 手机上统计芯片和按钮各占一行；sm 起并排、按钮靠右 */}
+      <div className="flex flex-col gap-2 text-sm sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="flex flex-wrap items-center gap-2">
+          {data?.quota != null && (
+            <StatusBadge tone="neutral" className="tabular-nums">
+              配额剩余 {data.quota}
+              {data.total != null ? ` / ${data.total}` : ""}
+            </StatusBadge>
+          )}
+          {data && (
+            <StatusBadge tone="neutral" className="tabular-nums">
+              共 {data.count} 个任务
+            </StatusBadge>
+          )}
+          {data?.watcher.pending ? (
+            <StatusBadge tone="brand" className="tabular-nums">
+              {data.watcher.pending} 个回执待兑现（生成 strm / 复制到 OpenList）
+            </StatusBadge>
+          ) : null}
+          {data?.watcher.lastError && (
+            <span className="break-all text-xs text-destructive">回执循环最近一次出错：{data.watcher.lastError}</span>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+          {/* 手机上没有表头那个全选框，放这里 */}
+          {tasks.length > 0 && (
+            <label className="flex cursor-pointer items-center gap-2 text-sm md:hidden">
+              <Checkbox checked={allSelected} onCheckedChange={(v) => toggleAll(v === true)} aria-label="全选" />
+              全选
+            </label>
+          )}
           {selected.size > 0 && (
             <Button
               variant="destructive"
@@ -400,106 +410,126 @@ export default function OfflinePage() {
           />
         )
       ) : (
-        <div className="overflow-hidden rounded-xl border bg-card">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-10">
-                  <Checkbox checked={allSelected} onCheckedChange={(v) => toggleAll(v === true)} aria-label="全选" />
-                </TableHead>
-                <TableHead>名称</TableHead>
-                <TableHead className="w-24 text-right">大小</TableHead>
-                <TableHead className="w-36">进度</TableHead>
-                <TableHead className="w-28">状态</TableHead>
-                <TableHead className="w-40">添加时间</TableHead>
-                <TableHead className="w-24 text-right">操作</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {tasks.map((t) => {
-                const meta = STATE_META[t.state];
-                const followup = followupByHash.get(t.infoHash);
-                return (
-                  <TableRow key={t.infoHash}>
-                    <TableCell>
+        <>
+          {/* 手机上一条一张卡，进度条铺满整行；md 起还是表格 */}
+          <div className="space-y-3 md:hidden">
+            {tasks.map((t) => {
+              const meta = STATE_META[t.state];
+              const followup = followupByHash.get(t.infoHash);
+              return (
+                <div key={t.infoHash} className="rounded-xl border bg-card p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-start gap-3">
                       <Checkbox
+                        className="mt-0.5"
                         checked={selected.has(t.infoHash)}
                         onCheckedChange={(v) => toggleOne(t.infoHash, v === true)}
                         aria-label="选择"
                       />
-                    </TableCell>
-                    <TableCell className="min-w-[240px]">
-                      <div className="flex min-w-0 items-start gap-2">
-                        {t.isDir ? (
-                          <FolderOpen className="mt-0.5 size-4 shrink-0 text-warning" />
-                        ) : (
-                          <FileIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex min-w-0 items-start gap-2">
+                          <OfflineIcon isDir={t.isDir} />
+                          <div className="break-all text-sm font-medium">{t.name || t.url}</div>
+                        </div>
+                        {t.state === "failed" && t.statusText && (
+                          <div className="break-all text-xs text-muted-foreground">{t.statusText}</div>
                         )}
-                        <div className="min-w-0">
-                          <div className="break-all text-sm" title={t.url}>
-                            {t.name || t.url}
+                        {followup && <FollowupLine followup={followup} originPath={taskPaths[followup.taskId]} />}
+                      </div>
+                    </div>
+                    <StatusBadge tone={meta.tone} pulse={meta.pulse} className="shrink-0">
+                      {stateLabel(t)}
+                    </StatusBadge>
+                  </div>
+                  <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+                    <OfflineProgress task={t} layout="inline" />
+                    <div className="tabular-nums">
+                      {formatSize(t.size)} · {fmtTime(t.addTime)}
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-center gap-2 border-t pt-3">
+                    <OfflineActions
+                      task={t}
+                      restarting={restarting.has(t.infoHash)}
+                      onRestart={() => doRestart(t)}
+                      onDelete={() => setDeleteTarget({ hashes: [t.infoHash], label: t.name || "这个任务" })}
+                      variant="card"
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="hidden overflow-hidden rounded-xl border bg-card md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox checked={allSelected} onCheckedChange={(v) => toggleAll(v === true)} aria-label="全选" />
+                  </TableHead>
+                  <TableHead>名称</TableHead>
+                  <TableHead className="w-24 text-right">大小</TableHead>
+                  <TableHead className="w-36">进度</TableHead>
+                  <TableHead className="w-28">状态</TableHead>
+                  <TableHead className="w-40">添加时间</TableHead>
+                  <TableHead className="w-24 text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {tasks.map((t) => {
+                  const meta = STATE_META[t.state];
+                  const followup = followupByHash.get(t.infoHash);
+                  return (
+                    <TableRow key={t.infoHash}>
+                      <TableCell>
+                        <Checkbox
+                          checked={selected.has(t.infoHash)}
+                          onCheckedChange={(v) => toggleOne(t.infoHash, v === true)}
+                          aria-label="选择"
+                        />
+                      </TableCell>
+                      <TableCell className="min-w-[240px]">
+                        <div className="flex min-w-0 items-start gap-2">
+                          <OfflineIcon isDir={t.isDir} />
+                          <div className="min-w-0">
+                            <div className="break-all text-sm" title={t.url}>
+                              {t.name || t.url}
+                            </div>
+                            {followup && <FollowupLine followup={followup} originPath={taskPaths[followup.taskId]} />}
                           </div>
-                          {followup && <FollowupLine followup={followup} originPath={taskPaths[followup.taskId]} />}
                         </div>
-                      </div>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">{formatSize(t.size)}</TableCell>
-                    <TableCell>
-                      <div className="space-y-1">
-                        <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                          <div className={`h-full rounded-full ${TONE_CLASS[STATE_META[t.state].tone].bar}`} style={{ width: `${t.percent}%` }} />
-                        </div>
-                        <div className="whitespace-nowrap text-xs text-muted-foreground tabular-nums">
-                          {t.percent}%{t.state === "downloading" && t.rateDownload ? ` · ${fmtRate(t.rateDownload)}` : ""}
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge tone={meta.tone} pulse={meta.pulse} title={t.statusText}>
-                        {t.state === "unknown" ? t.statusText || meta.label : meta.label}
-                      </StatusBadge>
-                      {t.state === "failed" && t.statusText && (
-                        <div className="mt-1 break-all text-xs text-muted-foreground">{t.statusText}</div>
-                      )}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground tabular-nums">
-                      {fmtTime(t.addTime)}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-right">
-                      <div className="flex justify-end gap-0.5">
-                        {t.state === "failed" && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-8"
-                            title="重试"
-                            onClick={() => doRestart(t)}
-                            disabled={restarting.has(t.infoHash)}
-                          >
-                            {restarting.has(t.infoHash) ? (
-                              <Loader2 className="size-4 animate-spin" />
-                            ) : (
-                              <RotateCcw className="size-4" />
-                            )}
-                          </Button>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">{formatSize(t.size)}</TableCell>
+                      <TableCell>
+                        <OfflineProgress task={t} layout="stack" />
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge tone={meta.tone} pulse={meta.pulse} title={t.statusText}>
+                          {stateLabel(t)}
+                        </StatusBadge>
+                        {t.state === "failed" && t.statusText && (
+                          <div className="mt-1 break-all text-xs text-muted-foreground">{t.statusText}</div>
                         )}
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-8 text-destructive hover:text-destructive"
-                          title="删除"
-                          onClick={() => setDeleteTarget({ hashes: [t.infoHash], label: t.name || "这个任务" })}
-                        >
-                          <Trash2 className="size-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground tabular-nums">
+                        {fmtTime(t.addTime)}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right">
+                        <OfflineActions
+                          task={t}
+                          restarting={restarting.has(t.infoHash)}
+                          onRestart={() => doRestart(t)}
+                          onDelete={() => setDeleteTarget({ hashes: [t.infoHash], label: t.name || "这个任务" })}
+                          variant="row"
+                        />
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </>
       )}
 
       {data && data.pageCount > 1 && (
@@ -614,5 +644,103 @@ function FollowupLine({ followup, originPath }: { followup: OfflineFollowup; ori
       )}
       {followup.detail && <span className="break-all">{followup.detail}</span>}
     </div>
+  );
+}
+
+/** 状态标签的文字：115 说不清的状态直接显示它给的说明 */
+function stateLabel(t: OfflineTask): string {
+  return t.state === "unknown" ? t.statusText || STATE_META[t.state].label : STATE_META[t.state].label;
+}
+
+function OfflineIcon({ isDir }: { isDir: boolean }) {
+  return isDir ? (
+    <FolderOpen className="mt-0.5 size-4 shrink-0 text-warning" />
+  ) : (
+    <FileIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+  );
+}
+
+/** 进度条 + 百分比/速度：表格里上下两行，卡片里一行铺满 */
+function OfflineProgress({ task: t, layout }: { task: OfflineTask; layout: "stack" | "inline" }) {
+  const bar = (
+    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+      <div className={`h-full rounded-full ${TONE_CLASS[STATE_META[t.state].tone].bar}`} style={{ width: `${t.percent}%` }} />
+    </div>
+  );
+  const text = (
+    <div className="whitespace-nowrap text-xs text-muted-foreground tabular-nums">
+      {t.percent}%{t.state === "downloading" && t.rateDownload ? ` · ${fmtRate(t.rateDownload)}` : ""}
+    </div>
+  );
+  if (layout === "inline") {
+    return (
+      <div className="flex items-center gap-3">
+        {bar}
+        {text}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      {bar}
+      {text}
+    </div>
+  );
+}
+
+/** 操作：表格里是图标，卡片里重试是带文字的大按钮、删除靠右 */
+function OfflineActions({
+  task: t,
+  restarting,
+  onRestart,
+  onDelete,
+  variant,
+}: {
+  task: OfflineTask;
+  restarting: boolean;
+  onRestart: () => void;
+  onDelete: () => void;
+  variant: "row" | "card";
+}) {
+  const retryIcon = restarting ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />;
+  if (variant === "row") {
+    return (
+      <div className="flex justify-end gap-0.5">
+        {t.state === "failed" && (
+          <Button variant="ghost" size="icon" className="size-8" title="重试" onClick={onRestart} disabled={restarting}>
+            {retryIcon}
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 text-destructive hover:text-destructive"
+          title="删除"
+          onClick={onDelete}
+        >
+          <Trash2 className="size-4" />
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <>
+      {t.state === "failed" && (
+        <Button variant="outline" size="sm" className="h-9 flex-1" onClick={onRestart} disabled={restarting}>
+          {retryIcon}
+          重试
+        </Button>
+      )}
+      {/* 大多数任务没有重试，这一行只剩它一个：带上文字，别让整行看起来是空的 */}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="ml-auto h-9 text-destructive hover:bg-destructive/10 hover:text-destructive"
+        onClick={onDelete}
+      >
+        <Trash2 className="size-4" />
+        删除
+      </Button>
+    </>
   );
 }

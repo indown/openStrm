@@ -262,14 +262,7 @@ export default function LifeMonitorPage() {
           </h2>
 
           <div className="flex flex-wrap items-center gap-2">
-            {status &&
-              (status.running ? (
-                <StatusBadge tone="info" pulse>
-                  运行中
-                </StatusBadge>
-              ) : (
-                <StatusBadge tone="neutral">已停止</StatusBadge>
-              ))}
+            {status && <RunBadge running={status.running} />}
             {status && status.accounts.length > 0 && (
               <Badge variant="outline" className="tabular-nums">
                 {runningCount} / {status.accounts.length} 个账号在跑
@@ -285,66 +278,93 @@ export default function LifeMonitorPage() {
           {status === null ? (
             <p className="text-sm text-muted-foreground">运行状态没能加载，点右上角的刷新按钮重试</p>
           ) : status.accounts.length > 0 ? (
-            <div className="overflow-hidden rounded-lg border bg-card">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>账号</TableHead>
-                    <TableHead className="w-20">状态</TableHead>
-                    <TableHead className="w-20">接口</TableHead>
-                    <TableHead className="w-16 text-right">轮询</TableHead>
-                    <TableHead className="w-16 text-right">事件</TableHead>
-                    <TableHead className="w-16 text-right">已处理</TableHead>
-                    <TableHead className="w-16 text-right">失败</TableHead>
-                    <TableHead className="w-24">最近轮询</TableHead>
-                    <TableHead className="w-40">游标时间</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {status.accounts.map((a) => (
-                    <Fragment key={a.name}>
-                      <TableRow>
-                        <TableCell className="font-medium">{a.name}</TableCell>
-                        <TableCell>
-                          {a.running ? (
-                            <StatusBadge tone="info" pulse>
-                              运行中
-                            </StatusBadge>
-                          ) : (
-                            <StatusBadge tone="neutral">已停止</StatusBadge>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-xs">{a.api === "web" ? "webapi" : "proapi"}</TableCell>
-                        <TableCell className="text-right tabular-nums">{a.stats.rounds}</TableCell>
-                        <TableCell className="text-right tabular-nums">{a.stats.events}</TableCell>
-                        <TableCell className="text-right tabular-nums">{a.stats.handled}</TableCell>
-                        <TableCell className="text-right tabular-nums">{a.stats.failed}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                          {relative(a.lastPollAt)}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                          {fmtTime(a.cursor.fromTime)}
-                        </TableCell>
-                      </TableRow>
-                      {a.lastError ? (
+            <>
+              {/* 手机上一账号一张卡：九列的表格横向滚起来什么都看不全 */}
+              <div className="space-y-3 md:hidden">
+                {status.accounts.map((a) => {
+                  const notice = accountNotice(a, status.running);
+                  return (
+                    <div key={a.name} className="rounded-xl border bg-card p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
+                          <div className="break-all text-sm font-medium">{a.name}</div>
+                          <div className="text-xs text-muted-foreground">接口 {a.api === "web" ? "webapi" : "proapi"}</div>
+                        </div>
+                        <div className="shrink-0">
+                          <RunBadge running={a.running} />
+                        </div>
+                      </div>
+                      <div className="mt-3 grid grid-cols-3 gap-x-4 gap-y-2 text-sm">
+                        <Stat label="轮询" value={a.stats.rounds} />
+                        <Stat label="事件" value={a.stats.events} />
+                        <Stat label="已处理" value={a.stats.handled} />
+                        <Stat label="失败" value={a.stats.failed} />
+                        <Stat label="最近轮询" value={relative(a.lastPollAt)} />
+                        <Stat label="游标时间" value={fmtTime(a.cursor.fromTime)} />
+                      </div>
+                      {notice && (
+                        <div className={`mt-3 break-all text-xs ${notice.tone === "danger" ? "text-destructive" : "text-muted-foreground"}`}>
+                          {notice.text}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="hidden overflow-hidden rounded-lg border bg-card md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>账号</TableHead>
+                      <TableHead className="w-20">状态</TableHead>
+                      <TableHead className="w-20">接口</TableHead>
+                      <TableHead className="w-16 text-right">轮询</TableHead>
+                      <TableHead className="w-16 text-right">事件</TableHead>
+                      <TableHead className="w-16 text-right">已处理</TableHead>
+                      <TableHead className="w-16 text-right">失败</TableHead>
+                      <TableHead className="w-24">最近轮询</TableHead>
+                      <TableHead className="w-40">游标时间</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {status.accounts.map((a) => {
+                      const notice = accountNotice(a, status.running);
+                      return (
+                      <Fragment key={a.name}>
                         <TableRow>
-                          <TableCell colSpan={9} className="text-xs text-destructive break-all whitespace-normal">
-                            最近错误：{a.lastError}
+                          <TableCell className="font-medium">{a.name}</TableCell>
+                          <TableCell>
+                            <RunBadge running={a.running} />
+                          </TableCell>
+                          <TableCell className="text-xs">{a.api === "web" ? "webapi" : "proapi"}</TableCell>
+                          <TableCell className="text-right tabular-nums">{a.stats.rounds}</TableCell>
+                          <TableCell className="text-right tabular-nums">{a.stats.events}</TableCell>
+                          <TableCell className="text-right tabular-nums">{a.stats.handled}</TableCell>
+                          <TableCell className="text-right tabular-nums">{a.stats.failed}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                            {relative(a.lastPollAt)}
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                            {fmtTime(a.cursor.fromTime)}
                           </TableCell>
                         </TableRow>
-                      ) : status.running && !a.running ? (
-                        // 状态列表按当前配置生成：监控跑着时才勾上的账号会在这里，但还没被带上
-                        <TableRow>
-                          <TableCell colSpan={9} className="text-xs text-muted-foreground">
-                            启动后才加进配置，重启监控后生效
-                          </TableCell>
-                        </TableRow>
-                      ) : null}
-                    </Fragment>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                        {notice && (
+                          <TableRow>
+                            <TableCell
+                              colSpan={9}
+                              className={`text-xs break-all whitespace-normal ${notice.tone === "danger" ? "text-destructive" : "text-muted-foreground"}`}
+                            >
+                              {notice.text}
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </Fragment>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
           ) : (
             <p className="text-sm text-muted-foreground">
               没有可监控的 115 账号，请先到「账户」页添加带 cookie 的 115 账号
@@ -518,47 +538,92 @@ export default function LifeMonitorPage() {
           {events.length === 0 ? (
             <p className="text-sm text-muted-foreground">还没有拉到任何事件</p>
           ) : (
-            <div className="overflow-hidden rounded-lg border bg-card">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-40">时间</TableHead>
-                    {showEventAccount && <TableHead className="w-28">账号</TableHead>}
-                    <TableHead className="w-28">类型</TableHead>
-                    <TableHead>文件</TableHead>
-                    <TableHead className="w-20">结果</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {events.map((e) => (
-                    <TableRow key={e.id}>
-                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                        {fmtTime(e.updateTime)}
-                      </TableCell>
-                      {showEventAccount && <TableCell className="text-xs">{e.accountName}</TableCell>}
-                      <TableCell className="text-xs">{e.typeName}</TableCell>
-                      <TableCell className="text-xs whitespace-normal">
-                        <div className="break-all">{e.fileName}</div>
-                        {e.detail && (
-                          <div className="text-muted-foreground break-all">{e.detail}</div>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <StatusBadge
-                          tone={e.status === "done" ? "success" : e.status === "failed" ? "danger" : "neutral"}
-                        >
-                          {e.status}
-                        </StatusBadge>
-                      </TableCell>
+            <>
+              {/* 手机上一事件一张卡，文件名占满一行 */}
+              <div className="space-y-2 md:hidden">
+                {events.map((e) => (
+                  <div key={e.id} className="rounded-xl border bg-card p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 space-y-1">
+                        <div className="break-all text-sm font-medium">{e.fileName}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {fmtTime(e.updateTime)}
+                          {showEventAccount ? ` · ${e.accountName}` : ""} · {e.typeName}
+                        </div>
+                        {e.detail && <div className="break-all text-xs text-muted-foreground">{e.detail}</div>}
+                      </div>
+                      <div className="shrink-0">
+                        <EventBadge status={e.status} />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="hidden overflow-hidden rounded-lg border bg-card md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-40">时间</TableHead>
+                      {showEventAccount && <TableHead className="w-28">账号</TableHead>}
+                      <TableHead className="w-28">类型</TableHead>
+                      <TableHead>文件</TableHead>
+                      <TableHead className="w-20">结果</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                  </TableHeader>
+                  <TableBody>
+                    {events.map((e) => (
+                      <TableRow key={e.id}>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                          {fmtTime(e.updateTime)}
+                        </TableCell>
+                        {showEventAccount && <TableCell className="text-xs">{e.accountName}</TableCell>}
+                        <TableCell className="text-xs">{e.typeName}</TableCell>
+                        <TableCell className="text-xs whitespace-normal">
+                          <div className="break-all">{e.fileName}</div>
+                          {e.detail && (
+                            <div className="text-muted-foreground break-all">{e.detail}</div>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <EventBadge status={e.status} />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
           )}
         </section>
       </div>
     </div>
+  );
+}
+
+/** 账号的运行状态标签：顶部总状态、状态表和手机卡片共用 */
+function RunBadge({ running }: { running: boolean }) {
+  return running ? (
+    <StatusBadge tone="info" pulse>
+      运行中
+    </StatusBadge>
+  ) : (
+    <StatusBadge tone="neutral">已停止</StatusBadge>
+  );
+}
+
+/** 账号行下面那句提示：最近错误优先；监控跑着时才勾上的账号会在列表里但还没被带上 */
+function accountNotice(
+  a: Status["accounts"][number],
+  monitorRunning: boolean,
+): { tone: "danger" | "muted"; text: string } | null {
+  if (a.lastError) return { tone: "danger", text: `最近错误：${a.lastError}` };
+  if (monitorRunning && !a.running) return { tone: "muted", text: "启动后才加进配置，重启监控后生效" };
+  return null;
+}
+
+function EventBadge({ status }: { status: string }) {
+  return (
+    <StatusBadge tone={status === "done" ? "success" : status === "failed" ? "danger" : "neutral"}>{status}</StatusBadge>
   );
 }
 

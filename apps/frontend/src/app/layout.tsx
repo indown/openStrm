@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import LayoutWrapper from "@/components/LayoutWrapper";
 import ClientAuthProvider from "@/components/ClientAuthProvider";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -15,6 +15,14 @@ export const metadata: Metadata = {
     shortcut: "/logo.png",
     apple: "/logo.png",
   },
+};
+
+// 浏览器地址栏 / 手机状态栏的配色跟主题走。只认系统偏好：next-themes 手动切换只改 class，不会更新这个 meta
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+  ],
 };
 
 export default function RootLayout({
