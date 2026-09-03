@@ -122,7 +122,7 @@ export function DirectoryPickerDialog({
                   onClick={() => handleOpenFolder(dir)}
                   className="w-full flex items-center gap-2 p-2 hover:bg-accent rounded-md text-left"
                 >
-                  <FolderOpen className="h-4 w-4 text-amber-500 shrink-0" />
+                  <FolderOpen className="h-4 w-4 text-warning shrink-0" />
                   <span className="truncate">{dir.n}</span>
                 </button>
               ))}

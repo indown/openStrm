@@ -60,7 +60,7 @@ export function DirectoryTreeDialog({ open, onOpenChange, account, onSelect, onS
             <AlertDialogDescription>
               将为您自动填写本地路径，是否需要？
               <br />
-              <span className="font-medium text-gray-700 mt-2 block">
+              <span className="font-medium text-foreground mt-2 block">
                 本地路径: {pendingPath ? `${account}/${pendingPath}` : ""}
               </span>
             </AlertDialogDescription>

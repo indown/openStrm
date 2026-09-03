@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   ChevronLeft,
   ChevronRight,
@@ -8,6 +9,7 @@ import {
   Eraser,
   File as FileIcon,
   FolderOpen,
+  KeyRound,
   Loader2,
   Plus,
   RefreshCw,
@@ -43,6 +45,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
+import { PageHeader } from "@/components/page-header";
+import { StatusBadge, TONE_CLASS, type StatusTone } from "@/components/status-badge";
+import { EmptyState } from "@/components/empty-state";
+import { TableSkeleton } from "@/components/loading";
 import {
   api,
   type OfflineFollowup,
@@ -56,12 +62,12 @@ import { AddOfflineTaskDialog } from "./components/AddOfflineTaskDialog";
 /** 有任务在下载或有回执待兑现时的刷新间隔 */
 const POLL_INTERVAL_MS = 5000;
 
-const STATE_META: Record<OfflineTaskState, { variant: "default" | "secondary" | "destructive" | "outline"; label: string }> = {
-  pending: { variant: "outline", label: "等待中" },
-  downloading: { variant: "secondary", label: "下载中" },
-  done: { variant: "default", label: "已完成" },
-  failed: { variant: "destructive", label: "失败" },
-  unknown: { variant: "outline", label: "未知" },
+const STATE_META: Record<OfflineTaskState, { tone: StatusTone; label: string; pulse?: boolean }> = {
+  pending: { tone: "neutral", label: "等待中" },
+  downloading: { tone: "info", label: "下载中", pulse: true },
+  done: { tone: "success", label: "已完成" },
+  failed: { tone: "danger", label: "失败" },
+  unknown: { tone: "neutral", label: "未知" },
 };
 
 function formatSize(bytes: number): string {
@@ -81,6 +87,9 @@ function fmtRate(bytesPerSec: number): string {
   if (!bytesPerSec) return "";
   return `${formatSize(bytesPerSec)}/s`;
 }
+
+const PAGE_TITLE = "云下载";
+const PAGE_DESCRIPTION = "把磁力、ed2k、http 链接交给 115 在云端下载；下载到同步任务的目录时，完成后自动生成 strm";
 
 export default function OfflinePage() {
   const [accounts, setAccounts] = useState<string[]>([]);
@@ -130,6 +139,8 @@ export default function OfflinePage() {
         if (seq !== seqRef.current) return;
         setData(res);
         setError(null);
+        // 把最后一页删空后 115 的 pageCount 会变小；page 停在原地就会一直看到"没有任务"的空页
+        if (res.pageCount >= 1 && page > res.pageCount) setPage(res.pageCount);
       } catch (err) {
         if (seq !== seqRef.current) return;
         const msg = apiErrorMessage(err, "读取云下载列表失败");
@@ -247,132 +258,165 @@ export default function OfflinePage() {
     }
   };
 
-  if (!accountsLoaded) return <div>Loading...</div>;
+  // 账号列表还没回来：标题先出，下面占个表格骨架
+  if (!accountsLoaded) {
+    return (
+      <div className="space-y-6">
+        <PageHeader icon={CloudDownload} title={PAGE_TITLE} description={PAGE_DESCRIPTION} />
+        <TableSkeleton rows={4} />
+      </div>
+    );
+  }
 
   if (accounts.length === 0) {
     return (
-      <div className="mx-auto max-w-4xl space-y-4">
-        <h1 className="text-2xl font-semibold">云下载</h1>
-        <p className="text-sm text-muted-foreground">还没有 115 账号，请先到「账户」页添加。</p>
+      <div className="space-y-6">
+        <PageHeader icon={CloudDownload} title={PAGE_TITLE} description={PAGE_DESCRIPTION} />
+        <EmptyState
+          icon={KeyRound}
+          title="还没有 115 账号"
+          description="云下载要通过 115 账号提交，先到「账户」页添加一个。"
+          action={
+            <Button asChild>
+              <Link href="/account">去添加账号</Link>
+            </Button>
+          }
+        />
       </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold flex items-center gap-2">
-            <CloudDownload className="h-6 w-6" />
-            云下载
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            把磁力、ed2k、http 链接交给 115 在云端下载；下载到同步任务的目录时，完成后自动生成 strm
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {accounts.length > 1 ? (
-            <Select
-              value={account}
-              onValueChange={(v) => {
-                setAccount(v);
-                setPage(1);
-                setSelected(new Set());
-              }}
-            >
-              <SelectTrigger className="w-40">
-                <SelectValue placeholder="账号" />
-              </SelectTrigger>
-              <SelectContent>
-                {accounts.map((a) => (
-                  <SelectItem key={a} value={a}>
-                    {a}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <Badge variant="outline">账号 {account}</Badge>
-          )}
-          <Button variant="outline" size="sm" onClick={() => load()} disabled={refreshing}>
-            <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-          </Button>
-          <Button size="sm" onClick={() => setAddOpen(true)}>
-            <Plus className="h-4 w-4" />
-            <span className="ml-1">添加</span>
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        icon={CloudDownload}
+        title={PAGE_TITLE}
+        description={PAGE_DESCRIPTION}
+        actions={
+          <>
+            {accounts.length > 1 ? (
+              <Select
+                value={account}
+                onValueChange={(v) => {
+                  setAccount(v);
+                  setPage(1);
+                  setSelected(new Set());
+                }}
+              >
+                <SelectTrigger className="w-40">
+                  <SelectValue placeholder="账号" />
+                </SelectTrigger>
+                <SelectContent>
+                  {accounts.map((a) => (
+                    <SelectItem key={a} value={a}>
+                      {a}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Badge variant="outline">账号 {account}</Badge>
+            )}
+            <Button variant="outline" onClick={() => load()} disabled={refreshing}>
+              <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
+              刷新
+            </Button>
+            <Button onClick={() => setAddOpen(true)}>
+              <Plus className="size-4" />
+              添加
+            </Button>
+          </>
+        }
+      />
 
-      <div className="flex items-center gap-2 flex-wrap text-sm">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
         {data?.quota != null && (
-          <Badge variant="outline">
+          <StatusBadge tone="neutral" className="tabular-nums">
             配额剩余 {data.quota}
             {data.total != null ? ` / ${data.total}` : ""}
-          </Badge>
+          </StatusBadge>
         )}
-        {data && <Badge variant="outline">共 {data.count} 个任务</Badge>}
+        {data && (
+          <StatusBadge tone="neutral" className="tabular-nums">
+            共 {data.count} 个任务
+          </StatusBadge>
+        )}
         {data?.watcher.pending ? (
-          <Badge variant="secondary">{data.watcher.pending} 个回执待兑现（生成 strm / 复制到 OpenList）</Badge>
+          <StatusBadge tone="brand" className="tabular-nums">
+            {data.watcher.pending} 个回执待兑现（生成 strm / 复制到 OpenList）
+          </StatusBadge>
         ) : null}
         {data?.watcher.lastError && (
-          <span className="text-xs text-destructive break-all">回执循环最近一次出错：{data.watcher.lastError}</span>
+          <span className="break-all text-xs text-destructive">回执循环最近一次出错：{data.watcher.lastError}</span>
         )}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           {selected.size > 0 && (
             <Button
               variant="destructive"
               size="sm"
               onClick={() => setDeleteTarget({ hashes: [...selected], label: `所选的 ${selected.size} 个任务` })}
             >
-              <Trash2 className="h-4 w-4" />
-              <span className="ml-1">删除所选（{selected.size}）</span>
+              <Trash2 className="size-4" />
+              删除所选（{selected.size}）
             </Button>
           )}
           <Button variant="outline" size="sm" onClick={() => setClearTarget({ flag: 0, label: "已完成的" })}>
-            <Eraser className="h-4 w-4" />
-            <span className="ml-1">清空已完成</span>
+            <Eraser className="size-4" />
+            清空已完成
           </Button>
           <Button variant="outline" size="sm" onClick={() => setClearTarget({ flag: 2, label: "失败的" })}>
-            <Eraser className="h-4 w-4" />
-            <span className="ml-1">清空失败</span>
+            <Eraser className="size-4" />
+            清空失败
           </Button>
         </div>
       </div>
 
-      {error && !data && loaded && <p className="text-sm text-destructive break-all">{error}</p>}
-
-      <div className="rounded-lg border overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-10">
-                <Checkbox checked={allSelected} onCheckedChange={(v) => toggleAll(v === true)} aria-label="全选" />
-              </TableHead>
-              <TableHead>名称</TableHead>
-              <TableHead className="w-24">大小</TableHead>
-              <TableHead className="w-36">进度</TableHead>
-              <TableHead className="w-28">状态</TableHead>
-              <TableHead className="w-40">添加时间</TableHead>
-              <TableHead className="w-24 text-right">操作</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {!loaded ? (
+      {!loaded ? (
+        <TableSkeleton rows={4} />
+      ) : tasks.length === 0 ? (
+        error ? (
+          <EmptyState
+            icon={CloudDownload}
+            title="列表加载失败"
+            description={error}
+            action={
+              <Button variant="outline" onClick={() => load()} disabled={refreshing}>
+                <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
+                重试
+              </Button>
+            }
+          />
+        ) : (
+          <EmptyState
+            icon={CloudDownload}
+            title="还没有云下载任务"
+            description="把磁力、ed2k 或 http 链接交给 115，下载完可以自动生成 strm。"
+            action={
+              <Button onClick={() => setAddOpen(true)}>
+                <Plus className="size-4" />
+                添加任务
+              </Button>
+            }
+          />
+        )
+      ) : (
+        <div className="overflow-hidden rounded-xl border bg-card">
+          <Table>
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
-                  <Loader2 className="h-4 w-4 animate-spin inline-block mr-2" />
-                  加载中...
-                </TableCell>
+                <TableHead className="w-10">
+                  <Checkbox checked={allSelected} onCheckedChange={(v) => toggleAll(v === true)} aria-label="全选" />
+                </TableHead>
+                <TableHead>名称</TableHead>
+                <TableHead className="w-24 text-right">大小</TableHead>
+                <TableHead className="w-36">进度</TableHead>
+                <TableHead className="w-28">状态</TableHead>
+                <TableHead className="w-40">添加时间</TableHead>
+                <TableHead className="w-24 text-right">操作</TableHead>
               </TableRow>
-            ) : tasks.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
-                  {error ? "列表加载失败" : "还没有云下载任务"}
-                </TableCell>
-              </TableRow>
-            ) : (
-              tasks.map((t) => {
+            </TableHeader>
+            <TableBody>
+              {tasks.map((t) => {
                 const meta = STATE_META[t.state];
                 const followup = followupByHash.get(t.infoHash);
                 return (
@@ -385,91 +429,103 @@ export default function OfflinePage() {
                       />
                     </TableCell>
                     <TableCell className="min-w-[240px]">
-                      <div className="flex items-start gap-2 min-w-0">
+                      <div className="flex min-w-0 items-start gap-2">
                         {t.isDir ? (
-                          <FolderOpen className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                          <FolderOpen className="mt-0.5 size-4 shrink-0 text-warning" />
                         ) : (
-                          <FileIcon className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                          <FileIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                         )}
                         <div className="min-w-0">
-                          <div className="text-sm break-all" title={t.url}>
+                          <div className="break-all text-sm" title={t.url}>
                             {t.name || t.url}
                           </div>
                           {followup && <FollowupLine followup={followup} originPath={taskPaths[followup.taskId]} />}
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell className="text-xs whitespace-nowrap">{formatSize(t.size)}</TableCell>
+                    <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">{formatSize(t.size)}</TableCell>
                     <TableCell>
                       <div className="space-y-1">
-                        <div className="h-1.5 rounded bg-muted overflow-hidden">
-                          <div
-                            className={`h-full ${t.state === "failed" ? "bg-destructive" : "bg-primary"}`}
-                            style={{ width: `${t.percent}%` }}
-                          />
+                        <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                          <div className={`h-full rounded-full ${TONE_CLASS[STATE_META[t.state].tone].bar}`} style={{ width: `${t.percent}%` }} />
                         </div>
-                        <div className="text-xs text-muted-foreground whitespace-nowrap">
+                        <div className="whitespace-nowrap text-xs text-muted-foreground tabular-nums">
                           {t.percent}%{t.state === "downloading" && t.rateDownload ? ` · ${fmtRate(t.rateDownload)}` : ""}
                         </div>
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge variant={meta.variant} title={t.statusText}>
+                      <StatusBadge tone={meta.tone} pulse={meta.pulse} title={t.statusText}>
                         {t.state === "unknown" ? t.statusText || meta.label : meta.label}
-                      </Badge>
+                      </StatusBadge>
                       {t.state === "failed" && t.statusText && (
-                        <div className="text-xs text-muted-foreground mt-1 break-all">{t.statusText}</div>
+                        <div className="mt-1 break-all text-xs text-muted-foreground">{t.statusText}</div>
                       )}
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{fmtTime(t.addTime)}</TableCell>
-                    <TableCell className="text-right whitespace-nowrap">
-                      {t.state === "failed" && (
+                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground tabular-nums">
+                      {fmtTime(t.addTime)}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-right">
+                      <div className="flex justify-end gap-0.5">
+                        {t.state === "failed" && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8"
+                            title="重试"
+                            onClick={() => doRestart(t)}
+                            disabled={restarting.has(t.infoHash)}
+                          >
+                            {restarting.has(t.infoHash) ? (
+                              <Loader2 className="size-4 animate-spin" />
+                            ) : (
+                              <RotateCcw className="size-4" />
+                            )}
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
-                          size="sm"
-                          title="重试"
-                          onClick={() => doRestart(t)}
-                          disabled={restarting.has(t.infoHash)}
+                          size="icon"
+                          className="size-8 text-destructive hover:text-destructive"
+                          title="删除"
+                          onClick={() => setDeleteTarget({ hashes: [t.infoHash], label: t.name || "这个任务" })}
                         >
-                          {restarting.has(t.infoHash) ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <RotateCcw className="h-4 w-4" />
-                          )}
+                          <Trash2 className="size-4" />
                         </Button>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        title="删除"
-                        onClick={() => setDeleteTarget({ hashes: [t.infoHash], label: t.name || "这个任务" })}
-                      >
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
-              })
-            )}
-          </TableBody>
-        </Table>
-      </div>
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      )}
 
       {data && data.pageCount > 1 && (
         <div className="flex items-center justify-end gap-2 text-sm">
-          <span className="text-muted-foreground">
+          <span className="text-muted-foreground tabular-nums">
             第 {data.page} / {data.pageCount} 页
           </span>
-          <Button variant="outline" size="sm" disabled={page <= 1 || refreshing} onClick={() => setPage((p) => p - 1)}>
-            <ChevronLeft className="h-4 w-4" />
+          <Button
+            variant="outline"
+            size="icon"
+            className="size-8"
+            title="上一页"
+            disabled={page <= 1 || refreshing}
+            onClick={() => setPage((p) => p - 1)}
+          >
+            <ChevronLeft className="size-4" />
           </Button>
           <Button
             variant="outline"
-            size="sm"
+            size="icon"
+            className="size-8"
+            title="下一页"
             disabled={page >= data.pageCount || refreshing}
             onClick={() => setPage((p) => p + 1)}
           >
-            <ChevronRight className="h-4 w-4" />
+            <ChevronRight className="size-4" />
           </Button>
         </div>
       )}
@@ -491,7 +547,7 @@ export default function OfflinePage() {
             <AlertDialogDescription asChild>
               <div className="space-y-3">
                 <p className="break-all">将从 115 的云下载列表里删除：{deleteTarget?.label}</p>
-                <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
                   <Checkbox checked={deleteFiles} onCheckedChange={(v) => setDeleteFiles(v === true)} />
                   同时删除已下载到网盘的文件
                 </label>
@@ -507,7 +563,7 @@ export default function OfflinePage() {
               }}
               disabled={busy}
             >
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "删除"}
+              {busy ? <Loader2 className="size-4 animate-spin" /> : "删除"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -528,7 +584,7 @@ export default function OfflinePage() {
               }}
               disabled={busy}
             >
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "清空"}
+              {busy ? <Loader2 className="size-4 animate-spin" /> : "清空"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -542,19 +598,17 @@ function FollowupLine({ followup, originPath }: { followup: OfflineFollowup; ori
   const target = isCopy
     ? (followup.copyDstDir ?? "")
     : `${originPath ?? followup.taskId}${followup.subPath ? `/${followup.subPath}` : ""}`;
-  const badge =
+  const badge: { tone: StatusTone; label: string } =
     followup.status === "done"
-      ? { variant: "default" as const, label: isCopy ? "已复制到 OpenList" : "strm 已生成" }
+      ? { tone: "success", label: isCopy ? "已复制到 OpenList" : "strm 已生成" }
       : followup.status === "failed"
-        ? { variant: "destructive" as const, label: isCopy ? "OpenList 复制失败" : "strm 未生成" }
-        : { variant: "outline" as const, label: isCopy ? "完成后复制到 OpenList" : "完成后生成 strm" };
+        ? { tone: "danger", label: isCopy ? "OpenList 复制失败" : "strm 未生成" }
+        : { tone: "neutral", label: isCopy ? "完成后复制到 OpenList" : "完成后生成 strm" };
   return (
-    <div className="mt-1 flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-      <Badge variant={badge.variant} className="text-[10px] px-1.5 py-0">
-        {badge.label}
-      </Badge>
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
       {target && (
-        <span className="truncate max-w-[220px]" title={target}>
+        <span className="max-w-[220px] truncate" title={target}>
           → {target}
         </span>
       )}

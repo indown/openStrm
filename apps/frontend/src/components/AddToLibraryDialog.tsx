@@ -17,7 +17,7 @@ import { Search, Film, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import type { MediaLibraryEntry, ScrapeStatus } from "@openstrm/shared";
 import { api, type LibraryAddResponse, type TmdbSearchResult } from "@/lib/api";
-import { apiErrorMessage } from "@/lib/axios";
+import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 
 export interface AddToLibraryInitial {
   id?: string;
@@ -149,13 +149,15 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
       toast.success("已加入影库");
       onOpenChange(false);
     } catch (err) {
-      const anyErr = err as { response?: { status?: number; data?: { message?: string; data?: MediaLibraryEntry } } };
-      if (anyErr.response?.status === 409) {
-        toast.error(anyErr.response.data?.message || "该分享已在影库中");
-        if (anyErr.response.data?.data) onSaved(anyErr.response.data.data);
+      const status = (err as { response?: { status?: number } }).response?.status;
+      // 409 的错误体里带着已存在的条目
+      const body = apiErrorBody(err) as { message?: string; data?: MediaLibraryEntry };
+      if (status === 409) {
+        toast.error(body.message || "该分享已在影库中");
+        if (body.data) onSaved(body.data);
         onOpenChange(false);
       } else {
-        toast.error(anyErr.response?.data?.message || "保存失败");
+        toast.error(body.message || "保存失败");
       }
     } finally {
       setSaving(false);
@@ -206,8 +208,8 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
                           </div>
                         )}
                       </div>
-                      <div className="p-1 text-[11px] leading-tight truncate">{item.title}</div>
-                      {item.year && <div className="px-1 pb-1 text-[10px] text-muted-foreground">{item.year}</div>}
+                      <div className="p-1 text-xs leading-tight truncate">{item.title}</div>
+                      {item.year && <div className="px-1 pb-1 text-xs text-muted-foreground">{item.year}</div>}
                     </button>
                   ))}
                 </div>

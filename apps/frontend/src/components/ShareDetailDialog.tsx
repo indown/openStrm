@@ -412,7 +412,7 @@ export function ShareDetailDialog({
                         onClick={() => handleOpenFolder(item)}
                       >
                         {item.is_dir ? (
-                          <FolderOpen className="h-4 w-4 text-amber-500" />
+                          <FolderOpen className="h-4 w-4 text-warning" />
                         ) : (
                           <File className="h-4 w-4 text-muted-foreground" />
                         )}

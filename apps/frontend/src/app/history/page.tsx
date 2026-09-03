@@ -5,7 +5,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -17,15 +16,18 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { buttonVariants } from "@/components/ui/button";
+import { PageHeader } from "@/components/page-header";
+import { StatusBadge, TONE_CLASS } from "@/components/status-badge";
+import { EmptyState } from "@/components/empty-state";
+import { CardListSkeleton } from "@/components/loading";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
+import { RUN_STATUS } from "@/lib/status";
 import type { TaskExecutionSummary } from "@openstrm/shared";
-import { 
-  Clock, 
-  CheckCircle, 
-  XCircle, 
-  AlertCircle, 
+import {
+  Clock,
+  XCircle,
   Trash2,
   Eye,
   Calendar,
@@ -33,19 +35,10 @@ import {
   Folder,
   FileText,
   Download,
-  Trash
+  Trash,
+  History,
+  RefreshCw,
 } from "lucide-react";
-
-// 状态图标和颜色映射
-const getStatusConfig = (status: TaskExecutionSummary["status"]) => {
-  const configs = {
-    running: { icon: Clock, color: "bg-blue-100 text-blue-800", label: "运行中" },
-    completed: { icon: CheckCircle, color: "bg-green-100 text-green-800", label: "已完成" },
-    failed: { icon: XCircle, color: "bg-red-100 text-red-800", label: "失败" },
-    cancelled: { icon: AlertCircle, color: "bg-yellow-100 text-yellow-800", label: "已取消" },
-  };
-  return configs[status];
-};
 
 // 格式化时间
 const formatTime = (timestamp: number) => {
@@ -66,7 +59,7 @@ const getDuration = (startTime: number, endTime?: number) => {
   const seconds = Math.floor(duration / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
-  
+
   if (hours > 0) {
     return `${hours}小时${minutes % 60}分钟`;
   } else if (minutes > 0) {
@@ -79,7 +72,14 @@ const getDuration = (startTime: number, endTime?: number) => {
 /** 静态导出下 useSearchParams 必须包在 Suspense 里，不然 next build 直接报错（和日志页一样） */
 export default function TaskHistoryPage() {
   return (
-    <React.Suspense fallback={<div className="p-6 text-muted-foreground">加载中...</div>}>
+    <React.Suspense
+      fallback={
+        <div className="space-y-6">
+          <PageHeader icon={History} title="任务执行历史" description="查看所有任务的执行记录和状态" />
+          <CardListSkeleton />
+        </div>
+      }
+    >
       <TaskHistoryContent />
     </React.Suspense>
   );
@@ -90,7 +90,7 @@ function TaskHistoryContent() {
   // 任务页的"执行历史"带 taskId 过来：只看这一个任务的记录
   const taskId = useSearchParams().get("taskId") ?? "";
   const [history, setHistory] = useState<TaskExecutionSummary[]>([]);
-  // 只有首次加载显示整页转圈；之后点"刷新"列表留在屏幕上
+  // 只有首次加载显示骨架；之后点"刷新"列表留在屏幕上
   const [loaded, setLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TaskExecutionSummary | null>(null);
@@ -141,159 +141,144 @@ function TaskHistoryContent() {
     window.open(`/log?taskId=${encodeURIComponent(execution.taskId)}&executionId=${encodeURIComponent(execution.id)}`, "_blank");
   };
 
-  if (!loaded) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto"></div>
-          <p className="mt-2 text-gray-600">加载中...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">任务执行历史</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            {taskId ? "只显示这个任务的执行记录" : "查看所有任务的执行记录和状态"}
-          </p>
-          {taskId && (
-            <div className="mt-2 flex items-center gap-2 flex-wrap">
-              <Badge variant="secondary" className="font-normal break-all">
-                {filteredTask ? `${filteredTask.originPath} → ${filteredTask.targetPath}` : `任务 ${taskId.slice(0, 8)}…`}
-              </Badge>
-              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => router.push("/history")}>
-                查看全部
-              </Button>
-            </div>
-          )}
-        </div>
-        <div className="flex space-x-2">
-          <Button onClick={fetchHistory} variant="outline" disabled={refreshing}>
-            {refreshing ? "刷新中..." : "刷新"}
-          </Button>
-          {!taskId && (
-            <Button onClick={() => setClearDialogOpen(true)} variant="outline" disabled={history.length === 0}>
-              删除所有历史
+    <div className="space-y-6">
+      <PageHeader
+        icon={History}
+        title="任务执行历史"
+        description={taskId ? "只显示这个任务的执行记录" : "查看所有任务的执行记录和状态"}
+        actions={
+          <>
+            <Button onClick={fetchHistory} variant="outline" disabled={refreshing}>
+              <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
+              {refreshing ? "刷新中..." : "刷新"}
             </Button>
-          )}
-        </div>
-      </div>
+            {!taskId && (
+              <Button onClick={() => setClearDialogOpen(true)} variant="outline" disabled={history.length === 0}>
+                <Trash className="size-4" />
+                删除所有历史
+              </Button>
+            )}
+          </>
+        }
+      >
+        {taskId && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Badge variant="secondary" className="break-all font-normal">
+              {filteredTask ? `${filteredTask.originPath} → ${filteredTask.targetPath}` : `任务 ${taskId.slice(0, 8)}…`}
+            </Badge>
+            <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => router.push("/history")}>
+              查看全部
+            </Button>
+          </div>
+        )}
+      </PageHeader>
 
-      {history.length === 0 ? (
-        <Card>
-          <CardContent className="flex items-center justify-center h-32">
-            <div className="text-center">
-              <FileText className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-              <p className="text-gray-600">{taskId ? "这个任务还没有执行记录" : "暂无任务执行历史"}</p>
-            </div>
-          </CardContent>
-        </Card>
+      {!loaded ? (
+        <CardListSkeleton />
+      ) : history.length === 0 ? (
+        <EmptyState
+          icon={FileText}
+          title={taskId ? "这个任务还没有执行记录" : "暂无任务执行历史"}
+          description={taskId ? "到任务列表点「开始」跑一次，记录会出现在这里" : "任务跑过之后，每次执行的结果都会记在这里"}
+        />
       ) : (
         <div className="grid gap-4">
           {history.map((execution) => {
-            const statusConfig = getStatusConfig(execution.status);
-            const StatusIcon = statusConfig.icon;
-            
+            const status = RUN_STATUS[execution.status];
+            const StatusIcon = status.icon;
+
             return (
-              <Card key={execution.id} className="hover:shadow-md transition-shadow">
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                      <StatusIcon className="h-5 w-5" />
-                      <div className="min-w-0">
-                        <CardTitle className="text-base break-all" title={`任务 ${execution.taskId}`}>
-                          {execution.taskInfo.originPath || `任务 ${execution.taskId}`}
-                        </CardTitle>
-                        <CardDescription className="flex items-center gap-4 mt-1 flex-wrap">
-                          <span className="flex items-center gap-1">
-                            <User className="h-4 w-4" />
-                            <span>{execution.taskInfo.account}</span>
-                          </span>
-                          <span className="flex items-center gap-1 min-w-0">
-                            <Folder className="h-4 w-4 shrink-0" />
-                            <span className="break-all">→ {execution.taskInfo.targetPath}</span>
-                          </span>
-                        </CardDescription>
+              <div key={execution.id} className="rounded-xl border bg-card p-5 transition-shadow hover:shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <StatusIcon className={`mt-0.5 size-5 shrink-0 ${TONE_CLASS[status.tone].text}`} />
+                    <div className="min-w-0">
+                      <div className="break-all text-base font-semibold leading-tight" title={`任务 ${execution.taskId}`}>
+                        {execution.taskInfo.originPath || `任务 ${execution.taskId}`}
                       </div>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <Badge className={statusConfig.color}>
-                        {statusConfig.label}
-                      </Badge>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => viewLogs(execution)}
-                      >
-                        <Eye className="h-4 w-4 mr-1" />
-                        查看日志
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setDeleteTarget(execution)}
-                        title="删除这条记录"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      <div className="mt-1 flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
+                        <span className="flex items-center gap-1">
+                          <User className="size-4" />
+                          <span>{execution.taskInfo.account}</span>
+                        </span>
+                        <span className="flex min-w-0 items-center gap-1">
+                          <Folder className="size-4 shrink-0" />
+                          <span className="break-all">→ {execution.taskInfo.targetPath}</span>
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </CardHeader>
-                
-                <CardContent className="pt-0">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="space-y-2">
-                      <div className="flex items-center space-x-2 text-sm">
-                        <Calendar className="h-4 w-4 text-gray-500" />
-                        <span className="font-medium">开始时间:</span>
-                        <span>{formatTime(execution.startTime)}</span>
-                      </div>
-                      {execution.endTime && (
-                        <div className="flex items-center space-x-2 text-sm">
-                          <Clock className="h-4 w-4 text-gray-500" />
-                          <span className="font-medium">执行时长:</span>
-                          <span>{getDuration(execution.startTime, execution.endTime)}</span>
-                        </div>
-                      )}
-                    </div>
-                    
-                    <div className="space-y-2">
-                      <div className="flex items-center space-x-2 text-sm">
-                        <Download className="h-4 w-4 text-gray-500" />
-                        <span className="font-medium">下载文件:</span>
-                        <span>{execution.summary.downloadedFiles}/{execution.summary.totalFiles}</span>
-                      </div>
-                      {execution.taskInfo.removeExtraFiles && (
-                        <div className="flex items-center space-x-2 text-sm">
-                          <Trash className="h-4 w-4 text-gray-500" />
-                          <span className="font-medium">删除文件:</span>
-                          <span>{execution.summary.deletedFiles}</span>
-                        </div>
-                      )}
-                      {(execution.summary.failedFiles ?? 0) > 0 && (
-                        <div className="flex items-center space-x-2 text-sm text-red-600">
-                          <XCircle className="h-4 w-4" />
-                          <span className="font-medium">失败文件:</span>
-                          <span>{execution.summary.failedFiles}</span>
-                        </div>
-                      )}
-                    </div>
-                    
-                    <div className="space-y-2">
-                      {execution.summary.errorMessage && (
-                        <div className="text-sm text-red-600 break-all">
-                          <span className="font-medium">错误信息:</span>
-                          <span className="ml-2">{execution.summary.errorMessage}</span>
-                        </div>
-                      )}
-                    </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <StatusBadge tone={status.tone} pulse={execution.status === "running"}>
+                      {status.label}
+                    </StatusBadge>
+                    <Button size="sm" variant="outline" onClick={() => viewLogs(execution)}>
+                      <Eye className="size-4" />
+                      查看日志
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 text-destructive hover:text-destructive"
+                      onClick={() => setDeleteTarget(execution)}
+                      title="删除这条记录"
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
                   </div>
-                </CardContent>
-              </Card>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm">
+                      <Calendar className="size-4 text-muted-foreground" />
+                      <span className="text-muted-foreground">开始时间</span>
+                      <span className="tabular-nums">{formatTime(execution.startTime)}</span>
+                    </div>
+                    {execution.endTime && (
+                      <div className="flex items-center gap-2 text-sm">
+                        <Clock className="size-4 text-muted-foreground" />
+                        <span className="text-muted-foreground">执行时长</span>
+                        <span className="tabular-nums">{getDuration(execution.startTime, execution.endTime)}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm">
+                      <Download className="size-4 text-muted-foreground" />
+                      <span className="text-muted-foreground">下载文件</span>
+                      <span className="tabular-nums">
+                        {execution.summary.downloadedFiles}/{execution.summary.totalFiles}
+                      </span>
+                    </div>
+                    {execution.taskInfo.removeExtraFiles && (
+                      <div className="flex items-center gap-2 text-sm">
+                        <Trash className="size-4 text-muted-foreground" />
+                        <span className="text-muted-foreground">删除文件</span>
+                        <span className="tabular-nums">{execution.summary.deletedFiles}</span>
+                      </div>
+                    )}
+                    {(execution.summary.failedFiles ?? 0) > 0 && (
+                      <div className="flex items-center gap-2 text-sm text-destructive">
+                        <XCircle className="size-4" />
+                        <span>失败文件</span>
+                        <span className="tabular-nums">{execution.summary.failedFiles}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    {execution.summary.errorMessage && (
+                      <div className="break-all text-sm text-destructive">
+                        <span className="font-medium">错误信息</span>
+                        <span className="ml-2">{execution.summary.errorMessage}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
             );
           })}
         </div>

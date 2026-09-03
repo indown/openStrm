@@ -1,12 +1,11 @@
 "use client";
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { Activity, Loader2, Play, RotateCw, Square, RefreshCw, Search } from "lucide-react";
+import { Activity, Loader2, Play, Radar, RotateCw, Square, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Separator } from "@/components/ui/separator";
 import {
   Select,
   SelectContent,
@@ -23,6 +22,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
+import { PageHeader } from "@/components/page-header";
+import { StatusBadge } from "@/components/status-badge";
+import { FormSkeleton } from "@/components/loading";
 import type { LifeMonitorSettings } from "@openstrm/shared";
 import { api, type LifeEventMode as EventMode, type LifeEventRow, type LifeMonitorStatus as Status } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
@@ -188,7 +190,18 @@ export default function LifeMonitorPage() {
     setCfg({ ...cfg, accounts: [...known, ...unknown] });
   };
 
-  if (loading) return <div>Loading...</div>;
+  const description = "轮询 115 生活事件，网盘一有变动就增量更新本地 strm 库，无需跑全量任务；多个账号各自轮询";
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <PageHeader icon={Radar} title="网盘监控" description={description} />
+        <div className="max-w-3xl">
+          <FormSkeleton />
+        </div>
+      </div>
+    );
+  }
 
   const modes = new Set<EventMode>(cfg.eventModes ?? ALL_MODES.map((x) => x.value));
   const selected = new Set(cfg.accounts ?? []);
@@ -199,27 +212,24 @@ export default function LifeMonitorPage() {
     (status?.accounts.length ?? 0) > 1 || new Set(events.map((e) => e.accountName)).size > 1;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold">网盘监控</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          轮询 115 生活事件，网盘一有变动就增量更新本地 strm 库，无需跑全量任务；多个账号各自轮询
-        </p>
-      </div>
-
-      {/* ---------------- 运行状态 ---------------- */}
-      <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-medium flex items-center gap-2">
-            <Activity className="h-4 w-4" />
-            运行状态
-          </h2>
-          <div className="flex items-center gap-2">
+    <div className="space-y-6">
+      <PageHeader
+        icon={Radar}
+        title="网盘监控"
+        description={description}
+        actions={
+          <>
             <Button variant="outline" size="sm" onClick={probe} disabled={probing}>
               {probing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-              <span className="ml-1">测试连接</span>
+              测试连接
             </Button>
-            <Button variant="outline" size="sm" onClick={() => { loadStatus(); loadEvents(); }}>
+            <Button
+              variant="outline"
+              size="icon"
+              className="size-8"
+              title="刷新"
+              onClick={() => { loadStatus(); loadEvents(); }}
+            >
               <RefreshCw className="h-4 w-4" />
             </Button>
             {status?.running ? (
@@ -227,36 +237,46 @@ export default function LifeMonitorPage() {
                 {/* 重启 = 用当前表单配置先停再起：改了账号列表、或某个账号修好 cookie 后重新带上它 */}
                 <Button variant="outline" size="sm" onClick={start} disabled={busy}>
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
-                  <span className="ml-1">重启</span>
+                  重启
                 </Button>
                 <Button variant="destructive" size="sm" onClick={stop} disabled={busy}>
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
-                  <span className="ml-1">停止</span>
+                  停止
                 </Button>
               </>
             ) : (
               <Button size="sm" onClick={start} disabled={busy}>
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                <span className="ml-1">启动</span>
+                启动
               </Button>
             )}
-          </div>
-        </div>
+          </>
+        }
+      />
+      <div className="max-w-3xl space-y-6">
+        {/* ---------------- 运行状态 ---------------- */}
+        <section className="space-y-4 rounded-xl border bg-card p-6">
+          <h2 className="flex items-center gap-2 text-base font-medium">
+            <Activity className="h-4 w-4 text-muted-foreground" />
+            运行状态
+          </h2>
 
-        <div className="rounded-lg border p-4 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            {status && (
-              <Badge variant={status.running ? "default" : "secondary"}>
-                {status.running ? "运行中" : "已停止"}
-              </Badge>
-            )}
+            {status &&
+              (status.running ? (
+                <StatusBadge tone="info" pulse>
+                  运行中
+                </StatusBadge>
+              ) : (
+                <StatusBadge tone="neutral">已停止</StatusBadge>
+              ))}
             {status && status.accounts.length > 0 && (
-              <Badge variant="outline">
+              <Badge variant="outline" className="tabular-nums">
                 {runningCount} / {status.accounts.length} 个账号在跑
               </Badge>
             )}
             {status?.embyRefresh?.configured && status.embyRefresh.pendingCount > 0 && (
-              <Badge variant="outline">
+              <Badge variant="outline" className="tabular-nums">
                 待通知 Emby：{status.embyRefresh.pendingCount} 处变更
               </Badge>
             )}
@@ -265,7 +285,7 @@ export default function LifeMonitorPage() {
           {status === null ? (
             <p className="text-sm text-muted-foreground">运行状态没能加载，点右上角的刷新按钮重试</p>
           ) : status.accounts.length > 0 ? (
-            <div className="rounded-md border overflow-x-auto">
+            <div className="overflow-hidden rounded-lg border bg-card">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -286,15 +306,19 @@ export default function LifeMonitorPage() {
                       <TableRow>
                         <TableCell className="font-medium">{a.name}</TableCell>
                         <TableCell>
-                          <Badge variant={a.running ? "default" : "secondary"}>
-                            {a.running ? "运行中" : "已停止"}
-                          </Badge>
+                          {a.running ? (
+                            <StatusBadge tone="info" pulse>
+                              运行中
+                            </StatusBadge>
+                          ) : (
+                            <StatusBadge tone="neutral">已停止</StatusBadge>
+                          )}
                         </TableCell>
                         <TableCell className="text-xs">{a.api === "web" ? "webapi" : "proapi"}</TableCell>
-                        <TableCell className="text-right">{a.stats.rounds}</TableCell>
-                        <TableCell className="text-right">{a.stats.events}</TableCell>
-                        <TableCell className="text-right">{a.stats.handled}</TableCell>
-                        <TableCell className="text-right">{a.stats.failed}</TableCell>
+                        <TableCell className="text-right tabular-nums">{a.stats.rounds}</TableCell>
+                        <TableCell className="text-right tabular-nums">{a.stats.events}</TableCell>
+                        <TableCell className="text-right tabular-nums">{a.stats.handled}</TableCell>
+                        <TableCell className="text-right tabular-nums">{a.stats.failed}</TableCell>
                         <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                           {relative(a.lastPollAt)}
                         </TableCell>
@@ -304,7 +328,7 @@ export default function LifeMonitorPage() {
                       </TableRow>
                       {a.lastError ? (
                         <TableRow>
-                          <TableCell colSpan={9} className="text-xs text-destructive break-all">
+                          <TableCell colSpan={9} className="text-xs text-destructive break-all whitespace-normal">
                             最近错误：{a.lastError}
                           </TableCell>
                         </TableRow>
@@ -327,7 +351,7 @@ export default function LifeMonitorPage() {
             </p>
           )}
 
-          <div className="grid grid-cols-3 md:grid-cols-6 gap-3 text-sm">
+          <div className="grid grid-cols-3 gap-3 rounded-lg bg-muted/40 p-3 text-sm md:grid-cols-6">
             <Stat label="轮询次数" value={status?.stats.rounds ?? 0} />
             <Stat label="已处理" value={status?.stats.handled ?? 0} />
             <Stat label="失败" value={status?.stats.failed ?? 0} />
@@ -335,215 +359,205 @@ export default function LifeMonitorPage() {
             <Stat label="事件表" value={status?.db.lifeEvents ?? 0} />
             <Stat label="路径缓存" value={status?.db.pathCache ?? 0} />
           </div>
-        </div>
 
-        {status?.logs && status.logs.length > 0 && (
-          <details className="rounded-lg border p-3">
-            <summary className="text-sm cursor-pointer select-none">
-              运行日志（最近 {Math.min(status.logs.length, 50)} 条）
-            </summary>
-            <pre className="mt-2 max-h-64 overflow-auto text-xs text-muted-foreground whitespace-pre-wrap break-all">
-              {status.logs.slice(-50).join("\n")}
-            </pre>
-          </details>
-        )}
-      </section>
+          {status?.logs && status.logs.length > 0 && (
+            <details className="rounded-lg border bg-muted/30 p-3">
+              <summary className="cursor-pointer text-sm select-none">
+                运行日志（最近 {Math.min(status.logs.length, 50)} 条）
+              </summary>
+              <pre className="mt-2 max-h-64 overflow-auto font-mono text-xs whitespace-pre-wrap break-all text-muted-foreground">
+                {status.logs.slice(-50).join("\n")}
+              </pre>
+            </details>
+          )}
+        </section>
 
-      <Separator />
+        {/* ---------------- 配置 ---------------- */}
+        <section className="space-y-4 rounded-xl border bg-card p-6">
+          <h2 className="text-base font-medium">配置</h2>
 
-      {/* ---------------- 配置 ---------------- */}
-      <section className="space-y-4">
-        <h2 className="text-base font-medium">配置</h2>
+          <div className="space-y-2">
+            <Label>监控账号</Label>
+            {accounts.length === 0 && unknownAccounts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">暂无 115 账号，请先到「账户」页添加</p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {accounts.map((a) => (
+                  <label key={a.name} className="flex items-center gap-2 rounded-md border p-3 cursor-pointer">
+                    <Checkbox
+                      checked={selected.has(a.name)}
+                      onCheckedChange={(v) => toggleAccount(a.name, v === true)}
+                    />
+                    <span className="text-sm font-medium">{a.name}</span>
+                  </label>
+                ))}
+                {unknownAccounts.map((name) => (
+                  <label key={name} className="flex items-center gap-2 rounded-md border border-dashed p-3 cursor-pointer">
+                    <Checkbox checked onCheckedChange={(v) => toggleAccount(name, v === true)} />
+                    <span className="text-sm">
+                      <span className="font-medium">{name}</span>
+                      <span className="block text-xs text-muted-foreground">账号已不存在，取消勾选后保存</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              勾选的账号各跑一条轮询，互不影响；一个都不勾时监控全部 115 账号。事件路径按该账号同步任务的原始路径前缀匹配
+            </p>
+          </div>
 
-        <div className="space-y-2">
-          <Label>监控账号</Label>
-          {accounts.length === 0 && unknownAccounts.length === 0 ? (
-            <p className="text-sm text-muted-foreground">暂无 115 账号，请先到「账户」页添加</p>
-          ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>冷启动模式</Label>
+              <Select
+                value={cfg.pullMode || "latest"}
+                onValueChange={(v) => setCfg({ ...cfg, pullMode: v as LifeMonitorConfig["pullMode"] })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PULL_MODES.map((m) => (
+                    <SelectItem key={m.value} value={m.value}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                首次启用建议 latest；all 会把历史事件全部补一遍，耗时较长
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>轮询间隔（秒）</Label>
+              <Input
+                type="number"
+                min={5}
+                max={3600}
+                value={cfg.intervalSeconds ?? 15}
+                onChange={(e) =>
+                  setCfg({ ...cfg, intervalSeconds: parseInt(e.target.value) || 15 })
+                }
+              />
+              <p className="text-xs text-muted-foreground">默认 15 秒，太短容易触发 115 风控；每个账号各算各的</p>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>处理的事件类型</Label>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {accounts.map((a) => (
-                <label key={a.name} className="flex items-center gap-2 rounded-md border p-3 cursor-pointer">
+              {ALL_MODES.map((m) => (
+                <label key={m.value} className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
                   <Checkbox
-                    checked={selected.has(a.name)}
-                    onCheckedChange={(v) => toggleAccount(a.name, v === true)}
+                    checked={modes.has(m.value)}
+                    onCheckedChange={(v) => toggleMode(m.value, v === true)}
+                    className="mt-0.5"
                   />
-                  <span className="text-sm font-medium">{a.name}</span>
-                </label>
-              ))}
-              {unknownAccounts.map((name) => (
-                <label key={name} className="flex items-center gap-2 rounded-md border border-dashed p-3 cursor-pointer">
-                  <Checkbox checked onCheckedChange={(v) => toggleAccount(name, v === true)} />
-                  <span className="text-sm">
-                    <span className="font-medium">{name}</span>
-                    <span className="block text-xs text-muted-foreground">账号已不存在，取消勾选后保存</span>
+                  <span>
+                    <span className="text-sm font-medium">{m.label}</span>
+                    <span className="block text-xs text-muted-foreground">{m.hint}</span>
                   </span>
                 </label>
               ))}
             </div>
-          )}
-          <p className="text-xs text-muted-foreground">
-            勾选的账号各跑一条轮询，互不影响；一个都不勾时监控全部 115 账号。事件路径按该账号同步任务的原始路径前缀匹配
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <Label>冷启动模式</Label>
-            <Select
-              value={cfg.pullMode || "latest"}
-              onValueChange={(v) => setCfg({ ...cfg, pullMode: v as LifeMonitorConfig["pullMode"] })}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PULL_MODES.map((m) => (
-                  <SelectItem key={m.value} value={m.value}>
-                    {m.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
             <p className="text-xs text-muted-foreground">
-              首次启用建议 latest；all 会把历史事件全部补一遍，耗时较长
+              关掉「删除」可以避免网盘误删连带清掉本地 strm
             </p>
           </div>
 
-          <div className="space-y-2">
-            <Label>轮询间隔（秒）</Label>
-            <Input
-              type="number"
-              min={5}
-              max={3600}
-              value={cfg.intervalSeconds ?? 15}
-              onChange={(e) =>
-                setCfg({ ...cfg, intervalSeconds: parseInt(e.target.value) || 15 })
-              }
-            />
-            <p className="text-xs text-muted-foreground">默认 15 秒，太短容易触发 115 风控；每个账号各算各的</p>
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <Label>处理的事件类型</Label>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {ALL_MODES.map((m) => (
-              <label key={m.value} className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
-                <Checkbox
-                  checked={modes.has(m.value)}
-                  onCheckedChange={(v) => toggleMode(m.value, v === true)}
-                  className="mt-0.5"
+          <div className="space-y-4 border-t pt-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium">Emby 刷新</h3>
+              <p className="text-xs text-muted-foreground">
+                /Library/Refresh 是全库扫描，生活事件逐条触发会打瘫 Emby，所以合并成一次再发。
+                未配置 Emby 地址时不会发出任何请求。
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>安静期（秒）</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={cfg.mediaServerRefreshDelay ?? 30}
+                  onChange={(e) =>
+                    setCfg({ ...cfg, mediaServerRefreshDelay: parseInt(e.target.value) || 30 })
+                  }
                 />
-                <span>
-                  <span className="text-sm font-medium">{m.label}</span>
-                  <span className="block text-xs text-muted-foreground">{m.hint}</span>
-                </span>
-              </label>
-            ))}
+                <p className="text-xs text-muted-foreground">最后一次变更后再等这么久才通知</p>
+              </div>
+              <div className="space-y-2">
+                <Label>最长等待（秒）</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={cfg.mediaServerRefreshMaxWait ?? 300}
+                  onChange={(e) =>
+                    setCfg({ ...cfg, mediaServerRefreshMaxWait: parseInt(e.target.value) || 300 })
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  变更持续不断时的封顶时间，防止刷新被无限推后
+                </p>
+              </div>
+            </div>
           </div>
-          <p className="text-xs text-muted-foreground">
-            关掉「删除」可以避免网盘误删连带清掉本地 strm
-          </p>
-        </div>
 
-        <Separator />
-
-        <div className="space-y-1">
-          <h3 className="text-sm font-medium">Emby 刷新</h3>
-          <p className="text-xs text-muted-foreground">
-            /Library/Refresh 是全库扫描，生活事件逐条触发会打瘫 Emby，所以合并成一次再发。
-            未配置 Emby 地址时不会发出任何请求。
-          </p>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <Label>安静期（秒）</Label>
-            <Input
-              type="number"
-              min={1}
-              value={cfg.mediaServerRefreshDelay ?? 30}
-              onChange={(e) =>
-                setCfg({ ...cfg, mediaServerRefreshDelay: parseInt(e.target.value) || 30 })
-              }
-            />
-            <p className="text-xs text-muted-foreground">最后一次变更后再等这么久才通知</p>
+          <div className="pt-2">
+            <Button disabled={saving} onClick={saveConfig}>
+              {saving ? "保存中..." : "保存"}
+            </Button>
           </div>
-          <div className="space-y-2">
-            <Label>最长等待（秒）</Label>
-            <Input
-              type="number"
-              min={1}
-              value={cfg.mediaServerRefreshMaxWait ?? 300}
-              onChange={(e) =>
-                setCfg({ ...cfg, mediaServerRefreshMaxWait: parseInt(e.target.value) || 300 })
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              变更持续不断时的封顶时间，防止刷新被无限推后
-            </p>
-          </div>
-        </div>
+        </section>
 
-        <div className="pt-2">
-          <Button disabled={saving} onClick={saveConfig}>
-            {saving ? "Saving..." : "Save"}
-          </Button>
-        </div>
-      </section>
-
-      <Separator />
-
-      {/* ---------------- 最近事件 ---------------- */}
-      <section className="space-y-4">
-        <h2 className="text-base font-medium">最近事件</h2>
-        {events.length === 0 ? (
-          <p className="text-sm text-muted-foreground">还没有拉到任何事件</p>
-        ) : (
-          <div className="rounded-lg border overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-40">时间</TableHead>
-                  {showEventAccount && <TableHead className="w-28">账号</TableHead>}
-                  <TableHead className="w-28">类型</TableHead>
-                  <TableHead>文件</TableHead>
-                  <TableHead className="w-20">结果</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {events.map((e) => (
-                  <TableRow key={e.id}>
-                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                      {fmtTime(e.updateTime)}
-                    </TableCell>
-                    {showEventAccount && <TableCell className="text-xs">{e.accountName}</TableCell>}
-                    <TableCell className="text-xs">{e.typeName}</TableCell>
-                    <TableCell className="text-xs">
-                      <div className="break-all">{e.fileName}</div>
-                      {e.detail && (
-                        <div className="text-muted-foreground break-all">{e.detail}</div>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          e.status === "done"
-                            ? "default"
-                            : e.status === "failed"
-                              ? "destructive"
-                              : "secondary"
-                        }
-                      >
-                        {e.status}
-                      </Badge>
-                    </TableCell>
+        {/* ---------------- 最近事件 ---------------- */}
+        <section className="space-y-4 rounded-xl border bg-card p-6">
+          <h2 className="text-base font-medium">最近事件</h2>
+          {events.length === 0 ? (
+            <p className="text-sm text-muted-foreground">还没有拉到任何事件</p>
+          ) : (
+            <div className="overflow-hidden rounded-lg border bg-card">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-40">时间</TableHead>
+                    {showEventAccount && <TableHead className="w-28">账号</TableHead>}
+                    <TableHead className="w-28">类型</TableHead>
+                    <TableHead>文件</TableHead>
+                    <TableHead className="w-20">结果</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-      </section>
+                </TableHeader>
+                <TableBody>
+                  {events.map((e) => (
+                    <TableRow key={e.id}>
+                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                        {fmtTime(e.updateTime)}
+                      </TableCell>
+                      {showEventAccount && <TableCell className="text-xs">{e.accountName}</TableCell>}
+                      <TableCell className="text-xs">{e.typeName}</TableCell>
+                      <TableCell className="text-xs whitespace-normal">
+                        <div className="break-all">{e.fileName}</div>
+                        {e.detail && (
+                          <div className="text-muted-foreground break-all">{e.detail}</div>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge
+                          tone={e.status === "done" ? "success" : e.status === "failed" ? "danger" : "neutral"}
+                        >
+                          {e.status}
+                        </StatusBadge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
@@ -552,7 +566,7 @@ function Stat({ label, value }: { label: string; value: string | number }) {
   return (
     <div>
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="font-medium">{value}</div>
+      <div className="font-medium tabular-nums">{value}</div>
     </div>
   );
 }

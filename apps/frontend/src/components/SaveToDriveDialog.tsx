@@ -240,7 +240,7 @@ export function SaveToDriveDialog({
                             onClick={() => handleOpenSubdir(d.name)}
                             className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left text-sm"
                           >
-                            <FolderOpen className="h-4 w-4 text-amber-500 shrink-0" />
+                            <FolderOpen className="h-4 w-4 text-warning shrink-0" />
                             <span className="truncate">{d.name}</span>
                           </button>
                         </li>

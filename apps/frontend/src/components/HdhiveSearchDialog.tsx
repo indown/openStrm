@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import {
   Loader2,
@@ -45,7 +46,7 @@ interface Props {
 function MediaTypeBadge({ type }: { type: "movie" | "tv" }) {
   const Icon = type === "movie" ? Film : Tv;
   return (
-    <Badge variant="outline" className="gap-1 text-[10px]">
+    <Badge variant="outline" className="gap-1 text-xs">
       <Icon className="h-3 w-3" />
       {type === "movie" ? "电影" : "剧集"}
     </Badge>
@@ -101,20 +102,20 @@ function ResourceCard({
           {res.title || "资源"}
         </span>
         {res.share_size && (
-          <Badge variant="outline" className="text-[10px]">{res.share_size}</Badge>
+          <Badge variant="outline" className="text-xs">{res.share_size}</Badge>
         )}
         {res.is_unlocked || unlockResult?.already_owned ? (
-          <Badge className="bg-green-100 text-green-700 hover:bg-green-100 text-[10px] gap-1">
-            <CheckCircle2 className="h-3 w-3" />
+          <StatusBadge tone="success">
+            <CheckCircle2 />
             已解锁
-          </Badge>
+          </StatusBadge>
         ) : res.unlock_points != null && res.unlock_points > 0 ? (
-          <Badge variant="outline" className="text-[10px] gap-1">
+          <Badge variant="outline" className="text-xs gap-1">
             <Lock className="h-3 w-3" />
             {res.unlock_points} 积分
           </Badge>
         ) : (
-          <Badge variant="outline" className="text-[10px]">免费</Badge>
+          <Badge variant="outline" className="text-xs">免费</Badge>
         )}
       </div>
       {remark && (
@@ -122,7 +123,7 @@ function ResourceCard({
           {remark}
         </div>
       )}
-      <div className="flex flex-wrap gap-1 text-[10px] text-muted-foreground">
+      <div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
         {res.video_resolution?.map((r) => (
           <span key={`r-${r}`} className="px-1.5 py-0.5 rounded bg-muted">{r}</span>
         ))}
@@ -336,7 +337,7 @@ export function HdhiveSearchDialog({
             搜索中...
           </div>
         ) : errorMessage ? (
-          <div className="text-sm text-red-600 py-4">{errorMessage}</div>
+          <div className="text-sm text-destructive py-4">{errorMessage}</div>
         ) : !tmdb ? (
           <div className="text-sm text-muted-foreground py-6">
             没有找到匹配的 TMDB 影视。可以换一个关键词，或者补充年份/原名再试。
@@ -365,7 +366,7 @@ export function HdhiveSearchDialog({
                   <span className="font-medium">{tmdb.title || `TMDB #${tmdb.id}`}</span>
                   {tmdb.year && <Badge variant="secondary">{tmdb.year}</Badge>}
                   <MediaTypeBadge type={tmdb.mediaType} />
-                  <Badge variant="outline" className="text-[10px]">TMDB {tmdb.id}</Badge>
+                  <Badge variant="outline" className="text-xs">TMDB {tmdb.id}</Badge>
                 </div>
                 {tmdb.overview && (
                   <p className="text-xs text-muted-foreground line-clamp-3">{tmdb.overview}</p>
@@ -484,7 +485,7 @@ function TabButton({
       {label}
       <span
         className={
-          "rounded px-1.5 py-0.5 text-[10px] " +
+          "rounded px-1.5 py-0.5 text-xs " +
           (active ? "bg-foreground text-background" : "bg-muted text-muted-foreground")
         }
       >

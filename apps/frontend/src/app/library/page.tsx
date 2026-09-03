@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/status-badge";
 import { Film, Edit, Trash2, Search, FileText, Loader2, AlertCircle, CloudUpload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -342,31 +343,31 @@ function LibraryCard({ entry, followed, savingToTask, onOpen, onEdit, onSaveToTa
           </div>
         )}
         {pending && (
-          <div className="absolute top-2 left-2 bg-background/80 rounded px-1.5 py-0.5 flex items-center gap-1 text-[10px]">
+          <div className="absolute top-2 left-2 bg-background/80 rounded px-1.5 py-0.5 flex items-center gap-1 text-xs">
             <Loader2 className="h-3 w-3 animate-spin" />
             刮削中
           </div>
         )}
         {failed && (
-          <div className="absolute top-2 left-2 bg-red-100 text-red-700 rounded px-1.5 py-0.5 flex items-center gap-1 text-[10px]">
-            <AlertCircle className="h-3 w-3" />
+          <StatusBadge tone="danger" className="absolute top-2 left-2 backdrop-blur-sm">
+            <AlertCircle />
             未匹配
-          </div>
+          </StatusBadge>
         )}
         {entry.year && (
-          <Badge variant="secondary" className="absolute top-2 right-2 text-[10px]">
+          <Badge variant="secondary" className="absolute top-2 right-2 text-xs">
             {entry.year}
           </Badge>
         )}
         {followed && (
-          <Badge className="absolute bottom-2 left-2 text-[10px]" variant="default">
+          <Badge className="absolute bottom-2 left-2 text-xs" variant="default">
             追更中
           </Badge>
         )}
         {entry.fileCount > 0 && (
           <Badge
             variant="secondary"
-            className="absolute bottom-2 right-2 text-[10px]"
+            className="absolute bottom-2 right-2 text-xs"
           >
             <FileText className="h-3 w-3 mr-1" />
             {entry.fileCount}
@@ -386,13 +387,13 @@ function LibraryCard({ entry, followed, savingToTask, onOpen, onEdit, onSaveToTa
         >
           {label}
         </button>
-        <div className="text-[11px] text-muted-foreground truncate" title={pathLabel}>
+        <div className="text-xs text-muted-foreground truncate" title={pathLabel}>
           {pathLabel}
         </div>
         {entry.tags.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {entry.tags.slice(0, 4).map((tag) => (
-              <Badge key={tag} variant="outline" className="text-[10px] px-1.5 py-0">
+              <Badge key={tag} variant="outline" className="text-xs px-1.5 py-0">
                 {tag}
               </Badge>
             ))}
@@ -425,7 +426,7 @@ function LibraryCard({ entry, followed, savingToTask, onOpen, onEdit, onSaveToTa
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+            className="h-7 w-7 p-0 text-destructive hover:text-destructive"
             onClick={onDelete}
             title="删除"
           >

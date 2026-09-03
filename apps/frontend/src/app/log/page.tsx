@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   History,
   Loader2,
+  ScrollText,
   Square,
   XCircle,
 } from "lucide-react";
@@ -17,8 +18,13 @@ import { toast } from "sonner";
 import type { TaskExecutionHistory } from "@openstrm/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/page-header";
+import { StatusBadge, TONE_CLASS } from "@/components/status-badge";
+import { EmptyState } from "@/components/empty-state";
+import { Spinner } from "@/components/loading";
 import { api } from "@/lib/api";
 import { apiErrorMessage, getToken } from "@/lib/axios";
+import { RUN_STATUS } from "@/lib/status";
 import {
   applyEvents,
   countFiles,
@@ -27,7 +33,6 @@ import {
   type FileRow,
   type LogEvent,
   type LogState,
-  type RunStatus,
 } from "./events";
 
 /** 列表最多渲染最近这么多行：任务动辄几千个文件，全部渲染会把页面拖死 */
@@ -47,13 +52,6 @@ function reducer(state: LogState, action: Action): LogState {
   if (action.type === "reset") return createLogState();
   return applyEvents(state, action.events);
 }
-
-const STATUS_META: Record<RunStatus, { label: string; className: string }> = {
-  running: { label: "运行中", className: "bg-blue-100 text-blue-800 hover:bg-blue-100" },
-  completed: { label: "已完成", className: "bg-green-100 text-green-800 hover:bg-green-100" },
-  failed: { label: "失败", className: "bg-red-100 text-red-800 hover:bg-red-100" },
-  cancelled: { label: "已取消", className: "bg-yellow-100 text-yellow-800 hover:bg-yellow-100" },
-};
 
 const CONNECTION_LABEL: Record<Connection, string> = {
   connecting: "连接中…",
@@ -82,7 +80,7 @@ function fmtDuration(ms: number): string {
  */
 export default function LogPage() {
   return (
-    <React.Suspense fallback={<div className="p-6 text-muted-foreground">加载中...</div>}>
+    <React.Suspense fallback={<Spinner label="加载中…" />}>
       <LogRouter />
     </React.Suspense>
   );
@@ -92,7 +90,20 @@ function LogRouter() {
   const search = useSearchParams();
   const taskId = search.get("taskId") ?? "";
   const executionId = search.get("executionId") ?? undefined;
-  if (!taskId) return <div className="p-6 text-muted-foreground">缺少 taskId 参数</div>;
+  if (!taskId) {
+    return (
+      <EmptyState
+        icon={ScrollText}
+        title="缺少 taskId 参数"
+        description="从任务列表的「实时日志」或「执行历史」进来才能看到日志"
+        action={
+          <Button variant="outline" asChild>
+            <Link href="/home">去任务列表</Link>
+          </Button>
+        }
+      />
+    );
+  }
   // 参数变了整个视图重来，省得在效果里处理"半路换任务"
   return <TaskLogView key={`${taskId}:${executionId ?? ""}`} taskId={taskId} executionId={executionId} />;
 }
@@ -295,58 +306,63 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
     return picked.slice(-MAX_ROWS).reverse();
   }, [state.files, filter]);
 
-  const statusMeta = connection === "not-running" ? null : STATUS_META[state.status];
+  const statusMeta = connection === "not-running" ? null : RUN_STATUS[state.status];
   const title = taskInfo?.originPath || `任务 ${taskId.slice(0, 8)}…`;
+  // 总进度条的颜色跟着状态标签走，同一个语义色
+  const progressColor = TONE_CLASS[statusMeta?.tone ?? "neutral"].bar;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div className="min-w-0 space-y-1">
-          <Link href="/home" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-            <ArrowLeft className="h-3 w-3" />
-            返回任务列表
-          </Link>
-          <h1 className="text-xl font-semibold break-all" title={taskId}>
-            {title}
-          </h1>
-          {taskInfo && (
-            <p className="text-sm text-muted-foreground break-all">
-              → {taskInfo.targetPath} · 账户 {taskInfo.account}
-            </p>
-          )}
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {statusMeta ? (
-            <Badge className={`border-0 ${statusMeta.className}`}>
-              {running && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
-              {state.starting ? "启动中" : statusMeta.label}
-            </Badge>
-          ) : (
-            <Badge variant="outline">未运行</Badge>
-          )}
-          {running && state.starting && <span className="text-xs text-muted-foreground">读取目录阶段暂不能取消</span>}
-          {running && !state.starting && (
-            <Button variant="destructive" size="sm" onClick={cancelTask} disabled={cancelling}>
-              {cancelling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
-              <span className="ml-1">取消任务</span>
-            </Button>
-          )}
-          <Button variant="outline" size="sm" asChild>
-            <Link href={`/history?taskId=${encodeURIComponent(taskId)}`}>
-              <History className="h-4 w-4" />
-              <span className="ml-1">执行历史</span>
-            </Link>
-          </Button>
-        </div>
+    <div className="space-y-6">
+      <div className="space-y-3">
+        <Link href="/home" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="size-3" />
+          返回任务列表
+        </Link>
+        <PageHeader
+          icon={ScrollText}
+          title={<span title={taskId}>{title}</span>}
+          description={taskInfo ? `→ ${taskInfo.targetPath} · 账户 ${taskInfo.account}` : undefined}
+          actions={
+            <>
+              {statusMeta ? (
+                <StatusBadge tone={statusMeta.tone} pulse={running}>
+                  {state.starting ? "启动中" : statusMeta.label}
+                </StatusBadge>
+              ) : (
+                <StatusBadge tone="neutral">未运行</StatusBadge>
+              )}
+              {running && state.starting && <span className="text-xs text-muted-foreground">读取目录阶段暂不能取消</span>}
+              {running && !state.starting && (
+                <Button variant="destructive" size="sm" onClick={cancelTask} disabled={cancelling}>
+                  {cancelling ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
+                  取消任务
+                </Button>
+              )}
+              <Button variant="outline" size="sm" asChild>
+                <Link href={`/history?taskId=${encodeURIComponent(taskId)}`}>
+                  <History className="size-4" />
+                  执行历史
+                </Link>
+              </Button>
+            </>
+          }
+        />
       </div>
 
       {connection === "not-running" ? (
-        <div className="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">
-          这个任务没在运行，也还没有执行记录。到任务列表点「开始」跑一次。
-        </div>
+        <EmptyState
+          icon={ScrollText}
+          title="这个任务没在运行，也还没有执行记录"
+          description="到任务列表点「开始」跑一次。"
+          action={
+            <Button variant="outline" asChild>
+              <Link href="/home">去任务列表</Link>
+            </Button>
+          }
+        />
       ) : (
         <>
-          <div className="rounded-lg border p-4 space-y-4">
+          <div className="space-y-4 rounded-xl border bg-card p-5">
             <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4 lg:grid-cols-7">
               <Stat label="总文件" value={counts.total ?? "—"} hint={kindKnown ? `strm ${state.strmTotal} · 下载 ${state.downloadTotal}` : undefined} />
               <Stat label="已完成" value={counts.done} />
@@ -359,13 +375,11 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
             <div className="space-y-1">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>总进度</span>
-                <span className="font-medium text-foreground">{counts.percent.toFixed(2)}%</span>
+                <span className="font-medium tabular-nums text-foreground">{counts.percent.toFixed(2)}%</span>
               </div>
-              <div className="h-2 rounded bg-muted overflow-hidden">
+              <div className="h-2 overflow-hidden rounded bg-muted">
                 <div
-                  className={`h-full transition-[width] duration-300 ${
-                    state.status === "failed" ? "bg-destructive" : state.status === "cancelled" ? "bg-yellow-500" : "bg-primary"
-                  }`}
+                  className={`h-full transition-[width] duration-300 ${progressColor}`}
                   style={{ width: `${Math.min(100, counts.percent)}%` }}
                 />
               </div>
@@ -376,12 +390,12 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
           </div>
 
           {state.fatalError && (
-            <Banner tone="bad" icon={<XCircle className="h-4 w-4" />}>
+            <Banner tone="bad" icon={<XCircle className="size-4" />}>
               任务出错：{state.fatalError}
             </Banner>
           )}
           {!state.fatalError && state.status === "failed" && state.finalMessage && (
-            <Banner tone="bad" icon={<AlertTriangle className="h-4 w-4" />}>
+            <Banner tone="bad" icon={<AlertTriangle className="size-4" />}>
               {state.finalMessage}
               {counts.failed > 0 && (
                 <button type="button" className="ml-2 underline" onClick={() => setFilter("failed")}>
@@ -391,18 +405,18 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
             </Banner>
           )}
           {state.status === "cancelled" && (
-            <Banner tone="warn" icon={<Square className="h-4 w-4" />}>
+            <Banner tone="warn" icon={<Square className="size-4" />}>
               {state.finalMessage ?? "任务已取消"}
             </Banner>
           )}
           {/* 启动阶段就结束的"无事可做"：正常跑完的结束事件不带 message */}
           {state.status === "completed" && state.finalMessage && (
-            <Banner tone="info" icon={<CheckCircle2 className="h-4 w-4" />}>
+            <Banner tone="info" icon={<CheckCircle2 className="size-4" />}>
               {state.finalMessage}
             </Banner>
           )}
 
-          <div className="rounded-lg border overflow-hidden">
+          <div className="overflow-hidden rounded-xl border bg-card">
             <div className="flex items-center gap-1 border-b bg-muted/40 px-3 py-2 text-xs">
               <FilterTab active={filter === "all"} onClick={() => setFilter("all")}>
                 全部 {state.files.size}
@@ -429,7 +443,7 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
                         : state.starting
                           ? (
                             <span className="inline-flex items-center gap-2">
-                              <Loader2 className="h-4 w-4 animate-spin" />
+                              <Loader2 className="size-4 animate-spin" />
                               正在读取远端目录，拿到文件清单后开始处理…
                             </span>
                           )
@@ -450,10 +464,10 @@ function Stat({ label, value, hint, tone }: { label: string; value: string | num
   return (
     <div className="min-w-0">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`font-medium truncate ${tone === "bad" ? "text-destructive" : tone === "warn" ? "text-yellow-700" : ""}`} title={hint}>
+      <div className={`truncate font-medium tabular-nums ${tone === "bad" ? "text-destructive" : tone === "warn" ? "text-warning" : ""}`} title={hint}>
         {value}
       </div>
-      {hint && <div className="text-[11px] text-muted-foreground truncate">{hint}</div>}
+      {hint && <div className="truncate text-xs text-muted-foreground">{hint}</div>}
     </div>
   );
 }
@@ -463,8 +477,8 @@ function Banner({ tone, icon, children }: { tone: "bad" | "warn" | "info"; icon:
     tone === "bad"
       ? "border-destructive/40 bg-destructive/5 text-destructive"
       : tone === "warn"
-        ? "border-yellow-300 bg-yellow-50 text-yellow-800"
-        : "border-border bg-muted/40 text-muted-foreground";
+        ? "border-warning/40 bg-warning/10 text-warning"
+        : "border-border bg-card text-muted-foreground";
   return (
     <div className={`flex items-start gap-2 rounded-md border p-3 text-sm break-all ${cls}`}>
       <span className="mt-0.5 shrink-0">{icon}</span>
@@ -478,7 +492,7 @@ function FilterTab({ active, onClick, children }: { active: boolean; onClick: ()
     <button
       type="button"
       onClick={onClick}
-      className={`rounded px-2 py-1 ${active ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+      className={`rounded px-2 py-1 tabular-nums ${active ? "bg-card font-medium shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
     >
       {children}
     </button>
@@ -494,13 +508,13 @@ function FileLine({ file, running }: { file: FileRow; running: boolean }) {
     <div className="flex items-center gap-3 border-b px-4 py-2 last:border-b-0">
       <span className="shrink-0">
         {failed ? (
-          <XCircle className="h-4 w-4 text-destructive" />
+          <XCircle className="size-4 text-destructive" />
         ) : done ? (
-          <CheckCircle2 className="h-4 w-4 text-green-600" />
+          <CheckCircle2 className="size-4 text-success" />
         ) : interrupted ? (
-          <Square className="h-4 w-4 text-muted-foreground" />
+          <Square className="size-4 text-muted-foreground" />
         ) : (
-          <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+          <Loader2 className="size-4 animate-spin text-brand" />
         )}
       </span>
       <div className="min-w-0 flex-1">
@@ -508,7 +522,7 @@ function FileLine({ file, running }: { file: FileRow; running: boolean }) {
         {file.error && <div className="text-xs text-destructive break-all">{file.error}</div>}
       </div>
       {file.kind !== "unknown" && (
-        <Badge variant="outline" className="shrink-0 text-[10px] px-1.5 py-0 font-normal text-muted-foreground">
+        <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-xs font-normal text-muted-foreground">
           {file.kind === "strm" ? "strm" : "下载"}
         </Badge>
       )}
@@ -518,11 +532,11 @@ function FileLine({ file, running }: { file: FileRow; running: boolean }) {
         ) : done ? (
           <span className="text-muted-foreground">完成</span>
         ) : interrupted ? (
-          <span className="text-muted-foreground">中断于 {Math.floor(file.percent)}%</span>
+          <span className="text-muted-foreground tabular-nums">中断于 {Math.floor(file.percent)}%</span>
         ) : (
           <div className="flex items-center justify-end gap-2">
-            <div className="h-1.5 w-16 rounded bg-muted overflow-hidden">
-              <div className="h-full bg-blue-600" style={{ width: `${file.percent}%` }} />
+            <div className="h-1.5 w-16 overflow-hidden rounded bg-muted">
+              <div className={`h-full ${TONE_CLASS.info.bar}`} style={{ width: `${file.percent}%` }} />
             </div>
             <span className="w-9 text-muted-foreground tabular-nums">{Math.floor(file.percent)}%</span>
           </div>
@@ -531,4 +545,3 @@ function FileLine({ file, running }: { file: FileRow; running: boolean }) {
     </div>
   );
 }
-
