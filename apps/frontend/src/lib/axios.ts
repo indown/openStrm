@@ -65,7 +65,7 @@ axiosInstance.interceptors.response.use(
       typeof window !== 'undefined' &&
       window.location.pathname !== '/change-password'
     ) {
-      window.location.href = '/change-password';
+      window.location.href = '/change-password?required=1';
     }
     return Promise.reject(error);
   }

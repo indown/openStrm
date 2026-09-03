@@ -56,16 +56,9 @@ export default function ClientAuthProvider({ children }: ClientAuthProviderProps
     setIsAuthenticated(true);
   }, [pathname, router]);
 
-  // 显示加载状态，直到认证检查完成
+  // 检查是同步的一帧，画转圈反而会闪一下；这一帧留白
   if (isAuthenticated === null) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto"></div>
-          <p className="mt-2 text-gray-600">验证登录状态...</p>
-        </div>
-      </div>
-    );
+    return null;
   }
 
   return <>{children}</>;

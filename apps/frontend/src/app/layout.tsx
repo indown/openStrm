@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
-import  LayoutWrapper  from "@/components/LayoutWrapper";
+import LayoutWrapper from "@/components/LayoutWrapper";
 import ClientAuthProvider from "@/components/ClientAuthProvider";
-import { Toaster } from "@/components/ui/sonner"
+import { ThemeProvider } from "@/components/theme-provider";
+import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
 // 字体用系统字体栈（见 globals.css）：next/font/google 会在构建时去 Google 拉字体，离线或国内网络下 next build 直接失败
@@ -22,12 +23,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN">
+    // suppressHydrationWarning：next-themes 在客户端给 <html> 加 class，服务端渲染的没有，这是预期内的差异
+    <html lang="zh-CN" suppressHydrationWarning>
       <body className="antialiased">
-        <ClientAuthProvider>
-          <LayoutWrapper>{children}</LayoutWrapper>
-        </ClientAuthProvider>
-        <Toaster />
+        <ThemeProvider>
+          <ClientAuthProvider>
+            <LayoutWrapper>{children}</LayoutWrapper>
+          </ClientAuthProvider>
+          <Toaster />
+        </ThemeProvider>
       </body>
     </html>
   );

@@ -3,12 +3,14 @@
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { useRouter } from "next/navigation";
+import { AlertCircle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Form, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { AuthShell } from "@/components/auth-shell";
 import { apiErrorMessage, setToken } from "@/lib/axios";
 import { api } from "@/lib/api";
-import Image from "next/image";
 
 interface LoginForm {
   username: string;
@@ -42,7 +44,7 @@ export default function LoginPage() {
       setToken(token);
 
       // 还在用默认密码的话，先去改密码——其余接口在那之前都会被后端拒绝
-      router.push(mustChangePassword ? "/change-password" : (safeNextPath() ?? "/"));
+      router.push(mustChangePassword ? "/change-password?required=1" : (safeNextPath() ?? "/"));
     } catch (err) {
       // 后端的 message 会说明是密码错还是被限流（"请 N 秒后再试"），原样给用户
       setError(apiErrorMessage(err, "登录失败，请检查用户名或密码"));
@@ -52,59 +54,45 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex h-screen items-center justify-center bg-gray-100">
-      <div className="w-full max-w-md bg-white p-8 rounded-2xl shadow-lg">
-        <div className="flex flex-col items-center mb-6">
-          <Image
-            src="/logo-128.png"
-            alt="OpenStrm Logo"
-            width={64}
-            height={64}
-            className="mb-4"
-            unoptimized
-            priority
-          />
-          <h1 className="text-2xl font-bold text-center">登录</h1>
-        </div>
-
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <FormField
-              control={form.control}
-              name="username"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>用户名</FormLabel>
-                  <Input placeholder="请输入用户名" autoComplete="username" {...field} />
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="password"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>密码</FormLabel>
-                  <Input type="password" placeholder="请输入密码" autoComplete="current-password" {...field} />
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            {error && (
-              <p role="alert" className="text-sm text-red-600 text-center">
-                {error}
-              </p>
+    <AuthShell title="登录 OpenStrm" description="管理网盘同步与本地 strm 库">
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+          <FormField
+            control={form.control}
+            name="username"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>用户名</FormLabel>
+                <Input placeholder="请输入用户名" autoComplete="username" {...field} />
+                <FormMessage />
+              </FormItem>
             )}
+          />
 
-            <Button type="submit" className="w-full mt-2" disabled={pending}>
-              {pending ? "登录中..." : "登录"}
-            </Button>
-          </form>
-        </Form>
-      </div>
-    </div>
+          <FormField
+            control={form.control}
+            name="password"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>密码</FormLabel>
+                <Input type="password" placeholder="请输入密码" autoComplete="current-password" {...field} />
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {error && (
+            <Alert variant="destructive">
+              <AlertCircle />
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+
+          <Button type="submit" className="mt-2 w-full" disabled={pending}>
+            {pending ? "登录中..." : "登录"}
+          </Button>
+        </form>
+      </Form>
+    </AuthShell>
   );
 }

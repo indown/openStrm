@@ -1,7 +1,9 @@
-"use client"
-import { Home, Inbox, Settings, Github, History, Library, Radar, Bot, CloudDownload, Rss } from "lucide-react";
-import Image from "next/image";
+"use client";
 
+import Image from "next/image";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { Github } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -9,128 +11,84 @@ import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
+  SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarSeparator,
+  SidebarRail,
 } from "@/components/ui/sidebar";
-import Link from "next/link";
-import { FEATURES } from "@/lib/features";
-import { usePathname } from "next/navigation"; // 新增
+import { NAV_GROUPS, isNavActive } from "@/lib/nav";
+
 // 构建时由 next.config.ts 注入（APP_VERSION 或 package.json 的版本）
 const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? "";
-
-// Menu items.
-const items = [
-  {
-    title: "首页",
-    url: "/home",
-    icon: Home,
-  },
-  // 影库入口暂时隐藏（lib/features.ts）；直接访问 /library 仍可用
-  ...(FEATURES.libraryEntry
-    ? [
-        {
-          title: "影库",
-          url: "/library",
-          icon: Library,
-        },
-      ]
-    : []),
-  {
-    title: "追更",
-    url: "/follow",
-    icon: Rss,
-  },
-  {
-    title: "账户",
-    url: "/account",
-    icon: Inbox,
-  },
-  {
-    title: "网盘监控",
-    url: "/life",
-    icon: Radar,
-  },
-  {
-    title: "云下载",
-    url: "/offline",
-    icon: CloudDownload,
-  },
-  {
-    title: "Telegram",
-    url: "/telegram",
-    icon: Bot,
-  },
-  {
-    title: "设置",
-    url: "/settings",
-    icon: Settings,
-  },
-  {
-    title: "历史",
-    url: "/history",
-    icon: History,
-  },
-];
+const REPO_URL = "https://github.com/indown/OpenStrm";
 
 export function AppSidebar() {
   const pathname = usePathname();
   return (
     <Sidebar collapsible="icon">
+      <SidebarHeader>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            {/* size=lg 在图标模式下自动缩成 32px 方块，文字随 overflow 隐藏，不用再手写折叠态 */}
+            <SidebarMenuButton size="lg" asChild tooltip="OpenStrm">
+              <Link href="/home">
+                <Image src="/logo-128.png" alt="OpenStrm" width={32} height={32} className="size-8 shrink-0" />
+                <div className="grid flex-1 text-left leading-tight">
+                  <span className="truncate text-sm font-semibold">OpenStrm</span>
+                  <span className="truncate text-xs text-muted-foreground">Strm 管理平台</span>
+                </div>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarHeader>
       <SidebarContent>
-        <div className="p-4 border-b border-border/50">
-          <div className="flex items-center gap-3">
-            <Image
-              src="/logo-128.png"
-              alt="OpenStrm Logo"
-              width={36}
-              height={36}
-              className="flex-shrink-0"
-            />
-            <div className="flex flex-col">
-              <span className="text-xl font-bold text-foreground">Open Strm</span>
-              <span className="text-xs text-muted-foreground">流媒体管理</span>
-            </div>
-          </div>
-        </div>
-        <SidebarGroup>
-          <SidebarGroupLabel>主菜单</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {items.map((item) => {
-                const isActive = pathname === item.url;
-                return (
-                  <SidebarMenuItem key={item.title} className={isActive ? "bg-muted" : ""}>
-                    <SidebarMenuButton asChild tooltip={item.title}>
+        {NAV_GROUPS.map((group) => (
+          <SidebarGroup key={group.label}>
+            <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {group.items.map((item) => (
+                  <SidebarMenuItem key={item.url}>
+                    <SidebarMenuButton
+                      asChild
+                      tooltip={item.title}
+                      isActive={isNavActive(item, pathname)}
+                      className="data-[active=true]:bg-brand/10 data-[active=true]:text-brand data-[active=true]:hover:bg-brand/15 data-[active=true]:hover:text-brand"
+                    >
                       <Link href={item.url}>
                         <item.icon />
                         <span>{item.title}</span>
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ))}
       </SidebarContent>
-      <SidebarSeparator className="ml-0 mr-2 w-auto group-data-[collapsible=icon]:mx-0" />
       <SidebarFooter>
-        <div className="flex items-center justify-between mx-2 mb-1 rounded-md px-2 py-1 text-xs group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
+        <div className="flex items-center justify-between gap-2 px-2 py-1 text-xs text-muted-foreground group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
           <a
-            href="https://github.com/indown/OpenStrm"
+            href={REPO_URL}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground group-data-[collapsible=icon]:justify-center"
+            className="inline-flex items-center gap-1.5 hover:text-foreground"
+            title="GitHub"
           >
-            <Github className="h-4 w-4" />
+            <Github className="size-4" />
             <span className="group-data-[collapsible=icon]:hidden">GitHub</span>
           </a>
-          <span className="px-2 py-0.5 rounded bg-muted text-foreground/80 group-data-[collapsible=icon]:hidden">v{appVersion}</span>
+          {appVersion && (
+            <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs tabular-nums group-data-[collapsible=icon]:hidden">
+              v{appVersion}
+            </span>
+          )}
         </div>
       </SidebarFooter>
+      <SidebarRail />
     </Sidebar>
   );
 }
