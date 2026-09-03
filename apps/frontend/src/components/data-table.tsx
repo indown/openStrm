@@ -39,7 +39,8 @@ export function DataTable<TData, TValue>({
   })
 
   return (
-    <div className="overflow-hidden rounded-md border">
+    // overflow-hidden 把表头底色裁进圆角；横向滚动是 Table 自带容器的事，不受它影响
+    <div className="overflow-hidden rounded-xl border bg-card">
       <Table>
         <TableHeader>
           {table.getHeaderGroups().map((headerGroup) => (
@@ -75,8 +76,8 @@ export function DataTable<TData, TValue>({
             ))
           ) : (
             <TableRow>
-              <TableCell colSpan={columns.length} className="h-24 text-center">
-                No results.
+              <TableCell colSpan={columns.length} className="h-24 text-center text-muted-foreground">
+                暂无数据
               </TableCell>
             </TableRow>
           )}
