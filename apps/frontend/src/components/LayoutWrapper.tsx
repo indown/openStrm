@@ -1,10 +1,11 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { Suspense, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { CircleUserRound, KeyRound, LogOut, Search, Share2 } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
@@ -23,7 +24,7 @@ import { apiErrorBody, clearToken } from "@/lib/axios";
 import { api, type HdhiveResourceItem, type HdhiveTmdbItem } from "@/lib/api";
 import { useShareDetail } from "@/hooks/use-share-detail";
 import { FEATURES } from "@/lib/features";
-import { currentPageTitle } from "@/lib/nav";
+import { PageCrumbs } from "@/components/page-crumbs";
 
 // 两个弹框只在用到时才加载：它们（连同转存 / 目录选择弹框）不该进所有页面共享的首屏包，登录页也得为它们买单
 const ShareDetailDialog = dynamic(() => import("@/components/ShareDetailDialog").then((m) => m.ShareDetailDialog), {
@@ -64,6 +65,8 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   const share = useShareDetail();
 
   const [searchQuery, setSearchQuery] = useState("");
+  // 手机上顶栏放不下输入框，分享链接改成图标 + 弹框
+  const [shareBoxOpen, setShareBoxOpen] = useState(false);
   const [hdhiveOpen, setHdhiveOpen] = useState(false);
   const [hdhiveLoading, setHdhiveLoading] = useState(false);
   const [hdhiveTmdb, setHdhiveTmdb] = useState<HdhiveTmdbItem | null>(null);
@@ -135,6 +138,13 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
 
   const fetchShareDetail = (overrideUrl?: string) => share.load(overrideUrl ?? share.link);
 
+  /** 手机弹框里点「查看」：先关掉输入弹框，转存弹框加载完自己会开 */
+  const submitShareFromDialog = () => {
+    if (!share.link.trim()) return;
+    setShareBoxOpen(false);
+    void fetchShareDetail();
+  };
+
   const handle115UnlockedFromHdhive = (fullUrl: string) => {
     const url = (fullUrl || "").trim();
     if (!url) return;
@@ -143,8 +153,6 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     void share.load(url);
   };
 
-  const pageTitle = currentPageTitle(pathname);
-
   return (
     <>
       <SidebarProvider>
@@ -152,15 +160,18 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
         {/* 内容列是浅灰画布，表格和面板用 bg-card 浮在上面；暗色下画布就是 background，面板靠 card 更亮来区分。
             min-w-0 不能少：它是侧栏旁边的 flex 项，默认 min-width:auto 会按宽表格的最小宽度算，连同侧栏把整页撑出横向滚动条 */}
         <SidebarInset className="min-w-0 bg-muted/50 dark:bg-background">
-          <header className="sticky top-0 z-20 flex flex-wrap items-center gap-2 border-b bg-background px-3 py-2 sm:h-14 sm:flex-nowrap sm:px-4 sm:py-0">
+          <header className="sticky top-0 z-20 flex h-14 items-center gap-2 border-b bg-background px-3 sm:px-4">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <SidebarTrigger className="-ml-1" />
               <Separator orientation="vertical" className="mr-1 data-[orientation=vertical]:h-5" />
-              {pageTitle && <div className="truncate text-sm font-medium">{pageTitle}</div>}
+              {/* 当前页名和子页面的返回键。它要读 query（日志页从历史进来时上一级是历史），静态导出下必须包在 Suspense 里 */}
+              <Suspense fallback={null}>
+                <PageCrumbs />
+              </Suspense>
             </div>
-            {/* 115 分享链接全站都能粘，回车或点「查看」打开转存弹框；窄屏时折到第二行占满一行 */}
-            <div className="order-last flex w-full items-center gap-1.5 sm:order-none sm:w-auto">
-              <div className="relative flex-1 sm:w-72">
+            {/* 115 分享链接全站都能粘，回车或点「查看」打开转存弹框；手机上收成一个图标，点开再输入 */}
+            <div className="hidden items-center gap-1.5 sm:flex">
+              <div className="relative w-72">
                 <Share2 className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   placeholder="粘贴 115 分享链接，回车查看"
@@ -174,10 +185,19 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
                 {share.loading ? "加载中..." : "查看"}
               </Button>
             </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8 sm:hidden"
+              aria-label="查看 115 分享"
+              onClick={() => setShareBoxOpen(true)}
+            >
+              <Share2 className="size-5" />
+            </Button>
             {/* 影巢搜索入口暂时隐藏（lib/features.ts） */}
             {FEATURES.hdhiveSearch && (
-              <div className="order-last flex w-full items-center gap-1.5 sm:order-none sm:w-auto">
-                <div className="relative flex-1 sm:w-64">
+              <div className="hidden items-center gap-1.5 sm:flex">
+                <div className="relative w-64">
                   <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     placeholder="搜索影视资源（TMDB → HDHive）"
@@ -201,6 +221,27 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
           <div className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6">{children}</div>
         </SidebarInset>
       </SidebarProvider>
+      {/* 手机上的分享链接输入：靠上摆，免得软键盘弹起来把居中的弹框顶没了 */}
+      <Dialog open={shareBoxOpen} onOpenChange={setShareBoxOpen}>
+        <DialogContent className="top-20 translate-y-0 sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>查看 115 分享</DialogTitle>
+            <DialogDescription>粘贴分享链接，看内容并转存到网盘</DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2">
+            <Input
+              autoFocus
+              placeholder="https://115.com/s/..."
+              value={share.link}
+              onChange={(e) => share.setLink(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && submitShareFromDialog()}
+            />
+            <Button onClick={submitShareFromDialog} disabled={share.loading || !share.link.trim()}>
+              {share.loading ? "加载中..." : "查看"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <ShareDetailDialog {...share.dialogProps} />
       {FEATURES.hdhiveSearch && (
         <HdhiveSearchDialog

@@ -37,7 +37,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import type { ShareFollowSummary } from "@openstrm/shared";
+import type { ShareFollowRun, ShareFollowSummary } from "@openstrm/shared";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { EmptyState } from "@/components/empty-state";
@@ -207,6 +207,17 @@ export default function FollowPage() {
   const follows = data?.follows ?? [];
   const activeCount = follows.filter((f) => f.enabled).length;
 
+  /** 表格行和手机卡片吃同一份 props，操作走同一套处理函数 */
+  const itemProps = (f: ShareFollowSummary): FollowItemProps => ({
+    follow: f,
+    originPath: taskPaths ? (taskPaths[f.taskId] ?? null) : undefined,
+    busy: busyIds.has(f.id),
+    onCheck: () => void doCheck(f),
+    onToggle: () => void doToggle(f),
+    onEdit: () => setEditTarget(f),
+    onDelete: () => setDeleteTarget(f),
+  });
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -255,34 +266,33 @@ export default function FollowPage() {
           />
         )
       ) : (
-        <div className="overflow-hidden rounded-xl border bg-card">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>名称</TableHead>
-                <TableHead className="w-48">目标</TableHead>
-                <TableHead className="w-36">检查</TableHead>
-                <TableHead className="min-w-[160px]">最近动态</TableHead>
-                <TableHead className="w-24">状态</TableHead>
-                <TableHead className="w-36 text-right">操作</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {follows.map((f) => (
-                <FollowRow
-                  key={f.id}
-                  follow={f}
-                  originPath={taskPaths ? (taskPaths[f.taskId] ?? null) : undefined}
-                  busy={busyIds.has(f.id)}
-                  onCheck={() => void doCheck(f)}
-                  onToggle={() => void doToggle(f)}
-                  onEdit={() => setEditTarget(f)}
-                  onDelete={() => setDeleteTarget(f)}
-                />
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+        <>
+          {/* 手机上一条一张卡，状态和操作都摆在眼前；md 起还是表格 */}
+          <div className="space-y-3 md:hidden">
+            {follows.map((f) => (
+              <FollowCard key={f.id} {...itemProps(f)} />
+            ))}
+          </div>
+          <div className="hidden overflow-hidden rounded-xl border bg-card md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>名称</TableHead>
+                  <TableHead className="w-48">目标</TableHead>
+                  <TableHead className="w-36">检查</TableHead>
+                  <TableHead className="min-w-[160px]">最近动态</TableHead>
+                  <TableHead className="w-24">状态</TableHead>
+                  <TableHead className="w-36 text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {follows.map((f) => (
+                  <FollowRow key={f.id} {...itemProps(f)} />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </>
       )}
 
       <EditFollowDialog
@@ -320,15 +330,7 @@ export default function FollowPage() {
   );
 }
 
-function FollowRow({
-  follow: f,
-  originPath,
-  busy,
-  onCheck,
-  onToggle,
-  onEdit,
-  onDelete,
-}: {
+type FollowItemProps = {
   follow: ShareFollowSummary;
   /** undefined = 任务列表还没拿到；null = 任务已删除 */
   originPath: string | null | undefined;
@@ -337,15 +339,125 @@ function FollowRow({
   onToggle: () => void;
   onEdit: () => void;
   onDelete: () => void;
-}) {
-  const meta = statusMeta(f);
-  const scope = scopeLabel(f);
+};
+
+/** 表格行和手机卡片都要算的展示字段 */
+function followView(f: ShareFollowSummary, originPath: string | null | undefined) {
   const target =
     originPath === undefined
       ? "…"
       : `${originPath ?? "（任务已删除）"}${f.subPath ? `/${f.subPath}` : ""}`;
-  const last = f.recent[0];
+  return {
+    meta: statusMeta(f),
+    scope: scopeLabel(f),
+    target,
+    last: f.recent[0] as ShareFollowRun | undefined,
+    checking: f.status === "checking",
+  };
+}
+
+/** 最近一次有动静的检查：新增了什么、跳过了什么 */
+function FollowRecent({ last }: { last: ShareFollowRun | undefined }) {
+  if (!last) return <span className="text-xs text-muted-foreground">订阅以来还没有新增</span>;
+  return (
+    <div className="space-y-0.5 text-xs">
+      {last.added.length > 0 && (
+        <div className="break-all">
+          <span className="font-medium text-success tabular-nums">+{last.added.length}</span>{" "}
+          {last.added.slice(0, 2).join("、")}
+          {last.added.length > 2 ? ` 等 ${last.added.length} 个` : ""}
+        </div>
+      )}
+      {last.skipped.length > 0 && (
+        <div className="break-all text-muted-foreground" title={last.skipped.join("\n")}>
+          跳过 {last.skipped.length} 项（{last.skipped[0]}
+          {last.skipped.length > 1 ? " 等" : ""}）
+        </div>
+      )}
+      {last.error && (last.added.length > 0 || last.skipped.length > 0) && (
+        <div className="break-all text-destructive">{last.error}</div>
+      )}
+      <div className="text-muted-foreground">{relativePast(last.at)}</div>
+    </div>
+  );
+}
+
+/** 操作按钮：表格里是一排图标，卡片里是带文字的大按钮，手指好点 */
+function FollowActions({
+  follow: f,
+  busy,
+  onCheck,
+  onToggle,
+  onEdit,
+  onDelete,
+  variant,
+}: FollowItemProps & { variant: "row" | "card" }) {
   const checking = f.status === "checking";
+  const checkIcon = busy || checking ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />;
+  const toggleIcon = f.enabled ? <Pause className="size-4" /> : <Play className="size-4" />;
+  if (variant === "row") {
+    return (
+      <div className="flex justify-end gap-0.5">
+        <Button variant="ghost" size="icon" className="size-8" title="立即检查" onClick={onCheck} disabled={busy || checking}>
+          {checkIcon}
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          title={f.enabled ? "暂停" : "继续"}
+          onClick={onToggle}
+          disabled={busy || checking}
+        >
+          {toggleIcon}
+        </Button>
+        <Button variant="ghost" size="icon" className="size-8" title="编辑" onClick={onEdit} disabled={busy}>
+          <Pencil className="size-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 text-destructive hover:text-destructive"
+          title="删除"
+          onClick={onDelete}
+          disabled={busy}
+        >
+          <Trash2 className="size-4" />
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <>
+      <Button variant="outline" size="sm" className="h-9 flex-1" onClick={onCheck} disabled={busy || checking}>
+        {checkIcon}
+        检查
+      </Button>
+      <Button variant="outline" size="sm" className="h-9 flex-1" onClick={onToggle} disabled={busy || checking}>
+        {toggleIcon}
+        {f.enabled ? "暂停" : "继续"}
+      </Button>
+      <Button variant="outline" size="sm" className="h-9 flex-1" onClick={onEdit} disabled={busy}>
+        <Pencil className="size-4" />
+        编辑
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-9 text-destructive hover:text-destructive"
+        title="删除"
+        onClick={onDelete}
+        disabled={busy}
+      >
+        <Trash2 className="size-4" />
+      </Button>
+    </>
+  );
+}
+
+function FollowRow(props: FollowItemProps) {
+  const { follow: f, originPath } = props;
+  const { meta, scope, target, last, checking } = followView(f, originPath);
   return (
     <TableRow>
       <TableCell className="min-w-[180px]">
@@ -362,29 +474,7 @@ function FollowRow({
         {f.enabled && !checking && <div title={fmtTime(f.nextCheckAt)}>下次 {relativeFuture(f.nextCheckAt)}</div>}
       </TableCell>
       <TableCell>
-        {last ? (
-          <div className="space-y-0.5 text-xs">
-            {last.added.length > 0 && (
-              <div className="break-all">
-                <span className="font-medium text-success tabular-nums">+{last.added.length}</span>{" "}
-                {last.added.slice(0, 2).join("、")}
-                {last.added.length > 2 ? ` 等 ${last.added.length} 个` : ""}
-              </div>
-            )}
-            {last.skipped.length > 0 && (
-              <div className="break-all text-muted-foreground" title={last.skipped.join("\n")}>
-                跳过 {last.skipped.length} 项（{last.skipped[0]}
-                {last.skipped.length > 1 ? " 等" : ""}）
-              </div>
-            )}
-            {last.error && (last.added.length > 0 || last.skipped.length > 0) && (
-              <div className="break-all text-destructive">{last.error}</div>
-            )}
-            <div className="text-muted-foreground">{relativePast(last.at)}</div>
-          </div>
-        ) : (
-          <span className="text-xs text-muted-foreground">订阅以来还没有新增</span>
-        )}
+        <FollowRecent last={last} />
       </TableCell>
       <TableCell>
         <StatusBadge tone={meta.tone} pulse={meta.pulse}>
@@ -397,36 +487,43 @@ function FollowRow({
         )}
       </TableCell>
       <TableCell className="whitespace-nowrap text-right">
-        <div className="flex justify-end gap-0.5">
-          <Button variant="ghost" size="icon" className="size-8" title="立即检查" onClick={onCheck} disabled={busy || checking}>
-            {busy || checking ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8"
-            title={f.enabled ? "暂停" : "继续"}
-            onClick={onToggle}
-            disabled={busy || checking}
-          >
-            {f.enabled ? <Pause className="size-4" /> : <Play className="size-4" />}
-          </Button>
-          <Button variant="ghost" size="icon" className="size-8" title="编辑" onClick={onEdit} disabled={busy}>
-            <Pencil className="size-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8 text-destructive hover:text-destructive"
-            title="删除"
-            onClick={onDelete}
-            disabled={busy}
-          >
-            <Trash2 className="size-4" />
-          </Button>
-        </div>
+        <FollowActions {...props} variant="row" />
       </TableCell>
     </TableRow>
+  );
+}
+
+/** 手机上的一条订阅：状态在右上角，检查节奏和最近动态在中间，底部一排大按钮 */
+function FollowCard(props: FollowItemProps) {
+  const { follow: f, originPath } = props;
+  const { meta, scope, target, last, checking } = followView(f, originPath);
+  return (
+    <div className="rounded-xl border bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <div className="break-all text-sm font-medium">{f.name}</div>
+          <div className="break-all text-xs text-muted-foreground">
+            {f.watchPath || "分享根目录"}
+            {scope !== "整个目录" && ` · 只追：${scope}`}
+          </div>
+          <div className="break-all text-xs text-muted-foreground">→ {target}</div>
+        </div>
+        <StatusBadge tone={meta.tone} pulse={meta.pulse} className="shrink-0">
+          {meta.label}
+        </StatusBadge>
+      </div>
+      <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+        <div>
+          {intervalLabel(f.intervalMinutes)} · 上次 {relativePast(f.lastCheckedAt)}
+          {f.enabled && !checking && ` · 下次 ${relativeFuture(f.nextCheckAt)}`}
+        </div>
+        <FollowRecent last={last} />
+        {f.lastError && f.status !== "checking" && <div className="break-all text-destructive">{f.lastError}</div>}
+      </div>
+      <div className="mt-3 flex items-center gap-2 border-t pt-3">
+        <FollowActions {...props} variant="card" />
+      </div>
+    </div>
   );
 }
 

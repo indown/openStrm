@@ -34,6 +34,51 @@ export type Account = {
   expiresAt?: number;   // openlist 类型的令牌过期时间
 };
 
+/** 认证信息：表格列和手机卡片共用。手机上没法 hover 看 title，wrap 时 cookie 直接换行显示 */
+function Credentials({ account, wrap = false }: { account: Account; wrap?: boolean }) {
+  if (account.accountType === "115") {
+    const cookie = account.cookie ?? "";
+    const shortCookie = cookie.length > 30 ? cookie.slice(0, 30) + "..." : cookie;
+
+    return (
+      <div className="flex items-center gap-2">
+        <Key className="size-4 shrink-0 text-muted-foreground" />
+        <code
+          title={cookie}
+          className={`block rounded bg-muted px-2 py-1 font-mono text-xs ${wrap ? "break-all" : "max-w-xs truncate"}`}
+        >
+          {shortCookie}
+        </code>
+      </div>
+    );
+  }
+  if (account.accountType === "openlist") {
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center gap-2 text-xs">
+          <User className="size-3 text-muted-foreground" />
+          <span className="text-muted-foreground">用户:</span>
+          <code className="rounded bg-muted px-1 font-mono">{account.account}</code>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <Key className="size-3 text-muted-foreground" />
+          <span className="text-muted-foreground">密码:</span>
+          <code className="rounded bg-muted px-1 font-mono">
+            {"*".repeat(Math.min(account.password?.length ?? 0, 8))}
+          </code>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">URL:</span>
+          <code className={`rounded bg-muted px-1 font-mono text-brand ${wrap ? "break-all" : ""}`}>
+            {account.url}
+          </code>
+        </div>
+      </div>
+    );
+  }
+  return <span className="text-muted-foreground">-</span>;
+}
+
 export default function AccountPage() {
   const [data, setData] = useState<Account[]>([]);
   // 只有首次加载显示骨架；之后的刷新列表留在屏幕上
@@ -67,6 +112,12 @@ export default function AccountPage() {
     }
   };
 
+  /** 表格和手机卡片的「编辑」都走这里：喂上那一行的数据再打开页面级的弹框 */
+  const openEditor = (account: Account) => {
+    setEditing(account);
+    setEditorOpen(true);
+  };
+
   const columns: ColumnDef<Account>[] = [
     {
       accessorKey: "name",
@@ -90,51 +141,7 @@ export default function AccountPage() {
     {
       id: "credentials",
       header: "认证信息",
-      cell: ({ row }) => {
-        const account = row.original;
-
-        if (account.accountType === "115") {
-          const cookie = account.cookie ?? "";
-          const shortCookie = cookie.length > 30 ? cookie.slice(0, 30) + "..." : cookie;
-
-          return (
-            <div className="flex items-center gap-2">
-              <Key className="size-4 text-muted-foreground" />
-              <code
-                title={cookie}
-                className="block max-w-xs truncate rounded bg-muted px-2 py-1 font-mono text-xs"
-              >
-                {shortCookie}
-              </code>
-            </div>
-          );
-        } else if (account.accountType === "openlist") {
-          return (
-            <div className="space-y-1">
-              <div className="flex items-center gap-2 text-xs">
-                <User className="size-3 text-muted-foreground" />
-                <span className="text-muted-foreground">用户:</span>
-                <code className="rounded bg-muted px-1 font-mono">{account.account}</code>
-              </div>
-              <div className="flex items-center gap-2 text-xs">
-                <Key className="size-3 text-muted-foreground" />
-                <span className="text-muted-foreground">密码:</span>
-                <code className="rounded bg-muted px-1 font-mono">
-                  {"*".repeat(Math.min(account.password?.length ?? 0, 8))}
-                </code>
-              </div>
-              <div className="flex items-center gap-2 text-xs">
-                <span className="text-muted-foreground">URL:</span>
-                <code className="rounded bg-muted px-1 font-mono text-brand">
-                  {account.url}
-                </code>
-              </div>
-            </div>
-          );
-        }
-
-        return <span className="text-muted-foreground">-</span>;
-      },
+      cell: ({ row }) => <Credentials account={row.original} />,
     },
     {
       id: "actions",
@@ -148,10 +155,7 @@ export default function AccountPage() {
               size="icon"
               className="size-8"
               title="编辑账户"
-              onClick={() => {
-                setEditing(account);
-                setEditorOpen(true);
-              }}
+              onClick={() => openEditor(account)}
             >
               <Edit className="size-4" />
             </Button>
@@ -197,7 +201,45 @@ export default function AccountPage() {
           action={addButton}
         />
       ) : (
-        <DataTable columns={columns} data={data} getRowId={(a) => a.name} />
+        <>
+          {/* 手机上一账号一张卡：表格横向滚起来操作列就看不见了 */}
+          <div className="space-y-3 md:hidden">
+            {data.map((account) => (
+              <div key={account.name} className="rounded-xl border bg-card p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <User className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="break-all text-sm font-medium">{account.name}</span>
+                  </div>
+                  <Badge variant="outline" className="shrink-0 text-xs">
+                    {account.accountType}
+                  </Badge>
+                </div>
+                <div className="mt-3">
+                  <Credentials account={account} wrap />
+                </div>
+                <div className="mt-3 flex items-center gap-2 border-t pt-3">
+                  <Button variant="outline" size="sm" className="h-9 flex-1" onClick={() => openEditor(account)}>
+                    <Edit className="size-4" />
+                    编辑
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-9 text-destructive hover:text-destructive"
+                    title="删除"
+                    onClick={() => setDeleteTarget(account)}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="hidden md:block">
+            <DataTable columns={columns} data={data} getRowId={(a) => a.name} />
+          </div>
+        </>
       )}
 
       {/* 新增 / 编辑弹框：整页一个，编辑哪一行就喂哪一行的数据，新增时 account 为空 */}

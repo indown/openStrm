@@ -137,8 +137,8 @@ function TaskHistoryContent() {
   };
 
   const viewLogs = (execution: TaskExecutionSummary) => {
-    // 跳转到日志查看页面
-    window.open(`/log?taskId=${encodeURIComponent(execution.taskId)}&executionId=${encodeURIComponent(execution.id)}`, "_blank");
+    // 同一标签页打开：顶栏有返回键，看完直接回来，不用在标签页之间切
+    router.push(`/log?taskId=${encodeURIComponent(execution.taskId)}&executionId=${encodeURIComponent(execution.id)}`);
   };
 
   return (

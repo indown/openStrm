@@ -49,13 +49,22 @@ export function isNavActive(item: NavItem, pathname: string): boolean {
   return [item.url, ...(item.match ?? [])].some((p) => pathname === p || pathname.startsWith(p + "/"));
 }
 
-/** 顶栏显示的当前页名 */
-export function currentPageTitle(pathname: string): string | null {
-  if (pathname.startsWith("/log")) return "任务日志";
-  if (pathname.startsWith("/library")) return "影库";
+export type PageCrumb = {
+  title: string;
+  /** 子页面才有：顶栏会常驻一个返回键和面包屑，手机上滚到哪都能回上一级 */
+  parent?: { title: string; url: string };
+};
+
+/** 顶栏显示的当前页。search 可选：日志页带 executionId 是在看历史记录，上一级算「历史」 */
+export function currentPage(pathname: string, search?: { get(name: string): string | null } | null): PageCrumb | null {
+  if (pathname.startsWith("/log")) {
+    const parent = search?.get("executionId") ? { title: "历史", url: "/history" } : { title: "任务", url: "/home" };
+    return { title: "任务日志", parent };
+  }
+  if (pathname.startsWith("/library")) return { title: "影库" };
   for (const group of NAV_GROUPS) {
     for (const item of group.items) {
-      if (isNavActive(item, pathname)) return item.title;
+      if (isNavActive(item, pathname)) return { title: item.title };
     }
   }
   return null;

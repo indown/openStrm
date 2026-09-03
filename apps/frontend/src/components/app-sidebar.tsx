@@ -16,6 +16,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { NAV_GROUPS, isNavActive } from "@/lib/nav";
 
@@ -25,6 +26,11 @@ const REPO_URL = "https://github.com/indown/OpenStrm";
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const { isMobile, setOpenMobile } = useSidebar();
+  // 手机上侧栏是抽屉，点了导航得自己收起来，shadcn 不会代劳；桌面上什么都不做
+  const closeOnMobile = () => {
+    if (isMobile) setOpenMobile(false);
+  };
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
@@ -32,7 +38,7 @@ export function AppSidebar() {
           <SidebarMenuItem>
             {/* size=lg 在图标模式下自动缩成 32px 方块，文字随 overflow 隐藏，不用再手写折叠态 */}
             <SidebarMenuButton size="lg" asChild tooltip="OpenStrm">
-              <Link href="/home">
+              <Link href="/home" onClick={closeOnMobile}>
                 <Image src="/logo-128.png" alt="OpenStrm" width={32} height={32} className="size-8 shrink-0" />
                 <div className="grid flex-1 text-left leading-tight">
                   <span className="truncate text-sm font-semibold">OpenStrm</span>
@@ -57,7 +63,7 @@ export function AppSidebar() {
                       isActive={isNavActive(item, pathname)}
                       className="data-[active=true]:bg-brand/10 data-[active=true]:text-brand data-[active=true]:hover:bg-brand/15 data-[active=true]:hover:text-brand"
                     >
-                      <Link href={item.url}>
+                      <Link href={item.url} onClick={closeOnMobile}>
                         <item.icon />
                         <span>{item.title}</span>
                       </Link>
