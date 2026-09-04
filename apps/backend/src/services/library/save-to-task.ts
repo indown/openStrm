@@ -9,7 +9,7 @@ import { fsDirGetId } from "../cloud-115/client.js";
 import { receiveToMyDrive } from "../cloud-115/share.js";
 import { generateStrmForSelected, type SelectedItem } from "../strm/share-strm.js";
 import { startTask } from "../task/runner.js";
-import { HttpError } from "../../lib/http-error.js";
+import { HttpError, upstreamError } from "../../lib/http-error.js";
 
 export interface SaveSelectionOpts {
   task: TaskDefinition;
@@ -62,7 +62,7 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
     await receiveToMyDrive(accountInfo, shareCode, receiveCode, fileIds, idRes.id);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "转存到 115 失败";
-    throw new HttpError(502, msg);
+    throw upstreamError(msg);
   }
 
   if (mode === "sync") {
@@ -80,7 +80,7 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
       return { mode: "sync", generatedCount, skippedCount };
     } catch (err) {
       const msg = err instanceof Error ? err.message : "生成 strm 失败";
-      throw new HttpError(502, msg);
+      throw upstreamError(msg);
     }
   }
 

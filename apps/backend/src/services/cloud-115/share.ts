@@ -235,6 +235,19 @@ export async function getShareDownloadUrl(
 }
 
 /** 转存分享文件/目录到我的网盘 */
+/** 同一个 id 只转存一次：弹框里重复勾选、API 调用方重复传，115 都会照单再复制一份 */
+export function uniqueFileIds(fileIds: number | string | (number | string)[]): (number | string)[] {
+  const seen = new Set<string>();
+  const out: (number | string)[] = [];
+  for (const id of Array.isArray(fileIds) ? fileIds : [fileIds]) {
+    const key = String(id).trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(id);
+  }
+  return out;
+}
+
 export async function receiveToMyDrive(
   accountInfo: AccountInfo,
   shareCode: string,
@@ -243,7 +256,7 @@ export async function receiveToMyDrive(
   toPid: number | string,
   opts?: { userAgent?: string }
 ): Promise<Record<string, unknown>> {
-  const resp = await shareReceive(accountInfo, shareCode, receiveCode, fileIds, String(toPid), opts);
+  const resp = await shareReceive(accountInfo, shareCode, receiveCode, uniqueFileIds(fileIds), String(toPid), opts);
   checkShareResponse(resp as { state?: boolean; errno?: number });
   return resp as Record<string, unknown>;
 }

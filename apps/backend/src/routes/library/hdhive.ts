@@ -7,7 +7,7 @@ import {
   type HdhiveMediaType,
 } from "../../services/hdhive.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
-import { HttpError } from "../../lib/http-error.js";
+import { HttpError, UPSTREAM_ERROR_STATUS, upstreamError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 
 const searchSchema = z.object({
@@ -24,12 +24,15 @@ type HdhiveFailure = Error & { status?: number; code?: string | number; retryAft
 /**
  * HDHive 的失败带着它自己的状态码和限流提示，转给前端。
  * 上游的 401/403 是 HDHive 在拒绝我们的 key（填错、过期），不是用户的会话失效——
- * 原样返回 401 会触发前端的全局拦截，把管理员直接踢回登录页。这两种改成 502，原状态码放进 upstreamStatus。
+ * 原样返回 401 会触发前端的全局拦截，把管理员直接踢回登录页。
+ * 这两种、没有状态码的网络错误、以及 HDHive 自己的 5xx 都按上游错误回（见 lib/http-error.ts），原状态码放进 upstreamStatus；
+ * 其余 4xx（404、429 限流）原样透传。
  */
 export function hdhiveError(err: unknown, fallback: string, data?: unknown): HttpError {
   const e = err as HdhiveFailure;
   const upstream = e.status && e.status >= 400 ? e.status : undefined;
-  const status = upstream === undefined || upstream === 401 || upstream === 403 ? 502 : upstream;
+  const status =
+    upstream === undefined || upstream === 401 || upstream === 403 || upstream >= 500 ? UPSTREAM_ERROR_STATUS : upstream;
   const message =
     upstream === 401 || upstream === 403
       ? `HDHive 拒绝了当前的 API Key（${upstream}）：${e.message || fallback}`
@@ -68,7 +71,7 @@ export default async function (fastify: FastifyInstance) {
       const language = body.language || settings.tmdb?.language || "zh-CN";
 
       const tmdbResults = await searchMulti(tmdbKey, query, language).catch((err: unknown) => {
-        throw new HttpError(502, err instanceof Error ? err.message : "TMDB 搜索失败");
+        throw upstreamError(err instanceof Error ? err.message : "TMDB 搜索失败");
       });
       const candidates = tmdbResults.filter((r) => r.mediaType === "movie" || r.mediaType === "tv");
       if (candidates.length === 0) {

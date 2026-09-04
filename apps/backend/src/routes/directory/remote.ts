@@ -4,15 +4,15 @@ import { Cloud115Error, fsDirGetId, listDirEntries } from "../../services/cloud-
 import { OpenlistError, openlistListDir } from "../../services/openlist/client.js";
 import { getAccount } from "../../db/repositories/accounts.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
-import { HttpError } from "../../lib/http-error.js";
+import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 
 const bodySchema = z.object({ account: z.string().min(1, "account is required"), path: z.string().default("") });
 
 /** 115 的失败要说出来：以前一律返回空列表，cookie 失效和"目录本来就是空的"在界面上长得一模一样 */
 function upstreamFailure(err: unknown, fallback: string): HttpError {
-  if (err instanceof Cloud115Error) return new HttpError(502, err.message, { upstreamStatus: err.status });
-  return new HttpError(502, err instanceof Error && err.message ? err.message : fallback);
+  if (err instanceof Cloud115Error) return upstreamError(err.message, { upstreamStatus: err.status });
+  return upstreamError(err instanceof Error && err.message ? err.message : fallback);
 }
 
 export default async function (fastify: FastifyInstance) {
@@ -28,7 +28,7 @@ export default async function (fastify: FastifyInstance) {
       try {
         entries = await openlistListDir(accountInfo, path || "/");
       } catch (err) {
-        if (err instanceof OpenlistError) throw new HttpError(502, err.message, { upstreamStatus: err.code });
+        if (err instanceof OpenlistError) throw upstreamError(err.message, { upstreamStatus: err.code });
         throw upstreamFailure(err, "列目录失败");
       }
       const base = path.replace(/\/+$/, "");

@@ -19,7 +19,7 @@ import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
-import { HttpError } from "../../lib/http-error.js";
+import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { Cloud115Error, fsDirGetId, type AccountInfo } from "../cloud-115/client.js";
 import {
@@ -208,8 +208,8 @@ export function resolveAccount115(name?: string): Account115 {
 /** 115 的失败要原样说出来：cookie 失效、风控 405 和"列表本来就是空的"在界面上不能长一样 */
 function upstream(err: unknown, fallback: string): HttpError {
   if (err instanceof HttpError) return err;
-  if (err instanceof Cloud115Error) return new HttpError(502, err.message, { upstreamStatus: err.status });
-  return new HttpError(502, err instanceof Error && err.message ? err.message : fallback);
+  if (err instanceof Cloud115Error) return upstreamError(err.message, { upstreamStatus: err.status });
+  return upstreamError(err instanceof Error && err.message ? err.message : fallback);
 }
 
 /* ------------------------------- 复制到 OpenList ------------------------------- */
