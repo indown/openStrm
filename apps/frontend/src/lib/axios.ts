@@ -78,7 +78,13 @@ export function apiErrorBody(err: unknown): { message?: string; details?: string
 }
 
 export function apiErrorMessage(err: unknown, fallback: string): string {
-  return apiErrorBody(err).message || fallback;
+  const message = apiErrorBody(err).message;
+  if (message) return message;
+  // 后端自己从不回 502 / 504：收到这两个码说明是网关（Cloudflare / 反代）替后端答的——
+  // 后端没起来、在重启或没响应，响应体也不是我们的错误壳，别只说一句"失败"
+  const status = (err as { response?: { status?: number } } | null)?.response?.status;
+  if (status === 502 || status === 504) return `${fallback}：网关返回 ${status}，后端可能正在重启或没有响应`;
+  return fallback;
 }
 
 export default axiosInstance;
