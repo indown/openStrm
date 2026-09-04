@@ -8,7 +8,7 @@ import { listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { normalizeSubPath } from "../../services/strm/naming.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
-import { HttpError } from "../../lib/http-error.js";
+import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 import { followOptionSchema, idParamsSchema } from "../../schemas/entities.js";
 import { createFollowAfterSave } from "../../services/follow/service.js";
@@ -60,7 +60,7 @@ export default async function (fastify: FastifyInstance) {
             { userAgent },
           );
         } catch (err) {
-          throw new HttpError(502, err instanceof Error ? err.message : "解析分享目录失败");
+          throw upstreamError(err instanceof Error ? err.message : "解析分享目录失败");
         }
       }
       selectedItems = [{ name: dirName, isDir: true }];
@@ -72,7 +72,7 @@ export default async function (fastify: FastifyInstance) {
         selectedItems = list.map((it) => ({ name: it.name, isDir: it.is_dir }));
       } catch (err) {
         if (err instanceof HttpError) throw err;
-        throw new HttpError(502, err instanceof Error ? err.message : "列分享目录失败");
+        throw upstreamError(err instanceof Error ? err.message : "列分享目录失败");
       }
     }
 

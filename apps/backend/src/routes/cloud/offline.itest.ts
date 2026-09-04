@@ -283,16 +283,17 @@ test("GET /api/115/offline/downpath：默认目录列表", async () => {
   });
 });
 
-test("115 出错要说出来：405 风控 → 502 + upstreamStatus；普通错误 → 502 原话；state=false → 502 带 115 的说法", async () => {
+// 不回 502：Cloudflare 会把源站的 502 / 504 换成它自己的错误页，原话就丢了（lib/http-error.ts）
+test("115 出错要说出来：405 风控 → 500 + upstreamStatus；普通错误 → 500 原话；state=false → 500 带 115 的说法", async () => {
   behavior.throwOnWeb = new Cloud115Error(405, { state: false, error: "您的访问被阻断" }, "https://lixian.115.com/web/lixian/");
   const blocked = await call("GET", "/api/115/offline");
-  assert.equal(blocked.statusCode, 502);
+  assert.equal(blocked.statusCode, 500);
   assert.equal(blocked.json().upstreamStatus, 405);
   assert.match(blocked.json().message, /访问被阻断/);
 
   behavior.throwOnWeb = new Error("socket hang up");
   const net = await call("POST", "/api/115/offline/clear", { flag: 0 });
-  assert.equal(net.statusCode, 502);
+  assert.equal(net.statusCode, 500);
   assert.equal(net.json().message, "socket hang up");
 
   delete behavior.throwOnWeb;
@@ -300,7 +301,7 @@ test("115 出错要说出来：405 风控 → 502 + upstreamStatus；普通错�
   transport.web = async () => ({ state: false, errno: 99, error: "请先登录" });
   try {
     const res = await call("GET", "/api/115/offline");
-    assert.equal(res.statusCode, 502);
+    assert.equal(res.statusCode, 500);
     assert.match(res.json().message, /请先登录/);
   } finally {
     transport.web = orig;

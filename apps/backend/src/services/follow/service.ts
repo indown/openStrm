@@ -25,7 +25,7 @@ import {
   toSummary,
   updateShareFollow,
 } from "../../db/repositories/share-follows.js";
-import { HttpError } from "../../lib/http-error.js";
+import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { Cloud115Error, sleep } from "../cloud-115/client.js";
 import { getShareDirList, ShareApiError, shareExtractPayload, type ShareAttr } from "../cloud-115/share.js";
@@ -103,9 +103,9 @@ const errMsg = (err: unknown): string => (err instanceof Error && err.message ? 
 /** 115 的失败要原样说出来：分享失效、cookie 失效和风控在界面上不能长一样 */
 function upstream(err: unknown, fallback: string): HttpError {
   if (err instanceof HttpError) return err;
-  if (err instanceof ShareApiError) return new HttpError(502, `分享不可用：${err.message}`, { errno: err.errno });
-  if (err instanceof Cloud115Error) return new HttpError(502, err.message, { upstreamStatus: err.status });
-  return new HttpError(502, errMsg(err) || fallback);
+  if (err instanceof ShareApiError) return upstreamError(`分享不可用：${err.message}`, { errno: err.errno });
+  if (err instanceof Cloud115Error) return upstreamError(err.message, { upstreamStatus: err.status });
+  return upstreamError(errMsg(err) || fallback);
 }
 
 export function clampInterval(minutes: number | undefined): number {

@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { searchMulti } from "../../services/tmdb.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
-import { HttpError } from "../../lib/http-error.js";
+import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 
 const bodySchema = z.object({ query: z.string().trim().min(1, "query is required"), language: z.string().optional() });
@@ -19,7 +19,7 @@ export default async function (fastify: FastifyInstance) {
       const results = await searchMulti(apiKey, query, language || settings.tmdb?.language || "zh-CN");
       return results;
     } catch (err) {
-      throw new HttpError(502, err instanceof Error ? err.message : "TMDB 搜索失败");
+      throw upstreamError(err instanceof Error ? err.message : "TMDB 搜索失败");
     }
   });
 }

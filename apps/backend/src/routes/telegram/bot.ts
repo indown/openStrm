@@ -5,7 +5,7 @@ import { getPollingStatus, restartPolling, stopPolling } from "../../services/te
 import { DEFAULT_NOTIFY, notifyPrefs } from "../../services/telegram/notify.js";
 import { BOT_COMMANDS } from "../../services/telegram/commands.js";
 import { deleteAppSetting, readAppSetting, readAppSettings, updateAppSetting } from "../../db/repositories/settings.js";
-import { HttpError } from "../../lib/http-error.js";
+import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 import { maskSecret, resolveSecret } from "../../lib/secrets.js";
 
@@ -84,7 +84,7 @@ export default async function (fastify: FastifyInstance) {
       telegram.chatId,
       "✅ <b>OpenStrm 测试消息</b>\n通知通道正常。任务、云下载、账号异常的通知都会发到这里。",
     );
-    if (!res.ok) throw new HttpError(502, `发送失败：${res.error ?? res.description ?? "unknown"}`);
+    if (!res.ok) throw upstreamError(`发送失败：${res.error ?? res.description ?? "unknown"}`);
     return { success: true };
   });
 }
