@@ -138,9 +138,21 @@ export function ShareDetailDialog({
     }
   }, [open, initialFileList, initialFileCount, startCid, startKey, fetchList]);
 
+  /**
+   * 勾选只对当前目录有效，换目录就清空。
+   * 勾选项只记名字不记层级：后端按当前浏览的这一层拼 strm 路径，115 转存也是把每个 id 平铺复制进目标目录，
+   * 父目录和它里面的条目一起提交只会得到重复和错位的文件。
+   */
+  const leaveFolder = () => {
+    if (selectedItems.size === 0) return;
+    setSelectedItems(new Map());
+    toast.info("换了目录，之前的勾选已清空；勾选只对当前目录有效");
+  };
+
   const handleOpenFolder = (item: ShareFileItem) => {
     if (!item.is_dir) return;
     const cid = String(item.cid);
+    leaveFolder();
     setBreadcrumb((prev) => [...prev, { id: cid, name: item.name }]);
     fetchList(cid, 1);
   };
@@ -149,6 +161,7 @@ export function ShareDetailDialog({
     if (index === breadcrumb.length - 1) return;
     const item = breadcrumb[index];
     if (!item.id) return;
+    leaveFolder();
     setBreadcrumb((prev) => prev.slice(0, index + 1));
     fetchList(item.id, 1);
   };
