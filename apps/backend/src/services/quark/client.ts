@@ -18,7 +18,7 @@ import type { AccountQuark } from "@openstrm/shared";
 import { updateAccount } from "../../db/repositories/accounts.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { scheduleForAccount } from "../download/rate-limited.js";
-import { PermanentError } from "../../lib/errors.js";
+import { PermanentError, isAbortError } from "../../lib/errors.js";
 import { DEFAULT_TIMEOUT_MS } from "../../lib/http.js";
 import { moduleLogger } from "../../lib/logger.js";
 
@@ -207,6 +207,17 @@ interface RawFile {
   updated_at?: number;
 }
 
+function toEntry(f: RawFile): QuarkEntry {
+  return {
+    fid: String(f.fid),
+    name: unescapeHtml(String(f.file_name ?? "")),
+    isDir: !f.file,
+    size: Number(f.size ?? 0),
+    category: Number(f.category ?? 0),
+    modifiedAt: Number(f.updated_at ?? 0),
+  };
+}
+
 /** 列一个目录的全部内容，按 100 条翻页；显式排序，翻页期间目录变化才不至于漏掉或重复条目 */
 export async function quarkListDir(account: AccountQuark, fid: string, signal?: AbortSignal): Promise<QuarkEntry[]> {
   const entries: QuarkEntry[] = [];
@@ -226,20 +237,30 @@ export async function quarkListDir(account: AccountQuark, fid: string, signal?: 
     const list = body.data?.list ?? [];
     for (const f of list) {
       if (!f.fid) continue;
-      entries.push({
-        fid: String(f.fid),
-        name: unescapeHtml(String(f.file_name ?? "")),
-        isDir: !f.file,
-        size: Number(f.size ?? 0),
-        category: Number(f.category ?? 0),
-        modifiedAt: Number(f.updated_at ?? 0),
-      });
+      entries.push(toEntry(f));
     }
     // 以 _total 为准；拿不到 _total 时靠空页收尾
     const total = Number(body.metadata?._total);
     if (list.length === 0 || (Number.isFinite(total) && entries.length >= total)) break;
   }
   return entries;
+}
+
+/**
+ * POST file/info/path_list {file_path:[...], namespace:"0"}：按绝对路径批量取条目，不存在的路径直接不回。
+ * 真机验证过：只认目录，大小写和空格都要精确；文件路径拿不到（文件还是得列父目录）。
+ */
+export async function quarkPathList(account: AccountQuark, paths: string[], signal?: AbortSignal): Promise<Map<string, QuarkEntry>> {
+  const out = new Map<string, QuarkEntry>();
+  if (paths.length === 0) return out;
+  const body = await quarkRequest<Array<RawFile & { file_path?: string }>>(account, "POST", "/file/info/path_list", {
+    data: { file_path: paths, namespace: "0" },
+    signal,
+  });
+  for (const f of body.data ?? []) {
+    if (f.fid && f.file_path) out.set(f.file_path, toEntry(f));
+  }
+  return out;
 }
 
 const pathCache = new LRUCache<string, QuarkEntry>({ max: 5000, ttl: 10 * 60 * 1000 });
@@ -282,6 +303,33 @@ export async function quarkResolvePath(
       fid = hit.fid;
       entry = hit;
       break;
+    }
+  }
+
+  // 还有两段以上没解析：先按路径一次问。目录能直接拿到；目标是文件时至少把父目录拿到，只剩最后一段要列
+  if (segments.length - start >= 2) {
+    const full = `/${segments.join("/")}`;
+    const parent = `/${segments.slice(0, -1).join("/")}`;
+    let hits: Map<string, QuarkEntry>;
+    try {
+      hits = await quarkPathList(account, [full, parent], signal);
+    } catch (err) {
+      // path_list 只是省请求的捷径：它打不通就退回逐段列目录，真有登录态问题那边照样会报
+      if (isAbortError(err)) throw err;
+      log.debug({ account: account.name, path, err }, "夸克 path_list 失败，退回逐段列目录");
+      hits = new Map();
+    }
+    const hit = hits.get(full);
+    if (hit) {
+      if (hit.isDir) pathCache.set(cacheKey(account, segments), hit);
+      return { fid: hit.fid, entry: hit };
+    }
+    const dir = hits.get(parent);
+    if (dir?.isDir) {
+      pathCache.set(cacheKey(account, segments.slice(0, -1)), dir);
+      start = segments.length - 1;
+      fid = dir.fid;
+      entry = dir;
     }
   }
 

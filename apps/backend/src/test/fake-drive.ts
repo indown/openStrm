@@ -31,6 +31,8 @@ import {
   type ShareRef,
   type ShareSession,
   type SubtreeEntry,
+  type ShareUpdateSignal,
+  type ShareUpdates,
 } from "../services/drive/types.js";
 
 export interface FakeNode {
@@ -131,11 +133,20 @@ export interface FakeShareDef {
 
 export class FakeShare implements ShareProvider {
   readonly shares = new Map<string, FakeShareDef>();
-  readonly calls = { info: 0, list: 0, receive: 0, resolvePath: 0 };
+  readonly calls = { info: 0, list: 0, receive: 0, resolvePath: 0, updates: 0 };
   /** 每次分享调用记一行 `<方法> <参数>` */
   readonly log: string[] = [];
   /** 每页条数，测翻页用 */
   pageSize = 100;
+  /** 服务端「相对上次转存有没有新增」的信号；默认 unknown = 认不出，追更照常列目录 */
+  updateSignal: ShareUpdateSignal = "unknown";
+  readonly updates: ShareUpdates = {
+    check: async (s: ShareSession) => {
+      this.calls.updates++;
+      this.def(s.ref);
+      return this.updateSignal;
+    },
+  };
 
   constructor(
     private readonly kind: DriveKind,

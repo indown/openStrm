@@ -16,6 +16,7 @@ import {
   quarkShareToken,
   quarkWaitTask,
   type QuarkShareFile,
+  quarkShareIncUpdate,
 } from "../../quark/share.js";
 import { QuarkSnapshotSource } from "../../life/sources/quark.js";
 import { listWholeShareDir, resolveSharePath } from "../share-walk.js";
@@ -37,6 +38,7 @@ import {
   type ShareRef,
   type ShareSession,
   type SubtreeEntry,
+  type ShareUpdates,
 } from "../types.js";
 
 const log = moduleLogger("quark");
@@ -74,6 +76,17 @@ function shareError(err: unknown): unknown {
 
 class QuarkShare implements ShareProvider {
   constructor(private readonly account: AccountQuark) {}
+
+  /** 夸克服务端知道「相对上次转存有没有新增」：追更先问它，没有就不用整棵列 */
+  readonly updates: ShareUpdates = {
+    check: async (s: ShareSession, signal?: AbortSignal) => {
+      try {
+        return await quarkShareIncUpdate(this.account, s.ref.code, this.stoken(s), signal);
+      } catch (err) {
+        throw shareError(err);
+      }
+    },
+  };
 
   parseLink(text: string): ShareRef | null {
     return parseQuarkShareLink(text);

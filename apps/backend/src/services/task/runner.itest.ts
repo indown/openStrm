@@ -108,6 +108,10 @@ const quarkServer = http.createServer((req, res) => {
       const list = quarkTree[url.searchParams.get("pdir_fid") ?? ""] ?? [];
       return json(200, { status: 200, code: 0, data: { list }, metadata: { _total: list.length } });
     }
+    if (url.pathname === "/file/info/path_list") {
+      // 这个假网盘不认路径：回空，客户端退回逐段列目录
+      return json(200, { status: 200, code: 0, data: [] });
+    }
     if (url.pathname === "/file/download") {
       const { fids } = JSON.parse(raw) as { fids: string[] };
       return json(200, { status: 200, code: 0, data: fids.map((fid) => ({ fid, download_url: `${quarkBase}/dl/${fid}` })) });

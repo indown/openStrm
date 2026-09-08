@@ -6,12 +6,14 @@
  *   - GET  share/sharepage/detail?pwd_id&stoken&pdir_fid&_page&_size=50 → data.list[{fid, file_name, dir, size, updated_at, share_fid_token}]，metadata._total 翻页
  *   - POST share/sharepage/save {fid_list, fid_token_list, to_pdir_fid, pwd_id, stoken, pdir_fid:"0", scene:"link"} → data.task_id
  *   - GET  task?task_id&retry_index → data.status 2 完成 / 3 失败 / 4 暂停；data.save_as.save_as_top_fids 是转存进来的顶层 fid
+ *   - POST share/inc_update_list {pwd_id, stoken, page, page_size} → 相对上次转存有没有新增：41040 没更新，41043 没转存过
  *
  * 分享级失败（分享不存在、stoken 失效、提取码错）抛 QuarkShareError；登录态问题仍是 QuarkError；转存任务失败是 QuarkTaskError。
  */
 import { setTimeout as sleep } from "node:timers/promises";
 import { LRUCache } from "lru-cache";
 import type { AccountQuark } from "@openstrm/shared";
+import type { ShareUpdateSignal } from "../drive/types.js";
 import { QuarkError, quarkRequest, unescapeHtml } from "./client.js";
 
 const PAGE_SIZE = 50;
@@ -146,6 +148,32 @@ export async function quarkShareList(
 }
 
 export const QUARK_SHARE_PAGE_SIZE = PAGE_SIZE;
+
+/**
+ * 相对这个账号上次转存，分享有没有新增（追更用）。
+ * 真 cookie 验证过请求体和 41040 / 41043 两个错误码；有更新时的返回结构没验证过（开放平台同名接口是 data.share_inc_update.list），
+ * 所以只当信号用：具体新增了什么仍靠整棵列目录对比。
+ */
+export async function quarkShareIncUpdate(
+  account: AccountQuark,
+  pwdId: string,
+  stoken: string,
+  signal?: AbortSignal,
+): Promise<ShareUpdateSignal> {
+  try {
+    await quarkRequest<unknown>(account, "POST", "/share/inc_update_list", {
+      data: { pwd_id: pwdId, stoken, page: 1, page_size: PAGE_SIZE },
+      signal,
+    });
+    return "some";
+  } catch (err) {
+    if (err instanceof QuarkError) {
+      if (err.code === 41040) return "none";
+      if (err.code === 41043) return "unknown";
+    }
+    throw toShareError(err);
+  }
+}
 
 /** 提交转存，返回任务 id；完成要用 quarkWaitTask 盯 */
 export async function quarkShareSave(

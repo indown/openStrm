@@ -9,11 +9,12 @@ import http from "node:http";
 import type { AccountQuark } from "@openstrm/shared";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { clearRateLimiters } from "../download/rate-limited.js";
-import { clearQuarkCaches, setQuarkApiBase } from "./client.js";
+import { clearQuarkCaches, QuarkError, setQuarkApiBase } from "./client.js";
 import {
   clearQuarkShareCaches,
   QuarkShareError,
   QuarkTaskError,
+  quarkShareIncUpdate,
   quarkShareList,
   quarkShareSave,
   quarkShareToken,
@@ -28,7 +29,8 @@ const shareTree: Record<string, RawFile[]> = {
   ],
   "d-s1": Array.from({ length: 120 }, (_, i) => ({ fid: `f-${i + 1}`, file_name: `E${i + 1}.mkv`, dir: false, size: 10, share_fid_token: `tok-f-${i + 1}` })),
 };
-const calls = { token: 0, detail: 0, save: 0, task: 0 };
+const calls = { token: 0, detail: 0, save: 0, task: 0, inc: 0 };
+let lastInc: Record<string, unknown> | null = null;
 let saved: { fid_list: string[]; fid_token_list: string[]; to_pdir_fid: string; pwd_id: string; stoken: string } | null = null;
 
 const server = http.createServer((req, res) => {
@@ -54,6 +56,15 @@ const server = http.createServer((req, res) => {
       const page = Number(url.searchParams.get("_page") ?? 1);
       const size = Number(url.searchParams.get("_size") ?? 50);
       return json(200, { status: 200, code: 0, data: { list: all.slice((page - 1) * size, page * size) }, metadata: { _total: all.length } });
+    }
+    if (url.pathname === "/share/inc_update_list") {
+      calls.inc++;
+      lastInc = body;
+      if (body.pwd_id === "quiet") return json(403, { status: 403, code: 41040, message: "分享没有更新" });
+      if (body.pwd_id === "never") return json(403, { status: 403, code: 41043, message: "用户未转存过此分享" });
+      if (body.pwd_id === "gone") return json(400, { status: 400, code: 41007, message: "share not exist" });
+      if (body.pwd_id === "loggedout") return json(401, { status: 401, code: 31001, message: "require login [guest]" });
+      return json(200, { status: 200, code: 0, data: { share_inc_update: { list: [{ fid: "f-new" }] } } });
     }
     if (url.pathname === "/share/sharepage/save") {
       calls.save++;
@@ -133,3 +144,14 @@ test("转存：fid 和 token 一一对应地提交，轮询到完成拿到顶层
   const failing = await quarkShareSave(account, { pwdId: "abc", stoken: "stk-abc", items: [{ id: "f-1", token: "tok-f-1" }], toPdirFid: "full" });
   await assert.rejects(quarkWaitTask(account, failing.taskId), (e: unknown) => e instanceof QuarkTaskError && /空间不足/.test(e.message));
 });
+
+test("追更信号 inc_update_list：41040 是 none、41043 没转存过是 unknown、有更新是 some；分享没了是 QuarkShareError，登录态问题仍是 QuarkError", async () => {
+  assert.equal(await quarkShareIncUpdate(account, "quiet", "stk-quiet"), "none");
+  assert.deepEqual(lastInc, { pwd_id: "quiet", stoken: "stk-quiet", page: 1, page_size: 50 });
+  assert.equal(await quarkShareIncUpdate(account, "never", "stk-never"), "unknown");
+  assert.equal(await quarkShareIncUpdate(account, "fresh", "stk-fresh"), "some");
+  await assert.rejects(quarkShareIncUpdate(account, "gone", "x"), QuarkShareError);
+  await assert.rejects(quarkShareIncUpdate(account, "loggedout", "x"), (e: unknown) => e instanceof QuarkError && !(e instanceof QuarkShareError));
+  assert.equal(calls.inc, 5);
+});
+

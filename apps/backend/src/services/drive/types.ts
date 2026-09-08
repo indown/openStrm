@@ -124,11 +124,12 @@ export interface ReceiveResult {
   topIds?: string[];
 }
 
+/** 服务端「相对上次转存有没有新增」的信号：none = 明确没有；some = 有；unknown = 认不出（这个账号没转存过、接口不通） */
+export type ShareUpdateSignal = "none" | "some" | "unknown";
+
+/** 夸克才有：追更先问一句，明确没更新就不用整棵列目录（services/follow/service.ts 只信有限次） */
 export interface ShareUpdates {
-  /** 曾转存过、源分享后来有更新的链接 */
-  listUpdated(): Promise<Array<{ code: string; url: string; title: string; updatedAt: number }>>;
-  /** 某个分享相对上次转存的新增文件 */
-  listNewFiles(session: ShareSession): Promise<ShareEntry[]>;
+  check(session: ShareSession, signal?: AbortSignal): Promise<ShareUpdateSignal>;
 }
 
 export interface ShareListPage {

@@ -36,6 +36,14 @@ const tree: Record<string, RawFile[]> = {
 let rotate = false;
 let failMode: "none" | "code" | "http401" = "none";
 const sortCalls = new Map<string, number>();
+/** path_list 每次问了哪些路径 */
+let pathListCalls: string[][] = [];
+/** path_list 只认目录、只认精确路径（真机行为） */
+const dirPaths: Record<string, RawFile & { file_path: string }> = {
+  "/tv": { fid: "d-tv", file_name: "tv", file: false, file_path: "/tv" },
+  "/tv/Show & Co": { fid: "d-show", file_name: "Show &amp; Co", file: false, file_path: "/tv/Show & Co" },
+  "/big": { fid: "d-big", file_name: "big", file: false, file_path: "/big" },
+};
 let lastSort: { headers: http.IncomingHttpHeaders; query: URLSearchParams } | null = null;
 
 const server = http.createServer((req, res) => {
@@ -63,6 +71,12 @@ const server = http.createServer((req, res) => {
         { status: 200, code: 0, message: "ok", data: { list }, metadata: { _total: all.length, _page: page, _size: size } },
         extra,
       );
+    }
+    if (url.pathname === "/file/info/path_list") {
+      const body = JSON.parse(raw) as { file_path: string[]; namespace: string };
+      pathListCalls.push(body.file_path);
+      if (body.namespace !== "0") return json(400, { status: 400, code: 14001, message: "Bad Parameter" });
+      return json(200, { status: 200, code: 0, data: body.file_path.filter((p) => dirPaths[p]).map((p) => dirPaths[p]) });
     }
     if (url.pathname === "/file/download") {
       const body = JSON.parse(raw) as { fids: string[] };
@@ -117,29 +131,44 @@ test("翻页：_total 250 分三页拼齐后停下", async () => {
   assert.equal(entries[249].fid, "f-big-250");
 });
 
-test("按路径找 fid：逐段列目录；第二次走缓存不再请求；找不到 / 中间段是文件都是 PermanentError", async () => {
+test("按路径找 fid：两段以上先用 path_list 一次拿到目录；文件退回父目录再列一层；缓存命中不再请求；找不到 / 中间段是文件都是 PermanentError", async () => {
   clearQuarkCaches();
   sortCalls.clear();
+  pathListCalls = [];
   const r = await quarkResolvePath(account, "tv/Show & Co");
   assert.equal(r.fid, "d-show");
   assert.equal(r.entry?.isDir, true);
-  assert.equal(sortCalls.get("0"), 1);
-  assert.equal(sortCalls.get("d-tv"), 1);
+  assert.equal(r.entry?.name, "Show & Co", "path_list 回来的名字同样反转义");
+  assert.deepEqual(pathListCalls, [["/tv/Show & Co", "/tv"]], "整条路径和父目录一起问");
+  assert.equal(sortCalls.size, 0, "path_list 命中就不用列目录");
 
   const again = await quarkResolvePath(account, "/tv/Show & Co/");
   assert.equal(again.fid, "d-show");
-  assert.equal(sortCalls.get("0"), 1, "缓存命中，不再列根目录");
-  assert.equal(sortCalls.get("d-tv"), 1);
+  assert.equal(pathListCalls.length, 1, "缓存命中，不再请求");
+  assert.equal(sortCalls.size, 0);
 
-  // 文件：父目录走缓存，只多列一次 d-show
+  // 文件：父目录走缓存，只剩最后一段，直接列一次 d-show（不再问 path_list）
   const file = await quarkResolvePath(account, "tv/Show & Co/ep1.mkv");
   assert.equal(file.fid, "f-ep1");
   assert.equal(file.entry?.isDir, false);
   assert.equal(sortCalls.get("d-show"), 1);
+  assert.equal(pathListCalls.length, 1);
+
+  // 冷缓存找文件：path_list 拿不到文件但拿到父目录 → 只列一次父目录
+  clearQuarkCaches();
+  sortCalls.clear();
+  const cold = await quarkResolvePath(account, "tv/Show & Co/ep1.mkv");
+  assert.equal(cold.fid, "f-ep1");
+  assert.deepEqual(pathListCalls.at(-1), ["/tv/Show & Co/ep1.mkv", "/tv/Show & Co"]);
+  assert.deepEqual([...sortCalls.keys()], ["d-show"]);
 
   assert.deepEqual(await quarkResolvePath(account, ""), { fid: "0", entry: null });
   await assert.rejects(quarkResolvePath(account, "tv/nope"), PermanentError);
+  // path_list 两个都不认（父目录是文件）：退回逐段列，照样是「不是目录」
+  clearQuarkCaches();
+  sortCalls.clear();
   await assert.rejects(quarkResolvePath(account, "root.txt/x"), PermanentError);
+  assert.equal(sortCalls.get("0"), 1, "path_list 没命中就退回从根列");
 });
 
 test("响应的 Set-Cookie 轮换了 __puus：传入的对象和账号表里的 cookie 都更新", async () => {

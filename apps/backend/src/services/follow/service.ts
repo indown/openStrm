@@ -31,7 +31,7 @@ import { HttpError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, parseShareRef, providerForTask } from "../drive/registry.js";
-import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession } from "../drive/types.js";
+import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession, ShareUpdateSignal } from "../drive/types.js";
 import { saveSelectionToTask } from "../share/receive.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
@@ -423,6 +423,39 @@ function settleFailure(f: ShareFollow, error: string, kind: FailKind): ShareFoll
   return run;
 }
 
+/** 服务端「没更新」信号连续信几次；有更新时的返回还没在真机验证过，信过头就照常列一遍兜底，最坏也就晚这几轮发现 */
+const UPDATE_SIGNAL_TRUST = 3;
+/** 每个订阅连续凭信号跳过了几轮 */
+const signalSkips = new Map<string, number>();
+
+/**
+ * 有服务端信号的分享（夸克 inc_update_list）先问一句相对上次转存有没有新增：明确说没有就跳过整棵列目录。
+ * 上一轮有转存失败的不问（失败的条目要靠列目录再试）；信号打不通就当不知道，让后面的列目录去报错。
+ */
+async function serverSaysUnchanged(f: ShareFollow, share: ShareProvider, session: ShareSession): Promise<boolean> {
+  const updates = share.updates;
+  if (!updates || f.errorStreak > 0) return false;
+  const skips = signalSkips.get(f.id) ?? 0;
+  if (skips >= UPDATE_SIGNAL_TRUST) return false;
+  let signal: ShareUpdateSignal;
+  try {
+    signal = await updates.check(session);
+  } catch {
+    return false;
+  }
+  if (signal !== "none") return false;
+  signalSkips.set(f.id, skips + 1);
+  return true;
+}
+
+/** 这轮没列目录也没变化：只推进时间 */
+function settleUnchanged(f: ShareFollow): null {
+  const now = deps.now();
+  updateShareFollow(f.id, { status: "idle", lastError: "", errorStreak: 0, lastCheckedAt: now, nextCheckAt: nextCheckAt(f, 0, now) });
+  log.debug(`追更「${f.name}」服务端说分享没有更新，这轮不列目录`);
+  return null;
+}
+
 async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
   let target: Target;
   try {
@@ -436,7 +469,9 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
   let listing: ScopeListing;
   try {
     const session = await share.open(ref);
+    if (await serverSaysUnchanged(f, share, session)) return settleUnchanged(f);
     listing = await listScope(share, session, f);
+    signalSkips.delete(f.id);
   } catch (err) {
     const msg = errMsg(err);
     const issue = provider.classifyError(err);
@@ -607,6 +642,7 @@ export async function __test_resetFollows(): Promise<void> {
   await stopFollowWatcher();
   replaceShareFollows([]);
   checking.clear();
+  signalSkips.clear();
   lastTickAt = null;
   lastError = null;
 }

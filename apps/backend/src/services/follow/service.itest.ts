@@ -368,3 +368,60 @@ test("列表和删除", async () => {
   assert.equal(listFollows().follows.length, 0);
   assert.throws(() => deleteFollow(s.id), (err: HttpError) => err.status === 404);
 });
+
+test("服务端更新信号（夸克）：说没更新就不列目录；连续 3 次后照常列一遍；上一轮有转存失败也不信", async () => {
+  const s = await subscribe();
+  const fake = drive.share!;
+  const listBefore = fake.calls.list;
+  fake.updateSignal = "none";
+  share.addFile("/E03.mkv", { hash: "c" });
+  for (let i = 0; i < 3; i++) {
+    now += HOUR;
+    const { run, follow } = await checkFollow(s.id);
+    assert.equal(run, null);
+    assert.equal(follow.status, "idle");
+    assert.equal(follow.lastCheckedAt, now);
+    assert.equal(follow.nextCheckAt, now + FOLLOW.DEFAULT_INTERVAL_MIN * 60_000);
+  }
+  assert.equal(fake.calls.list, listBefore, "三轮都信了信号，没列目录");
+  assert.equal(fake.calls.updates, 3);
+  assert.equal(received(), 0);
+
+  // 第四轮信不过了：照常列，发现新集
+  now += HOUR;
+  const fourth = await checkFollow(s.id);
+  assert.deepEqual(fourth.run?.added, ["E03.mkv"]);
+  assert.equal(received(), 1);
+  // 信不过的那轮根本不问信号；列过一遍后信任重新计数：又能跳过
+  assert.equal(fake.calls.updates, 3);
+  now += HOUR;
+  assert.equal((await checkFollow(s.id)).run, null);
+  assert.equal(fake.calls.updates, 4);
+
+  // 说有 / 认不出：照常列
+  fake.updateSignal = "some";
+  share.addFile("/E04.mkv", { hash: "d" });
+  now += HOUR;
+  assert.deepEqual((await checkFollow(s.id)).run?.added, ["E04.mkv"]);
+  fake.updateSignal = "unknown";
+  share.addFile("/E05.mkv", { hash: "e" });
+  now += HOUR;
+  assert.deepEqual((await checkFollow(s.id)).run?.added, ["E05.mkv"]);
+
+  // 上一轮转存失败（落点目录没了）→ 即使信号说没更新，也要列目录把失败的再试一次
+  drive.tree.remove("/tv/The Show");
+  share.addFile("/E06.mkv", { hash: "f" });
+  now += HOUR;
+  const failedRun = await checkFollow(s.id);
+  assert.equal(failedRun.follow.status, "error");
+  assert.equal(failedRun.follow.errorStreak, 1);
+  drive.tree.addDir("/tv/The Show");
+  fake.updateSignal = "none";
+  const updatesBefore = fake.calls.updates;
+  now += HOUR;
+  const retry = await checkFollow(s.id);
+  assert.equal(fake.calls.updates, updatesBefore, "有失败在身就不问信号");
+  assert.deepEqual(retry.run?.added, ["E06.mkv"]);
+  assert.equal(retry.follow.errorStreak, 0);
+});
+
