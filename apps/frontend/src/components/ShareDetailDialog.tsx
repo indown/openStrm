@@ -17,9 +17,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { File, ChevronRight, FolderOpen, Download, ChevronLeft, ChevronsLeft, ChevronsRight, BookmarkPlus } from "lucide-react";
+import { File, ChevronRight, FolderOpen, Download, ChevronLeft, BookmarkPlus } from "lucide-react";
 import { toast } from "sonner";
-import { api, type ShareFileItem } from "@/lib/api";
+import { api, type ShareEntry, type ShareInfo, type ShareReceiveItem } from "@/lib/api";
+import { SHARE_PAGE_SIZE } from "@/hooks/use-share-detail";
 import { apiErrorMessage } from "@/lib/axios";
 import { notifyFollowResult, notifySaveToTaskResult } from "@/lib/save-result";
 import { Button } from "@/components/ui/button";
@@ -27,7 +28,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { DirectoryPickerDialog } from "@/components/DirectoryPickerDialog";
 import { SaveToDriveDialog, type SaveToTaskChoice } from "@/components/SaveToDriveDialog";
 
-export type { ShareFileItem } from "@/lib/api";
+export type { ShareEntry } from "@/lib/api";
 
 interface BreadcrumbItem {
   id: string;
@@ -37,16 +38,16 @@ interface BreadcrumbItem {
 interface ShareDetailDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  shareInfo: Record<string, unknown> | null;
-  fileList: ShareFileItem[];
+  shareInfo: ShareInfo | null;
+  fileList: ShareEntry[];
   fileCount: number;
+  /** 根目录第一页之后还有没有：有就是下一页的游标 */
+  nextCursor?: string;
   shareLink: string;
   loading?: boolean;
   startCid?: string | number;
   startCrumbs?: BreadcrumbItem[];
 }
-
-const PAGE_SIZE = 32;
 
 function formatSize(bytes?: number): string {
   if (bytes == null || bytes === 0) return "-";
@@ -62,6 +63,7 @@ export function ShareDetailDialog({
   shareInfo,
   fileList: initialFileList,
   fileCount: initialFileCount,
+  nextCursor: initialNext,
   shareLink,
   loading: initialLoading = false,
   startCid,
@@ -69,24 +71,21 @@ export function ShareDetailDialog({
 }: ShareDetailDialogProps) {
   const router = useRouter();
   const [breadcrumb, setBreadcrumb] = useState<BreadcrumbItem[]>([{ id: "0", name: "根目录" }]);
-  const [currentList, setCurrentList] = useState<ShareFileItem[]>([]);
+  const [currentList, setCurrentList] = useState<ShareEntry[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [page, setPage] = useState(1);
+  // 翻页靠游标：cursors[i] 是第 i+1 页的游标（第一页没有），next 是当前页之后那一页的
+  const [cursors, setCursors] = useState<Array<string | undefined>>([undefined]);
+  const [next, setNext] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
-  const [selectedItems, setSelectedItems] = useState<Map<string, { name: string; isDir: boolean }>>(new Map());
+  const [selectedItems, setSelectedItems] = useState<Map<string, ShareReceiveItem>>(new Map());
   const [saving, setSaving] = useState(false);
   const [showDirPicker, setShowDirPicker] = useState(false);
   const [showSaveToTask, setShowSaveToTask] = useState(false);
   const [addingToLibrary, setAddingToLibrary] = useState(false);
 
-  const shareInfoData = shareInfo?.share_info as Record<string, unknown> | undefined;
-  const title = (shareInfoData?.name ?? shareInfoData?.share_name ?? "115 分享") as string;
-  const createTime =
-    shareInfoData?.create_time != null
-      ? new Date(Number(shareInfoData.create_time) * 1000).toLocaleString()
-      : "";
-
-  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  const title = shareInfo?.title || "分享";
+  const kindLabel = shareInfo?.kind === "quark" ? "夸克网盘" : shareInfo?.kind === "115" ? "115 网盘" : "";
 
   // 定位用的面包屑按内容比较：每次 load 都传新数组，按引用比较会把弹框多初始化一次
   const startKey = useMemo(() => (startCrumbs ?? []).map((c) => `${c.id}:${c.name}`).join("/"), [startCrumbs]);
@@ -98,17 +97,23 @@ export function ShareDetailDialog({
   const seqRef = useRef(0);
 
   const fetchList = useCallback(
-    async (cid: string, nextPage: number) => {
+    async (dirId: string, nextPage: number, cursor?: string) => {
       const link = shareLink.trim();
       if (!link) return;
       const seq = ++seqRef.current;
       setLoading(true);
       try {
-        const page = await api.share.list(link, cid, { limit: PAGE_SIZE, offset: (nextPage - 1) * PAGE_SIZE });
+        const result = await api.share.list(link, dirId, cursor, SHARE_PAGE_SIZE);
         if (seq !== seqRef.current) return;
-        setCurrentList(page.list ?? []);
-        setTotalCount(page.count ?? 0);
+        setCurrentList(result.entries ?? []);
+        setTotalCount(result.total ?? result.entries?.length ?? 0);
+        setNext(result.next);
         setPage(nextPage);
+        setCursors((prev) => {
+          const copy = nextPage === 1 ? [undefined] : prev.slice(0, nextPage - 1);
+          copy[nextPage - 1] = cursor;
+          return copy;
+        });
       } catch {
         if (seq !== seqRef.current) return;
         toast.error("加载目录失败");
@@ -124,23 +129,26 @@ export function ShareDetailDialog({
     if (!open) return;
     setSelectedItems(new Map());
     setPage(1);
+    setCursors([undefined]);
     const startCidStr = startCid != null ? String(startCid) : "";
     const crumbs = startCrumbsRef.current;
     if (startCidStr && startCidStr !== "0" && crumbs && crumbs.length > 0) {
       setBreadcrumb([{ id: "0", name: "根目录" }, ...crumbs]);
       setCurrentList([]);
       setTotalCount(0);
+      setNext(undefined);
       fetchList(startCidStr, 1);
     } else {
       setBreadcrumb([{ id: "0", name: "根目录" }]);
       setCurrentList(initialFileList);
       setTotalCount(initialFileCount);
+      setNext(initialNext);
     }
-  }, [open, initialFileList, initialFileCount, startCid, startKey, fetchList]);
+  }, [open, initialFileList, initialFileCount, initialNext, startCid, startKey, fetchList]);
 
   /**
    * 勾选只对当前目录有效，换目录就清空。
-   * 勾选项只记名字不记层级：后端按当前浏览的这一层拼 strm 路径，115 转存也是把每个 id 平铺复制进目标目录，
+   * 勾选项只记名字不记层级：后端按当前浏览的这一层拼 strm 路径，网盘的转存也是把每个 id 平铺复制进目标目录，
    * 父目录和它里面的条目一起提交只会得到重复和错位的文件。
    */
   const leaveFolder = () => {
@@ -149,12 +157,11 @@ export function ShareDetailDialog({
     toast.info("换了目录，之前的勾选已清空；勾选只对当前目录有效");
   };
 
-  const handleOpenFolder = (item: ShareFileItem) => {
-    if (!item.is_dir) return;
-    const cid = String(item.cid);
+  const handleOpenFolder = (item: ShareEntry) => {
+    if (!item.isDir) return;
     leaveFolder();
-    setBreadcrumb((prev) => [...prev, { id: cid, name: item.name }]);
-    fetchList(cid, 1);
+    setBreadcrumb((prev) => [...prev, { id: item.id, name: item.name }]);
+    fetchList(item.id, 1);
   };
 
   const handleBreadcrumbClick = (index: number) => {
@@ -166,22 +173,25 @@ export function ShareDetailDialog({
     fetchList(item.id, 1);
   };
 
-  const handlePageChange = (nextPage: number) => {
-    if (nextPage < 1 || nextPage > totalPages || nextPage === page) return;
-    const currentCid = breadcrumb[breadcrumb.length - 1].id;
-    fetchList(currentCid, nextPage);
+  const currentDirId = breadcrumb[breadcrumb.length - 1].id;
+  const handlePrevPage = () => {
+    if (loading || page <= 1) return;
+    fetchList(currentDirId, page - 1, cursors[page - 2]);
+  };
+  const handleNextPage = () => {
+    if (loading || !next) return;
+    fetchList(currentDirId, page + 1, next);
   };
 
-  const toggleSelect = (item: ShareFileItem) => {
-    const itemId = item.is_dir ? String(item.cid) : String(item.id);
+  const toggleSelect = (item: ShareEntry) => {
     setSelectedItems((prev) => {
-      const next = new Map(prev);
-      if (next.has(itemId)) {
-        next.delete(itemId);
+      const copy = new Map(prev);
+      if (copy.has(item.id)) {
+        copy.delete(item.id);
       } else {
-        next.set(itemId, { name: item.name, isDir: item.is_dir });
+        copy.set(item.id, { id: item.id, name: item.name, isDir: item.isDir, token: item.token });
       }
-      return next;
+      return copy;
     });
   };
 
@@ -205,19 +215,18 @@ export function ShareDetailDialog({
     setShowSaveToTask(false);
     setSaving(true);
     try {
-      const items = Array.from(selectedItems.entries()).map(([, v]) => ({ name: v.name, isDir: v.isDir }));
+      const items = Array.from(selectedItems.values());
       const current = breadcrumb[breadcrumb.length - 1];
       const watchPath = breadcrumb.slice(1).map((b) => b.name).join("/");
       const result = await api.share.receive({
         url: shareLink.trim(),
-        fileIds: Array.from(selectedItems.keys()),
+        items,
         taskId: choice.taskId,
         subPath: choice.subPath,
         mode: choice.mode,
-        selectedItems: items,
         // 追更盯的是当前浏览的这一层目录
         ...(choice.follow
-          ? { follow: choice.follow, cid: current.id, watchPath, name: watchPath ? `${title} / ${watchPath}` : title }
+          ? { follow: choice.follow, watchDirId: current.id, watchPath, name: watchPath ? `${title} / ${watchPath}` : title }
           : {}),
       });
       notifySaveToTaskResult(result, router);
@@ -310,7 +319,7 @@ export function ShareDetailDialog({
   const handleDirSelected = async (cid: number) => {
     setSaving(true);
     try {
-      await api.share.receive({ url: shareLink.trim(), fileIds: Array.from(selectedItems.keys()), toPid: String(cid) });
+      await api.share.receive({ url: shareLink.trim(), items: Array.from(selectedItems.values()), toDirId: String(cid) });
       toast.success("保存成功");
       setSelectedItems(new Map());
     } catch (err) {
@@ -340,9 +349,7 @@ export function ShareDetailDialog({
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <DialogTitle className="truncate">{title}</DialogTitle>
-              {createTime && (
-                <DialogDescription>创建时间：{createTime}</DialogDescription>
-              )}
+              {kindLabel && <DialogDescription>{kindLabel}的分享{shareInfo?.account ? `，用账号「${shareInfo.account}」打开` : ""}</DialogDescription>}
             </div>
             {shareLink.trim() && (
               <div className="flex items-center gap-2 shrink-0 mr-6">
@@ -409,10 +416,9 @@ export function ShareDetailDialog({
               </TableHeader>
               <TableBody>
                 {displayList.map((item) => {
-                  const itemId = item.is_dir ? String(item.cid) : String(item.id);
-                  const isSelected = selectedItems.has(itemId);
+                  const isSelected = selectedItems.has(item.id);
                   return (
-                    <TableRow key={itemId}>
+                    <TableRow key={item.id}>
                       <TableCell className="py-1">
                         <Checkbox
                           checked={isSelected}
@@ -424,7 +430,7 @@ export function ShareDetailDialog({
                         className="py-1 cursor-pointer"
                         onClick={() => handleOpenFolder(item)}
                       >
-                        {item.is_dir ? (
+                        {item.isDir ? (
                           <FolderOpen className="h-4 w-4 text-warning" />
                         ) : (
                           <File className="h-4 w-4 text-muted-foreground" />
@@ -438,10 +444,10 @@ export function ShareDetailDialog({
                         {item.name}
                       </TableCell>
                       <TableCell className="text-right text-muted-foreground">
-                        {item.is_dir ? "-" : formatSize(item.size)}
+                        {item.isDir ? "-" : formatSize(item.size)}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
-                        {item.is_dir ? "文件夹" : "文件"}
+                        {item.isDir ? "文件夹" : "文件"}
                       </TableCell>
                     </TableRow>
                   );
@@ -450,51 +456,17 @@ export function ShareDetailDialog({
             </Table>
           )}
         </div>
-        {totalCount > 0 && (
+        {(totalCount > 0 || page > 1 || next) && (
           <div className="flex items-center justify-between pt-2 text-sm text-muted-foreground">
-            <span>
-              共 {totalCount} 项 · 第 {page} / {totalPages} 页
+            <span className="tabular-nums">
+              {totalCount > 0 ? `共 ${totalCount} 项 · ` : ""}第 {page} 页
             </span>
             <div className="flex items-center gap-1">
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => handlePageChange(1)}
-                disabled={loading || page <= 1}
-                aria-label="首页"
-              >
-                <ChevronsLeft className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => handlePageChange(page - 1)}
-                disabled={loading || page <= 1}
-                aria-label="上一页"
-              >
+              <Button variant="outline" size="icon" className="h-7 w-7" onClick={handlePrevPage} disabled={loading || page <= 1} aria-label="上一页">
                 <ChevronLeft className="h-4 w-4" />
               </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => handlePageChange(page + 1)}
-                disabled={loading || page >= totalPages}
-                aria-label="下一页"
-              >
+              <Button variant="outline" size="icon" className="h-7 w-7" onClick={handleNextPage} disabled={loading || !next} aria-label="下一页">
                 <ChevronRight className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => handlePageChange(totalPages)}
-                disabled={loading || page >= totalPages}
-                aria-label="末页"
-              >
-                <ChevronsRight className="h-4 w-4" />
               </Button>
             </div>
           </div>
@@ -505,9 +477,12 @@ export function ShareDetailDialog({
               已选择 {selectedItems.size} 项
             </span>
             <div className="flex items-center gap-2">
-              <Button variant="outline" onClick={handleOpenCustomDir} disabled={saving}>
-                保存到自定义目录
-              </Button>
+              {/* 「保存到自定义目录」走 115 的目录接口，夸克的分享只能存到任务目录 */}
+              {shareInfo?.kind === "115" && (
+                <Button variant="outline" onClick={handleOpenCustomDir} disabled={saving}>
+                  保存到自定义目录
+                </Button>
+              )}
               <Button onClick={handleOpenSaveToTask} disabled={saving}>
                 <Download className="h-4 w-4 mr-2" />
                 {saving ? "保存中..." : "保存到任务目录"}
@@ -527,6 +502,7 @@ export function ShareDetailDialog({
         onConfirm={handleTaskSaveChoice}
         selectedCount={selectedItems.size}
         followHint={followHint}
+        kind={shareInfo?.kind}
       />
     </Dialog>
   );

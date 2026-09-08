@@ -26,12 +26,11 @@ export type PendingAction =
   | { kind: "offline"; urls: string[]; browse?: BrowseState }
   | {
       kind: "share";
+      /** 分享链接：转存时重新解析，账号和网盘类型都从它来 */
       link: string;
-      shareCode: string;
-      receiveCode: string;
       name: string;
-      fileIds: string[];
-      items: Array<{ name: string; isDir: boolean }>;
+      /** 分享根目录下的条目；token 是夸克转存要的 share_fid_token */
+      items: Array<{ id: string; name: string; isDir: boolean; token?: string }>;
       browse?: BrowseState;
     };
 

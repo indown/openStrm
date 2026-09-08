@@ -19,13 +19,14 @@ import {
 } from "@/components/ui/select";
 import { ChevronRight, FolderOpen } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
-import { api, type DirectoryNode } from "@/lib/api";
+import { api, type DirectoryNode, type DriveKind } from "@/lib/api";
 import { DEFAULT_FOLLOW_INTERVAL, FOLLOW_INTERVALS } from "@/lib/follow";
 import { toast } from "sonner";
 
 export interface TaskOption {
   id: string;
   account: string;
+  accountType?: string;
   originPath: string;
   targetPath: string;
   strmPrefix?: string;
@@ -46,9 +47,13 @@ interface SaveToDriveDialogProps {
   selectedCount: number;
   /** 给一段追更范围的说明就会显示「转存后追更」选项；不给则隐藏 */
   followHint?: string;
+  /** 分享是哪家网盘的：只列同类账号的任务（115 的分享转不进夸克，反之亦然） */
+  kind?: DriveKind;
 }
 
 type RemoteDir = DirectoryNode;
+
+const KIND_LABEL: Record<DriveKind, string> = { "115": "115 网盘", quark: "夸克网盘", openlist: "OpenList" };
 
 export function SaveToDriveDialog({
   open,
@@ -56,6 +61,7 @@ export function SaveToDriveDialog({
   onConfirm,
   selectedCount,
   followHint,
+  kind,
 }: SaveToDriveDialogProps) {
   const [tasks, setTasks] = useState<TaskOption[]>([]);
   const [loading, setLoading] = useState(false);
@@ -78,7 +84,8 @@ export function SaveToDriveDialog({
       .list()
       .then((rows) => {
         if (cancelled) return;
-        const list: TaskOption[] = Array.isArray(rows) ? rows : [];
+        // 老任务没存 accountType 的也留着，后端会再校验一次
+        const list: TaskOption[] = (Array.isArray(rows) ? rows : []).filter((t) => !kind || !t.accountType || t.accountType === kind);
         setTasks(list);
         setSelectedTaskId((prev) => (prev && list.some((t) => t.id === prev) ? prev : (list[0]?.id ?? "")));
       })
@@ -91,7 +98,7 @@ export function SaveToDriveDialog({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, kind]);
 
   const selectedTask = useMemo(() => tasks.find((t) => t.id === selectedTaskId), [tasks, selectedTaskId]);
   const taskInvalid = selectedTask && (!selectedTask.targetPath || !selectedTask.strmPrefix);
@@ -155,7 +162,7 @@ export function SaveToDriveDialog({
         <DialogHeader>
           <DialogTitle>保存到任务目录</DialogTitle>
           <DialogDescription>
-            将已选中的 {selectedCount} 项保存到任务对应的 115 目录，并生成 strm 文件。
+            将已选中的 {selectedCount} 项保存到任务对应的网盘目录，并生成 strm 文件。
           </DialogDescription>
         </DialogHeader>
 
@@ -166,7 +173,7 @@ export function SaveToDriveDialog({
               <div className="text-sm text-muted-foreground">加载中...</div>
             ) : tasks.length === 0 ? (
               <div className="text-sm text-muted-foreground">
-                暂无任务，请先到首页创建一个指向你希望保存到的 115 目录的任务。
+                {kind ? `没有${KIND_LABEL[kind]}账号的任务，请先到首页用同类账号创建一个指向目标目录的任务。` : "暂无任务，请先到首页创建一个指向你希望保存到的网盘目录的任务。"}
               </div>
             ) : (
               <Select value={selectedTaskId} onValueChange={handleSelectTask}>

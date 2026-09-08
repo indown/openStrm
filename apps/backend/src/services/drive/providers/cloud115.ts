@@ -7,6 +7,7 @@ import { readAppSettings } from "../../../db/repositories/settings.js";
 import { isAbortError, PermanentError } from "../../../lib/errors.js";
 import {
   Cloud115Error,
+  exportDirParse,
   fsDirGetId,
   getDownloadUrlWeb,
   getIdToPath,
@@ -22,9 +23,11 @@ import {
   shareExtractPayload,
   type ShareAttr,
 } from "../../cloud-115/share.js";
-import { exportDirFiles } from "../../strm/share-strm.js";
+import { buildTree, collectFilesAndTopEmptyDirs, findExportedDir } from "../../task/tree.js";
 import { classifyAccountIssue } from "../../telegram/notify.js";
+import { resolveSharePath } from "../share-walk.js";
 import {
+  RemoteDirNotFoundError,
   ShareGoneError,
   splitPath,
   type AccountIssue,
@@ -78,32 +81,36 @@ function shareError(err: unknown): unknown {
   return err;
 }
 
+/** 115 的分享：自家域名的 URL，或者裸分享码 / `码-提取码` 这类短写法；别家的 URL 一律不认 */
+export function parse115ShareLink(text: string): ShareRef | null {
+  const raw = text.trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) {
+    let host: string;
+    try {
+      host = new URL(raw).hostname;
+    } catch {
+      return null;
+    }
+    if (!SHARE_HOSTS.test(host)) return null;
+  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || /\.[a-z]{2,}\//i.test(raw) || /\s/.test(raw)) {
+    return null;
+  }
+  try {
+    const { share_code, receive_code } = shareExtractPayload(raw);
+    if (!share_code) return null;
+    const url = /^https?:\/\//i.test(raw) ? raw : `https://115.com/s/${share_code}${receive_code ? `?password=${receive_code}` : ""}`;
+    return { kind: "115", code: share_code, password: receive_code, url };
+  } catch {
+    return null;
+  }
+}
+
 class Cloud115Share implements ShareProvider {
   constructor(private readonly account: Account115) {}
 
   parseLink(text: string): ShareRef | null {
-    const raw = text.trim();
-    if (!raw) return null;
-    if (/^https?:\/\//i.test(raw)) {
-      let host: string;
-      try {
-        host = new URL(raw).hostname;
-      } catch {
-        return null;
-      }
-      if (!SHARE_HOSTS.test(host)) return null;
-    } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || /\.[a-z]{2,}\//i.test(raw)) {
-      // 别家的链接：不是 115 的域名就不认
-      return null;
-    }
-    try {
-      const { share_code, receive_code } = shareExtractPayload(raw);
-      if (!share_code) return null;
-      const url = /^https?:\/\//i.test(raw) ? raw : `https://115.com/s/${share_code}${receive_code ? `?password=${receive_code}` : ""}`;
-      return { kind: "115", code: share_code, password: receive_code, url };
-    } catch {
-      return null;
-    }
+    return parse115ShareLink(text);
   }
 
   async open(ref: ShareRef): Promise<ShareSession> {
@@ -123,12 +130,13 @@ class Cloud115Share implements ShareProvider {
     return { title, fileCount: count };
   }
 
-  async list(s: ShareSession, dirId: string, cursor?: string): Promise<ShareListPage> {
+  async list(s: ShareSession, dirId: string, cursor?: string, opts?: { limit?: number }): Promise<ShareListPage> {
     const offset = Number(cursor ?? 0) || 0;
+    const limit = Math.max(1, Math.min(opts?.limit ?? SHARE_PAGE, SHARE_PAGE));
     let page: { list: ShareAttr[]; count: number };
     try {
       page = await getShareDirList(this.account, s.ref.code, s.ref.password, dirId || "0", {
-        limit: SHARE_PAGE,
+        limit,
         offset,
         userAgent: userAgent(),
       });
@@ -140,30 +148,8 @@ class Cloud115Share implements ShareProvider {
     return { entries, next: page.list.length > 0 && end < page.count ? String(end) : undefined, total: page.count };
   }
 
-  private async listAll(s: ShareSession, dirId: string): Promise<ShareEntry[]> {
-    const out: ShareEntry[] = [];
-    let cursor: string | undefined;
-    for (;;) {
-      const page = await this.list(s, dirId, cursor);
-      out.push(...page.entries);
-      if (!page.next) return out;
-      cursor = page.next;
-    }
-  }
-
-  async resolvePath(s: ShareSession, path: string): Promise<ShareEntry | null> {
-    const segs = splitPath(path);
-    if (segs.length === 0) return null;
-    let dirId = "0";
-    let hit: ShareEntry | null = null;
-    for (let i = 0; i < segs.length; i++) {
-      const entries = await this.listAll(s, dirId);
-      const isLast = i === segs.length - 1;
-      hit = entries.find((e) => e.name === segs[i] && (isLast || e.isDir)) ?? null;
-      if (!hit) return null;
-      dirId = hit.id;
-    }
-    return hit;
+  resolvePath(s: ShareSession, path: string, signal?: AbortSignal): Promise<ShareEntry | null> {
+    return resolveSharePath(this, s, path, signal);
   }
 
   async receive(s: ShareSession, items: ReceiveItem[], toDirId: string): Promise<ReceiveResult> {
@@ -231,8 +217,30 @@ export class Cloud115Provider implements DriveProvider {
     return (await listDirEntries(id || "0", this.ctx(signal))).map(toDriveEntry);
   }
 
+  /**
+   * 115 有整树导出：导出目录树文件再解析。导出的树从上一级开始（导出 tv/Show 得到 tv → Show → …），
+   * 把顶层当成目录本身会多套一层 Show/Show/…，所以要用 findExportedDir 定位到目标目录再摊平。
+   */
   async listSubtree(path: string, opts?: { id?: string; signal?: AbortSignal }): Promise<string[]> {
-    return exportDirFiles({ accountInfo: this.account, dirPath: path, cid: opts?.id });
+    let folderId = opts?.id && opts.id !== "0" ? opts.id : null;
+    if (!folderId) folderId = await this.dirId(splitPath(path).join("/"), opts?.signal);
+    if (!folderId) throw new RemoteDirNotFoundError(path);
+    const raw = await exportDirParse({
+      exportFileIds: folderId,
+      targetPid: 0,
+      layerLimit: 0,
+      deleteAfter: true,
+      timeoutMs: 300000,
+      checkIntervalMs: 1000,
+      accountInfo: this.account,
+    });
+    const tree = buildTree(raw);
+    const dir = findExportedDir(tree, path);
+    if (!dir) {
+      const tops = tree.filter((n) => n.name).map((n) => n.name).join("、");
+      throw new Error(`导出的目录树里找不到 ${path}（顶层：${tops || "空"}）`);
+    }
+    return collectFilesAndTopEmptyDirs(dir.children ?? []);
   }
 
   async downloadLink(path: string, opts?: { token?: string; signal?: AbortSignal }): Promise<DriveLink> {

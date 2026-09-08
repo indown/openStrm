@@ -2,14 +2,47 @@
  * 追更的对照规则：分享目录现在有什么 vs 快照里有什么 → 哪些要转存、哪些只记一笔。
  *
  * 纯函数，不碰网络和数据库；service 只负责把两边的清单喂进来。
- * 条目的身份是「相对路径 + sha1」：路径决定它会落在网盘和本地的哪里，sha1 认得出改名和搬家。
+ * 条目的身份是「相对路径 + 内容身份」：路径决定它会落在网盘和本地的哪里，身份认得出改名和搬家。
+ * 身份优先用 sha1（115 有），没有 sha1 的（夸克）用分享内的 id——同一个分享里 fid 是稳定的。
  * 规则改动先过 diff.test.ts。
  */
 import type { ShareFollowEntry } from "@openstrm/shared";
 
-/** 现在列出来的一条：比快照多一个分享侧的 file id，转存要用 */
+/** 现在列出来的一条：比快照多一个分享侧的 file id（转存要用）和转存凭据（夸克，不进快照） */
 export interface ListedEntry extends ShareFollowEntry {
   id: string;
+  token?: string;
+}
+
+/** 两条是不是同一个文件：都有 sha1 比 sha1；都没有 sha1 但都有 id 比 id；其它情况认不出，当作同一个 */
+function sameFile(a: ShareFollowEntry, b: ShareFollowEntry): boolean {
+  if (a.sha1 && b.sha1) return a.sha1 === b.sha1;
+  if (!a.sha1 && !b.sha1 && a.id && b.id) return a.id === b.id;
+  return true;
+}
+
+interface Identities {
+  sha: Set<string>;
+  /** 没有 sha1 的条目才按 id 认 */
+  ids: Set<string>;
+}
+
+function identitiesOf(known: ShareFollowEntry[]): Identities {
+  const sha = new Set<string>();
+  const ids = new Set<string>();
+  for (const e of known) {
+    if (e.isDir) continue;
+    if (e.sha1) sha.add(e.sha1);
+    else if (e.id) ids.add(e.id);
+  }
+  return { sha, ids };
+}
+
+/** 快照里见过这个文件（不管它当时叫什么）？ */
+function seenBefore(e: ShareFollowEntry, known: Identities): boolean {
+  if (e.sha1) return known.sha.has(e.sha1);
+  if (e.id) return known.ids.has(e.id);
+  return false;
 }
 
 export interface FollowDiff {
@@ -32,7 +65,7 @@ export const parentOf = (p: string): string => {
 
 export function diffShareListing(known: ShareFollowEntry[], current: ListedEntry[]): FollowDiff {
   const knownByPath = new Map(known.map((e) => [e.path, e]));
-  const knownSha = new Set(known.filter((e) => !e.isDir && e.sha1).map((e) => e.sha1 as string));
+  const identities = identitiesOf(known);
   const added: ListedEntry[] = [];
   const replaced: ListedEntry[] = [];
   const moved: ListedEntry[] = [];
@@ -45,18 +78,18 @@ export function diffShareListing(known: ShareFollowEntry[], current: ListedEntry
     if (wholeDirs.some((d) => isUnder(e.path, d))) continue;
     const k = knownByPath.get(e.path);
     if (k) {
-      if (!e.isDir && !k.isDir && e.sha1 && k.sha1 && e.sha1 !== k.sha1) replaced.push(e);
+      if (!e.isDir && !k.isDir && !sameFile(e, k)) replaced.push(e);
       continue;
     }
     if (e.isDir) {
       wholeDirs.push(e.path);
       const files = current.filter((c) => !c.isDir && isUnder(c.path, e.path));
       // 里面全是早就见过的文件：这是分享者把旧文件整理进了新目录，不是新内容
-      if (files.length > 0 && files.every((f) => f.sha1 && knownSha.has(f.sha1))) moved.push(e);
+      if (files.length > 0 && files.every((f) => seenBefore(f, identities))) moved.push(e);
       else added.push(e);
       continue;
     }
-    if (e.sha1 && knownSha.has(e.sha1)) moved.push(e);
+    if (seenBefore(e, identities)) moved.push(e);
     else added.push(e);
   }
   return { added, replaced, moved };
@@ -79,6 +112,7 @@ export function mergeKnown(
     const entry: ShareFollowEntry = { path: e.path, isDir: e.isDir };
     if (e.sha1) entry.sha1 = e.sha1;
     if (e.size != null) entry.size = e.size;
+    if (e.id) entry.id = e.id;
     byPath.set(e.path, entry);
   }
   return [...byPath.values()];
@@ -90,7 +124,7 @@ export interface ReceiveGroup {
   items: ListedEntry[];
 }
 
-/** 转存按落点分组：115 的 receive 一次只能指定一个目标目录 */
+/** 转存按落点分组：网盘的转存一次只能指定一个目标目录 */
 export function groupByParent(entries: ListedEntry[]): ReceiveGroup[] {
   const groups = new Map<string, ListedEntry[]>();
   for (const e of entries) {

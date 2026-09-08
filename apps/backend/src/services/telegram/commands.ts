@@ -21,16 +21,16 @@ import {
   addOfflineTasks,
   getOfflineWatcherStatus,
   listOfflineTasks,
-  resolveAccount115,
   resolveOpenlistCopyConfig,
   type AddOfflineResponse,
 } from "../offline/service.js";
 import { openlistListDir } from "../openlist/client.js";
 import { getLifeMonitorStatus } from "../life/monitor.js";
 import { normalizeOfflineUrls } from "../cloud-115/offline.js";
-import { fsDirGetId, listDirEntries } from "../cloud-115/client.js";
-import { getShareData, getShareDirList, shareExtractPayload } from "../cloud-115/share.js";
-import { resolveTaskAccount115, saveSelectionToTask } from "../library/save-to-task.js";
+import { KIND_LABEL, findShareLink, providerFor, providerForTask, shareForLink } from "../drive/registry.js";
+import type { DriveKind } from "../drive/types.js";
+import { listWholeShareDir } from "../drive/share-walk.js";
+import { saveSelectionToTask } from "../share/receive.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { createPending, peekPending, takePending, updatePending, type BrowseState, type PendingAction } from "./session.js";
 import { clamp, describeRun, esc, fmtTime, shortName, taskLabel } from "./format.js";
@@ -59,18 +59,26 @@ export interface OfflineRow {
 }
 
 export interface ShareSummary {
-  shareCode: string;
-  receiveCode: string;
+  /** 规范化后的分享链接，转存时再解析一次 */
+  link: string;
+  kind: DriveKind;
   name: string;
   count: number;
-  items: Array<{ id: string; name: string; isDir: boolean }>;
+  items: Array<{ id: string; name: string; isDir: boolean; token?: string }>;
+}
+
+export interface AccountBrief {
+  name: string;
+  kind: DriveKind;
+  /** 能不能转存分享 */
+  share: boolean;
 }
 
 export interface CommandDeps {
   settings(): AppSettings;
   listTasks(): TaskDefinition[];
-  /** 115 账号名；只有这些账号的任务能作为云下载 / 转存的目的地 */
-  accounts115(): string[];
+  /** 账号和它们的网盘类型：云下载只认 115 账号的任务，转存只认和分享同类且能转存的账号的任务 */
+  accounts(): AccountBrief[];
   latestExecutions(): Map<string, TaskExecutionSummary>;
   recentExecutions(limit: number): TaskExecutionSummary[];
   taskExecutions(taskId: string, limit: number): TaskExecutionSummary[];
@@ -94,14 +102,12 @@ export interface CommandDeps {
   shareInfo(link: string): Promise<ShareSummary>;
   receiveShare(input: {
     task: TaskDefinition;
-    shareCode: string;
-    receiveCode: string;
-    fileIds: string[];
-    items: Array<{ name: string; isDir: boolean }>;
+    link: string;
+    items: Array<{ id: string; name: string; isDir: boolean; token?: string }>;
     /** 相对 task.originPath 的子目录，空串是任务根目录 */
     subPath: string;
   }): Promise<{ ok: boolean; message: string }>;
-  /** 任务 115 目录（originPath/segments…）下的子目录名，目的地浏览用 */
+  /** 任务的网盘目录（originPath/segments…）下的子目录名，目的地浏览用 */
   listSubdirs(task: TaskDefinition, segments: string[]): Promise<string[]>;
 }
 
@@ -118,7 +124,11 @@ function describeStart(body: Record<string, unknown>): string {
 const realDeps: CommandDeps = {
   settings: readAppSettings,
   listTasks,
-  accounts115: () => listAccounts().filter((a) => a.accountType === "115").map((a) => a.name),
+  accounts: () =>
+    listAccounts().map((a) => {
+      const p = providerFor(a);
+      return { name: a.name, kind: p.kind, share: p.capabilities.share };
+    }),
   latestExecutions: getLatestExecutions,
   recentExecutions: (limit) => getAllTaskHistory().slice(0, limit),
   taskExecutions: (taskId, limit) => getTaskHistory(taskId).slice(0, limit),
@@ -164,30 +174,27 @@ const realDeps: CommandDeps = {
     };
   },
   shareInfo: async (link) => {
-    const account = resolveAccount115();
-    const { share_code: shareCode, receive_code: receiveCode } = shareExtractPayload(link);
-    const data = await getShareData(account, shareCode, receiveCode);
-    const info = (data.shareinfo ?? data) as Record<string, unknown>;
-    const name = String(info.share_title ?? info.share_name ?? info.title ?? "分享");
-    const { list, count } = await getShareDirList(account, shareCode, receiveCode, 0, { limit: 20 });
+    const { provider, ref } = shareForLink(link);
+    const share = provider.share!;
+    const session = await share.open(ref);
+    const info = await share.info(session);
+    // 整个分享一起转存：根目录下的条目全部要（翻完页）
+    const list = await listWholeShareDir(share, session, "0");
     return {
-      shareCode,
-      receiveCode,
-      name,
-      count,
-      items: list.map((it) => ({ id: String(it.id), name: it.name, isDir: it.is_dir })),
+      link: ref.url,
+      kind: ref.kind,
+      name: info.title || "分享",
+      count: list.length,
+      items: list.map((it) => ({ id: it.id, name: it.name, isDir: it.isDir, token: it.token })),
     };
   },
-  receiveShare: async ({ task, shareCode, receiveCode, fileIds, items, subPath }) => {
+  receiveShare: async ({ task, link, items, subPath }) => {
     try {
-      const accountInfo = resolveTaskAccount115(listAccounts(), task);
+      const { ref } = shareForLink(link);
       const r = await saveSelectionToTask({
         task,
-        accountInfo,
-        shareCode,
-        receiveCode,
-        fileIds,
-        selectedItems: items,
+        ref,
+        items,
         subPath,
         mode: "async",
         settings: readAppSettings(),
@@ -203,24 +210,18 @@ const realDeps: CommandDeps = {
     }
   },
   listSubdirs: async (task, segments) => {
-    const accountInfo = resolveTaskAccount115(listAccounts(), task);
-    const ua = readAppSettings()["user-agent"];
-    const userAgent = typeof ua === "string" && ua ? ua : undefined;
+    const provider = providerForTask(task);
     const path = [task.originPath, ...segments].join("/");
-    const idRes = (await fsDirGetId(path, { userAgent, accountInfo })) as { id?: number | string };
-    // getid 对不存在的路径回 id=0（网盘根目录），不能拿去列
-    if (idRes?.id == null || String(idRes.id) === "" || String(idRes.id) === "0") {
-      throw new Error(`目录不存在：${path}`);
-    }
-    const entries = await listDirEntries(idRes.id, { userAgent, accountInfo });
-    // 目录没有 sha；文件不进列表
-    return entries.filter((e) => !e.sha).map((e) => e.n);
+    const node = await provider.resolvePath(path);
+    if (!node || !node.isDir) throw new Error(`目录不存在：${path}`);
+    // 文件不进列表
+    return (await provider.listDir(node.id)).filter((e) => e.isDir).map((e) => e.name);
   },
 };
 
 let deps: CommandDeps = { ...realDeps };
 
-/** 仅供测试：换掉会碰库、115、任务引擎的部分；传 null 恢复 */
+/** 仅供测试：换掉会碰库、网盘、任务引擎的部分；传 null 恢复 */
 export function setCommandDeps(partial: Partial<CommandDeps> | null): void {
   deps = partial ? { ...realDeps, ...partial } : { ...realDeps };
 }
@@ -254,8 +255,6 @@ export async function handleUpdate(bot: BotLike, update: TelegramUpdate): Promis
   if (update.callback_query) return handleCallback(bot, update.callback_query);
 }
 
-const SHARE_LINK = /https?:\/\/(?:[\w-]+\.)*(?:115\.com|115cdn\.com|anxia\.com)\/s\/[a-z0-9]+(?:\?[^\s]*)?/i;
-
 async function handleMessage(bot: BotLike, msg: TelegramMessage): Promise<void> {
   const settings = deps.settings();
   const chatId = String(msg.chat.id);
@@ -278,9 +277,9 @@ async function handleMessage(bot: BotLike, msg: TelegramMessage): Promise<void> 
     return;
   }
 
-  const share = SHARE_LINK.exec(text);
+  const share = findShareLink(text);
   if (share) {
-    await beginShare(bot, chatId, msg.from!.id, share[0], settings);
+    await beginShare(bot, chatId, msg.from!.id, share.url, settings);
     return;
   }
   const { urls } = normalizeOfflineUrls(text);
@@ -290,10 +289,10 @@ async function handleMessage(bot: BotLike, msg: TelegramMessage): Promise<void> 
   }
   // 长得像链接（thunder:// 之类）但一条都不认：说清楚收什么；纯聊天就给个提示
   if (/(?:^|\s)(?:[a-z][\w+.-]*:\/\/|magnet:\?|[0-9a-f]{40}\b)/i.test(text)) {
-    await bot.sendMessage(chatId, "不认识这种链接。能收的有：115 分享链接、磁力、ed2k、http(s)、ftp。");
+    await bot.sendMessage(chatId, "不认识这种链接。能收的有：115 / 夸克分享链接、磁力、ed2k、http(s)、ftp。");
     return;
   }
-  await bot.sendMessage(chatId, "直接把 115 分享链接或磁力/ed2k 链接发给我，或者用 /help 看看能做什么。");
+  await bot.sendMessage(chatId, "直接把 115 / 夸克分享链接或磁力/ed2k 链接发给我，或者用 /help 看看能做什么。");
 }
 
 /* ------------------------------- 命令 ------------------------------- */
@@ -330,7 +329,7 @@ function helpText(settings: AppSettings): string {
     "",
     "<b>直接发链接：</b>",
     `• 磁力 / ed2k / http 链接 → 交给 115 云下载，可选下到某个任务目录（能进子文件夹），下完自动生成 strm（${onOff(p.offlineAdd)}）`,
-    `• 115 分享链接 → 转存到某个任务目录（能进子文件夹）并同步（${onOff(p.shareReceive)}）`,
+    `• 115 / 夸克分享链接 → 转存到同类账号的某个任务目录（能进子文件夹）并同步（${onOff(p.shareReceive)}）`,
     "",
     "<b>命令：</b>",
     `/tasks 任务列表，带「运行」按钮（${onOff(p.taskStart)}）`,
@@ -451,8 +450,9 @@ async function sendCancelMenu(bot: BotLike, chatId: string): Promise<void> {
 
 /* ------------------------------- 链接：云下载 ------------------------------- */
 
-function destinationTasks(): TaskDefinition[] {
-  const names = new Set(deps.accounts115());
+/** 能当目的地的任务：云下载只有 115 账号的；转存要和分享同类、且账号能转存 */
+function destinationTasks(kind: DriveKind, needShare = false): TaskDefinition[] {
+  const names = new Set(deps.accounts().filter((a) => a.kind === kind && (!needShare || a.share)).map((a) => a.name));
   return deps.listTasks().filter((t) => names.has(t.account));
 }
 
@@ -461,12 +461,12 @@ async function beginOffline(bot: BotLike, chatId: string, userId: number, urls: 
     await bot.sendMessage(chatId, "云下载功能未开启：到 OpenStrm 的 Telegram 页打开「允许添加云下载」。");
     return;
   }
-  if (deps.accounts115().length === 0) {
+  if (!deps.accounts().some((a) => a.kind === "115")) {
     await bot.sendMessage(chatId, "还没有配置 115 账号，无法云下载。");
     return;
   }
   const token = createPending(chatId, userId, { kind: "offline", urls });
-  const buttons: InlineKeyboard = destinationTasks()
+  const buttons: InlineKeyboard = destinationTasks("115")
     .slice(0, 15)
     .map((t) => [{ text: `📁 ${shortName(t.originPath, 40)}`, callback_data: `ofl:${token}:${t.id}` }]);
   buttons.push([{ text: "☁️ 115 默认目录（不生成 strm）", callback_data: `ofl:${token}:default` }]);
@@ -547,20 +547,12 @@ async function beginShare(bot: BotLike, chatId: string, userId: number, link: st
     await bot.sendMessage(chatId, "这个分享是空的，或者提取码不对。");
     return;
   }
-  const targets = destinationTasks();
+  const targets = destinationTasks(info.kind, true);
   if (targets.length === 0) {
-    await bot.sendMessage(chatId, "没有 115 账号的同步任务，先到首页建一个再来转存。");
+    await bot.sendMessage(chatId, `没有${KIND_LABEL[info.kind]}账号的同步任务，先到首页建一个再来转存。`);
     return;
   }
-  const token = createPending(chatId, userId, {
-    kind: "share",
-    link,
-    shareCode: info.shareCode,
-    receiveCode: info.receiveCode,
-    name: info.name,
-    fileIds: info.items.map((i) => i.id),
-    items: info.items.map((i) => ({ name: i.name, isDir: i.isDir })),
-  });
+  const token = createPending(chatId, userId, { kind: "share", link: info.link, name: info.name, items: info.items });
   const listing = info.items.slice(0, 10).map((i) => `${i.isDir ? "📁" : "📄"} ${esc(shortName(i.name))}`);
   if (info.count > 10) listing.push(`…共 ${info.count} 项`);
   const buttons: InlineKeyboard = targets.slice(0, 15).map((t) => [{ text: `📁 转存到 ${shortName(t.originPath, 36)}`, callback_data: `shr:${token}:${t.id}` }]);
@@ -580,14 +572,7 @@ async function finishShare(
   task: TaskDefinition,
   subPath: string,
 ): Promise<void> {
-  const r = await deps.receiveShare({
-    task,
-    shareCode: pending.shareCode,
-    receiveCode: pending.receiveCode,
-    fileIds: pending.fileIds,
-    items: pending.items,
-    subPath,
-  });
+  const r = await deps.receiveShare({ task, link: pending.link, items: pending.items, subPath });
   const target = `${task.originPath}${subPath ? `/${subPath}` : ""}`;
   const head = r.ok ? `✅ <b>${esc(pending.name)}</b>` : `❌ <b>${esc(pending.name)}</b> 转存失败`;
   await edit(bot, chatId, messageId, clamp(`${head}\n目录：${esc(target)}\n${esc(r.message)}`));

@@ -13,7 +13,7 @@
  *     失败 → 记下 115 的说法；列表里连续几轮找不到 → 当作被人删了。
  *     没有待办时循环自己停掉，不白打接口。
  */
-import type { Account115, AccountOpenlist, AppSettings, TaskDefinition } from "@openstrm/shared";
+import type { Account115, AccountInfo as SharedAccountInfo, AccountOpenlist, AppSettings, TaskDefinition } from "@openstrm/shared";
 import { getAccount, listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -37,7 +37,6 @@ import {
   type OfflineListPage,
   type OfflineTask,
 } from "../cloud-115/offline.js";
-import { resolveTaskAccount115 } from "../library/save-to-task.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import {
   copyStateSucceeded,
@@ -48,6 +47,7 @@ import {
 } from "../openlist/client.js";
 import { normalizeSubPath } from "../strm/naming.js";
 import { generateStrmForSelected, type GenerateResult, type SelectedItem } from "../strm/share-strm.js";
+import { providerFor } from "../drive/registry.js";
 import { notify, type NotifyEvent } from "../telegram/notify.js";
 
 const log = moduleLogger("offline");
@@ -177,7 +177,13 @@ const realDeps: Deps = {
   list: (accountInfo, page) => offlineList(accountInfo, page),
   resolveDirId: resolveDirIdReal,
   generate: ({ task, accountInfo, settings, subPath, item }) =>
-    generateStrmForSelected({ task, selectedItems: [item], accountInfo, settings, subPath }),
+    generateStrmForSelected({
+      task,
+      provider: providerFor({ accountType: "115", name: accountInfo.name, cookie: accountInfo.cookie }),
+      selectedItems: [item],
+      settings,
+      subPath,
+    }),
   notify,
   openlist: {
     listNames: async (cfg) => (await openlistListDir(cfg.account, cfg.srcDir, { refresh: true })).map((e) => e.name),
@@ -194,6 +200,14 @@ export function setOfflineServiceDeps(partial: Partial<Deps> | null): void {
 }
 
 /* ------------------------------- 账号与错误 ------------------------------- */
+
+/** 云下载只能下到 115 账号的任务目录：按 task.account 从已读取的 accounts 里挑对应 115 账号 */
+export function resolveTaskAccount115(accounts: SharedAccountInfo[], task: TaskDefinition): Account115 {
+  const accountInfo = accounts.find((a) => a.name === task.account);
+  if (!accountInfo) throw new HttpError(400, `Task ${task.id} 绑定的账号 ${task.account} 不存在`);
+  if (accountInfo.accountType !== "115") throw new HttpError(400, `Task ${task.id} 绑定的账号 ${task.account} 不是 115 账号`);
+  return accountInfo;
+}
 
 /** 指定了名字就要那一个；没指定取第一个 115 账号 */
 export function resolveAccount115(name?: string): Account115 {
@@ -629,7 +643,7 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
     return;
   }
   f.attempts += 1;
-  const item: SelectedItem = { name: t.resultName || t.name, isDir: t.isDir, cid: t.isDir ? t.resultId : undefined };
+  const item: SelectedItem = { name: t.resultName || t.name, isDir: t.isDir, id: t.isDir && t.resultId ? String(t.resultId) : undefined };
   try {
     const r = await deps.generate({ task, accountInfo, settings: readAppSettings(), subPath: f.subPath, item });
     finish(f, "done", `已生成 ${r.generatedCount} 个 strm（跳过 ${r.skippedCount} 个）`);

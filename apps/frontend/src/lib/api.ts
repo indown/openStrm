@@ -51,16 +51,28 @@ export type StartTaskResult = {
   warning?: string;
 };
 
-export interface ShareFileItem {
-  id: number;
+export type DriveKind = "115" | "quark" | "openlist";
+
+/** 分享里的一项（后端已归一化，各家网盘同一个形状） */
+export interface ShareEntry {
+  id: string;
   name: string;
-  is_dir: boolean;
-  parent_id: number;
+  isDir: boolean;
   size?: number;
-  [k: string]: unknown;
+  hash?: string;
+  /** 夸克转存要的 share_fid_token，原样带回给 receive */
+  token?: string;
 }
-export type ShareInfo = Record<string, unknown>;
-export type ShareListPage = { list: ShareFileItem[]; count: number; limit: number; offset: number };
+export interface ShareInfo {
+  kind: DriveKind;
+  /** 打开这个分享用的账号 */
+  account: string;
+  title: string;
+  fileCount?: number;
+}
+/** 翻页游标不透明：有 next 就还有下一页 */
+export type ShareListPage = { kind: DriveKind; account: string; entries: ShareEntry[]; next?: string; total?: number };
+export type ShareReceiveItem = Pick<ShareEntry, "id" | "name" | "isDir" | "token">;
 export type ShareReceiveResult = Record<string, unknown> & {
   mode?: "sync" | "async";
   taskId?: string;
@@ -452,25 +464,25 @@ export const api = {
   },
 
   share: {
-    info: (url: string) => data(axiosInstance.post<ShareInfo>("/api/115/share", { action: "info", url })),
-    list: (url: string, cid: string | number = 0, page?: { limit: number; offset: number }) =>
-      data(axiosInstance.post<ShareListPage>("/api/115/share", { action: "list", url, cid, ...page })),
-    /** 转存到任务目录（带 taskId）或网盘目录（带 toPid） */
-    /** 同步生成 + 建追更订阅都可能要等一会，超时放宽 */
+    /** 账号由链接决定：先认出是 115 还是夸克的分享，再挑同类账号 */
+    info: (url: string) => data(axiosInstance.post<ShareInfo>("/api/share", { action: "info", url })),
+    list: (url: string, dirId = "0", cursor?: string, limit?: number) =>
+      data(axiosInstance.post<ShareListPage>("/api/share", { action: "list", url, dirId, cursor, limit })),
+    /** 转存到任务目录（带 taskId）或网盘目录（带 toDirId / toPath）；同步生成 + 建追更订阅都可能要等一会，超时放宽 */
     receive: (body: {
       url: string;
-      fileIds: string[];
+      items: ShareReceiveItem[];
       taskId?: string;
       subPath?: string;
       mode?: "sync" | "async";
-      selectedItems?: { name: string; isDir: boolean }[];
-      toPid?: string | number;
+      toDirId?: string;
+      toPath?: string;
       /** 追更盯的目录（当前浏览的这一层）及其展示路径 / 订阅名 */
-      cid?: string | number;
+      watchDirId?: string;
       follow?: { intervalMinutes: number };
       watchPath?: string;
       name?: string;
-    }) => data(axiosInstance.post<ShareReceiveResult>("/api/115/share", { action: "receive", ...body }, { timeout: 180_000 })),
+    }) => data(axiosInstance.post<ShareReceiveResult>("/api/share", { action: "receive", ...body }, { timeout: 180_000 })),
   },
 
   drive115: {

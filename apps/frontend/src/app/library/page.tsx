@@ -22,6 +22,7 @@ import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import { notifyFollowResult, notifySaveToTaskResult } from "@/lib/save-result";
 import { useShareDetail } from "@/hooks/use-share-detail";
+import { shareKindOf } from "@/lib/share";
 import { ShareDetailDialog } from "@/components/ShareDetailDialog";
 import { AddToLibraryDialog, type AddToLibraryInitial } from "@/components/AddToLibraryDialog";
 import { SaveToDriveDialog, type SaveToTaskChoice } from "@/components/SaveToDriveDialog";
@@ -283,6 +284,7 @@ export default function LibraryPage() {
         }}
         onConfirm={handleSaveToTaskChoice}
         selectedCount={1}
+        kind={shareKindOf(saveToTaskEntry?.shareUrl) ?? undefined}
         followHint={`之后定期检查「${saveToTaskEntry?.title || saveToTaskEntry?.rawName || "该分享"}」对应的分享目录里新增的文件，自动转存到同一位置并生成 strm。`}
       />
 

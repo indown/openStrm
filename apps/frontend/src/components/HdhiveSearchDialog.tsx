@@ -61,9 +61,10 @@ function panTypeOf(resource: HdhiveResourceItem): string {
   return raw || UNKNOWN_PAN_TYPE;
 }
 
+/** 这种网盘的分享能不能在本站打开：115 和夸克都接了分享转存 */
 function is115(panType: string | null | undefined): boolean {
   if (!panType) return false;
-  return /115/i.test(panType);
+  return /115|夸克|quark/i.test(panType);
 }
 
 async function copyText(text: string) {
@@ -186,7 +187,7 @@ function ResourceCard({
                 onClick={() => onOpenIn115(fullUrl)}
               >
                 <ArrowRightCircle className="h-3 w-3" />
-                在 115 分享中查看
+                查看分享
               </Button>
             </div>
           )}

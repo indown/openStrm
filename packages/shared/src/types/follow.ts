@@ -1,15 +1,19 @@
 /**
- * 分享追更：盯住一个 115 分享里的目录，周期性地把新增的文件转存到某个同步任务的目录并生成 strm。
+ * 分享追更：盯住一个网盘分享（115 / 夸克）里的目录，周期性地把新增的文件转存到某个同步任务的目录并生成 strm。
  */
 
 export type ShareFollowStatus = "idle" | "checking" | "error" | "expired" | "stale";
 
-/** 快照里的一条：路径相对被盯的目录（watchCid），目录不带尾部斜杠 */
+/**
+ * 快照里的一条：路径相对被盯的目录（watchCid），目录不带尾部斜杠。
+ * 身份靠 sha1（115 有）或分享内的 id（夸克没有 sha1，fid 在同一个分享里稳定）认改名和搬家。
+ */
 export interface ShareFollowEntry {
   path: string;
   isDir: boolean;
   sha1?: string;
   size?: number;
+  id?: string;
 }
 
 /** 一次有动静的检查：新增了什么、跳过了什么（被替换 / 改名 / 范围目录不见了）、出了什么错 */

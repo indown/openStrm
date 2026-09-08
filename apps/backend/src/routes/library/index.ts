@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { Account115, MediaLibraryEntry } from "@openstrm/shared";
+import type { MediaLibraryEntry } from "@openstrm/shared";
 import {
   getAll,
   getById,
@@ -10,10 +10,9 @@ import {
   remove,
   update,
 } from "../../db/repositories/media-library.js";
-import { shareExtractPayload, getShareData } from "../../services/cloud-115/share.js";
+import { matchShareLink, parseShareRef } from "../../services/drive/registry.js";
 import { enqueueOne } from "../../services/library/scrape-worker.js";
 import { normalizeTitle } from "../../services/media-title.js";
-import { listAccounts } from "../../db/repositories/accounts.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
@@ -48,14 +47,10 @@ export default async function (fastify: FastifyInstance) {
     const body = parse(createSchema, request.body);
     const shareUrl = body.shareUrl;
 
-    let parsed: ReturnType<typeof shareExtractPayload>;
-    try {
-      parsed = shareExtractPayload(shareUrl);
-    } catch {
-      throw new HttpError(400, "Invalid share url");
-    }
-    const { share_code: shareCode, receive_code: receiveCode } = parsed;
-    if (!shareCode) throw new HttpError(400, "Cannot parse shareCode from url");
+    const ref = parseShareRef(shareUrl);
+    if (!ref) throw new HttpError(400, "Invalid share url");
+    const shareCode = ref.code;
+    const receiveCode = ref.password;
 
     const settings = readAppSettings();
     const hasTmdb = Boolean(settings.tmdb?.apiKey?.trim());
@@ -104,8 +99,6 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(201).send({ mode: "subdir", entry });
     }
 
-    const account115 = listAccounts().find((a): a is Account115 => a.accountType === "115");
-
     // ==== 单片模式 ====
     const existing = getByShareCode(shareCode);
     if (existing) throw new HttpError(409, "该分享已在影库中", { data: existing });
@@ -113,12 +106,14 @@ export default async function (fastify: FastifyInstance) {
     let title = bodyTitle;
     let fileCount = typeof body.fileCount === "number" ? body.fileCount : 0;
 
-    if ((!title || !fileCount) && account115) {
+    // 有能开这个分享的账号就顺手补标题和条数；没有也照样入库
+    const match = (!title || !fileCount) && matchShareLink(shareUrl);
+    if (match) {
       try {
-        const data = await getShareData(account115, shareCode, receiveCode);
-        const shareInfo = (data.share_info ?? {}) as { share_title?: string; name?: string; file_size?: number; file_count?: number };
-        if (!title) title = String(shareInfo.share_title ?? shareInfo.name ?? "").trim();
-        if (!fileCount) fileCount = Number(shareInfo.file_size ?? shareInfo.file_count ?? 0) || 0;
+        const session = await match.provider.share!.open(match.ref);
+        const info = await match.provider.share!.info(session);
+        if (!title) title = info.title.trim();
+        if (!fileCount) fileCount = info.fileCount ?? 0;
       } catch {
         // ignore — allow saving without metadata enrichment
       }

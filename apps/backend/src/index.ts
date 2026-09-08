@@ -46,7 +46,7 @@ import taskCronRoute from "./routes/task/cron.js";
 
 // Cloud storage routes
 import cloudFilesRoute from "./routes/cloud/files.js";
-import cloudShareRoute from "./routes/cloud/share.js";
+import shareRoute from "./routes/share/index.js";
 import cloudOfflineRoute from "./routes/cloud/offline.js";
 import { startOfflineWatcher, stopOfflineWatcher } from "./services/offline/service.js";
 
@@ -127,7 +127,7 @@ await app.register(taskCronRoute);
 
 // Cloud storage routes
 await app.register(cloudFilesRoute);
-await app.register(cloudShareRoute);
+await app.register(shareRoute);
 await app.register(cloudOfflineRoute);
 await app.register(followRoute);
 

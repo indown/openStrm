@@ -52,7 +52,10 @@ let olDirTree: Record<string, string[]> = {};
 const deps: Partial<CommandDeps> = {
   settings: () => settings,
   listTasks: () => tasks,
-  accounts115: () => ["115"],
+  accounts: () => [
+    { name: "115", kind: "115", share: true },
+    { name: "ol", kind: "openlist", share: false },
+  ],
   latestExecutions: () => new Map([["t1", run({})]]),
   recentExecutions: () => [run({}), run({ id: "e2", taskId: "t2", status: "failed", summary: { totalFiles: 3, downloadedFiles: 1, deletedFiles: 0, failedFiles: 2, errorMessage: "2 个文件失败：a、b" } })],
   taskExecutions: (taskId) => (taskId === "t1" ? [run({})] : []),
@@ -71,7 +74,7 @@ const deps: Partial<CommandDeps> = {
   lifeStatus: () => ({ running: true, accounts: [{ name: "115", running: true, lastError: null }] }),
   shareInfo: async (link) => {
     calls.push({ fn: "shareInfo", args: link });
-    return { shareCode: "sc", receiveCode: "rc", name: "剧集合集", count: 2, items: [{ id: "1", name: "S01", isDir: true }, { id: "2", name: "readme.txt", isDir: false }] };
+    return { link, kind: "115", name: "剧集合集", count: 2, items: [{ id: "1", name: "S01", isDir: true, token: "t1" }, { id: "2", name: "readme.txt", isDir: false }] };
   },
   receiveShare: async (input) => { calls.push({ fn: "receiveShare", args: input }); return { ok: true, message: "已转存，后台同步已启动" }; },
   listSubdirs: async (task, segments) => {
@@ -347,10 +350,11 @@ test("贴 115 分享链接：读分享、选任务 → 浏览子目录 → 「�
   await handleUpdate(bot, cb(go.callback_data));
   assert.equal(calls[0].fn, "receiveShare");
   // deepEqual 的断言签名把 calls 收窄成了 args: string，这里要先绕回 unknown
-  const args = calls[0].args as unknown as { task: TaskDefinition; shareCode: string; fileIds: string[]; subPath: string };
+  const args = calls[0].args as unknown as { task: TaskDefinition; link: string; items: Array<{ id: string; token?: string }>; subPath: string };
   assert.equal(args.task.id, "t1");
-  assert.equal(args.shareCode, "sc");
-  assert.deepEqual(args.fileIds, ["1", "2"]);
+  assert.equal(args.link, "https://115cdn.com/s/swhk9bx3wwq?password=sff1");
+  assert.deepEqual(args.items.map((i) => i.id), ["1", "2"]);
+  assert.equal(args.items[0].token, "t1", "夸克转存要的 token 跟着条目一起带过去");
   assert.equal(args.subPath, "某剧");
   assert.match(edited[2].text, /✅ <b>剧集合集<\/b>\n目录：tv\/某剧\n已转存，后台同步已启动/);
 });
@@ -359,7 +363,7 @@ test("其它文本：不认识的链接和闲聊各有提示；/help 说明当�
   await handleUpdate(bot, msg("thunder://abc"));
   assert.match(sent[0].text, /不认识这种链接/);
   await handleUpdate(bot, msg("你好"));
-  assert.match(sent[1].text, /直接把 115 分享链接/);
+  assert.match(sent[1].text, /直接把 115 \/ 夸克分享链接/);
   await handleUpdate(bot, msg("/help"));
   assert.match(sent[2].text, /未开启，到 Telegram 页打开/);
   await handleUpdate(bot, msg("/id"));

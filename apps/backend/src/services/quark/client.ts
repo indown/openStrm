@@ -153,7 +153,7 @@ interface RequestOptions {
  * 走一次夸克接口。和 request115 一样排进账号限流器（共享的每秒配额按账号名分，夸克自动享有同样的限流）。
  * HTTP 状态一律放行，由响应壳判断成败：4xx 的壳里 message 才是给人看的原因。
  */
-async function request<T>(
+export async function quarkRequest<T>(
   account: AccountQuark,
   method: "GET" | "POST",
   path: string,
@@ -211,7 +211,7 @@ interface RawFile {
 export async function quarkListDir(account: AccountQuark, fid: string, signal?: AbortSignal): Promise<QuarkEntry[]> {
   const entries: QuarkEntry[] = [];
   for (let page = 1; ; page++) {
-    const body = await request<{ list?: RawFile[] }>(account, "GET", "/file/sort", {
+    const body = await quarkRequest<{ list?: RawFile[] }>(account, "GET", "/file/sort", {
       params: {
         pdir_fid: fid,
         _page: page,
@@ -308,7 +308,7 @@ export function quarkLinkHeaders(account: AccountQuark): Record<string, string> 
 
 /** 文件的下载直链。夸克明确说没有直链时是 PermanentError，别拿同一个 fid 重试 */
 export async function quarkDownloadLink(account: AccountQuark, fid: string, signal?: AbortSignal): Promise<QuarkLink> {
-  const body = await request<Array<{ download_url?: string }>>(account, "POST", "/file/download", {
+  const body = await quarkRequest<Array<{ download_url?: string }>>(account, "POST", "/file/download", {
     data: { fids: [fid] },
     signal,
   });

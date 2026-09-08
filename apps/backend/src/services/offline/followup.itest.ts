@@ -170,7 +170,7 @@ test("完成（目录）：用 115 给的产物 id 生成 strm，回执 done，�
   assert.equal(g.task.id, "t1");
   assert.equal(g.accountInfo.name, "acc");
   assert.equal(g.subPath, "S1");
-  assert.deepEqual(g.item, { name: "Show.S01", isDir: true, cid: "r1" });
+  assert.deepEqual(g.item, { name: "Show.S01", isDir: true, id: "r1" });
   const [f] = listFollowups();
   assert.equal(f.status, "done");
   assert.match(f.detail, /已生成 3 个 strm（跳过 1 个）/);
@@ -181,11 +181,11 @@ test("完成（目录）：用 115 给的产物 id 生成 strm，回执 done，�
   assert.equal(getOfflineWatcherStatus().pending, 0);
 });
 
-test("完成（单文件）：按 del_path 生成，不带 cid", async () => {
+test("完成（单文件）：按 del_path 生成，不带产物 id", async () => {
   await seed();
   pages = [[row({ isDir: false, resultId: "f1", resultName: "ep1.mkv", name: "ep1" })]];
   await tickFollowups();
-  assert.deepEqual(generated[0].item, { name: "ep1.mkv", isDir: false, cid: undefined });
+  assert.deepEqual(generated[0].item, { name: "ep1.mkv", isDir: false, id: undefined });
 });
 
 test("115 报失败：回执 failed 并带上 115 的说法，不生成", async () => {

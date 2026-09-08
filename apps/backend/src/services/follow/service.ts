@@ -2,15 +2,17 @@
  * 分享追更的编排层，路由只调这里。
  *
  *   - 建订阅：解析任务和账号，把范围内现有的条目列一遍当快照——当时没勾的东西以后也不会补转存。
- *   - 检查：重新列 → diff（diff.ts）→ 按落点分组转存并生成 strm（复用 saveSelectionToTask）
+ *   - 检查：重新列 → diff（diff.ts）→ 按落点分组转存并生成 strm（复用 share/receive.ts）
  *     → 更新快照、记动态、通知。
- *   - 一条循环每分钟挑到期的订阅顺序跑，条与条之间隔两秒（share/snap 打得太密会被封 IP）；
+ *   - 一条循环每分钟挑到期的订阅顺序跑，条与条之间隔两秒（分享接口打得太密会被封 IP）；
  *     没有开着的订阅时循环自己停，建订阅 / 恢复时再起。
  *   - 状态全在 share_follows 表里，重启接着跑。
+ *
+ * 网盘的差异全在 DriveProvider 里：订阅不存网盘类型，任务的账号是哪家就按哪家列分享和转存（建订阅时校验同类）。
  */
 import { randomUUID } from "node:crypto";
-import type { Account115, AppSettings, ShareFollow, ShareFollowRun, ShareFollowSummary, TaskDefinition } from "@openstrm/shared";
-import { listAccounts } from "../../db/repositories/accounts.js";
+import { setTimeout as sleep } from "node:timers/promises";
+import type { AppSettings, ShareFollow, ShareFollowRun, ShareFollowSummary, TaskDefinition } from "@openstrm/shared";
 import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import {
@@ -25,14 +27,15 @@ import {
   toSummary,
   updateShareFollow,
 } from "../../db/repositories/share-follows.js";
-import { HttpError, upstreamError } from "../../lib/http-error.js";
+import { HttpError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
-import { Cloud115Error, sleep } from "../cloud-115/client.js";
-import { getShareDirList, ShareApiError, shareExtractPayload, type ShareAttr } from "../cloud-115/share.js";
-import { resolveTaskAccount115, saveSelectionToTask, type SaveSelectionOpts, type SaveSelectionResult } from "../library/save-to-task.js";
+import { driveErrorToHttp } from "../drive/errors.js";
+import { assertSameKind, parseShareRef, providerForTask } from "../drive/registry.js";
+import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession } from "../drive/types.js";
+import { saveSelectionToTask } from "../share/receive.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
-import { classifyAccountIssue, notify, type NotifyEvent } from "../telegram/notify.js";
+import { notify, type NotifyEvent } from "../telegram/notify.js";
 import { baseName, diffShareListing, groupByParent, mergeKnown, scopeIsWhole, type ListedEntry } from "./diff.js";
 
 const log = moduleLogger("follow");
@@ -45,7 +48,6 @@ export const FOLLOW = {
   MAX_DEPTH: 4,
   MAX_ENTRIES: 3000,
   MAX_REQUESTS: 30,
-  PAGE_SIZE: 1000,
   /** 分享接口连续这么多次说"不行"，就当分享没了 */
   EXPIRE_STREAK: 3,
   STALE_DAYS: 60,
@@ -58,13 +60,8 @@ const STALE_MS = FOLLOW.STALE_DAYS * 24 * 3600_000;
 
 /* ------------------------------- 依赖注入 ------------------------------- */
 
-type ShareRef = Pick<ShareFollow, "shareCode" | "receiveCode">;
-
+/** 网盘那几步走 DriveProvider（测试用 setDriveProviderFactory 换假网盘）；这里只剩通知和时间 */
 interface Deps {
-  /** 列分享目录的一页 */
-  listDir: (account: Account115, share: ShareRef, cid: string, offset: number) => Promise<{ list: ShareAttr[]; count: number }>;
-  /** 转存 + 生成 strm */
-  save: (opts: SaveSelectionOpts) => Promise<SaveSelectionResult>;
   notify: (event: NotifyEvent) => Promise<unknown>;
   now: () => number;
   /** 下次检查时间的抖动，[0,1)；测试钉成 0.5 就没有抖动 */
@@ -73,25 +70,11 @@ interface Deps {
   gapMs: number;
 }
 
-const realDeps: Deps = {
-  listDir: (account, share, cid, offset) => {
-    const ua = readAppSettings()["user-agent"];
-    return getShareDirList(account, share.shareCode, share.receiveCode, cid, {
-      limit: FOLLOW.PAGE_SIZE,
-      offset,
-      userAgent: typeof ua === "string" ? ua : undefined,
-    });
-  },
-  save: saveSelectionToTask,
-  notify,
-  now: () => Date.now(),
-  random: Math.random,
-  gapMs: 2_000,
-};
+const realDeps: Deps = { notify, now: () => Date.now(), random: Math.random, gapMs: 2_000 };
 
 let deps: Deps = { ...realDeps };
 
-/** 仅供测试：换掉会碰网络 / 磁盘的几步；传 null 恢复 */
+/** 仅供测试：换掉通知和时间；传 null 恢复 */
 export function setFollowServiceDeps(partial: Partial<Deps> | null): void {
   deps = partial ? { ...realDeps, ...partial } : { ...realDeps };
 }
@@ -99,14 +82,6 @@ export function setFollowServiceDeps(partial: Partial<Deps> | null): void {
 /* ------------------------------- 小工具 ------------------------------- */
 
 const errMsg = (err: unknown): string => (err instanceof Error && err.message ? err.message : String(err));
-
-/** 115 的失败要原样说出来：分享失效、cookie 失效和风控在界面上不能长一样 */
-function upstream(err: unknown, fallback: string): HttpError {
-  if (err instanceof HttpError) return err;
-  if (err instanceof ShareApiError) return upstreamError(`分享不可用：${err.message}`, { errno: err.errno });
-  if (err instanceof Cloud115Error) return upstreamError(err.message, { upstreamStatus: err.status });
-  return upstreamError(errMsg(err) || fallback);
-}
 
 export function clampInterval(minutes: number | undefined): number {
   const n = Number.isFinite(minutes) ? Math.round(minutes as number) : FOLLOW.DEFAULT_INTERVAL_MIN;
@@ -124,7 +99,7 @@ function normalizeScope(scope: string[] | undefined): string[] {
   return names.includes("") ? [""] : names.filter(Boolean);
 }
 
-/** 下次检查：间隔按连续失败次数翻倍（封顶一天），再加 ±10% 抖动，几条订阅不会总在同一秒挤到 115 */
+/** 下次检查：间隔按连续失败次数翻倍（封顶一天），再加 ±10% 抖动，几条订阅不会总在同一秒挤到网盘 */
 function nextCheckAt(f: Pick<ShareFollow, "intervalMinutes">, streak: number, now: number): number {
   const base = f.intervalMinutes * 60_000;
   const delay = streak > 0 ? Math.min(base * 2 ** Math.min(streak, 5), FOLLOW.MAX_BACKOFF_MS) : base;
@@ -142,11 +117,23 @@ function pushRecent(recent: ShareFollowRun[], run: ShareFollowRun): ShareFollowR
   return [run, ...recent].slice(0, FOLLOW.RECENT_KEEP);
 }
 
-function resolveTask(taskId: string): { task: TaskDefinition; account: Account115 } {
+interface Target {
+  task: TaskDefinition;
+  provider: DriveProvider;
+  share: ShareProvider;
+}
+
+function resolveTask(taskId: string): Target {
   const task = getTask(taskId);
   if (!task) throw new HttpError(404, `Task not found: ${taskId}`);
   if (!task.targetPath || !task.strmPrefix) throw new HttpError(400, "所选任务缺少 targetPath 或 strmPrefix 配置");
-  return { task, account: resolveTaskAccount115(listAccounts(), task) };
+  const provider = providerForTask(task, "share");
+  return { task, provider, share: provider.share! };
+}
+
+/** 订阅只存分享码和提取码；网盘类型就是任务账号的类型（建订阅时校验过同类） */
+function refOf(f: Pick<ShareFollow, "shareUrl" | "shareCode" | "receiveCode">, provider: DriveProvider): ShareRef {
+  return { kind: provider.kind, code: f.shareCode, password: f.receiveCode, url: f.shareUrl };
 }
 
 /* ------------------------------- 列分享目录 ------------------------------- */
@@ -157,47 +144,48 @@ interface Budget {
   requests: number;
 }
 
-function toEntry(item: ShareAttr, prefix: string): ListedEntry {
+function toEntry(item: ShareEntry, prefix: string): ListedEntry {
   const entry: ListedEntry = {
     path: prefix ? `${prefix}/${item.name}` : item.name,
-    isDir: item.is_dir,
+    isDir: item.isDir,
     id: String(item.id),
   };
-  if (item.sha1) entry.sha1 = item.sha1;
+  if (item.hash) entry.sha1 = item.hash;
   if (item.size != null) entry.size = item.size;
+  if (item.token) entry.token = item.token;
   return entry;
 }
 
-async function listAll(account: Account115, share: ShareRef, cid: string, budget: Budget): Promise<ShareAttr[]> {
-  const out: ShareAttr[] = [];
-  let offset = 0;
+async function listAll(share: ShareProvider, session: ShareSession, dirId: string, budget: Budget): Promise<ShareEntry[]> {
+  const out: ShareEntry[] = [];
+  let cursor: string | undefined;
   for (;;) {
     if (++budget.requests > FOLLOW.MAX_REQUESTS) {
       throw new FollowTooLargeError(`分享目录太大（列了 ${FOLLOW.MAX_REQUESTS} 次还没列完），追更只适合剧集级的目录`);
     }
-    const { list, count } = await deps.listDir(account, share, cid, offset);
-    out.push(...list);
-    offset += list.length;
-    if (list.length === 0 || offset >= count) return out;
+    const page = await share.list(session, dirId, cursor);
+    out.push(...page.entries);
+    if (!page.next || page.entries.length === 0) return out;
+    cursor = page.next;
   }
 }
 
 async function walk(
-  account: Account115,
-  share: ShareRef,
-  cid: string,
+  share: ShareProvider,
+  session: ShareSession,
+  dirId: string,
   prefix: string,
   depth: number,
   budget: Budget,
   out: ListedEntry[],
 ): Promise<void> {
-  for (const item of await listAll(account, share, cid, budget)) {
+  for (const item of await listAll(share, session, dirId, budget)) {
     const entry = toEntry(item, prefix);
     out.push(entry);
     if (out.length > FOLLOW.MAX_ENTRIES) {
       throw new FollowTooLargeError(`分享目录太大（超过 ${FOLLOW.MAX_ENTRIES} 项），追更只适合剧集级的目录`);
     }
-    if (item.is_dir && depth < FOLLOW.MAX_DEPTH) await walk(account, share, String(item.id), entry.path, depth + 1, budget, out);
+    if (item.isDir && depth < FOLLOW.MAX_DEPTH) await walk(share, session, item.id, entry.path, depth + 1, budget, out);
   }
 }
 
@@ -208,23 +196,27 @@ export interface ScopeListing {
 }
 
 /** 把范围内的东西全列出来。范围是整个目录就从 watchCid 递归；否则先列一层找到范围目录再各自递归 */
-async function listScope(account: Account115, f: Pick<ShareFollow, "shareCode" | "receiveCode" | "watchCid" | "scope">): Promise<ScopeListing> {
+async function listScope(
+  share: ShareProvider,
+  session: ShareSession,
+  f: Pick<ShareFollow, "watchCid" | "scope">,
+): Promise<ScopeListing> {
   const budget: Budget = { requests: 0 };
   const entries: ListedEntry[] = [];
   if (scopeIsWhole(f.scope)) {
-    await walk(account, f, f.watchCid, "", 0, budget, entries);
+    await walk(share, session, f.watchCid, "", 0, budget, entries);
     return { entries, missingScopes: [] };
   }
-  const top = await listAll(account, f, f.watchCid, budget);
+  const top = await listAll(share, session, f.watchCid, budget);
   const missingScopes: string[] = [];
   for (const name of f.scope) {
-    const hit = top.find((it) => it.is_dir && it.name === name);
+    const hit = top.find((it) => it.isDir && it.name === name);
     if (!hit) {
       missingScopes.push(name);
       continue;
     }
     entries.push(toEntry(hit, ""));
-    await walk(account, f, String(hit.id), name, 1, budget, entries);
+    await walk(share, session, hit.id, name, 1, budget, entries);
   }
   return { entries, missingScopes };
 }
@@ -248,18 +240,17 @@ export interface CreateFollowInput {
 export async function createFollow(input: CreateFollowInput): Promise<ShareFollowSummary> {
   let shareCode = (input.shareCode ?? "").trim();
   let receiveCode = (input.receiveCode ?? "").trim();
+  const parsed = input.shareUrl?.trim() ? parseShareRef(input.shareUrl) : null;
   if (!shareCode && input.shareUrl?.trim()) {
-    try {
-      const parsed = shareExtractPayload(input.shareUrl);
-      shareCode = parsed.share_code;
-      if (!receiveCode) receiveCode = parsed.receive_code;
-    } catch {
-      throw new HttpError(400, "Invalid share url");
-    }
+    if (!parsed) throw new HttpError(400, "Invalid share url");
+    shareCode = parsed.code;
+    if (!receiveCode) receiveCode = parsed.password;
   }
   if (!shareCode) throw new HttpError(400, "shareCode is required");
 
-  const { task, account } = resolveTask(input.taskId);
+  const { task, provider, share } = resolveTask(input.taskId);
+  // 链接认得出是哪家的就必须和任务账号同类：115 的分享追不进夸克
+  if (parsed) assertSameKind(parsed, provider);
   const watchCid = normalizeCid(input.watchCid);
   const existing = findShareFollow(shareCode, watchCid);
   if (existing) throw new HttpError(409, "这个分享目录已经在追更", { data: toSummary(existing) });
@@ -272,7 +263,7 @@ export async function createFollow(input: CreateFollowInput): Promise<ShareFollo
     id: randomUUID(),
     name: (input.name ?? "").trim() || watchPath || shareCode,
     libraryId: input.libraryId ?? null,
-    shareUrl: (input.shareUrl ?? "").trim(),
+    shareUrl: (input.shareUrl ?? "").trim() || parsed?.url || "",
     shareCode,
     receiveCode,
     watchCid,
@@ -296,9 +287,10 @@ export async function createFollow(input: CreateFollowInput): Promise<ShareFollo
 
   let listing: ScopeListing;
   try {
-    listing = await listScope(account, draft);
+    const session = await share.open(refOf(draft, provider));
+    listing = await listScope(share, session, draft);
   } catch (err) {
-    throw upstream(err, "列分享目录失败");
+    throw driveErrorToHttp(err, "列分享目录失败");
   }
   if (!scopeIsWhole(scope) && listing.missingScopes.length === scope.length) {
     throw new HttpError(400, `在分享里没找到目录：${listing.missingScopes.join("、")}`);
@@ -431,24 +423,29 @@ function settleFailure(f: ShareFollow, error: string, kind: FailKind): ShareFoll
 }
 
 async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
-  let task: TaskDefinition;
-  let account: Account115;
+  let target: Target;
   try {
-    ({ task, account } = resolveTask(f.taskId));
+    target = resolveTask(f.taskId);
   } catch (err) {
     return settleFailure(f, err instanceof HttpError && err.status === 404 ? `同步任务 ${f.taskId} 已不存在` : errMsg(err), "error");
   }
+  const { task, provider, share } = target;
+  const ref = refOf(f, provider);
 
   let listing: ScopeListing;
   try {
-    listing = await listScope(account, f);
+    const session = await share.open(ref);
+    listing = await listScope(share, session, f);
   } catch (err) {
     const msg = errMsg(err);
-    if (classifyAccountIssue(msg)) {
-      void deps.notify({ type: "account-alert", account: account.name, reason: msg, source: `追更 ${f.name}` }).catch(() => {});
+    const issue = provider.classifyError(err);
+    // cookie 失效 / 被风控是账号的问题，不该把订阅停掉：走账号告警，普通退避
+    if (issue === "auth" || issue === "blocked") {
+      void deps.notify({ type: "account-alert", account: provider.account.name, reason: msg, source: `追更 ${f.name}` }).catch(() => {});
       return settleFailure(f, msg, "error");
     }
-    return settleFailure(f, err instanceof ShareApiError ? `分享不可用：${msg}` : msg, err instanceof ShareApiError ? "share" : "error");
+    if (issue === "gone") return settleFailure(f, `分享不可用：${msg}`, "share");
+    return settleFailure(f, msg, "error");
   }
 
   const now = deps.now();
@@ -461,13 +458,11 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
   for (const group of groupByParent(diff.added)) {
     const subPath = normalizeSubPath(group.parent ? `${f.subPath}/${group.parent}` : f.subPath);
     try {
-      const r = await deps.save({
+      const r = await saveSelectionToTask({
         task,
-        accountInfo: account,
-        shareCode: f.shareCode,
-        receiveCode: f.receiveCode,
-        fileIds: group.items.map((i) => i.id),
-        selectedItems: group.items.map((i) => ({ name: baseName(i.path), isDir: i.isDir })),
+        provider,
+        ref,
+        items: group.items.map((i) => ({ id: i.id, name: baseName(i.path), isDir: i.isDir, token: i.token })),
         subPath,
         mode: "sync",
         settings,
@@ -510,11 +505,11 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
   }
   updateShareFollow(f.id, patch);
 
-  const target = `${task.originPath}${f.subPath ? `/${f.subPath}` : ""}`;
+  const target2 = `${task.originPath}${f.subPath ? `/${f.subPath}` : ""}`;
   if (received.length) {
-    log.info(`追更「${f.name}」新增 ${received.length} 项 → ${target}，生成 ${generated} 个 strm`);
+    log.info(`追更「${f.name}」新增 ${received.length} 项 → ${target2}，生成 ${generated} 个 strm`);
     if (generated > 0) scheduleEmbyRefresh();
-    void deps.notify({ type: "follow-added", name: f.name, added: received.map(baseName), generated, target }).catch(() => {});
+    void deps.notify({ type: "follow-added", name: f.name, added: received.map(baseName), generated, target: target2 }).catch(() => {});
   }
   if (errors.length) {
     log.warn(`追更「${f.name}」有条目转存失败：${errors.join("；")}`);

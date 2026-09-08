@@ -142,8 +142,8 @@ export interface ShareProvider {
   /** 夸克换 stoken（按 pwd_id + 提取码缓存）；115 空操作 */
   open(ref: ShareRef, signal?: AbortSignal): Promise<ShareSession>;
   info(session: ShareSession, signal?: AbortSignal): Promise<ShareInfo>;
-  /** 翻页游标不透明：115 是 offset，夸克是页码 */
-  list(session: ShareSession, dirId: string, cursor?: string, signal?: AbortSignal): Promise<ShareListPage>;
+  /** 翻页游标不透明：115 是 offset，夸克是页码。limit 只是上限建议，各家按自己的页大小来 */
+  list(session: ShareSession, dirId: string, cursor?: string, opts?: { limit?: number; signal?: AbortSignal }): Promise<ShareListPage>;
   /** 按分享内路径逐级找（影库条目转存用）；空路径返回 null（就是根） */
   resolvePath(session: ShareSession, path: string, signal?: AbortSignal): Promise<ShareEntry | null>;
   /** 转存到我的网盘目录，阻塞到完成 */

@@ -108,3 +108,36 @@ test("scopeFromSelection：勾了文件追整个目录，只勾目录追这些�
   assert.deepEqual(scopeFromSelection([{ name: "S1", isDir: true }, { name: " S1 ", isDir: true }, { name: "S2", isDir: true }]), ["S1", "S2"]);
   assert.deepEqual(scopeFromSelection([]), [""]);
 });
+
+/* ------------------------------- 没有 sha1 的网盘（夸克）：按分享内的 id 认身份 ------------------------------- */
+
+const qfile = (path: string, id: string): ListedEntry => ({ path, isDir: false, size: 1, id });
+const qknown: ShareFollowEntry[] = [
+  { path: "E01.mkv", isDir: false, id: "f1" },
+  { path: "E02.mkv", isDir: false, id: "f2" },
+];
+
+test("夸克：改名后 id 不变 → 搬家，不再转一份", () => {
+  const d = diffShareListing(qknown, [qfile("E01.v2.mkv", "f1"), qfile("E02.mkv", "f2")]);
+  assert.deepEqual(d.added, []);
+  assert.deepEqual(paths(d.moved), ["E01.v2.mkv"]);
+});
+
+test("夸克：同名重传是新 id → 被替换，只记不转；新 id 新名字才是新增", () => {
+  const d = diffShareListing(qknown, [qfile("E01.mkv", "f1b"), qfile("E02.mkv", "f2"), qfile("E03.mkv", "f3")]);
+  assert.deepEqual(paths(d.replaced), ["E01.mkv"]);
+  assert.deepEqual(paths(d.added), ["E03.mkv"]);
+});
+
+test("夸克：整个目录改名、里面的文件 id 都见过 → 目录按搬家记", () => {
+  const known: ShareFollowEntry[] = [{ path: "S1", isDir: true, id: "d1" }, { path: "S1/E01.mkv", isDir: false, id: "f1" }];
+  const d = diffShareListing(known, [dir("Season 1", "d1"), qfile("Season 1/E01.mkv", "f1")]);
+  assert.deepEqual(d.added, []);
+  assert.deepEqual(paths(d.moved), ["Season 1"]);
+});
+
+test("快照保留 id：下一轮才能靠它认出改名", () => {
+  const merged = mergeKnown([], [qfile("E01.mkv", "f1")]);
+  assert.deepEqual(merged, [{ path: "E01.mkv", isDir: false, size: 1, id: "f1" }]);
+});
+

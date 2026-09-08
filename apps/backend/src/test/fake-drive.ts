@@ -132,6 +132,8 @@ export interface FakeShareDef {
 export class FakeShare implements ShareProvider {
   readonly shares = new Map<string, FakeShareDef>();
   readonly calls = { info: 0, list: 0, receive: 0, resolvePath: 0 };
+  /** 每次分享调用记一行 `<方法> <参数>` */
+  readonly log: string[] = [];
   /** 每页条数，测翻页用 */
   pageSize = 100;
 
@@ -159,6 +161,8 @@ export class FakeShare implements ShareProvider {
   }
 
   private def(ref: ShareRef): FakeShareDef {
+    // 网盘那边设了 failWith（cookie 失效 / 风控），分享接口一样打不通
+    if (this.drive.failWith) throw this.drive.failWith;
     const def = this.shares.get(ref.code);
     if (!def || def.gone) throw new ShareGoneError(`share not exist: ${ref.code}`, 4100);
     if (def.password && def.password !== ref.password) throw new ShareGoneError("wrong password", 4101);
@@ -188,8 +192,9 @@ export class FakeShare implements ShareProvider {
     };
   }
 
-  async list(s: ShareSession, dirId: string, cursor?: string): Promise<ShareListPage> {
+  async list(s: ShareSession, dirId: string, cursor?: string, _opts?: { limit?: number }): Promise<ShareListPage> {
     this.calls.list++;
+    this.log.push(`list ${dirId || "0"}${cursor ? `@${cursor}` : ""}`);
     const def = this.def(s.ref);
     const dir = def.tree.pathOf(dirId || "0");
     if (dir === null) return { entries: [], total: 0 };
@@ -212,6 +217,7 @@ export class FakeShare implements ShareProvider {
 
   async receive(s: ShareSession, items: ReceiveItem[], toDirId: string): Promise<ReceiveResult> {
     this.calls.receive++;
+    this.log.push(`receive ${items.map((i) => i.id).join(",")} -> ${toDirId}`);
     const def = this.def(s.ref);
     const target = this.drive.tree.pathOf(toDirId);
     if (target === null) throw new Error(`fake receive: unknown target dir ${toDirId}`);

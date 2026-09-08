@@ -1,17 +1,18 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getById } from "../../db/repositories/media-library.js";
-import { getShareDirList, resolveLibraryEntryShareReceiveIds } from "../../services/cloud-115/share.js";
-import { resolveTaskAccount115, saveSelectionToTask } from "../../services/library/save-to-task.js";
-import type { SelectedItem } from "../../services/strm/share-strm.js";
-import { listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
-import { normalizeSubPath } from "../../services/strm/naming.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
-import { HttpError, upstreamError } from "../../lib/http-error.js";
+import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
-import { followOptionSchema, idParamsSchema } from "../../schemas/entities.js";
+import { driveErrorToHttp } from "../../services/drive/errors.js";
+import { assertSameKind, parseShareRef, providerForTask } from "../../services/drive/registry.js";
+import { listWholeShareDir } from "../../services/drive/share-walk.js";
+import type { ShareRef } from "../../services/drive/types.js";
 import { createFollowAfterSave } from "../../services/follow/service.js";
+import { saveSelectionToTask, type SaveItem } from "../../services/share/receive.js";
+import { normalizeSubPath } from "../../services/strm/naming.js";
+import { followOptionSchema, idParamsSchema } from "../../schemas/entities.js";
 
 const bodySchema = z.object({
   taskId: z.string().trim().min(1, "taskId is required"),
@@ -33,69 +34,55 @@ export default async function (fastify: FastifyInstance) {
 
     const task = getTask(body.taskId);
     if (!task) throw new HttpError(404, `Task not found: ${body.taskId}`);
-    const accountInfo = resolveTaskAccount115(listAccounts(), task);
+    const provider = providerForTask(task, "share");
+    const share = provider.share!;
+    // 条目存的是分享码和提取码；网盘类型从链接认，认不出就按任务账号的类型来（老数据都是 115）
+    const parsed = parseShareRef(entry.shareUrl);
+    const ref: ShareRef = {
+      kind: parsed?.kind ?? provider.kind,
+      code: entry.shareCode,
+      password: entry.receiveCode,
+      url: entry.shareUrl || parsed?.url || "",
+    };
+    assertSameKind(ref, provider);
 
-    const settings = readAppSettings();
-    const userAgent = typeof settings["user-agent"] === "string" ? settings["user-agent"] : undefined;
-
-    let fileIds: Array<number | string>;
-    let selectedItems: SelectedItem[];
     const trimmedSharePath = (entry.sharePath ?? "").replace(/^\/+/, "");
     const rootCid = entry.shareRootCid ?? "";
     const isShareSubtreeEntry = Boolean(trimmedSharePath) || (rootCid !== "" && rootCid !== "0");
 
-    if (isShareSubtreeEntry) {
-      const dirName = entry.rawName || entry.title;
-      if (!dirName) throw new HttpError(400, "影库条目缺少目录名");
-      if (rootCid && rootCid !== "0") {
-        fileIds = [rootCid];
-      } else {
-        try {
-          fileIds = await resolveLibraryEntryShareReceiveIds(
-            accountInfo,
-            entry.shareCode,
-            entry.receiveCode,
-            entry.sharePath ?? "",
-            dirName,
-            { userAgent },
-          );
-        } catch (err) {
-          throw upstreamError(err instanceof Error ? err.message : "解析分享目录失败");
+    let items: SaveItem[];
+    try {
+      const session = await share.open(ref);
+      if (isShareSubtreeEntry) {
+        const dirName = entry.rawName || entry.title;
+        if (!dirName) throw new HttpError(400, "影库条目缺少目录名");
+        // 115 转存只要 id，存过的 id 直接用；夸克还要每个条目的 token，必须按路径重新找一遍
+        if (rootCid && rootCid !== "0" && provider.kind === "115") {
+          items = [{ id: rootCid, name: dirName, isDir: true }];
+        } else {
+          const hit = await share.resolvePath(session, trimmedSharePath || dirName);
+          if (!hit) throw new HttpError(400, `在分享里没找到「${trimmedSharePath || dirName}」，请检查提取码或分享是否仍有效`);
+          items = [{ id: hit.id, name: dirName, isDir: hit.isDir, token: hit.token }];
         }
-      }
-      selectedItems = [{ name: dirName, isDir: true }];
-    } else {
-      try {
-        const { list } = await getShareDirList(accountInfo, entry.shareCode, entry.receiveCode, 0, { limit: 1000 });
+      } else {
+        const list = await listWholeShareDir(share, session, "0");
         if (list.length === 0) throw new HttpError(400, "分享为空");
-        fileIds = list.map((it) => String(it.id));
-        selectedItems = list.map((it) => ({ name: it.name, isDir: it.is_dir }));
-      } catch (err) {
-        if (err instanceof HttpError) throw err;
-        throw upstreamError(err instanceof Error ? err.message : "列分享目录失败");
+        items = list.map((it) => ({ id: it.id, name: it.name, isDir: it.isDir, token: it.token }));
       }
+    } catch (err) {
+      throw driveErrorToHttp(err, "列分享目录失败");
     }
 
-    const result = await saveSelectionToTask({
-      task,
-      accountInfo,
-      shareCode: entry.shareCode,
-      receiveCode: entry.receiveCode,
-      fileIds,
-      selectedItems,
-      subPath,
-      mode,
-      settings,
-    });
+    const result = await saveSelectionToTask({ task, provider, ref, items, subPath, mode, settings: readAppSettings() });
     if (!body.follow) return result;
     // 子目录条目转存的是目录本身，落在 subPath/目录名 下，追更就盯那个目录、落到同一处；
     // 整个分享的条目盯分享根目录
-    const dirName = isShareSubtreeEntry ? selectedItems[0].name : "";
+    const dirName = isShareSubtreeEntry ? items[0].name : "";
     const extra = await createFollowAfterSave({
-      shareUrl: entry.shareUrl,
+      shareUrl: ref.url,
       shareCode: entry.shareCode,
       receiveCode: entry.receiveCode,
-      watchCid: isShareSubtreeEntry ? String(fileIds[0]) : "0",
+      watchCid: isShareSubtreeEntry ? items[0].id : "0",
       watchPath: trimmedSharePath || dirName,
       scope: [""],
       taskId: task.id,

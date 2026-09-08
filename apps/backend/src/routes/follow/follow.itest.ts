@@ -1,12 +1,14 @@
 /**
- * 追更路由的闭环：鉴权、校验、建 / 列 / 改 / 删 / 立即检查。分享列表和转存换成桩。
+ * 追更路由的闭环：鉴权、校验、建 / 列 / 改 / 删 / 立即检查。分享和网盘换成内存假网盘。
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/routes/follow/follow.itest.ts
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { after, before, test } from "node:test";
 import Fastify, { type FastifyInstance } from "fastify";
-import type { AccountInfo, ShareFollowSummary, TaskDefinition } from "@openstrm/shared";
+import type { AccountInfo, AppSettings, ShareFollowSummary, TaskDefinition } from "@openstrm/shared";
 import { registerErrorHandling } from "../../plugins/error-handler.js";
 import { authPlugin } from "../../plugins/auth.js";
 import followRoute from "./index.js";
@@ -14,33 +16,32 @@ import { DEFAULT_AUTH } from "../../db/defaults.js";
 import { writeAuthPassword } from "../../db/repositories/auth.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
-import type { ShareAttr } from "../../services/cloud-115/share.js";
+import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
+import { DATA_DIR } from "../../paths.js";
+import { setDriveProviderFactory } from "../../services/drive/registry.js";
 import { __test_resetFollows, setFollowServiceDeps } from "../../services/follow/service.js";
+import { FakeDrive, type FakeTree } from "../../test/fake-drive.js";
 
 let app: FastifyInstance;
 let auth: Record<string, string>;
-let baseline: { tasks: TaskDefinition[]; accounts: AccountInfo[] };
+let baseline: { tasks: TaskDefinition[]; accounts: AccountInfo[]; settings: AppSettings };
 const account: AccountInfo = { accountType: "115", name: "acc", cookie: "c" };
-const task: TaskDefinition = { id: "t1", account: "acc", accountType: "115", originPath: "tv", targetPath: "tv", strmPrefix: "/mnt" };
+const task: TaskDefinition = { id: "t1", account: "acc", accountType: "115", originPath: "tv", targetPath: "follow-itest/tv", strmPrefix: "/mnt" };
 
-let items: ShareAttr[] = [{ id: "f1", name: "E01.mkv", is_dir: false, parent_id: 0, size: 1, sha1: "a" }];
-const saves: string[][] = [];
+const drive = new FakeDrive("115", account, { share: true });
+let share: FakeTree;
 
 before(async () => {
-  baseline = { tasks: listTasks(), accounts: listAccounts() };
+  baseline = { tasks: listTasks(), accounts: listAccounts(), settings: readAppSettings() };
   replaceTasks([task]);
   replaceAccounts([account]);
+  replaceAppSettings({ ...baseline.settings, strmExtensions: [".mkv"] });
   await writeAuthPassword("follow-itest-pw");
-  setFollowServiceDeps({
-    listDir: async () => ({ list: items, count: items.length }),
-    save: async (opts) => {
-      saves.push(opts.fileIds.map(String));
-      return { mode: "sync", generatedCount: opts.fileIds.length, skippedCount: 0 };
-    },
-    notify: async () => {},
-    random: () => 0.5,
-    gapMs: 0,
-  });
+  drive.tree.addDir("/tv/The Show");
+  share = drive.share!.define("abc", { title: "The Show", password: "1234" });
+  share.addFile("/E01.mkv", { hash: "a" });
+  setDriveProviderFactory((a) => (a.name === "acc" ? drive : null));
+  setFollowServiceDeps({ notify: async () => {}, random: () => 0.5, gapMs: 0 });
 
   app = Fastify();
   registerErrorHandling(app);
@@ -54,8 +55,11 @@ after(async () => {
   await app.close();
   await __test_resetFollows();
   setFollowServiceDeps(null);
+  setDriveProviderFactory(null);
   replaceTasks(baseline.tasks);
   replaceAccounts(baseline.accounts);
+  replaceAppSettings(baseline.settings);
+  fs.rmSync(path.join(DATA_DIR, "follow-itest"), { recursive: true, force: true });
   await writeAuthPassword(DEFAULT_AUTH.password);
 });
 
@@ -103,13 +107,15 @@ test("建订阅：校验、201、列表、重复 409、改、检查、删", asyn
   assert.equal(updated.json<ShareFollowSummary>().enabled, false);
   assert.equal((await call("PUT", "/api/follow/nope", { name: "x" })).statusCode, 404);
 
-  items = [...items, { id: "f2", name: "E02.mkv", is_dir: false, parent_id: 0, size: 1, sha1: "b" }];
+  share.addFile("/E02.mkv", { hash: "b" });
   const checked = await call("POST", `/api/follow/${follow.id}/check`);
   assert.equal(checked.statusCode, 200, checked.body);
   const r = checked.json<{ follow: ShareFollowSummary; run: { added: string[]; generated: number } | null }>();
   assert.deepEqual(r.run?.added, ["E02.mkv"]);
   assert.equal(r.follow.knownCount, 2);
-  assert.deepEqual(saves, [["f2"]]);
+  assert.equal(drive.share!.calls.receive, 1);
+  assert.ok(drive.tree.get("/tv/The Show/E02.mkv"), "转存进了任务目录");
+  assert.ok(fs.existsSync(path.join(DATA_DIR, "follow-itest", "tv", "The Show", "E02.strm")), "生成了 strm");
   assert.equal((await call("POST", "/api/follow/nope/check")).statusCode, 404);
 
   assert.equal((await call("DELETE", `/api/follow/${follow.id}`)).statusCode, 200);

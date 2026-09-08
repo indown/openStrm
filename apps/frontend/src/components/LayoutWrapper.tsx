@@ -169,12 +169,12 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
                 <PageCrumbs />
               </Suspense>
             </div>
-            {/* 115 分享链接全站都能粘，回车或点「查看」打开转存弹框；手机上收成一个图标，点开再输入 */}
+            {/* 115 / 夸克分享链接全站都能粘，回车或点「查看」打开转存弹框；手机上收成一个图标，点开再输入 */}
             <div className="hidden items-center gap-1.5 sm:flex">
               <div className="relative w-72">
                 <Share2 className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
-                  placeholder="粘贴 115 分享链接，回车查看"
+                  placeholder="粘贴 115 / 夸克分享链接，回车查看"
                   value={share.link}
                   onChange={(e) => share.setLink(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && fetchShareDetail()}
@@ -189,7 +189,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
               variant="ghost"
               size="icon"
               className="size-8 sm:hidden"
-              aria-label="查看 115 分享"
+              aria-label="查看分享"
               onClick={() => setShareBoxOpen(true)}
             >
               <Share2 className="size-5" />
@@ -225,13 +225,13 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       <Dialog open={shareBoxOpen} onOpenChange={setShareBoxOpen}>
         <DialogContent className="top-20 translate-y-0 sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>查看 115 分享</DialogTitle>
+            <DialogTitle>查看分享</DialogTitle>
             <DialogDescription>粘贴分享链接，看内容并转存到网盘</DialogDescription>
           </DialogHeader>
           <div className="flex items-center gap-2">
             <Input
               autoFocus
-              placeholder="https://115.com/s/..."
+              placeholder="https://115.com/s/... 或 https://pan.quark.cn/s/..."
               value={share.link}
               onChange={(e) => share.setLink(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && submitShareFromDialog()}

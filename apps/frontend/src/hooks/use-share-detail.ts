@@ -1,7 +1,10 @@
 import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { api, type ShareFileItem, type ShareInfo } from "@/lib/api";
+import { api, type ShareEntry, type ShareInfo } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
+
+/** 分享详情弹框一页多少条；115 按这个给，夸克固定 50 一页 */
+export const SHARE_PAGE_SIZE = 50;
 
 export interface ShareCrumb {
   id: string;
@@ -25,8 +28,9 @@ export function useShareDetail() {
   const [open, setOpen] = useState(false);
   const [link, setLink] = useState("");
   const [info, setInfo] = useState<ShareInfo | null>(null);
-  const [list, setList] = useState<ShareFileItem[]>([]);
+  const [list, setList] = useState<ShareEntry[]>([]);
   const [count, setCount] = useState(0);
+  const [next, setNext] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [startCid, setStartCid] = useState<string | number | undefined>(undefined);
   const [startCrumbs, setStartCrumbs] = useState<ShareCrumb[] | undefined>(undefined);
@@ -36,7 +40,7 @@ export function useShareDetail() {
   const load = async (url: string, opts: LoadOptions = {}) => {
     const trimmed = url.trim();
     if (!trimmed) {
-      toast.error("请输入 115 分享链接");
+      toast.error("请输入分享链接（115 或夸克）");
       return;
     }
     const seq = ++seqRef.current;
@@ -48,6 +52,7 @@ export function useShareDetail() {
       setInfo(null);
       setList([]);
       setCount(0);
+      setNext(undefined);
       setOpen(true);
     }
     // 直接定位到子目录时根目录列表用不上（弹框自己拉 startCid 那一层），不拉它：
@@ -57,13 +62,14 @@ export function useShareDetail() {
     try {
       const [shareInfo, page] = await Promise.all([
         api.share.info(trimmed),
-        needRootList ? api.share.list(trimmed, 0) : Promise.resolve(null),
+        needRootList ? api.share.list(trimmed, "0", undefined, SHARE_PAGE_SIZE) : Promise.resolve(null),
       ]);
       if (seq !== seqRef.current) return;
       setInfo(shareInfo ?? null);
       if (page) {
-        setList(page.list ?? []);
-        setCount(page.count ?? 0);
+        setList(page.entries ?? []);
+        setCount(page.total ?? page.entries?.length ?? 0);
+        setNext(page.next);
       }
       setOpen(true);
     } catch (err) {
@@ -82,6 +88,7 @@ export function useShareDetail() {
     shareInfo: info,
     fileList: list,
     fileCount: count,
+    nextCursor: next,
     shareLink: link,
     loading,
     startCid,

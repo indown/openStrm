@@ -28,7 +28,7 @@ import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 const PERMISSIONS: Array<{ key: keyof TelegramPermissions; label: string; hint: string }> = [
   { key: "allowTaskStart", label: "允许从 Telegram 启动 / 取消任务", hint: "/tasks 里的「运行」按钮会真的跑同步任务。" },
   { key: "allowOfflineAdd", label: "允许添加云下载", hint: "发磁力 / ed2k / http 链接给机器人，交给 115 云下载；选任务目录的话下完自动生成 strm。" },
-  { key: "allowShareReceive", label: "允许转存分享", hint: "发 115 分享链接给机器人，整个分享转存到某个任务的目录并触发同步。" },
+  { key: "allowShareReceive", label: "允许转存分享", hint: "发 115 / 夸克分享链接给机器人，整个分享转存到同类账号的某个任务目录并触发同步。" },
 ];
 
 const NOTIFY: Array<{ key: keyof TelegramNotifySettings; label: string; hint: string }> = [
@@ -331,7 +331,7 @@ export default function TelegramPage() {
               <div className="font-medium">直接发链接</div>
               <ul className="mt-1 space-y-1 text-muted-foreground">
                 <li>• 磁力 / ed2k / http(s) / ftp 链接（可多行）→ 选下到哪个任务目录，或 115 默认目录</li>
-                <li>• 115 分享链接 → 看一眼内容，选转存到哪个任务目录</li>
+                <li>• 115 / 夸克分享链接 → 看一眼内容，选转存到哪个任务目录</li>
               </ul>
             </div>
             <div>
