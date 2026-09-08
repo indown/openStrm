@@ -12,6 +12,15 @@ import type {
   MediaLibraryEntry,
   ShareFollowRun,
   ShareFollowSummary,
+  StrmDeleteResult,
+  StrmFileInfo,
+  StrmListResult,
+  StrmRegenerateMode,
+  StrmRegenerateResult,
+  StrmRewriteResult,
+  StrmScanResult,
+  StrmSearchResult,
+  StrmVerifyResult,
   TaskDefinition,
   TaskExecutionHistory,
   TaskExecutionSummary,
@@ -484,6 +493,30 @@ export const api = {
       data(axiosInstance.post<{ success: true }>("/api/115/offline/restart", body)),
     downPaths: (account?: string) =>
       data(axiosInstance.get<{ dirs: OfflineDownPath[] }>("/api/115/offline/downpath", { params: { account } })),
+  },
+
+  /** strm 管理：路径都是相对任务 targetPath 的 POSIX 路径，"" 是任务根目录 */
+  strm: {
+    list: (taskId: string, path = "") =>
+      data(axiosInstance.get<StrmListResult>("/api/strm/list", { params: { taskId, path } })),
+    file: (taskId: string, path: string) =>
+      data(axiosInstance.get<StrmFileInfo>("/api/strm/file", { params: { taskId, path } })),
+    /** 整个目录递归找名字，大库要一会 */
+    search: (taskId: string, q: string) =>
+      data(axiosInstance.get<StrmSearchResult>("/api/strm/search", { params: { taskId, q }, timeout: 60_000 })),
+    remove: (taskId: string, paths: string[]) =>
+      data(axiosInstance.post<StrmDeleteResult>("/api/strm/delete", { taskId, paths }, { timeout: 120_000 })),
+    /** 扫描一个目录（"" 是整个任务），大目录要一两分钟 */
+    scan: (taskId: string, path = "") =>
+      data(axiosInstance.post<StrmScanResult>("/api/strm/scan", { taskId, path }, { timeout: 120_000 })),
+    /** 逐个到 115 确认文件还在不在，可能要三分钟；范围太大后端回 400 */
+    verify: (taskId: string, path = "") =>
+      data(axiosInstance.post<StrmVerifyResult>("/api/strm/verify", { taskId, path }, { timeout: 200_000 })),
+    /** 读 115 目录再生成，最长五分钟；根目录 400、任务同步中 409、115 目录没了 404 */
+    regenerate: (taskId: string, path: string, mode: StrmRegenerateMode) =>
+      data(axiosInstance.post<StrmRegenerateResult>("/api/strm/regenerate", { taskId, path, mode }, { timeout: 330_000 })),
+    rewrite: (taskId: string, path: string, dryRun: boolean) =>
+      data(axiosInstance.post<StrmRewriteResult>("/api/strm/rewrite", { taskId, path, dryRun }, { timeout: 120_000 })),
   },
 
   directory: {

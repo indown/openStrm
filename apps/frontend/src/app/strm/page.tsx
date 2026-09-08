@@ -1,0 +1,679 @@
+"use client";
+
+import * as React from "react";
+import { useState } from "react";
+import Link from "next/link";
+import {
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  File,
+  FileCog,
+  Files,
+  FolderOpen,
+  ListChecks,
+  Loader2,
+  MoreHorizontal,
+  RefreshCcw,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Stethoscope,
+  Trash2,
+  Wrench,
+  X,
+} from "lucide-react";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { PageHeader } from "@/components/page-header";
+import { StatusBadge } from "@/components/status-badge";
+import { EmptyState } from "@/components/empty-state";
+import { Spinner, TableSkeleton } from "@/components/loading";
+import { fmtTime, formatSize } from "@/lib/format";
+import { KIND_META, parentOf } from "@/lib/strm";
+import { useStrmBrowser, type DeleteRequest, type StrmRow } from "./use-strm-browser";
+import { StrmFileSheet } from "./components/StrmFileSheet";
+import { ScanDialog } from "./components/ScanDialog";
+import { VerifyDialog } from "./components/VerifyDialog";
+import { RegenerateDialog } from "./components/RegenerateDialog";
+import { RewriteDialog } from "./components/RewriteDialog";
+
+const DESCRIPTION = "浏览任务生成的本地 strm 目录，体检、校验、修正或重新生成";
+
+/** 从下拉菜单里打开确认弹框要等菜单先关掉，否则菜单还回焦点时会把弹框顶掉 */
+const afterMenuClosed = (fn: () => void) => setTimeout(fn, 0);
+
+/** 静态导出下 useSearchParams 必须包在 Suspense 里，不然 next build 直接报错（和历史页一样） */
+export default function StrmPage() {
+  return (
+    <React.Suspense
+      fallback={
+        <div className="space-y-6">
+          <PageHeader icon={Files} title="strm 管理" description={DESCRIPTION} />
+          <TableSkeleton rows={6} />
+        </div>
+      }
+    >
+      <StrmContent />
+    </React.Suspense>
+  );
+}
+
+/** 一行条目在表格和手机卡片上都要用到的东西；操作都回到页面层处理 */
+type RowProps = {
+  row: StrmRow;
+  checked: boolean;
+  /** 搜索结果里要显示所在目录 */
+  showPath: boolean;
+  onToggle: (on: boolean) => void;
+  onOpen: () => void;
+  onDelete: () => void;
+  onVerify: () => void;
+  onRegenerate: () => void;
+  onRewrite: () => void;
+};
+
+function StrmContent() {
+  const b = useStrmBrowser();
+  const [filePath, setFilePath] = useState<string | null>(null);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [scanPath, setScanPath] = useState("");
+  const [verifyPath, setVerifyPath] = useState<string | null>(null);
+  const [regenPath, setRegenPath] = useState<string | null>(null);
+  const [rewritePath, setRewritePath] = useState<string | null>(null);
+
+  const openScan = (p: string) => {
+    setScanPath(p);
+    setScanOpen(true);
+  };
+
+  const rowProps = (row: StrmRow): RowProps => ({
+    row,
+    checked: b.selected.has(row.path),
+    showPath: b.mode === "search",
+    onToggle: (on) => b.toggleOne(row.path, on),
+    onOpen: () => {
+      if (row.isDir) b.go({ path: row.path });
+      else if (row.kind === "strm") setFilePath(row.path);
+    },
+    onDelete: () => void b.requestDelete([row.path], `「${row.name}」`),
+    onVerify: () => setVerifyPath(row.path),
+    onRegenerate: () => setRegenPath(row.path),
+    onRewrite: () => setRewritePath(row.path),
+  });
+
+  const task = b.task;
+  const syncing = task?.status === "processing";
+  const tasksReady = b.tasks !== null;
+  const q = b.query.trim();
+
+  const goTasksButton = (
+    <Button asChild variant="outline">
+      <Link href="/home">去任务页</Link>
+    </Button>
+  );
+
+  const renderBody = () => {
+    if (!tasksReady) {
+      return b.tasksError ? (
+        <EmptyState
+          icon={Files}
+          title="读取任务列表失败"
+          description={b.tasksError}
+          action={
+            <Button variant="outline" onClick={() => void b.reloadTasks()}>
+              <RefreshCw className="size-4" />
+              重试
+            </Button>
+          }
+        />
+      ) : (
+        <TableSkeleton rows={6} />
+      );
+    }
+    if (b.tasks && b.tasks.length === 0) {
+      return (
+        <EmptyState
+          icon={ListChecks}
+          title="还没有同步任务"
+          description="strm 管理基于任务的本地目录；先到「任务」页新建一个并跑一次。"
+          action={goTasksButton}
+        />
+      );
+    }
+    if (!task) {
+      // 有任务但 URL 里的这个不存在（比如被删了）；没带 taskId 时 hook 会自动跳到第一个任务
+      return b.taskId ? (
+        <EmptyState icon={Files} title="这个任务不存在" description="可能已被删除，换一个任务看看。" />
+      ) : (
+        <TableSkeleton rows={6} />
+      );
+    }
+    if (!b.loaded) return <TableSkeleton rows={6} />;
+    if (b.error && b.entries.length === 0 && b.mode !== "search") {
+      return (
+        <EmptyState
+          icon={Files}
+          title="读取目录失败"
+          description={b.error}
+          action={
+            <Button variant="outline" onClick={() => void b.refresh()} disabled={b.refreshing}>
+              <RefreshCw className={`size-4 ${b.refreshing ? "animate-spin" : ""}`} />
+              重试
+            </Button>
+          }
+        />
+      );
+    }
+    if (b.loading && b.visible.length === 0) return <Spinner label="正在读取目录…" />;
+    if (b.visible.length === 0) {
+      if (b.mode === "search") {
+        return (
+          <EmptyState
+            className="py-10"
+            icon={Search}
+            title="没有匹配的项目"
+            description={`整个目录里都没有名字包含「${b.searchTerm}」的文件。`}
+          />
+        );
+      }
+      if (q) {
+        return (
+          <EmptyState
+            className="py-10"
+            icon={Search}
+            title="没有匹配的项目"
+            description={`当前目录里没有名字包含「${q}」的项目；按回车可以搜索整个目录。`}
+          />
+        );
+      }
+      if (b.path === "") {
+        return (
+          <EmptyState
+            icon={Files}
+            title="这个目录还是空的"
+            description="任务还没跑过，或者本地目录不存在。到「任务」页运行一次同步后再来。"
+            action={goTasksButton}
+          />
+        );
+      }
+      return (
+        <EmptyState icon={FolderOpen} title="这个目录是空的" description="可以用「工具 → 重新生成」按 115 目录补齐。" />
+      );
+    }
+    return (
+      <>
+        {/* 手机上一条一张卡；md 起是表格 */}
+        <div className="space-y-3 md:hidden">
+          {b.visible.map((row) => (
+            <StrmCard key={row.path} {...rowProps(row)} />
+          ))}
+        </div>
+        <div className="hidden overflow-hidden rounded-xl border bg-card md:block">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-10">
+                  <Checkbox checked={b.allSelected} onCheckedChange={(v) => b.toggleAll(v === true)} aria-label="全选" />
+                </TableHead>
+                <TableHead>名称</TableHead>
+                <TableHead className="w-24">类型</TableHead>
+                <TableHead className="w-24 text-right">大小</TableHead>
+                <TableHead className="w-44">修改时间</TableHead>
+                <TableHead className="w-28 text-right">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {b.visible.map((row) => (
+                <StrmTableRow key={row.path} {...rowProps(row)} />
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </>
+    );
+  };
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        icon={Files}
+        title="strm 管理"
+        description={DESCRIPTION}
+        actions={
+          <>
+            <Button variant="outline" onClick={() => void b.refresh()} disabled={!task || b.refreshing}>
+              <RefreshCw className={`size-4 ${b.refreshing ? "animate-spin" : ""}`} />
+              刷新
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" disabled={!task}>
+                  <Wrench className="size-4" />
+                  工具
+                  <ChevronDown className="size-4 opacity-60" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => afterMenuClosed(() => openScan(b.path))}>
+                  <Stethoscope />
+                  体检当前目录
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => afterMenuClosed(() => setVerifyPath(b.path))}>
+                  <ShieldCheck />
+                  校验当前目录
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={b.path === ""}
+                  title={b.path === "" ? "根目录请直接运行同步任务" : undefined}
+                  onSelect={() => afterMenuClosed(() => setRegenPath(b.path))}
+                >
+                  <RefreshCcw />
+                  重新生成当前目录
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => afterMenuClosed(() => setRewritePath(b.path))}>
+                  <FileCog />
+                  修正内容
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        }
+      >
+        {task && (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <p className="break-all font-mono text-xs text-muted-foreground">本地目录 {task.targetPath || "（数据目录根）"}</p>
+            {syncing && (
+              <StatusBadge tone="info" pulse>
+                同步中
+              </StatusBadge>
+            )}
+          </div>
+        )}
+      </PageHeader>
+
+      {tasksReady && b.tasks && b.tasks.length > 0 && (
+        <div className="space-y-3">
+          {/* 工具栏：任务 + 筛选 / 搜索 */}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Select value={b.taskId || undefined} onValueChange={(id) => b.go({ taskId: id, path: "" })}>
+              <SelectTrigger className="w-full sm:w-80">
+                <SelectValue placeholder="选择任务" />
+              </SelectTrigger>
+              <SelectContent>
+                {b.tasks.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>
+                    {t.originPath} → {t.targetPath}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <div className="flex flex-1 items-center gap-2">
+              <Input
+                value={b.query}
+                onChange={(e) => b.setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && void b.runSearch()}
+                placeholder="筛选当前目录，回车搜索整个目录"
+                disabled={!task}
+                className="flex-1"
+              />
+              <Button variant="outline" onClick={() => void b.runSearch()} disabled={!task || !q || b.searching} title="搜索整个目录">
+                {b.searching ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
+                搜索
+              </Button>
+            </div>
+          </div>
+
+          {/* 面包屑 + 选择操作 */}
+          {task && (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <nav className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
+                <button
+                  type="button"
+                  onClick={() => b.go({ path: "" })}
+                  disabled={b.segments.length === 0}
+                  title={task.targetPath}
+                  className={
+                    b.segments.length === 0
+                      ? "cursor-default font-medium text-foreground"
+                      : "text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  }
+                >
+                  根目录
+                </button>
+                {b.segments.map((seg, i) => {
+                  const last = i === b.segments.length - 1;
+                  return (
+                    <span key={`${i}-${seg}`} className="flex min-w-0 items-center gap-1">
+                      <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                      <button
+                        type="button"
+                        onClick={() => b.go({ path: b.segments.slice(0, i + 1).join("/") })}
+                        disabled={last}
+                        title={seg}
+                        className={`max-w-[140px] truncate ${
+                          last
+                            ? "cursor-default font-medium text-foreground"
+                            : "text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                        }`}
+                      >
+                        {seg}
+                      </button>
+                    </span>
+                  );
+                })}
+              </nav>
+              <div className="flex flex-wrap items-center gap-2">
+                {b.mode === "search" && (
+                  <button
+                    type="button"
+                    onClick={b.exitSearch}
+                    className="inline-flex items-center gap-1 rounded-md border border-brand/20 bg-brand/10 px-2 py-0.5 text-xs text-brand"
+                    title="退出搜索，回到当前目录"
+                  >
+                    全目录搜索「{b.searchTerm}」
+                    <X className="size-3" />
+                  </button>
+                )}
+                {b.visible.length > 0 && (
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground md:hidden">
+                    <Checkbox checked={b.allSelected} onCheckedChange={(v) => b.toggleAll(v === true)} aria-label="全选" />
+                    全选
+                  </label>
+                )}
+                {b.selected.size > 0 && (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => void b.requestDelete([...b.selected], `所选 ${b.selected.size} 项`)}
+                  >
+                    <Trash2 className="size-4" />
+                    删除所选（{b.selected.size}）
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {b.mode === "search" && b.truncated && (
+            <p className="text-xs text-warning">结果太多，只显示了前面一部分，请换个更具体的关键词。</p>
+          )}
+        </div>
+      )}
+
+      {renderBody()}
+
+      <DeleteStrmDialog target={b.deleteTarget} deleting={b.deleting} onCancel={b.cancelDelete} onConfirm={() => void b.confirmDelete()} />
+
+      <StrmFileSheet
+        taskId={b.taskId}
+        path={filePath}
+        onOpenChange={(open) => !open && setFilePath(null)}
+        onDelete={b.requestDelete}
+        onDeleted={() => setFilePath(null)}
+      />
+      <ScanDialog
+        key={`${b.taskId}::${scanPath}`}
+        open={scanOpen}
+        onOpenChange={setScanOpen}
+        taskId={b.taskId}
+        path={scanPath}
+        onOpenPath={(dir) => {
+          setScanOpen(false);
+          b.go({ path: dir });
+        }}
+        onDelete={b.requestDelete}
+        onRewriteAll={(p) => {
+          setScanOpen(false);
+          setRewritePath(p);
+        }}
+      />
+      <VerifyDialog target={verifyPath} onOpenChange={(open) => !open && setVerifyPath(null)} taskId={b.taskId} onDelete={b.requestDelete} />
+      <RegenerateDialog
+        target={regenPath}
+        onOpenChange={(open) => !open && setRegenPath(null)}
+        taskId={b.taskId}
+        syncing={Boolean(syncing)}
+        onDone={() => void b.refresh()}
+      />
+      <RewriteDialog target={rewritePath} onOpenChange={(open) => !open && setRewritePath(null)} taskId={b.taskId} onDone={() => void b.refresh()} />
+    </div>
+  );
+}
+
+/* ------------------------------- 行 / 卡片 ------------------------------- */
+
+function EntryName({ row, showPath, onOpen }: Pick<RowProps, "row" | "showPath" | "onOpen">) {
+  const Icon = row.isDir ? FolderOpen : File;
+  const clickable = row.isDir || row.kind === "strm";
+  return (
+    <div className="flex min-w-0 items-start gap-2">
+      <Icon className={`mt-0.5 size-4 shrink-0 ${row.isDir ? "text-warning" : "text-muted-foreground"}`} />
+      <div className="min-w-0">
+        <button
+          type="button"
+          onClick={onOpen}
+          disabled={!clickable}
+          title={row.name}
+          className={`break-all text-left text-sm font-medium ${clickable ? "hover:text-brand" : "cursor-default"}`}
+        >
+          {row.name}
+          {row.isSymlink && <span className="ml-1 text-xs font-normal text-muted-foreground">（链接）</span>}
+        </button>
+        {showPath && <div className="break-all text-xs text-muted-foreground">{parentOf(row.path) || "根目录"}</div>}
+      </div>
+    </div>
+  );
+}
+
+function DirMenu({
+  size,
+  onVerify,
+  onRegenerate,
+  onRewrite,
+  onDelete,
+}: Pick<RowProps, "onVerify" | "onRegenerate" | "onRewrite" | "onDelete"> & { size: "size-8" | "size-9" }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className={size} title="更多操作">
+          <MoreHorizontal />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => afterMenuClosed(onVerify)}>
+          <ShieldCheck />
+          校验此目录
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => afterMenuClosed(onRegenerate)}>
+          <RefreshCcw />
+          重新生成
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => afterMenuClosed(onRewrite)}>
+          <FileCog />
+          修正内容
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onSelect={() => afterMenuClosed(onDelete)}>
+          <Trash2 />
+          删除
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function KindBadge({ row }: { row: StrmRow }) {
+  if (row.isDir) return <span className="text-xs text-muted-foreground">目录</span>;
+  const meta = KIND_META[row.kind];
+  return <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>;
+}
+
+function StrmTableRow(p: RowProps) {
+  const { row } = p;
+  return (
+    <TableRow data-state={p.checked ? "selected" : undefined}>
+      <TableCell className="w-10">
+        <Checkbox checked={p.checked} onCheckedChange={(v) => p.onToggle(v === true)} aria-label={`选择 ${row.name}`} />
+      </TableCell>
+      <TableCell className="min-w-[240px]">
+        <EntryName row={row} showPath={p.showPath} onOpen={p.onOpen} />
+      </TableCell>
+      <TableCell className="w-24">
+        <KindBadge row={row} />
+      </TableCell>
+      <TableCell className="w-24 text-right text-xs text-muted-foreground tabular-nums">{row.isDir ? "-" : formatSize(row.size)}</TableCell>
+      <TableCell className="w-44 text-xs text-muted-foreground tabular-nums">{fmtTime(row.mtime)}</TableCell>
+      <TableCell className="w-28">
+        <div className="flex justify-end gap-0.5">
+          {row.isDir ? (
+            <DirMenu size="size-8" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onDelete={p.onDelete} />
+          ) : (
+            <>
+              {row.kind === "strm" && (
+                <Button variant="ghost" size="icon" className="size-8" title="查看" onClick={p.onOpen}>
+                  <Eye className="size-4" />
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 text-destructive hover:text-destructive"
+                title="删除"
+                onClick={p.onDelete}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            </>
+          )}
+        </div>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function StrmCard(p: RowProps) {
+  const { row } = p;
+  return (
+    <div className="rounded-xl border bg-card p-4">
+      <div className="flex items-start gap-3">
+        <Checkbox className="mt-0.5" checked={p.checked} onCheckedChange={(v) => p.onToggle(v === true)} aria-label={`选择 ${row.name}`} />
+        <div className="min-w-0 flex-1">
+          <EntryName row={row} showPath={p.showPath} onOpen={p.onOpen} />
+          <div className="mt-1 text-xs text-muted-foreground tabular-nums">
+            {row.isDir ? fmtTime(row.mtime) : `${formatSize(row.size)} · ${fmtTime(row.mtime)}`}
+          </div>
+        </div>
+        {!row.isDir && (
+          <div className="shrink-0">
+            <KindBadge row={row} />
+          </div>
+        )}
+      </div>
+      <div className="mt-3 flex items-center gap-2 border-t pt-3">
+        {row.isDir ? (
+          <>
+            <Button variant="outline" size="sm" className="h-9 flex-1" onClick={p.onOpen}>
+              <FolderOpen className="size-4" />
+              打开
+            </Button>
+            <DirMenu size="size-9" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onDelete={p.onDelete} />
+          </>
+        ) : row.kind === "strm" ? (
+          <>
+            <Button variant="outline" size="sm" className="h-9 flex-1" onClick={p.onOpen}>
+              <Eye className="size-4" />
+              查看
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-9 text-destructive hover:text-destructive"
+              title="删除"
+              onClick={p.onDelete}
+            >
+              <Trash2 className="size-4" />
+            </Button>
+          </>
+        ) : (
+          <Button variant="outline" size="sm" className="h-9 flex-1 text-destructive hover:text-destructive" onClick={p.onDelete}>
+            <Trash2 className="size-4" />
+            删除
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------- 删除确认 ------------------------------- */
+
+function DeleteStrmDialog({
+  target,
+  deleting,
+  onCancel,
+  onConfirm,
+}: {
+  target: DeleteRequest | null;
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const paths = target?.paths ?? [];
+  return (
+    <AlertDialog open={target != null} onOpenChange={(open) => !open && !deleting && onCancel()}>
+      <AlertDialogContent className="sm:max-w-[460px]">
+        <AlertDialogHeader>
+          <AlertDialogTitle className="break-all">删除{target?.label}</AlertDialogTitle>
+          <AlertDialogDescription asChild>
+            <div className="space-y-2">
+              <p>会从本地目录里删除（目录连同里面的内容一起删），115 网盘不受影响。</p>
+              <ul className="space-y-0.5 font-mono text-xs text-foreground">
+                {paths.slice(0, 5).map((p) => (
+                  <li key={p} className="break-all">
+                    {p}
+                  </li>
+                ))}
+                {paths.length > 5 && <li className="text-muted-foreground">…等 {paths.length} 项</li>}
+              </ul>
+              <p className="font-medium text-destructive">此操作无法撤销。</p>
+            </div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="gap-2">
+          <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+          <AlertDialogAction
+            className={buttonVariants({ variant: "destructive" })}
+            onClick={(e) => {
+              e.preventDefault();
+              onConfirm();
+            }}
+            disabled={deleting}
+          >
+            {deleting ? <Loader2 className="size-4 animate-spin" /> : "删除"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
