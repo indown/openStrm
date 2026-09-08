@@ -1,0 +1,314 @@
+/**
+ * 夸克网盘（Cookie 模式）的最小客户端：列目录、按路径找 fid、取下载直链。
+ *
+ * 接口和约定都照 OpenList 的 drivers/quark_uc：
+ *   - base https://drive.quark.cn/1/clouddrive，每个请求带 ?pr=ucpro&fr=pc，
+ *     头 Cookie / Referer / 固定的桌面端 UA（不用设置里的全局 UA：直链和取链时的 UA 绑定，固定下来才确定）。
+ *   - 响应壳 { status, code, message, data, metadata }；status >= 400 或 code !== 0 即失败，message 给人看。
+ *   - 服务端会在 Set-Cookie 里轮换 __puus：必须合并回账号 cookie 并落库，否则 cookie 很快失效。
+ *   - 没有「路径 → id」接口，也没有 115 那种整树导出：路径从根 "0" 逐段列目录对名字，目录内容按 100 条翻页。
+ *   - /file/download 给的直链取文件时必须带同一份 Cookie、Referer、UA，所以不能 302 给播放器；
+ *     全量任务里随片下载字幕 / nfo 是我们自己取，带上这几个头即可。
+ *
+ * 只抛 QuarkError（接口明确说失败）和 PermanentError（路径不存在这类换多少次都一样的）；HTTP 语义由路由翻译。
+ */
+import axios, { type AxiosRequestConfig } from "axios";
+import { LRUCache } from "lru-cache";
+import type { AccountQuark } from "@openstrm/shared";
+import { updateAccount } from "../../db/repositories/accounts.js";
+import { readAppSettings } from "../../db/repositories/settings.js";
+import { scheduleForAccount } from "../download/rate-limited.js";
+import { PermanentError } from "../../lib/errors.js";
+import { DEFAULT_TIMEOUT_MS } from "../../lib/http.js";
+import { moduleLogger } from "../../lib/logger.js";
+
+const log = moduleLogger("quark");
+
+export const QUARK_API = "https://drive.quark.cn/1/clouddrive";
+export const QUARK_REFERER = "https://pan.quark.cn";
+export const QUARK_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch";
+const PAGE_SIZE = 100;
+/** 服务端会轮换的 cookie 键：__puus 每次都可能换，__pus 只在转码播放时出现，顺手一起收 */
+const ROTATED_COOKIES = ["__puus", "__pus"];
+
+let apiBase = QUARK_API;
+/** 仅供测试：把接口指到本地假服务；传 null 恢复 */
+export function setQuarkApiBase(base: string | null): void {
+  apiBase = base ?? QUARK_API;
+}
+
+export class QuarkError extends Error {
+  constructor(
+    message: string,
+    /** 响应壳里的 status（没有就是 HTTP 状态码） */
+    readonly status?: number,
+    /** 响应壳里的 code，夸克自己的错误码 */
+    readonly code?: number,
+  ) {
+    super(message);
+    this.name = "QuarkError";
+  }
+}
+
+export interface QuarkEntry {
+  fid: string;
+  name: string;
+  isDir: boolean;
+  size: number;
+  /** 夸克的分类：1 = 视频 */
+  category: number;
+}
+
+/** 下载直链和取它时必须带的头 */
+export interface QuarkLink {
+  url: string;
+  headers: Record<string, string>;
+}
+
+interface Envelope<T> {
+  status?: number;
+  code?: number;
+  message?: string;
+  data?: T;
+  metadata?: Record<string, unknown>;
+}
+
+/* ------------------------------- cookie ------------------------------- */
+
+/** 把 name=value 写进 cookie 串：已有的键替换，没有就追加，其它键原样保留 */
+export function mergeCookie(cookie: string, name: string, value: string): string {
+  const pairs = cookie
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  let found = false;
+  const out = pairs.map((pair) => {
+    const eq = pair.indexOf("=");
+    const key = (eq === -1 ? pair : pair.slice(0, eq)).trim();
+    if (key !== name) return pair;
+    found = true;
+    return `${name}=${value}`;
+  });
+  if (!found) out.push(`${name}=${value}`);
+  return out.join("; ");
+}
+
+/** 从响应的 Set-Cookie 里取某个键的值（只看分号前的键值对，Path / HttpOnly 之类的属性忽略）；没有返回 null */
+export function cookieFromSetCookie(headers: string[] | string | undefined, name: string): string | null {
+  if (!headers) return null;
+  for (const header of Array.isArray(headers) ? headers : [headers]) {
+    const first = header.split(";")[0] ?? "";
+    const eq = first.indexOf("=");
+    if (eq === -1) continue;
+    if (first.slice(0, eq).trim() === name) return first.slice(eq + 1).trim();
+  }
+  return null;
+}
+
+/**
+ * 把响应里轮换过的 cookie 合并回账号。改的是传进来的那个对象：全量任务一次 listAccounts() 之后
+ * 整轮复用同一个对象，后面的请求才拿得到新值；同时写库，下一次任务从库里读到的也是新的。
+ * 并发请求各自带回不同的值时后写胜出——它们都是同一会话的刷新，旧值短时间内仍有效，不值得为此串行化。
+ */
+function rememberRotatedCookies(account: AccountQuark, setCookie: string[] | string | undefined): void {
+  let merged = account.cookie;
+  for (const name of ROTATED_COOKIES) {
+    const value = cookieFromSetCookie(setCookie, name);
+    if (value) merged = mergeCookie(merged, name, value);
+  }
+  if (merged === account.cookie) return;
+  account.cookie = merged;
+  updateAccount(account.name, { cookie: merged });
+  log.debug(`夸克账号 ${account.name} 的 cookie 已轮换并写回`);
+}
+
+/* ------------------------------- 名字 ------------------------------- */
+
+const NAMED_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+
+/** 列目录返回的 file_name 是 HTML 转义过的（OpenList 也做了一次 html.UnescapeString） */
+export function unescapeHtml(s: string): string {
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, body: string) => {
+    if (body[0] === "#") {
+      const hex = body[1] === "x" || body[1] === "X";
+      const code = hex ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+      return Number.isFinite(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? match;
+  });
+}
+
+/* ------------------------------- 请求 ------------------------------- */
+
+interface RequestOptions {
+  params?: Record<string, string | number>;
+  data?: unknown;
+  signal?: AbortSignal;
+}
+
+/**
+ * 走一次夸克接口。和 request115 一样排进账号限流器（共享的每秒配额按账号名分，夸克自动享有同样的限流）。
+ * HTTP 状态一律放行，由响应壳判断成败：4xx 的壳里 message 才是给人看的原因。
+ */
+async function request<T>(
+  account: AccountQuark,
+  method: "GET" | "POST",
+  path: string,
+  { params, data, signal }: RequestOptions = {},
+): Promise<Envelope<T>> {
+  const maxConcurrent = readAppSettings().download?.linkMaxConcurrent ?? 2;
+  return scheduleForAccount(
+    `${account.name}:normal`,
+    async () => {
+      const config: AxiosRequestConfig = {
+        url: `${apiBase}${path}`,
+        method,
+        params: { pr: "ucpro", fr: "pc", ...params },
+        data,
+        headers: {
+          Cookie: account.cookie,
+          Referer: QUARK_REFERER,
+          "User-Agent": QUARK_UA,
+          Accept: "application/json, text/plain, */*",
+        },
+        timeout: DEFAULT_TIMEOUT_MS,
+        signal,
+        validateStatus: () => true,
+      };
+      const res = await axios.request<Envelope<T> | string>(config);
+      rememberRotatedCookies(account, res.headers["set-cookie"]);
+      const body = res.data;
+      if (!body || typeof body !== "object") {
+        throw new QuarkError(`夸克 ${path} 失败：HTTP ${res.status}`, res.status);
+      }
+      if (res.status >= 400 || (body.status ?? 0) >= 400 || (body.code ?? 0) !== 0) {
+        const reason = body.message || `HTTP ${res.status}`;
+        throw new QuarkError(`夸克 ${path} 失败：${reason}`, body.status ?? res.status, body.code);
+      }
+      return body;
+    },
+    maxConcurrent,
+    signal,
+  );
+}
+
+/* ------------------------------- fs ------------------------------- */
+
+interface RawFile {
+  fid?: string;
+  file_name?: string;
+  /** true 是文件；OpenList 按 !file 判目录，缺失时同样当目录 */
+  file?: boolean;
+  size?: number;
+  category?: number;
+}
+
+/** 列一个目录的全部内容，按 100 条翻页；显式排序，翻页期间目录变化才不至于漏掉或重复条目 */
+export async function quarkListDir(account: AccountQuark, fid: string, signal?: AbortSignal): Promise<QuarkEntry[]> {
+  const entries: QuarkEntry[] = [];
+  for (let page = 1; ; page++) {
+    const body = await request<{ list?: RawFile[] }>(account, "GET", "/file/sort", {
+      params: {
+        pdir_fid: fid,
+        _page: page,
+        _size: PAGE_SIZE,
+        _fetch_total: 1,
+        fetch_all_file: 1,
+        fetch_risk_file_name: 1,
+        _sort: "file_type:asc,file_name:asc",
+      },
+      signal,
+    });
+    const list = body.data?.list ?? [];
+    for (const f of list) {
+      if (!f.fid) continue;
+      entries.push({
+        fid: String(f.fid),
+        name: unescapeHtml(String(f.file_name ?? "")),
+        isDir: !f.file,
+        size: Number(f.size ?? 0),
+        category: Number(f.category ?? 0),
+      });
+    }
+    // 以 _total 为准；拿不到 _total 时靠空页收尾
+    const total = Number(body.metadata?._total);
+    if (list.length === 0 || (Number.isFinite(total) && entries.length >= total)) break;
+  }
+  return entries;
+}
+
+const pathCache = new LRUCache<string, QuarkEntry>({ max: 5000, ttl: 10 * 60 * 1000 });
+
+/** 仅供测试 */
+export function clearQuarkCaches(): void {
+  pathCache.clear();
+}
+
+function splitPath(path: string): string[] {
+  return path
+    .split("/")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function cacheKey(account: AccountQuark, segments: string[]): string {
+  return `${account.name}\0${segments.join("/")}`;
+}
+
+/**
+ * 路径 → fid。从最长的已缓存前缀往下逐段列目录对名字（只缓存目录：文件路径在任务里都是一次性的）。
+ * 根（空路径 / "/"）返回 fid "0"、entry null。段找不到抛 PermanentError：取直链的重试见到它就直接放弃。
+ */
+export async function quarkResolvePath(
+  account: AccountQuark,
+  path: string,
+  signal?: AbortSignal,
+): Promise<{ fid: string; entry: QuarkEntry | null }> {
+  const segments = splitPath(path);
+  if (segments.length === 0) return { fid: "0", entry: null };
+
+  let start = 0;
+  let fid = "0";
+  let entry: QuarkEntry | null = null;
+  for (let len = segments.length; len > 0; len--) {
+    const hit = pathCache.get(cacheKey(account, segments.slice(0, len)));
+    if (hit) {
+      start = len;
+      fid = hit.fid;
+      entry = hit;
+      break;
+    }
+  }
+
+  for (let i = start; i < segments.length; i++) {
+    const name = segments[i];
+    const isLast = i === segments.length - 1;
+    const sofar = segments.slice(0, i + 1).join("/");
+    const matches = (await quarkListDir(account, fid, signal)).filter((e) => e.name.trim() === name);
+    if (matches.length === 0) throw new PermanentError(`夸克：找不到 ${sofar}`);
+    if (matches.length > 1) log.warn({ account: account.name, path: sofar }, "夸克目录里有同名条目，取第一个");
+    // 中间段必须是目录；同名时优先目录
+    entry = (isLast ? null : matches.find((e) => e.isDir)) ?? matches[0];
+    if (!isLast && !entry.isDir) throw new PermanentError(`夸克：${sofar} 不是目录`);
+    if (entry.isDir) pathCache.set(cacheKey(account, segments.slice(0, i + 1)), entry);
+    fid = entry.fid;
+  }
+  return { fid, entry };
+}
+
+/** 取直链时必须一起带上的头：cookie 现读，好把刚轮换进来的 __puus 带上 */
+export function quarkLinkHeaders(account: AccountQuark): Record<string, string> {
+  return { Cookie: account.cookie, Referer: QUARK_REFERER, "User-Agent": QUARK_UA };
+}
+
+/** 文件的下载直链。夸克明确说没有直链时是 PermanentError，别拿同一个 fid 重试 */
+export async function quarkDownloadLink(account: AccountQuark, fid: string, signal?: AbortSignal): Promise<QuarkLink> {
+  const body = await request<Array<{ download_url?: string }>>(account, "POST", "/file/download", {
+    data: { fids: [fid] },
+    signal,
+  });
+  const url = body.data?.[0]?.download_url;
+  if (!url) throw new PermanentError(`夸克：没有拿到 ${fid} 的下载直链`);
+  return { url, headers: quarkLinkHeaders(account) };
+}

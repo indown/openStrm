@@ -220,6 +220,23 @@ test("POST /api/account 不接受掩码值当 cookie", async () => {
   assert.match(res.json().message, /cookie/);
 });
 
+test("POST /api/account：夸克账号缺 cookie → 400；带 cookie → 201 且响应掩码；PUT 掩码值不覆盖真值", async () => {
+  const missing = await call("POST", "/api/account", { accountType: "quark", name: "qk" });
+  assert.equal(missing.statusCode, 400);
+  assert.match(missing.json().message, /cookie/);
+
+  const res = await call("POST", "/api/account", { accountType: "quark", name: "qk", cookie: "kps=1; __puus=abcdef" });
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.json().accountType, "quark");
+  assert.equal(res.json().cookie, "••••cdef");
+
+  const listed = (await call("GET", "/api/account")).json().find((a: { name: string }) => a.name === "qk");
+  const put = await call("PUT", "/api/account", { name: "qk", accountType: "quark", cookie: listed.cookie });
+  assert.equal(put.statusCode, 200);
+  assert.equal((listAccounts().find((a) => a.name === "qk") as { cookie?: string }).cookie, "kps=1; __puus=abcdef");
+  assert.equal((await call("DELETE", "/api/account?name=qk")).statusCode, 200);
+});
+
 test("DELETE /api/account：删掉后再删 404", async () => {
   assert.equal((await call("DELETE", "/api/account?name=main")).statusCode, 200);
   assert.equal((await call("DELETE", "/api/account?name=main")).statusCode, 404);

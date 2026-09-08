@@ -42,14 +42,14 @@ import { toast } from "sonner";
 export const accountFormSchema = z.object({
   accountType: z.string().min(1, "账户类型不能为空"),
   name: z.string().min(1, "账户名称不能为空"),
-  // 115 类型字段
+  // 115 / 夸克类型字段
   cookie: z.string().optional(),
   // openlist 类型字段
   account: z.string().optional(),
   password: z.string().optional(),
   url: z.string().optional(),
 }).refine((data) => {
-  if (data.accountType === "115") {
+  if (data.accountType === "115" || data.accountType === "quark") {
     return data.cookie && data.cookie.length > 0;
   } else if (data.accountType === "openlist") {
     return data.account && data.password && data.url;
@@ -133,8 +133,12 @@ export function AddAccountDialog({ account, trigger, onSuccess, open: openProp, 
     }
   };
 
-  // 模拟可选账号类型
-  const accountTypes = ["115", "openlist"];
+  /** 下拉里显示的名字；值不变，后端和任务表都认这些值 */
+  const accountTypes: Array<{ value: string; label: string }> = [
+    { value: "115", label: "115 网盘" },
+    { value: "openlist", label: "OpenList" },
+    { value: "quark", label: "夸克网盘" },
+  ];
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -169,9 +173,9 @@ export function AddAccountDialog({ account, trigger, onSuccess, open: openProp, 
                         <SelectValue placeholder="选择账户类型" />
                       </SelectTrigger>
                       <SelectContent>
-                        {accountTypes.map((type) => (
-                          <SelectItem key={type} value={type}>
-                            {type}
+                        {accountTypes.map(({ value, label }) => (
+                          <SelectItem key={value} value={value}>
+                            {label}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -217,6 +221,32 @@ export function AddAccountDialog({ account, trigger, onSuccess, open: openProp, 
                   <Info className="h-4 w-4" />
                   <AlertDescription>
                     如果希望使用 302 重定向功能，推荐将账户名称与 openlist、cd2 的 115 账户用户名保持一致，这样可以保证正确回源。
+                  </AlertDescription>
+                </Alert>
+              </>
+            )}
+
+            {/* 夸克类型字段：和 115 一样只要 cookie */}
+            {watchAccountType === "quark" && (
+              <>
+                <FormField
+                  control={form.control}
+                  name="cookie"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Cookie</FormLabel>
+                      <FormControl>
+                        <Input placeholder="输入夸克网盘的 Cookie" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <Alert>
+                  <Info className="h-4 w-4" />
+                  <AlertDescription>
+                    浏览器登录 pan.quark.cn 后，在开发者工具的网络面板里找任意 drive-pc.quark.cn 的请求，复制请求头里的
+                    Cookie。夸克的直链取文件必须带 Cookie，所以夸克任务不支持 302，strm 里只写路径前缀。
                   </AlertDescription>
                 </Alert>
               </>

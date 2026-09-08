@@ -19,6 +19,7 @@ const nameQuerySchema = z.object({ name: z.string().min(1, "Missing name") });
 function missingCredentials(input: object): string | null {
   const body = input as Record<string, unknown>;
   if (body.accountType === "115" && !body.cookie) return "cookie is required for 115 accounts";
+  if (body.accountType === "quark" && !body.cookie) return "cookie is required for quark accounts";
   if (body.accountType === "openlist" && (!body.account || !body.password || !body.url)) {
     return "account, password, and url are required for openlist accounts";
   }

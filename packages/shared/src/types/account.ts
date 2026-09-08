@@ -15,4 +15,11 @@ export interface AccountOpenlist {
   expiresAt?: number;
 }
 
-export type AccountInfo = Account115 | AccountOpenlist;
+/** 夸克网盘，Cookie 模式（同 OpenList 的 Quark 驱动）；服务端轮换的 __puus 会由客户端写回这里 */
+export interface AccountQuark {
+  accountType: "quark";
+  name: string;
+  cookie: string;
+}
+
+export type AccountInfo = Account115 | AccountOpenlist | AccountQuark;

@@ -2,6 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { Cloud115Error, fsDirGetId, listDirEntries } from "../../services/cloud-115/client.js";
 import { OpenlistError, openlistListDir } from "../../services/openlist/client.js";
+import { QuarkError, quarkListDir, quarkResolvePath } from "../../services/quark/client.js";
+import { PermanentError } from "../../lib/errors.js";
 import { getAccount } from "../../db/repositories/accounts.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError, upstreamError } from "../../lib/http-error.js";
@@ -36,7 +38,22 @@ export default async function (fastify: FastifyInstance) {
         .filter((e) => e.is_dir)
         .map((e) => ({ name: e.name, id: `${base}/${e.name}`, isDir: true, hasChildren: true }));
     }
-    // AccountInfo 目前只有 115 / openlist 两种；将来加类型时这行会把没接的挡下来
+    // 夸克没有路径接口：按名字逐段找到目录的 fid 再列；id 给 fid，前端只拿它做 key、按名字拼路径
+    if (accountInfo.accountType === "quark") {
+      try {
+        const { fid, entry } = await quarkResolvePath(accountInfo, path);
+        if (entry && !entry.isDir) throw new HttpError(400, `不是目录: ${path}`);
+        return (await quarkListDir(accountInfo, fid))
+          .filter((e) => e.isDir)
+          .map((e) => ({ name: e.name, id: e.fid, isDir: true, hasChildren: true }));
+      } catch (err) {
+        if (err instanceof HttpError) throw err;
+        if (err instanceof PermanentError) throw new HttpError(404, err.message);
+        if (err instanceof QuarkError) throw upstreamError(err.message, { upstreamStatus: err.status, code: err.code });
+        throw upstreamFailure(err, "列目录失败");
+      }
+    }
+    // AccountInfo 目前只有 115 / openlist / quark 三种；将来加类型时这行会把没接的挡下来
     if (accountInfo.accountType !== "115") throw new HttpError(400, "unsupported account type");
 
     const userAgent = readAppSettings()["user-agent"] || undefined;

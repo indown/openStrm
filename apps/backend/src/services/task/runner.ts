@@ -10,7 +10,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import axios from "axios";
 import { catchError, defer, EMPTY, finalize, from, merge, mergeMap, Subject, Subscription, tap } from "rxjs";
-import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
+import type { AccountInfo, AccountQuark, TaskDefinition } from "@openstrm/shared";
 import { listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -21,10 +21,11 @@ import { mapLimit } from "../../lib/async.js";
 import { isDirectoryEntry, removeEmptyParents } from "../../lib/fs.js";
 import { Cloud115Error, exportDirParse, fsDirGetId } from "../cloud-115/client.js";
 import { openlistLogin } from "../openlist/client.js";
+import { quarkListDir, quarkResolvePath } from "../quark/client.js";
 import {
   downloadOrCreateStrm,
   downloadOrCreateStrmLimited,
-  getRealDownloadLink,
+  resolveDownload,
 } from "../download/rate-limited.js";
 import {
   addLogsToTaskExecution,
@@ -136,6 +137,38 @@ async function getOpenlistTreeData(baseUrl: string, token: string, originPath: s
   return tree.nodes;
 }
 
+/**
+ * 夸克没有整树导出：从 originPath 对应的目录起逐层列目录，同一层的目录并发列（在飞上限 4，
+ * 真正的节流是账号限流器）。顶层节点是 originPath 的最后一段，和 OpenList 分支同形，flattenTree 就能对上。
+ * 目录也进树（空目录才会同步到本地）；名字里带 / 的条目按路径根本找不回来，跳过并告警。
+ */
+async function getQuarkTreeData(account: AccountQuark, originPath: string): Promise<TreeNode[]> {
+  const segments = originPath.split("/").map((s) => s.trim()).filter(Boolean);
+  if (segments.length === 0) throw new Error("远程路径不能是根目录，请填一个具体目录");
+  const { fid, entry } = await quarkResolvePath(account, originPath);
+  if (entry && !entry.isDir) throw new Error(`远程路径是一个文件而不是目录: ${originPath}`);
+
+  const tree = new TreeBuilder();
+  let frontier: Array<{ fid: string; rel: string[] }> = [{ fid, rel: [segments[segments.length - 1]] }];
+  while (frontier.length > 0) {
+    const listed = await mapLimit(frontier, 4, (dir) => quarkListDir(account, dir.fid));
+    const next: typeof frontier = [];
+    frontier.forEach((dir, i) => {
+      for (const item of listed[i]) {
+        if (item.name.includes("/")) {
+          log.warn({ account: account.name, dir: dir.rel.join("/"), name: item.name }, "夸克条目名字里带 /，按路径找不回来，跳过");
+          continue;
+        }
+        const segs = [...dir.rel, item.name];
+        tree.add(segs);
+        if (item.isDir) next.push({ fid: item.fid, rel: segs });
+      }
+    });
+    frontier = next;
+  }
+  return tree.nodes;
+}
+
 async function loadRemoteTree(
   task: TaskDefinition,
   accountInfo: AccountInfo,
@@ -181,6 +214,16 @@ async function loadRemoteTree(
       return { fail: fail(500, err instanceof Error ? err.message : "OpenList 登录失败") };
     }
     return { tree: buildTree(await getOpenlistTreeData(accountInfo.url, token, originPath)) };
+  }
+
+  if (accountInfo.accountType === "quark") {
+    if (!accountInfo.cookie) return { fail: fail(500, `夸克账号 ${account} 没有 cookie`) };
+    try {
+      return { tree: buildTree(await getQuarkTreeData(accountInfo, originPath)) };
+    } catch (error) {
+      // cookie 失效没有可靠的错误码可认，接口的 message 原样带上，界面上能看出是登录态的问题
+      return { fail: fail(500, "读取夸克目录失败", error instanceof Error ? error.message : String(error)) };
+    }
   }
 
   // AccountInfo 是判别联合，到这里已经穷尽；留一条兜底以防将来加类型
@@ -396,13 +439,15 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
           // 取直链是 Promise，本身不认退订；挂上 signal，取消时进行中的接口请求掐断、排在限流器里的不再发
           const abort = new AbortController();
           return from(
-            getRealDownloadLink(`${originPath}/${filePath}`, account, accounts, { signal: abort.signal }),
+            resolveDownload(`${originPath}/${filePath}`, account, accounts, { signal: abort.signal }),
           ).pipe(finalize(() => abort.abort()));
         }).pipe(
-          mergeMap((url) =>
+          // 夸克的直链要带 cookie 等头才取得到，其它类型 headers 为空
+          mergeMap(({ url, headers }) =>
             downloadOrCreateStrmLimited(url, path.join(saveDir, filePath), account, {
               asStrm: false,
               displayPath: filePath,
+              headers,
             }),
           ),
           tap({ next: (p) => report(p, "download"), complete: () => finishOne(filePath) }),

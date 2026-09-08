@@ -26,7 +26,7 @@ import { Edit, Trash2, Plus, User, Key, KeyRound } from "lucide-react";
 export type Account = {
   accountType: string;
   name: string;
-  cookie?: string;      // 115 类型使用
+  cookie?: string;      // 115 / 夸克类型使用
   account?: string;     // openlist 类型使用 (用户名)
   password?: string;    // openlist 类型使用
   url?: string;         // openlist 类型使用
@@ -36,7 +36,7 @@ export type Account = {
 
 /** 认证信息：表格列和手机卡片共用。手机上没法 hover 看 title，wrap 时 cookie 直接换行显示 */
 function Credentials({ account, wrap = false }: { account: Account; wrap?: boolean }) {
-  if (account.accountType === "115") {
+  if (account.accountType === "115" || account.accountType === "quark") {
     const cookie = account.cookie ?? "";
     const shortCookie = cookie.length > 30 ? cookie.slice(0, 30) + "..." : cookie;
 
@@ -197,7 +197,7 @@ export default function AccountPage() {
         <EmptyState
           icon={KeyRound}
           title="暂无账户"
-          description="添加一个 115 或 OpenList 账号，同步任务、云下载和网盘监控都要用它"
+          description="添加一个 115、夸克或 OpenList 账号，同步任务、云下载和网盘监控都要用它"
           action={addButton}
         />
       ) : (

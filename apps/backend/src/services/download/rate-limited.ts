@@ -6,6 +6,7 @@ import fsp from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { defer, lastValueFrom, Observable, retry, Subscription, throwError, timer } from "rxjs";
 import { Cloud115Error, getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
+import { quarkDownloadLink, quarkResolvePath } from "../quark/client.js";
 import type { AccountInfo } from "@openstrm/shared";
 import { isAbortError, PermanentError } from "../../lib/errors.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -135,31 +136,45 @@ export interface LinkOptions {
   signal?: AbortSignal;
 }
 
+/** 取到的直链，以及取文件时必须一起带的头（夸克的直链和 cookie / UA 绑定；115 和 OpenList 没有） */
+export interface ResolvedDownload {
+  url: string;
+  headers?: Record<string, string>;
+}
+
 /**
  * 文件的下载直链。网络断、5xx、限流这类临时失败隔 retryDelay 重试，最多 maxRetries 次；
  * 远端明确说没有这个文件、凭据缺失这类 PermanentError 直接失败——以前也重试三次，一个不存在的文件白等六秒。
  */
-export async function getRealDownloadLink(
+export async function resolveDownload(
   filePath: string,
   account: string,
   accounts: AccountInfo[],
   { maxRetries = 3, retryDelay = 2000, signal }: LinkOptions = {},
-): Promise<string> {
+): Promise<ResolvedDownload> {
   const settings = readAppSettings();
   const accountInfo = accounts.find((acc) => acc.name === account);
   if (!accountInfo) throw new Error(`No cookie found for account: ${account}`);
 
-  const fetchLink = (): Promise<string> => {
-    // 115 的每一次接口调用在 request115 里各自限流；openlist 在这里按账号限流
+  const fetchLink = async (): Promise<ResolvedDownload> => {
+    // 115 的每一次接口调用在 request115 里各自限流，夸克在它的 request 里也是；openlist 在这里按账号限流。
+    // 夸克不能再套一层 scheduleForAccount：里外各占一个槽位，默认并发 2 时两个文件就把账号卡死
     if (accountInfo.accountType === "115") {
-      return getRealDownloadLinkDirect115(filePath, accountInfo, settings["user-agent"], signal);
+      return { url: await getRealDownloadLinkDirect115(filePath, accountInfo, settings["user-agent"], signal) };
     }
-    return scheduleForAccount(
+    if (accountInfo.accountType === "quark") {
+      if (!accountInfo.cookie) throw new PermanentError(`Missing quark cookie for account: ${accountInfo.name}`);
+      const { fid, entry } = await quarkResolvePath(accountInfo, filePath, signal);
+      if (!entry || entry.isDir) throw new PermanentError(`Not a file: ${filePath}`);
+      return quarkDownloadLink(accountInfo, fid, signal);
+    }
+    const url = await scheduleForAccount(
       account,
       () => getRealDownloadLinkDirect(filePath, accountInfo, signal),
       settings.download?.linkMaxConcurrent || 2,
       signal,
     );
+    return { url };
   };
 
   for (let attempt = 0; ; attempt++) {
@@ -171,6 +186,16 @@ export async function getRealDownloadLink(
       await sleep(retryDelay, undefined, { signal });
     }
   }
+}
+
+/** 只要直链本身的调用方（生活事件、分享 strm）用这个；要连头一起拿的用 resolveDownload */
+export async function getRealDownloadLink(
+  filePath: string,
+  account: string,
+  accounts: AccountInfo[],
+  opts: LinkOptions = {},
+): Promise<string> {
+  return (await resolveDownload(filePath, account, accounts, opts)).url;
 }
 
 async function getRealDownloadLinkDirect115(
@@ -213,6 +238,8 @@ export interface DownloadOptions {
   enablePathEncoding?: boolean;
   /** 下载流多久没数据算卡死。默认 STREAM_IDLE_TIMEOUT_MS，测试调小 */
   idleTimeoutMs?: number;
+  /** 取文件时额外带的头（夸克直链要 Cookie / Referer / 取链时的 UA）；里面的 User-Agent 盖过设置里的 */
+  headers?: Record<string, string>;
 }
 
 export function downloadOrCreateStrm(url: string, savePath: string, opts?: DownloadOptions): Observable<Progress> {
@@ -257,7 +284,7 @@ export function downloadOrCreateStrm(url: string, savePath: string, opts?: Downl
       .mkdir(dir, { recursive: true })
       .then(() =>
         axios.get(url, {
-          headers: { "User-Agent": userAgent },
+          headers: { "User-Agent": userAgent, ...opts?.headers },
           responseType: "stream",
           timeout: DEFAULT_TIMEOUT_MS,
           signal: controller.signal,

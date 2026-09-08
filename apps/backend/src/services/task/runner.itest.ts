@@ -15,6 +15,7 @@ import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js
 import { deleteTask, insertTask, updateTask } from "../../db/repositories/tasks.js";
 import { deleteTaskExecution, getTaskExecution, getTaskHistory } from "../task-history.js";
 import { clearRateLimiters } from "../download/rate-limited.js";
+import { clearQuarkCaches, QUARK_UA, setQuarkApiBase } from "../quark/client.js";
 import { cancelRunningTask, isTaskRunning, waitForTaskStart } from "./registry.js";
 import { startTask } from "./runner.js";
 
@@ -83,6 +84,54 @@ const server = http.createServer((req, res) => {
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 
+// ---- 假夸克 ----
+const quarkTree: Record<string, Array<{ fid: string; file_name: string; file: boolean }>> = {
+  "0": [{ fid: "q-media", file_name: "media", file: false }],
+  "q-media": [{ fid: "q-show", file_name: "Show", file: false }],
+  "q-show": [{ fid: "q-s1", file_name: "S1", file: false }],
+  "q-s1": [
+    { fid: "q-ep1", file_name: "ep1.mkv", file: true },
+    { fid: "q-nfo", file_name: "ep1.nfo", file: true },
+  ],
+};
+const QUARK_COOKIE = "kps=1; __puus=abc";
+const quarkServer = http.createServer((req, res) => {
+  const url = new URL(req.url ?? "/", "http://x");
+  const json = (status: number, body: unknown) => {
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  };
+  let raw = "";
+  req.on("data", (c) => (raw += c));
+  req.on("end", () => {
+    if (url.pathname === "/file/sort") {
+      const list = quarkTree[url.searchParams.get("pdir_fid") ?? ""] ?? [];
+      return json(200, { status: 200, code: 0, data: { list }, metadata: { _total: list.length } });
+    }
+    if (url.pathname === "/file/download") {
+      const { fids } = JSON.parse(raw) as { fids: string[] };
+      return json(200, { status: 200, code: 0, data: fids.map((fid) => ({ fid, download_url: `${quarkBase}/dl/${fid}` })) });
+    }
+    if (url.pathname.startsWith("/dl/")) {
+      // 夸克的直链没有 cookie / Referer / 取链时的 UA 就取不到；这里照样把关，证明头真的传到了下载那一步
+      const ok =
+        req.headers.cookie === QUARK_COOKIE &&
+        req.headers.referer === "https://pan.quark.cn" &&
+        req.headers["user-agent"] === QUARK_UA;
+      if (!ok) {
+        res.writeHead(403);
+        return res.end("forbidden");
+      }
+      res.writeHead(200, { "content-type": "text/plain" });
+      return res.end(`content of ${url.pathname.slice(4)}`);
+    }
+    res.writeHead(404);
+    res.end();
+  });
+});
+await new Promise<void>((r) => quarkServer.listen(0, "127.0.0.1", r));
+const quarkBase = `http://127.0.0.1:${(quarkServer.address() as { port: number }).port}`;
+
 const baseline = { settings: readAppSettings(), accounts: listAccounts() };
 const outDir = path.join(process.env.DATA_DIR!, TASK);
 
@@ -96,7 +145,11 @@ async function waitFor(cond: () => boolean, what: string, ms = 10_000) {
 
 before(() => {
   replaceAppSettings({ ...baseline.settings, strmExtensions: [".mkv"], downloadExtensions: [".nfo"] });
-  replaceAccounts([{ accountType: "openlist", name: "ol", account: "u", password: "p", url: base }]);
+  replaceAccounts([
+    { accountType: "openlist", name: "ol", account: "u", password: "p", url: base },
+    { accountType: "quark", name: "qk", cookie: QUARK_COOKIE },
+  ]);
+  setQuarkApiBase(quarkBase);
   insertTask({
     id: TASK,
     account: "ol",
@@ -116,6 +169,10 @@ after(async () => {
   fs.rmSync(outDir, { recursive: true, force: true });
   server.closeAllConnections();
   await new Promise<void>((r) => server.close(() => r()));
+  setQuarkApiBase(null);
+  clearQuarkCaches();
+  quarkServer.closeAllConnections();
+  await new Promise<void>((r) => quarkServer.close(() => r()));
 });
 
 test("整条跑通：strm 落盘、附件下载、历史记完成", async () => {
@@ -291,4 +348,33 @@ test("单个文件下载失败不拖死任务：其余照常完成，历史记 f
 
 test("不存在的任务 404", async () => {
   assert.equal((await startTask("nope")).status, 404);
+});
+
+test("夸克账号整条跑通：逐层列目录建树、strm 落盘、附件带 cookie 下载、历史记完成", async () => {
+  const id = `${TASK}-quark`;
+  insertTask({ id, account: "qk", accountType: "quark", originPath: ORIGIN, targetPath: `${TASK}/quark`, strmPrefix: "http://strm.local" });
+  const dir = path.join(process.env.DATA_DIR!, TASK, "quark");
+  try {
+    const res = await startTask(id);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.message, "2 files to download");
+    await waitFor(() => !isTaskRunning(id), "任务结束");
+
+    const strm = fs.readFileSync(path.join(dir, "S1/ep1.strm"), "utf8");
+    assert.ok(strm.startsWith("http://strm.local"), strm);
+    assert.ok(strm.endsWith(`${ORIGIN}/S1/ep1.mkv`), strm);
+    assert.equal(fs.readFileSync(path.join(dir, "S1/ep1.nfo"), "utf8"), "content of q-nfo");
+
+    await waitFor(() => getTaskHistory(id)[0]?.status !== "running", "历史收尾");
+    const [h] = getTaskHistory(id);
+    assert.equal(h.status, "completed", h.summary.errorMessage);
+    assert.equal(h.summary.downloadedFiles, 2);
+
+    const again = await startTask(id);
+    assert.equal(again.body.message, "no files to download");
+  } finally {
+    for (const h of getTaskHistory(id)) deleteTaskExecution(h.id);
+    deleteTask(id);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

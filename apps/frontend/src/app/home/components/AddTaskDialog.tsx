@@ -189,8 +189,8 @@ export function AddTaskDialog({
 
   const accountType = accounts.find((acc) => acc.name === account)?.accountType ?? "";
   const is115Account = accountType === "115";
-  /** 115 和 OpenList 都能列目录（/api/directory/remote/list 按账号类型分流），远程路径旁边给个浏览按钮 */
-  const canBrowseRemote = account !== "" && (is115Account || accountType === "openlist");
+  /** 115、夸克和 OpenList 都能列目录（/api/directory/remote/list 按账号类型分流），远程路径旁边给个浏览按钮 */
+  const canBrowseRemote = account !== "" && (is115Account || accountType === "openlist" || accountType === "quark");
   const prefixIsHttp = /^https?:\/\//i.test(strmPrefix.trim());
   const encoding = pathEncodingHint(prefixIsHttp, is115Account && enable302);
 

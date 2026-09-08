@@ -6,7 +6,7 @@ export type {
   TelegramSettings,
   TelegramNotifySettings,
 } from "./settings.js";
-export type { AccountInfo, Account115, AccountOpenlist } from "./account.js";
+export type { AccountInfo, Account115, AccountOpenlist, AccountQuark } from "./account.js";
 export type {
   TaskDefinition,
   TaskExecutionHistory,

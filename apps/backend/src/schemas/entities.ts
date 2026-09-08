@@ -74,12 +74,22 @@ const accountOpenlistSchema = z.looseObject({
   url: z.string({ error: "account, password, and url are required for openlist accounts" }).min(1),
 });
 
-export const accountInputSchema = z.discriminatedUnion("accountType", [account115Schema, accountOpenlistSchema]);
+const accountQuarkSchema = z.looseObject({
+  accountType: z.literal("quark"),
+  name: z.string().min(1),
+  cookie: z.string({ error: "cookie is required for quark accounts" }).min(1, "cookie is required for quark accounts"),
+});
+
+export const accountInputSchema = z.discriminatedUnion("accountType", [
+  account115Schema,
+  accountOpenlistSchema,
+  accountQuarkSchema,
+]);
 
 /** 改账号：name 定位，其余字段可选；凭据是否齐全由路由按 accountType 再查 */
 export const accountPatchSchema = z.looseObject({
   name: z.string().min(1),
-  accountType: z.enum(["115", "openlist"]).optional(),
+  accountType: z.enum(["115", "openlist", "quark"]).optional(),
 });
 
 export const lifeMonitorSchema = z.looseObject({
