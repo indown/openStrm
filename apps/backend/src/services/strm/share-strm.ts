@@ -4,7 +4,7 @@ import type { TaskDefinition, AppSettings } from "@openstrm/shared";
 import type { AccountInfo } from "../cloud-115/client.js";
 import { exportDirParse, fsDirGetId } from "../cloud-115/client.js";
 import { writeStrm } from "../download/rate-limited.js";
-import { buildTree, collectFilesAndTopEmptyDirs } from "../task/tree.js";
+import { buildTree, collectFilesAndTopEmptyDirs, findExportedDir } from "../task/tree.js";
 import { resolveInDataDir } from "../../paths.js";
 import { toStrmPath } from "./naming.js";
 
@@ -92,11 +92,14 @@ export async function generateStrmForSelected(params: {
       accountInfo,
     });
     const tree = buildTree(raw);
-    const files: string[] = [];
-    for (const node of tree) {
-      if (node.children?.length) files.push(...collectFilesAndTopEmptyDirs(node.children));
-      else if (/\.[a-z0-9]+$/i.test(node.name)) files.push(node.name);
+    const dirPath = `${originRoot}/${item.name}`;
+    // 115 导出的树从上一级开始（导出 tv/Show 得到 tv → Show → …），把顶层当成 item 本身会多套一层 Show/Show/…
+    const dir = findExportedDir(tree, dirPath);
+    if (!dir) {
+      const tops = tree.filter((n) => n.name).map((n) => n.name).join("、");
+      throw new Error(`导出的目录树里找不到 ${dirPath}（顶层：${tops || "空"}），文件已转存到 115 但没有生成 strm`);
     }
+    const files = collectFilesAndTopEmptyDirs(dir.children ?? []);
 
     for (const rel of files) {
       const ext = path.extname(rel).toLowerCase();

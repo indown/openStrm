@@ -7,7 +7,7 @@
  * "no files to download"。规则改动必须先过 plan.test.ts。
  */
 import { extOf, localNameFor } from "../strm/naming.js";
-import { collectFilesAndTopEmptyDirs, type TreeNode } from "./tree.js";
+import { collectFilesAndTopEmptyDirs, findExportedDir, type TreeNode } from "./tree.js";
 
 export interface SyncPlan {
   /** 远端有、本地没有、且属于 strm 或下载白名单的条目（远端相对路径） */
@@ -16,14 +16,16 @@ export interface SyncPlan {
   extra: string[];
 }
 
-/** 把导出的目录树摊平成相对路径：文件 + 顶层空目录 */
-export function flattenTree(tree: TreeNode[]): string[] {
-  const entries: string[] = [];
-  for (const node of tree) {
-    if (node.children?.length) entries.push(...collectFilesAndTopEmptyDirs(node.children));
-    else if (/\.[a-z0-9]+$/i.test(node.name)) entries.push(node.name);
-  }
-  return entries;
+/**
+ * 把导出的目录树摊平成相对 originPath 的路径：文件 + 顶层空目录。
+ * 树顶层不一定是 originPath 本身（见 findExportedDir），要先找到它再往下摊。
+ * @returns 找不到 originPath 对应节点时返回 null——按"远端为空"处理会把本地库当多余删光；
+ *          树里一个有名字的节点都没有（导出为空）时返回 []，交给 runner 的空远端保护
+ */
+export function flattenTree(tree: TreeNode[], originPath: string): string[] | null {
+  if (!tree.some((n) => n.name.trim())) return [];
+  const dir = findExportedDir(tree, originPath);
+  return dir ? collectFilesAndTopEmptyDirs(dir.children ?? []) : null;
 }
 
 /**

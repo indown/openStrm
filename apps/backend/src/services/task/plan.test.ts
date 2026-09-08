@@ -12,6 +12,11 @@ import type { TreeNode } from "./tree.js";
 const strm = extSet([".mp4", ".mkv", ".avi", ".iso", ".flac"]);
 const dl = extSet([".nfo", ".jpg", ".srt"]);
 
+const dir = (key: number, name: string, parent: number, children: TreeNode[] = []): TreeNode =>
+  ({ key, name, parent_key: parent, depth: 0, children });
+const file = (key: number, name: string, parent: number): TreeNode =>
+  ({ key, name, parent_key: parent, depth: 0, children: [] });
+
 test("本地已有对应 .strm 的 strm 类文件既不缺也不多——不限于 mp4/mp3/mkv", () => {
   const plan = planSync(["a.avi", "b.iso", "c.flac", "d.mkv"], ["a.strm", "b.strm", "c.strm", "d.strm"], strm, dl);
   assert.deepEqual(plan, { missing: [], extra: [] });
@@ -57,23 +62,56 @@ test("远端为空时本地全是多余，本地为空时白名单内全是缺�
   assert.deepEqual(planSync(["x.mkv", "x.txt"], [], strm, dl).missing, ["x.mkv"]);
 });
 
-test("flattenTree：顶层节点是被导出的目录本身，条目相对它；只有整棵无文件的子树才记成目录", () => {
-  const dir = (key: number, name: string, parent: number, children: TreeNode[] = []): TreeNode =>
-    ({ key, name, parent_key: parent, depth: 0, children });
-  const file = (key: number, name: string, parent: number): TreeNode =>
-    ({ key, name, parent_key: parent, depth: 0, children: [] });
-  const entries = flattenTree([
-    // exportDirParse 的占位根，永远是空名字、没有孩子
-    dir(0, "", 0),
-    dir(1, "tv", 0, [
-      file(2, "root.mkv", 1),
-      dir(3, "Show", 1, [file(4, "ep1.mkv", 3), dir(5, "Extras", 3)]),
-      dir(6, "Season1", 1, [dir(7, "Sub", 6)]),
-    ]),
-  ]);
-  assert.deepEqual(entries.sort(), ["Season1", "Show/ep1.mkv", "root.mkv"], [
+test("flattenTree：originPath 只有一层时树顶层就是它本身，条目相对它；只有整棵无文件的子树才记成目录", () => {
+  const entries = flattenTree(
+    [
+      // exportDirParse 的占位根，永远是空名字、没有孩子
+      dir(0, "", 0),
+      dir(1, "tv", 0, [
+        file(2, "root.mkv", 1),
+        dir(3, "Show", 1, [file(4, "ep1.mkv", 3), dir(5, "Extras", 3)]),
+        dir(6, "Season1", 1, [dir(7, "Sub", 6)]),
+      ]),
+    ],
+    "tv",
+  );
+  assert.deepEqual(entries?.sort(), ["Season1", "Show/ep1.mkv", "root.mkv"], [
     "路径不带 tv 前缀（和本地 saveDir 下的相对路径对齐）",
     "Show 里有文件，它的空子目录 Extras 不单独记",
     "Season1 整棵没有文件，记成一个目录条目",
   ].join("；"));
+});
+
+test("flattenTree：originPath 多层时 115 从上一级开始导出，条目仍相对 originPath 而不是多一层", () => {
+  const entries = flattenTree(
+    [
+      dir(0, "", 0),
+      dir(1, "媒体库", 0, [
+        dir(2, "tv", 1, [
+          file(3, "root.mkv", 2),
+          dir(4, "Show", 2, [file(5, "ep1.mkv", 4)]),
+          dir(6, "Season1", 2, [dir(7, "Sub", 6)]),
+        ]),
+      ]),
+    ],
+    "媒体库/tv",
+  );
+  assert.deepEqual(entries?.sort(), ["Season1", "Show/ep1.mkv", "root.mkv"], "不带 tv/ 前缀，否则 removeExtraFiles 会把正确的本地文件当多余删掉");
+});
+
+test("flattenTree：OpenList 树顶层是 originPath 最后一段，前导 / 不影响", () => {
+  const entries = flattenTree(
+    [dir(0, "", 0), dir(1, "Show", 0, [dir(2, "S1", 1, [file(3, "ep1.mkv", 2), file(4, "ep1.nfo", 2)])])],
+    "/media/Show",
+  );
+  assert.deepEqual(entries, ["S1/ep1.mkv", "S1/ep1.nfo"]);
+});
+
+test("flattenTree：找不到 originPath 对应的目录返回 null，不能把别的目录当成它", () => {
+  assert.equal(flattenTree([dir(0, "", 0), dir(1, "Other", 0, [file(2, "x.mkv", 1)])], "tv"), null);
+});
+
+test("flattenTree：导出为空（只有占位根）返回空数组，交给 runner 的空远端保护", () => {
+  assert.deepEqual(flattenTree([dir(0, "", 0)], "tv"), []);
+  assert.deepEqual(flattenTree([], "tv"), []);
 });

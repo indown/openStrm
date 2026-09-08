@@ -48,6 +48,31 @@ export function buildTree(list: TreeNode[]): TreeNode[] {
   return roots;
 }
 
+/**
+ * 在导出的目录树里找目标目录本身。
+ * 115 的"导出目录树"总是从被导出目录的上一级开始：导出 tv/Show 得到 tv → Show → …，
+ * 导出 tv/Show/Season 1 得到 Show → Season 1 → …；只有顶层目录（导出首行是"根目录"）才是自己在最上面。
+ * OpenList（runner.getOpenlistTreeData）的顶层则是 originPath 的最后一段。
+ * 所以拿目标绝对路径的各段从树顶按后缀往下对，先试最长的后缀：tv/Show/Show 这种同名嵌套只有最长后缀才落到里面那个。
+ * 段两边空白不参与比较（导出解析时每段 trim 过，分享列表 / originPath 是原样）。
+ * @returns 目标节点；树为空、路径为空（根目录）或名字对不上时返回 null——调用方按"导出没对上"处理，不能猜
+ */
+export function findExportedDir(tree: TreeNode[], dirPath: string): TreeNode | null {
+  const segments = dirPath.split("/").map((s) => s.trim()).filter(Boolean);
+  const roots = tree.filter((n) => n.name.trim() !== "");
+  for (let start = 0; start < segments.length; start++) {
+    let level = roots;
+    let node: TreeNode | null = null;
+    for (let i = start; i < segments.length; i++) {
+      node = level.find((n) => n.name.trim() === segments[i]) ?? null;
+      if (!node) break;
+      level = node.children ?? [];
+    }
+    if (node) return node;
+  }
+  return null;
+}
+
 export function collectFilesAndTopEmptyDirs(nodes: TreeNode[], parentPath = ""): string[] {
   const result: string[] = [];
   function dfs(nodeList: TreeNode[], basePath: string): boolean {
