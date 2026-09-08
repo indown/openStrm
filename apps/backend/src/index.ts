@@ -68,6 +68,7 @@ import { start as startScrapeWorker } from "./services/library/scrape-worker.js"
 // Directory routes
 import directoryLocalRoute from "./routes/directory/local.js";
 import directoryRemoteRoute from "./routes/directory/remote.js";
+import strmRoute from "./routes/strm/index.js";
 
 
 // 115 life-event monitor (incremental cloud-drive change detection)
@@ -140,6 +141,7 @@ await app.register(librarySaveToTaskRoute);
 // Directory routes
 await app.register(directoryLocalRoute);
 await app.register(directoryRemoteRoute);
+await app.register(strmRoute);
 
 // Alist-compatible route
 

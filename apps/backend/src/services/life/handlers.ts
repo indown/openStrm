@@ -23,9 +23,8 @@ import {
 } from "../cloud-115/path-resolver.js";
 import { dropSubtree, repathSubtree } from "../../db/repositories/life.js";
 import { resolveInDataDir } from "../../paths.js";
-import { strmContent, toStrmPath } from "../strm/naming.js";
-import { safeDecode } from "../resolve/direct-link.js";
-import { isDirectoryEntry, pathExists } from "../../lib/fs.js";
+import { decodeSegments, strmContent, toStrmPath } from "../strm/naming.js";
+import { isDirectoryEntry, pathExists, removeEmptyParents } from "../../lib/fs.js";
 
 interface Deps {
   /** pick_code → 下载直链。真实现打 115 接口，测试换成本地桩 */
@@ -119,18 +118,6 @@ function localPathFor(match: TaskMatch, ctx: LifeContext, relFile: string): stri
  */
 function strmUrlFor(task: TaskDefinition, relFile: string): string {
   return `${task.originPath}/${relFile}`;
-}
-
-async function removeEmptyParents(dir: string, stopAt: string): Promise<void> {
-  if (!dir.startsWith(stopAt) || dir === stopAt) return;
-  try {
-    if ((await fsp.readdir(dir)).length === 0) {
-      await fsp.rmdir(dir);
-      await removeEmptyParents(path.dirname(dir), stopAt);
-    }
-  } catch {
-    /* 目录非空或已不存在，停止 */
-  }
 }
 
 /* ------------------------------- 生成 ------------------------------- */
@@ -243,11 +230,6 @@ async function materializeFolder(
   }
 
   return counters;
-}
-
-/** 按段解码：某一段里有解不开的 `%` 也不影响其它段 */
-function decodeSegments(content: string): string {
-  return content.split("/").map(safeDecode).join("/");
 }
 
 /**

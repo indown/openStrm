@@ -38,6 +38,25 @@ export function encodePathSegments(p: string): string {
   return p.split("/").map((seg) => encodeURIComponent(seg)).join("/");
 }
 
+/** decodeURIComponent 解不开（孤零零的 `%`）就原样返回 */
+export function safeDecode(p: string): string {
+  try {
+    return decodeURIComponent(p);
+  } catch {
+    return p;
+  }
+}
+
+/** 按段解码：某一段里有解不开的 `%` 也不影响其它段 */
+export function decodeSegments(p: string): string {
+  return p.split("/").map(safeDecode).join("/");
+}
+
+/** 去掉本地 strm 文件名的 .strm 后缀（不分大小写）；不是 .strm 就原样返回 */
+export function stripStrmExt(rel: string): string {
+  return /\.strm$/i.test(rel) ? rel.slice(0, -5) : rel;
+}
+
 /**
  * strm 文件的内容：`${前缀}/${网盘路径}`。
  * 开了路径编码时网盘路径按段 encodeURIComponent；前缀（`http://host:5244/d` 或 `/mnt/pan`）
