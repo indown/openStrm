@@ -218,7 +218,7 @@ function StrmContent() {
         );
       }
       return (
-        <EmptyState icon={FolderOpen} title="这个目录是空的" description="可以用「工具 → 重新生成」按 115 目录补齐。" />
+        <EmptyState icon={FolderOpen} title="这个目录是空的" description="可以用「工具 → 重新生成」按网盘目录补齐。" />
       );
     }
     return (
@@ -647,7 +647,7 @@ function DeleteStrmDialog({
           <AlertDialogTitle className="break-all">删除{target?.label}</AlertDialogTitle>
           <AlertDialogDescription asChild>
             <div className="space-y-2">
-              <p>会从本地目录里删除（目录连同里面的内容一起删），115 网盘不受影响。</p>
+              <p>会从本地目录里删除（目录连同里面的内容一起删），网盘里的文件不受影响。</p>
               <ul className="space-y-0.5 font-mono text-xs text-foreground">
                 {paths.slice(0, 5).map((p) => (
                   <li key={p} className="break-all">

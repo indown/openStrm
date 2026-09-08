@@ -1,11 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { TaskDefinition } from "@openstrm/shared";
-import { listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
-import { resolveTaskAccount115 } from "../../services/library/save-to-task.js";
+import { providerForTask } from "../../services/drive/registry.js";
 import { deletePaths, listDir, readStrm, regenerate, rewrite, scan, search, STRM_LIMITS, verify } from "../../services/strm/manage.js";
 
 /**
@@ -69,19 +68,19 @@ export default async function (fastify: FastifyInstance) {
     return rewrite(loadTask(body.taskId), body.path, { dryRun: body.dryRun });
   });
 
-  /** 要读 115 目录再生成，最长可能等 5 分钟；根目录 400、任务同步中 409、115 目录没了 404 */
+  /** 要读网盘目录再生成，最长可能等 5 分钟；根目录 400、任务同步中 409、网盘目录没了 404 */
   fastify.post("/api/strm/regenerate", auth, async (request) => {
     const body = parse(regenerateBody, request.body);
     const task = loadTask(body.taskId);
-    const account = resolveTaskAccount115(listAccounts(), task);
-    return regenerate(task, account, body.path, { mode: body.mode });
+    const provider = providerForTask(task);
+    return regenerate(task, provider, body.path, { mode: body.mode });
   });
 
-  /** 逐个目录到 115 确认；范围太大回 400 */
+  /** 逐个目录到网盘确认；范围太大回 400 */
   fastify.post("/api/strm/verify", auth, async (request) => {
     const body = parse(verifyBody, request.body);
     const task = loadTask(body.taskId);
-    const account = resolveTaskAccount115(listAccounts(), task);
-    return verify(task, account, body.path);
+    const provider = providerForTask(task);
+    return verify(task, provider, body.path);
   });
 }

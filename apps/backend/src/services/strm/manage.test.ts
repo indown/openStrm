@@ -1,6 +1,6 @@
 /**
  * strm 管理的本地文件操作：在临时 DATA_DIR 里造一棵树，逐个验证浏览 / 体检 / 删除 / 修正 / 重建 / 校验。
- * 碰 115 的两步（导出目录、查目录）用桩。用例按顺序改同一棵树，不能乱序。
+ * 碰网盘的几步走内存假网盘（test/fake-drive.ts）。用例按顺序改同一棵树，不能乱序。
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/services/strm/manage.test.ts
  */
@@ -14,7 +14,7 @@ import { HttpError } from "../../lib/http-error.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { releaseTaskStart, reserveTaskStart } from "../task/registry.js";
-import { RemoteDirNotFoundError } from "./share-strm.js";
+import { FakeDrive } from "../../test/fake-drive.js";
 import {
   deletePaths,
   listDir,
@@ -31,6 +31,8 @@ import {
 } from "./manage.js";
 
 const acc: AccountInfo = { accountType: "115", name: "acc", cookie: "c" };
+/** 每个用例自己造一个假网盘：tree 里放什么，listSubtree / resolvePath / listDir 就看见什么 */
+const drive = () => new FakeDrive("115", acc, { notes: { verify: "115 的目录信息有几分钟缓存" } });
 const main: TaskDefinition = { id: "s-main", account: "acc", accountType: "115", originPath: "tv", targetPath: "strm-test/tv", strmPrefix: "/mnt/pan" };
 const nested: TaskDefinition = { id: "s-nested", account: "acc", accountType: "115", originPath: "nested", targetPath: "strm-test/tv/NestedOut", strmPrefix: "/mnt/pan" };
 const sib: TaskDefinition = { id: "s-sib", account: "acc", accountType: "115", originPath: "tv2", targetPath: "strm-test/tv", strmPrefix: "/mnt/pan" };
@@ -238,7 +240,7 @@ test("互斥：任务在启动 / 运行中写操作 409（dryRun 不拦）；同
   try {
     await assert.rejects(rewrite(main, "Show", { dryRun: false }), (e: unknown) => status(409)(e) && /运行/.test((e as Error).message));
     await assert.rejects(deletePaths(main, ["Other/bad.strm"]), status(409));
-    await assert.rejects(regenerate(main, acc, "Show", { mode: "fill" }), status(409));
+    await assert.rejects(regenerate(main, drive(), "Show", { mode: "fill" }), status(409));
     assert.equal((await rewrite(main, "Show", { dryRun: true })).checked, 5);
   } finally {
     releaseTaskStart("s-main");
@@ -247,38 +249,29 @@ test("互斥：任务在启动 / 运行中写操作 409（dryRun 不拦）；同
   const gate = new Promise<void>((r) => {
     release = r;
   });
-  setStrmManageDeps({
-    exportDirFiles: async () => {
-      await gate;
-      return [];
-    },
-  });
-  const running = regenerate(main, acc, "Show", { mode: "fill" });
+  const slow = drive();
+  slow.tree.addDir("/tv/Show");
+  slow.beforeCall = () => gate;
+  const running = regenerate(main, slow, "Show", { mode: "fill" });
   await new Promise((r) => setTimeout(r, 10));
   await assert.rejects(deletePaths(main, ["Other/bad.strm"]), (e: unknown) => status(409)(e) && /正在进行/.test((e as Error).message));
   release();
   assert.equal((await running).remoteFiles, 0);
-  setStrmManageDeps(null);
   assert.equal(exists("Other/bad.strm"), true);
 });
 
-test("regenerate：fill 只补缺；rebuild 覆盖 + 删多余 strm + 清空目录、附件不动；网盘目录不在 404；导出失败 500 本地不变；根 400", async () => {
-  const calls: string[] = [];
-  const remote = ["Season 1/ep1.mkv", "Season 1/ep9.mkv", "Season 1/ep9.nfo", "Extras"];
-  setStrmManageDeps({
-    exportDirFiles: async ({ dirPath }) => {
-      calls.push(dirPath);
-      return remote;
-    },
-  });
-  const fill = await regenerate(main, acc, "Show", { mode: "fill" });
-  assert.deepEqual(calls, ["tv/Show"]);
+test("regenerate：fill 只补缺；rebuild 覆盖 + 删多余 strm + 清空目录、附件不动；网盘目录不在 404；读取失败 500 本地不变；根 400", async () => {
+  const d = drive();
+  for (const f of ["Season 1/ep1.mkv", "Season 1/ep9.mkv", "Season 1/ep9.nfo"]) d.tree.addFile(`/tv/Show/${f}`);
+  d.tree.addDir("/tv/Show/Extras");
+  const fill = await regenerate(main, d, "Show", { mode: "fill" });
+  assert.deepEqual(d.log, ["listSubtree tv/Show"]);
   assert.deepEqual(fill, { mode: "fill", remoteFiles: 2, generated: 1, skipped: 1, removed: 0 });
   assert.equal(read("Show/Season 1/ep9.strm"), "/mnt/pan/tv/Show/Season 1/ep9.mkv");
   assert.equal(exists("Show/Season 1/ep2.strm"), true, "fill 不删");
   assert.equal(exists("Show/Season 1/ep9.nfo"), false, "只生成 strm，不下载附件");
 
-  const rebuild = await regenerate(main, acc, "Show", { mode: "rebuild" });
+  const rebuild = await regenerate(main, d, "Show", { mode: "rebuild" });
   assert.deepEqual(rebuild, { mode: "rebuild", remoteFiles: 2, generated: 2, skipped: 0, removed: 4 });
   assert.equal(exists("Show/Show"), false, "多余 strm 删掉后空目录一并清掉");
   assert.equal(exists("Show/Season 1/ep2.strm"), false);
@@ -286,65 +279,47 @@ test("regenerate：fill 只补缺；rebuild 覆盖 + 删多余 strm + 清空目�
   assert.equal(exists("Show/Season 1/ep2.nfo"), true, "附件不动");
   assert.equal(read("Show/Season 1/ep1.strm"), "/mnt/pan/tv/Show/Season 1/ep1.mkv");
 
-  setStrmManageDeps({
-    exportDirFiles: async ({ dirPath }) => {
-      throw new RemoteDirNotFoundError(dirPath);
-    },
-  });
-  await assert.rejects(regenerate(main, acc, "Show", { mode: "rebuild" }), (e: unknown) => status(404)(e) && /不存在目录/.test((e as Error).message));
-  setStrmManageDeps({
-    exportDirFiles: async () => {
-      throw new Error("导出超时");
-    },
-  });
-  await assert.rejects(regenerate(main, acc, "Show", { mode: "rebuild" }), (e: unknown) => status(500)(e) && /导出超时/.test((e as Error).message));
+  const gone = drive();
+  await assert.rejects(regenerate(main, gone, "Show", { mode: "rebuild" }), (e: unknown) => status(404)(e) && /不存在目录/.test((e as Error).message));
+  gone.tree.addDir("/tv/Show");
+  gone.failWith = new Error("导出超时");
+  await assert.rejects(regenerate(main, gone, "Show", { mode: "rebuild" }), (e: unknown) => status(500)(e) && /导出超时/.test((e as Error).message));
   assert.equal(exists("Show/Season 1/ep9.strm"), true, "失败时本地不动");
-  await assert.rejects(regenerate(main, acc, "", { mode: "fill" }), status(400));
-  setStrmManageDeps(null);
+  await assert.rejects(regenerate(main, d, "", { mode: "fill" }), status(400));
 });
 
 test("verify：按网盘父目录分组只问一次；文件缺失 / 目录没了 / 解析不出分开报；单文件；封控整体中止，普通错误只记 errors", async () => {
   seed();
-  const getid: string[] = [];
-  setStrmManageDeps({
-    fsDirGetId: async (p) => {
-      getid.push(p);
-      return { id: p === "tv/Show/Season 1" ? 100 : 0 };
-    },
-    listDirEntries: async (cid) => (String(cid) === "100" ? [{ n: "ep1.mkv ", fid: 1, cid: 100, fc: 1 }] : []),
-  });
-  const r = await verify(main, acc, "Show");
-  assert.deepEqual(getid.sort(), ["tv/Show", "tv/Show/Season 1", "tv/Show/Show/Season 1"]);
+  const d = drive();
+  // 网盘上只有 tv/Show/Season 1/ep1.mkv：Show 目录存在但没有 1080p 那个文件，Show/Show 整个目录不在
+  d.tree.addFile("/tv/Show/Season 1/ep1.mkv");
+  const r = await verify(main, d, "Show");
+  assert.deepEqual(
+    d.log.filter((l) => l.startsWith("resolvePath ")).map((l) => l.slice("resolvePath ".length)).sort(),
+    ["tv/Show", "tv/Show/Season 1", "tv/Show/Show/Season 1"],
+  );
   assert.equal(r.dirs, 3);
   assert.equal(r.checked, 5);
   const missing = Object.fromEntries(r.missing.map((m) => [m.path, `${m.reason} ${m.remotePath}`]));
   assert.deepEqual(missing, {
     "Show/Season 1/Show.S01E02.strm": "file-missing tv/Show/Season 1/Show.S01E02.mkv",
-    "Show/Show.S01E02.1080p.strm": "dir-missing tv/Show/Show.S01E02.1080p.mkv",
+    "Show/Show.S01E02.1080p.strm": "file-missing tv/Show/Show.S01E02.1080p.mkv",
     "Show/Show/Season 1/ep1.strm": "dir-missing tv/Show/Show/Season 1/ep1.mkv",
   });
   assert.deepEqual(r.unparsable, [{ path: "Show/Season 1/ep2.strm", reason: "prefix-mismatch" }]);
-  assert.ok(r.note.length > 0);
+  assert.equal(r.note, "115 的目录信息有几分钟缓存", "提示来自 provider");
   assert.deepEqual(r.errors, []);
 
-  const single = await verify(main, acc, "Show/Season 1/ep1.strm");
+  const single = await verify(main, d, "Show/Season 1/ep1.strm");
   assert.equal(single.checked, 1);
   assert.equal(single.missing.length, 0);
 
-  setStrmManageDeps({
-    fsDirGetId: async () => {
-      throw new Error("您的访问被阻断");
-    },
-  });
-  await assert.rejects(verify(main, acc, "Show"), (e: unknown) => status(500)(e) && /阻断/.test((e as Error).message));
-  setStrmManageDeps({
-    fsDirGetId: async () => {
-      throw new Error("网络抖动");
-    },
-  });
-  const soft = await verify(main, acc, "Show/Season 1/ep1.strm");
+  d.failWith = new Error("您的访问被阻断");
+  await assert.rejects(verify(main, d, "Show"), (e: unknown) => status(500)(e) && /阻断/.test((e as Error).message));
+  d.failWith = new Error("网络抖动");
+  const soft = await verify(main, d, "Show/Season 1/ep1.strm");
   assert.deepEqual(soft.errors, [{ remoteDir: "tv/Show/Season 1", message: "网络抖动" }]);
   assert.equal(soft.missing.length, 0);
-  setStrmManageDeps(null);
-  assert.equal((await verify(fresh, acc, "")).checked, 0, "根不存在给空");
+  d.failWith = null;
+  assert.equal((await verify(fresh, d, "")).checked, 0, "根不存在给空");
 });

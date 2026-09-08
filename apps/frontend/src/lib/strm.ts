@@ -33,7 +33,7 @@ export const ISSUE_META: Record<
   unparsable: {
     label: "无法解析",
     tone: "danger",
-    hint: "看不出这个 strm 指向哪个文件（空文件、没有扩展名或文件名对不上），用「重新生成」按 115 目录重建",
+    hint: "看不出这个 strm 指向哪个文件（空文件、没有扩展名或文件名对不上），用「重新生成」按网盘目录重建",
   },
   "duplicate-episode": {
     label: "疑似重复剧集",

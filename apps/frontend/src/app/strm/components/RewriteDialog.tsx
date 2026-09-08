@@ -40,7 +40,7 @@ function Summary({ r }: { r: StrmRewriteResult }) {
       )}
       {r.unparsable.length > 0 && (
         <div className="text-xs text-muted-foreground">
-          <p className="tabular-nums">{r.unparsable.length} 个无法解析、不会重写（可用「重新生成」按 115 目录重建）：</p>
+          <p className="tabular-nums">{r.unparsable.length} 个无法解析、不会重写（可用「重新生成」按网盘目录重建）：</p>
           <ul className="mt-0.5 space-y-0.5 font-mono">
             {r.unparsable.slice(0, 3).map((u) => (
               <li key={u.path} className="break-all">

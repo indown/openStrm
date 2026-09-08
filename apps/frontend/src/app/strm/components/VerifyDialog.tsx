@@ -31,7 +31,7 @@ type Props = {
   onDelete: RequestDelete;
 };
 
-/** 逐个到 115 确认 strm 指向的文件还在不在；缺失的可以就地删掉 */
+/** 逐个到网盘确认 strm 指向的文件还在不在；缺失的可以就地删掉 */
 export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) {
   const open = target != null;
   const [phase, setPhase] = useState<Phase>("idle");
@@ -70,7 +70,7 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
   const removeMissing = async (paths: string[]) => {
     setRemoving(true);
     try {
-      const res = await onDelete(paths, paths.length === 1 ? `「${baseName(paths[0])}」` : `115 上已不存在的 ${paths.length} 个 strm`);
+      const res = await onDelete(paths, paths.length === 1 ? `「${baseName(paths[0])}」` : `网盘上已不存在的 ${paths.length} 个 strm`);
       if (!res) return;
       const failed = new Set(res.failed.map((f) => f.path));
       const removed = new Set(paths.filter((p) => !failed.has(p)));
@@ -92,10 +92,10 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
           {phase === "idle" && (
             <p className="text-sm text-muted-foreground">
-              会逐个到 115 确认 strm 指向的文件还在不在。目录大时要两三分钟；115 的目录缓存可能有几分钟延迟，刚转存或刚删除的文件可能误报。范围太大时会被拒绝，进更小的子目录再试。
+              会逐个到网盘确认 strm 指向的文件还在不在。目录大时要两三分钟；范围太大时会被拒绝，进更小的子目录再试。
             </p>
           )}
-          {running && <Spinner label="正在向 115 逐个确认，请不要关闭页面…" />}
+          {running && <Spinner label="正在向网盘逐个确认，请不要关闭页面…" />}
           {phase === "error" && (
             <Alert variant="destructive">
               <AlertCircle />
@@ -109,11 +109,11 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
                 检查了 {result.checked} 个 strm、{result.dirs} 个网盘目录。
               </p>
               {missing.length === 0 ? (
-                <EmptyState className="py-8" icon={CheckCircle2} title="全部存在" description="这些 strm 指向的文件都还在 115 上。" />
+                <EmptyState className="py-8" icon={CheckCircle2} title="全部存在" description="这些 strm 指向的文件都还在网盘上。" />
               ) : (
                 <div className="overflow-hidden rounded-xl border">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/40 px-3 py-2 text-xs">
-                    <span className="tabular-nums">115 上已不存在（{missing.length}）</span>
+                    <span className="tabular-nums">网盘上已不存在（{missing.length}）</span>
                     <Button
                       variant="outline"
                       size="sm"
@@ -152,7 +152,7 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
               )}
               {result.unparsable.length > 0 && (
                 <div className="text-xs text-muted-foreground">
-                  <p className="tabular-nums">{result.unparsable.length} 个无法解析出 115 路径，没有校验（用「修正内容」或「重新生成」处理）：</p>
+                  <p className="tabular-nums">{result.unparsable.length} 个无法解析出网盘路径，没有校验（用「修正内容」或「重新生成」处理）：</p>
                   <ul className="mt-0.5 space-y-0.5 font-mono">
                     {result.unparsable.slice(0, 5).map((u) => (
                       <li key={u.path} className="break-all">

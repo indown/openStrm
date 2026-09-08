@@ -279,8 +279,12 @@ export class FakeDrive implements DriveProvider {
   readonly withHash: boolean;
   readonly linkBase: string;
   readonly calls = { resolvePath: 0, listDir: 0, listSubtree: 0, walkSubtree: 0, downloadLink: 0 };
+  /** 每次网盘调用记一行 `<方法> <参数>`，测试断言调用顺序 / 次数用 */
+  readonly log: string[] = [];
   /** 设了就让所有网盘调用抛这个错（模拟 cookie 失效 / 风控） */
   failWith: Error | null = null;
+  /** 每次网盘调用前先等它（模拟慢接口 / 卡住） */
+  beforeCall: (() => Promise<void>) | null = null;
 
   constructor(
     readonly kind: DriveKind,
@@ -296,20 +300,22 @@ export class FakeDrive implements DriveProvider {
     this.notes = opts.notes;
   }
 
-  private guard(): void {
+  private async guard(method: string, arg: string): Promise<void> {
+    this.log.push(`${method} ${arg}`);
+    if (this.beforeCall) await this.beforeCall();
     if (this.failWith) throw this.failWith;
   }
 
   async resolvePath(path: string): Promise<DriveNode | null> {
     this.calls.resolvePath++;
-    this.guard();
+    await this.guard("resolvePath", path);
     const node = this.tree.get(path);
     return node ? { id: node.id, isDir: node.isDir } : null;
   }
 
   async listDir(id: string): Promise<DriveEntry[]> {
     this.calls.listDir++;
-    this.guard();
+    await this.guard("listDir", id);
     const dir = this.tree.pathOf(id);
     if (dir === null) return [];
     return this.tree.children(dir).map(({ path, node }) => ({
@@ -333,14 +339,14 @@ export class FakeDrive implements DriveProvider {
 
   async listSubtree(path: string, opts?: { id?: string }): Promise<string[]> {
     this.calls.listSubtree++;
-    this.guard();
+    await this.guard("listSubtree", opts?.id ?? path);
     const root = this.rootPath(path, opts?.id);
     return syncViewFromPaths(this.tree.descendants(root).map(({ path: p }) => splitPath(p.slice(root === "/" ? 0 : root.length))));
   }
 
   async walkSubtree(path: string, opts?: { id?: string }): Promise<SubtreeEntry[]> {
     this.calls.walkSubtree++;
-    this.guard();
+    await this.guard("walkSubtree", opts?.id ?? path);
     const root = this.rootPath(path, opts?.id);
     return this.tree.descendants(root).map(({ path: p, node }) => ({
       path: splitPath(p.slice(root === "/" ? 0 : root.length)).join("/"),
@@ -353,7 +359,7 @@ export class FakeDrive implements DriveProvider {
 
   async downloadLink(path: string): Promise<DriveLink> {
     this.calls.downloadLink++;
-    this.guard();
+    await this.guard("downloadLink", path);
     const p = normalizePath(path);
     const node = this.tree.get(p);
     if (!node || node.isDir) throw new RemoteDirNotFoundError(p);
@@ -363,8 +369,8 @@ export class FakeDrive implements DriveProvider {
   classifyError(err: unknown): AccountIssue | null {
     if (err instanceof ShareGoneError) return "gone";
     const msg = err instanceof Error ? err.message : String(err);
-    if (/cookie|login/i.test(msg)) return "auth";
-    if (/blocked|405/i.test(msg)) return "blocked";
+    if (/cookie|login|登录/i.test(msg)) return "auth";
+    if (/blocked|405|阻断|封控/i.test(msg)) return "blocked";
     return null;
   }
 }

@@ -31,8 +31,6 @@ import type {
   StrmVerifyResult,
   TaskDefinition,
 } from "@openstrm/shared";
-import type { AccountInfo, DriveEntry } from "../cloud-115/client.js";
-import { fsDirGetId, listDirEntries } from "../cloud-115/client.js";
 import { listTasks } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { mapLimit } from "../../lib/async.js";
@@ -43,10 +41,9 @@ import { resolveInDataDir } from "../../paths.js";
 import { writeStrm } from "../download/rate-limited.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { isTaskRunning } from "../task/registry.js";
-import { classifyAccountIssue } from "../telegram/notify.js";
+import { RemoteDirNotFoundError, type DriveProvider } from "../drive/types.js";
 import { episodeKey, inspectStrm, isForeignStrm, showDirOf } from "./inspect.js";
 import { extOf, extSet, toStrmPath } from "./naming.js";
-import { exportDirFiles, RemoteDirNotFoundError } from "./share-strm.js";
 
 const log = moduleLogger("strm-manage");
 
@@ -60,27 +57,23 @@ export const STRM_LIMITS = {
   /** 体检每类问题最多列这么多条，总数在 counts 里 */
   ISSUE_LIST: 200,
   REWRITE_SAMPLES: 50,
-  /** 校验一次最多看的 strm 数 / 要问 115 的目录数：每个目录 1 次 getid + 至少 1 次列目录，默认限速 2/s */
+  /** 校验一次最多看的 strm 数 / 要问网盘的目录数：每个目录 1 次解析 + 至少 1 次列目录，默认限速 2/s */
   VERIFY_FILES: 2000,
   VERIFY_DIRS: 60,
   DELETE_MAX: 500,
 } as const;
 
-const VERIFY_NOTE = "115 的目录信息有几分钟缓存：刚转存进去或刚删掉的文件，几分钟内校验结果可能还是旧的";
-
 /* ------------------------------- 依赖注入 ------------------------------- */
 
+/** 网盘那几步走 DriveProvider（测试用 setDriveProviderFactory 换假网盘）；这里只剩任务表 */
 interface Deps {
-  exportDirFiles: typeof exportDirFiles;
-  fsDirGetId: (p: string, ctx: { accountInfo: AccountInfo }) => Promise<{ id?: number | string } | undefined>;
-  listDirEntries: (cid: number | string, ctx: { accountInfo: AccountInfo }) => Promise<DriveEntry[]>;
   isTaskRunning: typeof isTaskRunning;
 }
 
-const realDeps: Deps = { exportDirFiles, fsDirGetId, listDirEntries, isTaskRunning };
+const realDeps: Deps = { isTaskRunning };
 let deps: Deps = { ...realDeps };
 
-/** 仅供测试：换掉会碰 115 / 任务表的几步；传 null 恢复 */
+/** 仅供测试：换掉会碰任务表的一步；传 null 恢复 */
 export function setStrmManageDeps(partial: Partial<Deps> | null): void {
   deps = partial ? { ...realDeps, ...partial } : { ...realDeps };
 }
@@ -567,7 +560,7 @@ export async function rewrite(task: TaskDefinition, rel: string, opts: { dryRun:
 
 export async function regenerate(
   task: TaskDefinition,
-  accountInfo: AccountInfo,
+  provider: DriveProvider,
   rel: string,
   opts: { mode: StrmRegenerateMode },
 ): Promise<StrmRegenerateResult> {
@@ -580,10 +573,10 @@ export async function regenerate(
     const strmExts = extSet(readAppSettings().strmExtensions);
     const remoteDir = `${task.originPath}/${mp.rel}`;
 
-    // 先导出再动本地：导出失败（超时、封控、cookie 失效）时本地一个字节都不该少
+    // 先读网盘再动本地：读失败（超时、封控、cookie 失效）时本地一个字节都不该少
     let files: string[];
     try {
-      files = await deps.exportDirFiles({ accountInfo, dirPath: remoteDir });
+      files = await provider.listSubtree(remoteDir);
     } catch (err) {
       if (err instanceof RemoteDirNotFoundError) throw new HttpError(404, err.message);
       if (err instanceof HttpError) throw err;
@@ -644,7 +637,7 @@ export async function regenerate(
 
 const collapseSlashes = (p: string): string => p.replace(/\/{2,}/g, "/");
 
-export async function verify(task: TaskDefinition, accountInfo: AccountInfo, rel: string): Promise<StrmVerifyResult> {
+export async function verify(task: TaskDefinition, provider: DriveProvider, rel: string): Promise<StrmVerifyResult> {
   const mp = await resolveManagedPath(task, rel);
   const tasks = listTasks();
   const foreign = nestedForeignRoots(task, tasks);
@@ -654,7 +647,7 @@ export async function verify(task: TaskDefinition, accountInfo: AccountInfo, rel
     throw new HttpError(400, `范围太大（超过 ${STRM_LIMITS.VERIFY_FILES} 个 strm），请选一个更小的目录分批校验`);
   }
 
-  const result: StrmVerifyResult = { checked: 0, dirs: 0, missing: [], unparsable: [], errors: [], note: VERIFY_NOTE };
+  const result: StrmVerifyResult = { checked: 0, dirs: 0, missing: [], unparsable: [], errors: [], note: provider.notes?.verify ?? "" };
   const groups = new Map<string, Array<{ path: string; remotePath: string; name: string }>>();
   await mapLimit(rels, 16, async (r) => {
     const full = path.join(mp.root, ...r.split("/"));
@@ -691,20 +684,19 @@ export async function verify(task: TaskDefinition, accountInfo: AccountInfo, rel
 
   await mapLimit([...groups], 4, async ([dir, items]) => {
     try {
-      const res = await deps.fsDirGetId(dir, { accountInfo });
-      const id = res?.id;
-      if (id == null || String(id) === "" || String(id) === "0") {
+      const node = await provider.resolvePath(dir);
+      if (!node || !node.isDir) {
         for (const it of items) result.missing.push({ path: it.path, remotePath: it.remotePath, reason: "dir-missing" });
         return;
       }
-      const names = new Set((await deps.listDirEntries(id, { accountInfo })).map((e) => String(e.n).trim()));
+      const names = new Set((await provider.listDir(node.id)).map((e) => e.name.trim()));
       for (const it of items) {
         if (!names.has(it.name.trim())) result.missing.push({ path: it.path, remotePath: it.remotePath, reason: "file-missing" });
       }
     } catch (err) {
       const msg = errMsg(err);
       // 封控 / cookie 失效：再问下去只会越问越糟，整体中止
-      if (classifyAccountIssue(msg)) throw upstreamError(msg);
+      if (provider.classifyError(err)) throw upstreamError(msg);
       result.errors.push({ remoteDir: dir, message: msg });
     }
   });

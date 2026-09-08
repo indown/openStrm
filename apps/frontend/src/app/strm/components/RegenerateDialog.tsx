@@ -29,10 +29,10 @@ type Props = {
 
 const MODES: Array<{ value: StrmRegenerateMode; label: string; hint: string }> = [
   { value: "fill", label: "补齐", hint: "只生成缺少的 strm，已有的不动" },
-  { value: "rebuild", label: "重建", hint: "按 115 现在的目录重新生成，本地多出来的 strm 会被删掉；字幕 / nfo 等附件不动" },
+  { value: "rebuild", label: "重建", hint: "按网盘现在的目录重新生成，本地多出来的 strm 会被删掉；字幕 / nfo 等附件不动" },
 ];
 
-/** 按对应的 115 目录重新导出并生成 strm；根目录不给做（请直接跑同步任务） */
+/** 按对应的网盘目录重新读取并生成 strm；根目录不给做（请直接跑同步任务） */
 export function RegenerateDialog({ target, onOpenChange, taskId, syncing, onDone }: Props) {
   const open = target != null;
   const [mode, setMode] = useState<StrmRegenerateMode>("fill");
@@ -73,7 +73,7 @@ export function RegenerateDialog({ target, onOpenChange, taskId, syncing, onDone
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>重新生成 strm</DialogTitle>
-          <DialogDescription className="break-all">读取 115 上对应的目录，{target ? `重新生成「${target}」` : "重新生成"}下的 strm。</DialogDescription>
+          <DialogDescription className="break-all">读取网盘上对应的目录，{target ? `重新生成「${target}」` : "重新生成"}下的 strm。</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           {isRoot && <p className="text-sm text-warning">根目录请直接运行同步任务。</p>}
@@ -99,7 +99,7 @@ export function RegenerateDialog({ target, onOpenChange, taskId, syncing, onDone
               </label>
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">会读取 115 目录，最长可能等 5 分钟；请不要关闭页面。</p>
+          <p className="text-xs text-muted-foreground">会读取网盘目录，最长可能等 5 分钟；请不要关闭页面。</p>
           {running && (
             <p className="flex items-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" />

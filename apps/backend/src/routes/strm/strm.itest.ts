@@ -1,5 +1,5 @@
 /**
- * strm 管理路由的闭环：鉴权、校验、各接口形状、账号类型限制、任务运行中 409。碰 115 的两步用桩。
+ * strm 管理路由的闭环：鉴权、校验、各接口形状、任务运行中 409。网盘走内存假网盘（test/fake-drive.ts）。
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/routes/strm/strm.itest.ts
  */
@@ -29,7 +29,8 @@ import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { DATA_DIR } from "../../paths.js";
 import { releaseTaskStart, reserveTaskStart } from "../../services/task/registry.js";
-import { setStrmManageDeps } from "../../services/strm/manage.js";
+import { setDriveProviderFactory } from "../../services/drive/registry.js";
+import { FakeDrive } from "../../test/fake-drive.js";
 
 let app: FastifyInstance;
 let auth: Record<string, string>;
@@ -41,6 +42,7 @@ const t115: TaskDefinition = { id: "r-main", account: "acc", accountType: "115",
 const tOl: TaskDefinition = { id: "r-ol", account: "ol", accountType: "openlist", originPath: "x", targetPath: "strm-itest/ol", strmPrefix: "/mnt/ol" };
 
 const ROOT = path.join(DATA_DIR, "strm-itest", "tv");
+const drives = new Map<string, FakeDrive>();
 const write = (rel: string, content: string) => {
   const p = path.join(ROOT, ...rel.split("/"));
   fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -57,6 +59,14 @@ before(async () => {
   write("Show/Season 1/ep2.strm", "/old/tv/Show/Season 1/ep2.mkv");
   write("Show/x.part", "");
 
+  // 115 账号的网盘：tv/Show/Season 1 下有 ep1 和 ep3；OpenList 账号的网盘是空的
+  const d115 = new FakeDrive("115", acc115);
+  d115.tree.addFile("/tv/Show/Season 1/ep1.mkv");
+  d115.tree.addFile("/tv/Show/Season 1/ep3.mkv");
+  drives.set("acc", d115);
+  drives.set("ol", new FakeDrive("openlist", accOl));
+  setDriveProviderFactory((account) => drives.get(account.name) ?? null);
+
   app = Fastify();
   registerErrorHandling(app);
   await app.register(authPlugin);
@@ -67,7 +77,7 @@ before(async () => {
 
 after(async () => {
   await app.close();
-  setStrmManageDeps(null);
+  setDriveProviderFactory(null);
   replaceTasks(baseline.tasks);
   replaceAccounts(baseline.accounts);
   fs.rmSync(path.join(DATA_DIR, "strm-itest"), { recursive: true, force: true });
@@ -147,15 +157,12 @@ test("scan / rewrite / delete", async () => {
   assert.equal(fs.existsSync(path.join(ROOT, "Show", "x.part")), false);
 });
 
-test("regenerate / verify：OpenList 任务 400；115 任务经桩 200；任务运行中写操作 409", async () => {
-  assert.equal((await post("/api/strm/regenerate", { taskId: "r-ol", path: "Show" })).statusCode, 400);
-  assert.equal((await post("/api/strm/verify", { taskId: "r-ol" })).statusCode, 400);
+test("regenerate / verify：任何网盘类型都能做（OpenList 本地目录不存在 404 / 校验 0 条）；115 任务 200；任务运行中写操作 409", async () => {
+  assert.equal((await post("/api/strm/regenerate", { taskId: "r-ol", path: "Show" })).statusCode, 404, "本地还没有这个目录");
+  const olVerify = await post("/api/strm/verify", { taskId: "r-ol" });
+  assert.equal(olVerify.statusCode, 200, olVerify.body);
+  assert.equal(olVerify.json<StrmVerifyResult>().checked, 0);
 
-  setStrmManageDeps({
-    exportDirFiles: async () => ["Season 1/ep1.mkv", "Season 1/ep3.mkv"],
-    fsDirGetId: async () => ({ id: 7 }),
-    listDirEntries: async () => [{ n: "ep1.mkv", fid: 1, cid: 7, fc: 1 }],
-  });
   const regen = await post("/api/strm/regenerate", { taskId: "r-main", path: "Show" });
   assert.equal(regen.statusCode, 200, regen.body);
   assert.deepEqual(regen.json<StrmRegenerateResult>(), { mode: "fill", remoteFiles: 2, generated: 1, skipped: 1, removed: 0 });
@@ -165,7 +172,7 @@ test("regenerate / verify：OpenList 任务 400；115 任务经桩 200；任务�
   assert.equal(verified.statusCode, 200, verified.body);
   const v = verified.json<StrmVerifyResult>();
   assert.equal(v.checked, 3);
-  assert.deepEqual(v.missing.map((m) => `${m.path}:${m.reason}`), ["Show/Season 1/ep2.strm:file-missing", "Show/Season 1/ep3.strm:file-missing"]);
+  assert.deepEqual(v.missing.map((m) => `${m.path}:${m.reason}`), ["Show/Season 1/ep2.strm:file-missing"]);
 
   assert.ok(reserveTaskStart("r-main"));
   try {
@@ -177,5 +184,4 @@ test("regenerate / verify：OpenList 任务 400；115 任务经桩 200；任务�
   } finally {
     releaseTaskStart("r-main");
   }
-  setStrmManageDeps(null);
 });
