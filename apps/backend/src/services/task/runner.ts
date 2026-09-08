@@ -8,20 +8,17 @@
 import type { Dirent } from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import axios from "axios";
 import { catchError, defer, EMPTY, finalize, from, merge, mergeMap, Subject, Subscription, tap } from "rxjs";
-import type { AccountInfo, AccountQuark, TaskDefinition } from "@openstrm/shared";
+import type { TaskDefinition } from "@openstrm/shared";
 import { listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { resolveInDataDir } from "../../paths.js";
-import { DEFAULT_TIMEOUT_MS } from "../../lib/http.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { mapLimit } from "../../lib/async.js";
 import { isDirectoryEntry, removeEmptyParents } from "../../lib/fs.js";
-import { Cloud115Error, exportDirParse, fsDirGetId } from "../cloud-115/client.js";
-import { openlistLogin } from "../openlist/client.js";
-import { quarkListDir, quarkResolvePath } from "../quark/client.js";
+import { KIND_LABEL, providerFor } from "../drive/registry.js";
+import { RemoteDirNotFoundError, splitPath, type DriveProvider } from "../drive/types.js";
 import {
   downloadOrCreateStrm,
   downloadOrCreateStrmLimited,
@@ -47,8 +44,8 @@ import {
   type StartOutcome,
 } from "./registry.js";
 import { LogBatcher } from "./log-batch.js";
-import { flattenTree, planSync } from "./plan.js";
-import { buildTree, collectFilesAndTopEmptyDirs, TreeBuilder, type TreeNode } from "./tree.js";
+import { planSync } from "./plan.js";
+import { collectFilesAndTopEmptyDirs, type TreeNode } from "./tree.js";
 
 export interface StartTaskResult {
   /** HTTP 语义的状态码：200 已受理（可能是"无事可做"），其余为失败 */
@@ -100,134 +97,31 @@ async function removeExtraFiles(extraLocally: string[], saveDir: string): Promis
 
 /* ------------------------------- 远端目录 ------------------------------- */
 
-async function getOpenlistTreeData(baseUrl: string, token: string, originPath: string): Promise<TreeNode[]> {
-  const allPaths: string[] = [];
-  async function collect(cur: string) {
-    const r = await axios.post(
-      `${baseUrl}/api/fs/list`,
-      { path: cur, page: 1, per_page: 0, refresh: true },
-      { headers: { Authorization: token }, timeout: DEFAULT_TIMEOUT_MS },
-    );
-    if (r.data.code !== 200) throw new Error(`Failed to list ${cur}: ${r.data.message}`);
-    for (const item of r.data.data.content || []) {
-      const p = cur.endsWith("/") ? `${cur}${item.name}` : `${cur}/${item.name}`;
-      allPaths.push(p);
-      if (item.is_dir) await collect(p);
-    }
-  }
-  await collect(originPath);
-
-  const parts = originPath.split("/").filter(Boolean);
-  const lastDir = parts[parts.length - 1] || "";
-  const prefix = originPath.substring(0, originPath.lastIndexOf("/" + lastDir));
-  const cleaned = allPaths
-    .map((p) => {
-      if (prefix.length === 0) return p;
-      if (p.startsWith(prefix + "/")) return p.substring(prefix.length + 1);
-      if (p.startsWith(prefix)) {
-        const c = p.substring(prefix.length);
-        return c.startsWith("/") ? c.substring(1) : c;
-      }
-      return p;
-    })
-    .filter(Boolean);
-
-  const tree = new TreeBuilder();
-  for (const full of cleaned) tree.add(full.split("/").filter(Boolean));
-  return tree.nodes;
-}
-
 /**
- * 夸克没有整树导出：从 originPath 对应的目录起逐层列目录，同一层的目录并发列（在飞上限 4，
- * 真正的节流是账号限流器）。顶层节点是 originPath 的最后一段，和 OpenList 分支同形，flattenTree 就能对上。
- * 目录也进树（空目录才会同步到本地）；名字里带 / 的条目按路径根本找不回来，跳过并告警。
+ * 远端目录的同步视图（文件 + 顶层空目录，相对 originPath）。三家网盘都走 provider.listSubtree，
+ * 这里只负责把失败翻译成任务启动结果：被封控 403，源目录不存在 / 其它 500 带原因。
  */
-async function getQuarkTreeData(account: AccountQuark, originPath: string): Promise<TreeNode[]> {
-  const segments = originPath.split("/").map((s) => s.trim()).filter(Boolean);
-  if (segments.length === 0) throw new Error("远程路径不能是根目录，请填一个具体目录");
-  const { fid, entry } = await quarkResolvePath(account, originPath);
-  if (entry && !entry.isDir) throw new Error(`远程路径是一个文件而不是目录: ${originPath}`);
-
-  const tree = new TreeBuilder();
-  let frontier: Array<{ fid: string; rel: string[] }> = [{ fid, rel: [segments[segments.length - 1]] }];
-  while (frontier.length > 0) {
-    const listed = await mapLimit(frontier, 4, (dir) => quarkListDir(account, dir.fid));
-    const next: typeof frontier = [];
-    frontier.forEach((dir, i) => {
-      for (const item of listed[i]) {
-        if (item.name.includes("/")) {
-          log.warn({ account: account.name, dir: dir.rel.join("/"), name: item.name }, "夸克条目名字里带 /，按路径找不回来，跳过");
-          continue;
-        }
-        const segs = [...dir.rel, item.name];
-        tree.add(segs);
-        if (item.isDir) next.push({ fid: item.fid, rel: segs });
-      }
-    });
-    frontier = next;
-  }
-  return tree.nodes;
-}
-
-async function loadRemoteTree(
+async function loadRemoteEntries(
   task: TaskDefinition,
-  accountInfo: AccountInfo,
-): Promise<{ tree: TreeNode[] } | { fail: StartTaskResult }> {
-  const { account, originPath } = task;
-
-  if (accountInfo.accountType === "115") {
-    if (!accountInfo.cookie) return { fail: fail(500, `115 账号 ${account} 没有 cookie`) };
-    try {
-      const idRes = await fsDirGetId(originPath, { accountInfo });
-      const data = await exportDirParse({
-        exportFileIds: idRes.id,
-        targetPid: 0,
-        layerLimit: 0,
-        deleteAfter: true,
-        timeoutMs: 300000,
-        checkIntervalMs: 1000,
-        accountInfo,
-      });
-      return { tree: buildTree(data) };
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      const blocked =
-        (error instanceof Cloud115Error && error.status === 405) ||
-        msg.includes("<!doctypehtml>") ||
-        msg.includes("您的访问被阻断");
-      if (blocked) {
-        return { fail: fail(403, "115账号被封控", "账号访问被阿里云阻断，请检查账号状态或稍后重试") };
-      }
-      // ensureOk 的 message 自带"115："前缀，这里外面还有一层"读取 115 目录失败"，别叠成"…失败：115：…"
-      return { fail: fail(500, "读取 115 目录失败", msg.replace(/^115：/, "")) };
+  provider: DriveProvider,
+): Promise<{ entries: string[] } | { fail: StartTaskResult }> {
+  const { originPath } = task;
+  if (splitPath(originPath).length === 0) return { fail: fail(400, "远程路径不能是根目录，请填一个具体目录") };
+  const label = KIND_LABEL[provider.kind];
+  try {
+    return { entries: await provider.listSubtree(originPath) };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (provider.classifyError(error) === "blocked") {
+      return { fail: fail(403, `${label}账号被封控`, "账号访问被阻断，请检查账号状态或稍后重试") };
     }
+    // 找不到源目录就中止：接着按"远端为空"跑会把本地库整个当多余删掉
+    if (error instanceof RemoteDirNotFoundError) {
+      return { fail: fail(500, "远端目录树里找不到源目录", `${originPath} 不存在或已改名，已中止，避免把本地文件当多余删掉`) };
+    }
+    // ensureOk 的 message 自带"115："前缀，这里外面还有一层"读取目录失败"，别叠成"…失败：115：…"
+    return { fail: fail(500, `读取${label}目录失败`, msg.replace(/^115：/, "")) };
   }
-
-  if (accountInfo.accountType === "openlist") {
-    if (!accountInfo.account || !accountInfo.password || !accountInfo.url) {
-      return { fail: fail(500, "OpenList 账号缺少地址或用户名/密码") };
-    }
-    let token: string;
-    try {
-      token = await openlistLogin(accountInfo);
-    } catch (err) {
-      return { fail: fail(500, err instanceof Error ? err.message : "OpenList 登录失败") };
-    }
-    return { tree: buildTree(await getOpenlistTreeData(accountInfo.url, token, originPath)) };
-  }
-
-  if (accountInfo.accountType === "quark") {
-    if (!accountInfo.cookie) return { fail: fail(500, `夸克账号 ${account} 没有 cookie`) };
-    try {
-      return { tree: buildTree(await getQuarkTreeData(accountInfo, originPath)) };
-    } catch (error) {
-      // cookie 失效没有可靠的错误码可认，接口的 message 原样带上，界面上能看出是登录态的问题
-      return { fail: fail(500, "读取夸克目录失败", error instanceof Error ? error.message : String(error)) };
-    }
-  }
-
-  // AccountInfo 是判别联合，到这里已经穷尽；留一条兜底以防将来加类型
-  return { fail: fail(400, "Unknown account type") };
 }
 
 /* --------------------------------- 入口 --------------------------------- */
@@ -292,11 +186,12 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
   const accounts = listAccounts();
   const accountInfo = accounts.find((a) => a.name === account);
   if (!accountInfo) return fail(500, `账号不存在：${account}`);
+  const provider = providerFor(accountInfo);
 
   const saveDir = resolveInDataDir(targetPath);
   if (!saveDir) return fail(400, `targetPath 越出了数据目录: ${targetPath}`);
 
-  const loaded = await loadRemoteTree(task, accountInfo);
+  const loaded = await loadRemoteEntries(task, provider);
   if ("fail" in loaded) return loaded.fail;
 
   await fsp.mkdir(saveDir, { recursive: true });
@@ -305,13 +200,8 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
   const strmExts = extSet(settings.strmExtensions);
   const dlExts = extSet(settings.downloadExtensions);
 
-  // 对照规则在 plan.ts，有单测钉着；这里只负责把两边的清单喂进去。
-  // 导出树里定位不到 originPath 就中止：接着按"远端为空"跑会把本地库整个当多余删掉
-  const remoteEntries = flattenTree(loaded.tree, originPath);
-  if (remoteEntries === null) {
-    const tops = loaded.tree.filter((n) => n.name).map((n) => n.name).join("、");
-    return fail(500, "远端目录树里找不到源目录", `${originPath} 不在导出结果里（顶层：${tops}），已中止，避免把本地文件当多余删掉`);
-  }
+  // 对照规则在 plan.ts，有单测钉着；这里只负责把两边的清单喂进去
+  const remoteEntries = loaded.entries;
   const localEntries = collectFilesAndTopEmptyDirs(await getLocalTree(saveDir));
   const { missing: missingLocally, extra: extraLocally } = planSync(remoteEntries, localEntries, strmExts, dlExts);
 

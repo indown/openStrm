@@ -5,9 +5,9 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { defer, lastValueFrom, Observable, retry, Subscription, throwError, timer } from "rxjs";
-import { Cloud115Error, getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
-import { quarkDownloadLink, quarkResolvePath } from "../quark/client.js";
+import { Cloud115Error } from "../cloud-115/client.js";
 import type { AccountInfo } from "@openstrm/shared";
+import { providerFor } from "../drive/registry.js";
 import { isAbortError, PermanentError } from "../../lib/errors.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { strmContent, toStrmPath } from "../strm/naming.js";
@@ -152,30 +152,11 @@ export async function resolveDownload(
   accounts: AccountInfo[],
   { maxRetries = 3, retryDelay = 2000, signal }: LinkOptions = {},
 ): Promise<ResolvedDownload> {
-  const settings = readAppSettings();
   const accountInfo = accounts.find((acc) => acc.name === account);
   if (!accountInfo) throw new Error(`No cookie found for account: ${account}`);
-
-  const fetchLink = async (): Promise<ResolvedDownload> => {
-    // 115 的每一次接口调用在 request115 里各自限流，夸克在它的 request 里也是；openlist 在这里按账号限流。
-    // 夸克不能再套一层 scheduleForAccount：里外各占一个槽位，默认并发 2 时两个文件就把账号卡死
-    if (accountInfo.accountType === "115") {
-      return { url: await getRealDownloadLinkDirect115(filePath, accountInfo, settings["user-agent"], signal) };
-    }
-    if (accountInfo.accountType === "quark") {
-      if (!accountInfo.cookie) throw new PermanentError(`Missing quark cookie for account: ${accountInfo.name}`);
-      const { fid, entry } = await quarkResolvePath(accountInfo, filePath, signal);
-      if (!entry || entry.isDir) throw new PermanentError(`Not a file: ${filePath}`);
-      return quarkDownloadLink(accountInfo, fid, signal);
-    }
-    const url = await scheduleForAccount(
-      account,
-      () => getRealDownloadLinkDirect(filePath, accountInfo, signal),
-      settings.download?.linkMaxConcurrent || 2,
-      signal,
-    );
-    return { url };
-  };
+  // 各家的限流在各自的 Provider / 客户端里做（115 的 request115、夸克的 request、OpenList 的 downloadLink），这里不再套
+  const provider = providerFor(accountInfo);
+  const fetchLink = (): Promise<ResolvedDownload> => provider.downloadLink(filePath, { signal });
 
   for (let attempt = 0; ; attempt++) {
     try {
@@ -196,39 +177,6 @@ export async function getRealDownloadLink(
   opts: LinkOptions = {},
 ): Promise<string> {
   return (await resolveDownload(filePath, account, accounts, opts)).url;
-}
-
-async function getRealDownloadLinkDirect115(
-  filePath: string,
-  accountInfo: { name: string; cookie: string; accountType?: string },
-  userAgent: string | undefined,
-  signal?: AbortSignal,
-): Promise<string> {
-  const pickcode = await getIdToPath({ path: filePath, userAgent, accountInfo, signal });
-  if (!pickcode) throw new PermanentError(`No pickcode found for file: ${filePath}`);
-  return getDownloadUrlWeb(pickcode, { userAgent, accountInfo, signal });
-}
-
-async function getRealDownloadLinkDirect(
-  filePath: string,
-  accountInfo: { name: string; accountType?: string; url?: string; token?: string },
-  signal?: AbortSignal,
-): Promise<string> {
-  if (accountInfo.accountType === "openlist") {
-    if (!accountInfo.url || !accountInfo.token)
-      throw new PermanentError(`Missing openlist credentials for account: ${accountInfo.name}`);
-    const response = await axios.post(`${accountInfo.url}/api/fs/get`, { path: filePath }, {
-      headers: { Authorization: accountInfo.token },
-      timeout: DEFAULT_TIMEOUT_MS,
-      signal,
-    });
-    const result = response.data;
-    // OpenList 已经明确答复了（多半是 object not found），两秒后再问答案也一样
-    if (result.code !== 200) throw new PermanentError(`Failed to get file info: ${result.message}`);
-    if (!result.data.raw_url) throw new PermanentError(`No raw_url found for file: ${filePath}`);
-    return result.data.raw_url;
-  }
-  throw new PermanentError(`Unsupported account type: ${accountInfo.accountType}`);
 }
 
 export interface DownloadOptions {

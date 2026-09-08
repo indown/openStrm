@@ -14,6 +14,7 @@ import axios, { isAxiosError } from "axios";
 import type { AccountOpenlist } from "@openstrm/shared";
 import { updateAccount } from "../../db/repositories/accounts.js";
 import { DEFAULT_TIMEOUT_MS } from "../../lib/http.js";
+import { isAbortError, PermanentError } from "../../lib/errors.js";
 import { moduleLogger } from "../../lib/logger.js";
 
 const log = moduleLogger("openlist");
@@ -26,6 +27,8 @@ export class OpenlistError extends Error {
     message: string,
     /** OpenList 响应体里的 code 或 HTTP 状态码 */
     public readonly code?: number,
+    /** true = 连不上 / HTTP 层失败（值得重试）；false = OpenList 明确答复了失败 */
+    public readonly transport = false,
   ) {
     super(message);
     this.name = "OpenlistError";
@@ -76,7 +79,13 @@ function httpErrText(err: unknown): string {
 }
 
 /** 走一次 OpenList 接口；token 失效（code/HTTP 401）就重登一次再试 */
-async function request<T>(account: AccountOpenlist, method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+async function request<T>(
+  account: AccountOpenlist,
+  method: "GET" | "POST",
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     const token = await openlistLogin(account);
     let res: { data: Envelope<T> };
@@ -87,13 +96,16 @@ async function request<T>(account: AccountOpenlist, method: "GET" | "POST", path
         data: body,
         headers: { Authorization: token },
         timeout: DEFAULT_TIMEOUT_MS,
+        signal,
       });
     } catch (err) {
+      // 调用方自己掐的（任务取消）：原样抛出去，重试和日志那边靠 isAbortError 认它
+      if (isAbortError(err)) throw err;
       if (isAxiosError(err) && err.response?.status === 401 && attempt === 0) {
         forgetToken(account);
         continue;
       }
-      throw new OpenlistError(`OpenList ${path} 失败：${httpErrText(err)}`, isAxiosError(err) ? err.response?.status : undefined);
+      throw new OpenlistError(`OpenList ${path} 失败：${httpErrText(err)}`, isAxiosError(err) ? err.response?.status : undefined, true);
     }
     if (res.data.code === 200) return res.data.data as T;
     if (res.data.code === 401 && attempt === 0) {
@@ -110,21 +122,39 @@ async function request<T>(account: AccountOpenlist, method: "GET" | "POST", path
 export interface OpenlistFsEntry {
   name: string;
   is_dir: boolean;
+  size?: number;
+  /** ISO 时间 */
+  modified?: string;
 }
 
 /** 列一个目录；refresh:true 绕过 OpenList 的缓存直接问上游存储 */
 export async function openlistListDir(
   account: AccountOpenlist,
   path: string,
-  { refresh = false }: { refresh?: boolean } = {},
+  { refresh = false, signal }: { refresh?: boolean; signal?: AbortSignal } = {},
 ): Promise<OpenlistFsEntry[]> {
-  const data = await request<{ content: OpenlistFsEntry[] | null } | null>(account, "POST", "/api/fs/list", {
-    path,
-    page: 1,
-    per_page: 0,
-    refresh,
-  });
+  const data = await request<{ content: OpenlistFsEntry[] | null } | null>(
+    account,
+    "POST",
+    "/api/fs/list",
+    { path, page: 1, per_page: 0, refresh },
+    signal,
+  );
   return data?.content ?? [];
+}
+
+/** 文件的直链（OpenList 的 raw_url）。OpenList 明确说没有这个文件时是 PermanentError，别拿同一路径重试 */
+export async function openlistRawUrl(account: AccountOpenlist, path: string, signal?: AbortSignal): Promise<string> {
+  let data: { raw_url?: string } | null;
+  try {
+    data = await request<{ raw_url?: string } | null>(account, "POST", "/api/fs/get", { path }, signal);
+  } catch (err) {
+    // OpenList 已经明确答复了（多半是 object not found），两秒后再问答案也一样；连不上的照常重试
+    if (err instanceof OpenlistError && !err.transport) throw new PermanentError(`Failed to get file info: ${err.message}`);
+    throw err;
+  }
+  if (!data?.raw_url) throw new PermanentError(`No raw_url found for file: ${path}`);
+  return data.raw_url;
 }
 
 /* ------------------------------- 复制任务 ------------------------------- */

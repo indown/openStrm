@@ -6,8 +6,10 @@ import { exportDirParse, fsDirGetId } from "../cloud-115/client.js";
 import { writeStrm } from "../download/rate-limited.js";
 import { buildTree, collectFilesAndTopEmptyDirs, findExportedDir } from "../task/tree.js";
 import { resolveInDataDir } from "../../paths.js";
-import { PermanentError } from "../../lib/errors.js";
+import { RemoteDirNotFoundError } from "../drive/types.js";
 import { toStrmPath } from "./naming.js";
+
+export { RemoteDirNotFoundError };
 
 export interface SelectedItem {
   name: string;
@@ -37,14 +39,6 @@ async function writeOneStrm(
 
 function normalizeSubPath(sub?: string): string {
   return (sub || "").split("/").map((s) => s.trim()).filter(Boolean).join("/");
-}
-
-/** 网盘上没有这个目录：getid 回了 0 */
-export class RemoteDirNotFoundError extends PermanentError {
-  constructor(readonly dirPath: string) {
-    super(`115 上不存在目录：${dirPath}`);
-    this.name = "RemoteDirNotFoundError";
-  }
 }
 
 /**

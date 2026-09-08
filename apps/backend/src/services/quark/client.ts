@@ -58,6 +58,8 @@ export interface QuarkEntry {
   size: number;
   /** 夸克的分类：1 = 视频 */
   category: number;
+  /** 毫秒 */
+  modifiedAt: number;
 }
 
 /** 下载直链和取它时必须带的头 */
@@ -202,6 +204,7 @@ interface RawFile {
   file?: boolean;
   size?: number;
   category?: number;
+  updated_at?: number;
 }
 
 /** 列一个目录的全部内容，按 100 条翻页；显式排序，翻页期间目录变化才不至于漏掉或重复条目 */
@@ -229,6 +232,7 @@ export async function quarkListDir(account: AccountQuark, fid: string, signal?: 
         isDir: !f.file,
         size: Number(f.size ?? 0),
         category: Number(f.category ?? 0),
+        modifiedAt: Number(f.updated_at ?? 0),
       });
     }
     // 以 _total 为准；拿不到 _total 时靠空页收尾
