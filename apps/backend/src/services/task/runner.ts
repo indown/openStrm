@@ -271,8 +271,13 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
   const strmExts = extSet(settings.strmExtensions);
   const dlExts = extSet(settings.downloadExtensions);
 
-  // 对照规则在 plan.ts，有单测钉着；这里只负责把两边的清单喂进去
-  const remoteEntries = flattenTree(loaded.tree);
+  // 对照规则在 plan.ts，有单测钉着；这里只负责把两边的清单喂进去。
+  // 导出树里定位不到 originPath 就中止：接着按"远端为空"跑会把本地库整个当多余删掉
+  const remoteEntries = flattenTree(loaded.tree, originPath);
+  if (remoteEntries === null) {
+    const tops = loaded.tree.filter((n) => n.name).map((n) => n.name).join("、");
+    return fail(500, "远端目录树里找不到源目录", `${originPath} 不在导出结果里（顶层：${tops}），已中止，避免把本地文件当多余删掉`);
+  }
   const localEntries = collectFilesAndTopEmptyDirs(await getLocalTree(saveDir));
   const { missing: missingLocally, extra: extraLocally } = planSync(remoteEntries, localEntries, strmExts, dlExts);
 
