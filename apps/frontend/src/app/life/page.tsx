@@ -99,7 +99,8 @@ export default function LifeMonitorPage() {
         delete saved.enabled;
         setCfg(saved);
       }),
-      api.accounts.list().then((list) => setAccounts((list || []).filter((a) => a.accountType === "115"))),
+      // 能做变更监控的账号：115（生活事件）和夸克（快照对比）；OpenList 没有
+      api.accounts.list().then((list) => setAccounts((list || []).filter((a) => a.accountType !== "openlist"))),
       loadStatus(),
       loadEvents(),
     ])
@@ -190,7 +191,7 @@ export default function LifeMonitorPage() {
     setCfg({ ...cfg, accounts: [...known, ...unknown] });
   };
 
-  const description = "轮询 115 生活事件，网盘一有变动就增量更新本地 strm 库，无需跑全量任务；多个账号各自轮询";
+  const description = "盯着网盘的变动增量更新本地 strm 库，无需跑全量任务：115 走生活事件流，夸克定时对比任务目录；多个账号各自轮询";
 
   if (loading) {
     return (
@@ -288,7 +289,7 @@ export default function LifeMonitorPage() {
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 space-y-1">
                           <div className="break-all text-sm font-medium">{a.name}</div>
-                          <div className="text-xs text-muted-foreground">接口 {a.api === "web" ? "webapi" : "proapi"}</div>
+                          <div className="text-xs text-muted-foreground">来源 {a.source}</div>
                         </div>
                         <div className="shrink-0">
                           <RunBadge running={a.running} />
@@ -300,7 +301,7 @@ export default function LifeMonitorPage() {
                         <Stat label="已处理" value={a.stats.handled} />
                         <Stat label="失败" value={a.stats.failed} />
                         <Stat label="最近轮询" value={relative(a.lastPollAt)} />
-                        <Stat label="游标时间" value={fmtTime(a.cursor.fromTime)} />
+                        <Stat label="游标时间" value={fmtTime(a.cursor.time)} />
                       </div>
                       {notice && (
                         <div className={`mt-3 break-all text-xs ${notice.tone === "danger" ? "text-destructive" : "text-muted-foreground"}`}>
@@ -317,7 +318,7 @@ export default function LifeMonitorPage() {
                     <TableRow>
                       <TableHead>账号</TableHead>
                       <TableHead className="w-20">状态</TableHead>
-                      <TableHead className="w-20">接口</TableHead>
+                      <TableHead className="w-20">来源</TableHead>
                       <TableHead className="w-16 text-right">轮询</TableHead>
                       <TableHead className="w-16 text-right">事件</TableHead>
                       <TableHead className="w-16 text-right">已处理</TableHead>
@@ -336,7 +337,7 @@ export default function LifeMonitorPage() {
                           <TableCell>
                             <RunBadge running={a.running} />
                           </TableCell>
-                          <TableCell className="text-xs">{a.api === "web" ? "webapi" : "proapi"}</TableCell>
+                          <TableCell className="text-xs">{a.source}</TableCell>
                           <TableCell className="text-right tabular-nums">{a.stats.rounds}</TableCell>
                           <TableCell className="text-right tabular-nums">{a.stats.events}</TableCell>
                           <TableCell className="text-right tabular-nums">{a.stats.handled}</TableCell>
@@ -345,7 +346,7 @@ export default function LifeMonitorPage() {
                             {relative(a.lastPollAt)}
                           </TableCell>
                           <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                            {fmtTime(a.cursor.fromTime)}
+                            {fmtTime(a.cursor.time)}
                           </TableCell>
                         </TableRow>
                         {notice && (
@@ -367,17 +368,18 @@ export default function LifeMonitorPage() {
             </>
           ) : (
             <p className="text-sm text-muted-foreground">
-              没有可监控的 115 账号，请先到「账户」页添加带 cookie 的 115 账号
+              没有可监控的账号，请先到「账户」页添加带 cookie 的 115 或夸克账号
             </p>
           )}
 
-          <div className="grid grid-cols-3 gap-3 rounded-lg bg-muted/40 p-3 text-sm md:grid-cols-6">
+          <div className="grid grid-cols-3 gap-3 rounded-lg bg-muted/40 p-3 text-sm md:grid-cols-7">
             <Stat label="轮询次数" value={status?.stats.rounds ?? 0} />
             <Stat label="已处理" value={status?.stats.handled ?? 0} />
             <Stat label="失败" value={status?.stats.failed ?? 0} />
             <Stat label="最近轮询" value={relative(status?.lastPollAt ?? null)} />
             <Stat label="事件表" value={status?.db.lifeEvents ?? 0} />
             <Stat label="路径缓存" value={status?.db.pathCache ?? 0} />
+            <Stat label="目录快照" value={status?.db.snapshots ?? 0} />
           </div>
 
           {status?.logs && status.logs.length > 0 && (
@@ -399,7 +401,7 @@ export default function LifeMonitorPage() {
           <div className="space-y-2">
             <Label>监控账号</Label>
             {accounts.length === 0 && unknownAccounts.length === 0 ? (
-              <p className="text-sm text-muted-foreground">暂无 115 账号，请先到「账户」页添加</p>
+              <p className="text-sm text-muted-foreground">暂无可监控的账号，请先到「账户」页添加 115 或夸克账号</p>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 {accounts.map((a) => (
@@ -423,7 +425,8 @@ export default function LifeMonitorPage() {
               </div>
             )}
             <p className="text-xs text-muted-foreground">
-              勾选的账号各跑一条轮询，互不影响；一个都不勾时监控全部 115 账号。事件路径按该账号同步任务的原始路径前缀匹配
+              勾选的账号各跑一条轮询，互不影响；一个都不勾时监控全部 115 / 夸克账号。事件路径按该账号同步任务的原始路径前缀匹配。
+              夸克没有事件流，靠每轮列一遍任务目录和上一轮对比，最短 5 分钟一轮
             </p>
           </div>
 
@@ -461,7 +464,7 @@ export default function LifeMonitorPage() {
                   setCfg({ ...cfg, intervalSeconds: parseInt(e.target.value) || 15 })
                 }
               />
-              <p className="text-xs text-muted-foreground">默认 15 秒，太短容易触发 115 风控；每个账号各算各的</p>
+              <p className="text-xs text-muted-foreground">默认 15 秒，太短容易触发 115 风控；夸克账号最短 5 分钟；每个账号各算各的</p>
             </div>
           </div>
 
@@ -491,7 +494,7 @@ export default function LifeMonitorPage() {
             <div className="space-y-1">
               <h3 className="text-sm font-medium">Emby 刷新</h3>
               <p className="text-xs text-muted-foreground">
-                /Library/Refresh 是全库扫描，生活事件逐条触发会打瘫 Emby，所以合并成一次再发。
+                /Library/Refresh 是全库扫描，变更事件逐条触发会打瘫 Emby，所以合并成一次再发。
                 未配置 Emby 地址时不会发出任何请求。
               </p>
             </div>
@@ -545,7 +548,8 @@ export default function LifeMonitorPage() {
                   <div key={e.id} className="rounded-xl border bg-card p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 space-y-1">
-                        <div className="break-all text-sm font-medium">{e.fileName}</div>
+                        <div className="break-all text-sm font-medium">{e.path || e.fileName}</div>
+                        {e.oldPath && <div className="break-all text-xs text-muted-foreground">来自 {e.oldPath}</div>}
                         <div className="text-xs text-muted-foreground">
                           {fmtTime(e.updateTime)}
                           {showEventAccount ? ` · ${e.accountName}` : ""} · {e.typeName}
@@ -566,7 +570,7 @@ export default function LifeMonitorPage() {
                       <TableHead className="w-40">时间</TableHead>
                       {showEventAccount && <TableHead className="w-28">账号</TableHead>}
                       <TableHead className="w-28">类型</TableHead>
-                      <TableHead>文件</TableHead>
+                      <TableHead>路径</TableHead>
                       <TableHead className="w-20">结果</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -579,7 +583,8 @@ export default function LifeMonitorPage() {
                         {showEventAccount && <TableCell className="text-xs">{e.accountName}</TableCell>}
                         <TableCell className="text-xs">{e.typeName}</TableCell>
                         <TableCell className="text-xs whitespace-normal">
-                          <div className="break-all">{e.fileName}</div>
+                          <div className="break-all">{e.path || e.fileName}</div>
+                          {e.oldPath && <div className="text-muted-foreground break-all">来自 {e.oldPath}</div>}
                           {e.detail && (
                             <div className="text-muted-foreground break-all">{e.detail}</div>
                           )}

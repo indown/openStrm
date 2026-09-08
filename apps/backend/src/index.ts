@@ -185,7 +185,7 @@ try {
   app.log.info(`API server running on http://${HOST}:${API_PORT}`);
   try { startScrapeWorker(); } catch (err) { app.log.error({ err }, "scrape-worker start failed"); }
 
-  // 生活事件监控：配置里开着就跟随服务一起起来
+  // 网盘监控：配置里开着就跟随服务一起起来
   const settings = readAppSettings();
   if (settings.lifeMonitor?.enabled) {
     startLifeMonitor()

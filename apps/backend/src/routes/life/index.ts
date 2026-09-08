@@ -8,6 +8,8 @@ import {
 } from "../../services/life/monitor.js";
 import { listRecentLifeEvents } from "../../db/repositories/life.js";
 import { BEHAVIOR_TYPE_TO_NAME } from "../../services/cloud-115/life.js";
+import { KIND_NAME } from "../../services/life/monitor.js";
+import type { ChangeKind } from "../../services/drive/types.js";
 import { updateAppSetting } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
@@ -43,7 +45,7 @@ export default async function (fastify: FastifyInstance) {
     return { success: res.ok, message: res.message };
   });
 
-  /** 只拉不处理，用来确认账号能不能读到生活事件；不指定账号就把配置里的都测一遍，有一个不通就算失败 */
+  /** 只看不处理，用来确认账号能不能读到变更；不指定账号就把配置里的都测一遍，有一个不通就算失败 */
   fastify.post("/api/life/probe", { preHandler: [fastify.authenticate] }, async (request) => {
     const { limit, account } = parse(probeSchema, request.body);
     const res = await probeLifeEvents(limit ?? 20, account);
@@ -57,7 +59,8 @@ export default async function (fastify: FastifyInstance) {
     return {
       events: listRecentLifeEvents(limit).map((e) => ({
         ...e,
-        typeName: BEHAVIOR_TYPE_TO_NAME[e.type] ?? `type_${e.type}`,
+        // 115 的事件按它自己的 behavior 名（能看出是上传还是接收），别家按统一的 kind
+        typeName: BEHAVIOR_TYPE_TO_NAME[e.type] ?? (e.kind ? (KIND_NAME[e.kind as ChangeKind] ?? e.kind) : `type_${e.type}`),
       })),
     };
   });

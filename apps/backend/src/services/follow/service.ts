@@ -37,6 +37,7 @@ import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
 import { notify, type NotifyEvent } from "../telegram/notify.js";
 import { baseName, diffShareListing, groupByParent, mergeKnown, scopeIsWhole, type ListedEntry } from "./diff.js";
+import { issueFromDrive } from "../telegram/notify.js";
 
 const log = moduleLogger("follow");
 
@@ -441,7 +442,9 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
     const issue = provider.classifyError(err);
     // cookie 失效 / 被风控是账号的问题，不该把订阅停掉：走账号告警，普通退避
     if (issue === "auth" || issue === "blocked") {
-      void deps.notify({ type: "account-alert", account: provider.account.name, reason: msg, source: `追更 ${f.name}` }).catch(() => {});
+      void deps
+        .notify({ type: "account-alert", account: provider.account.name, reason: msg, source: `追更 ${f.name}`, issue: issueFromDrive(issue) })
+        .catch(() => {});
       return settleFailure(f, msg, "error");
     }
     if (issue === "gone") return settleFailure(f, `分享不可用：${msg}`, "share");

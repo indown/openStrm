@@ -55,7 +55,7 @@ test("账号告警：认得出 cookie 失效和封控，同一账号同一原因
 
   assert.equal(await notify({ type: "account-alert", account: "主号", reason: "socket hang up", source: "网盘监控" }), false);
   assert.equal(await notify({ type: "account-alert", account: "主号", reason: "登录超时，请重新登录", source: "网盘监控" }), true);
-  assert.match(sent[0].text, /⚠️ <b>115 账号需要处理<\/b>\n账号 <b>主号<\/b> 的 cookie 已失效[\s\S]*来源：网盘监控/);
+  assert.match(sent[0].text, /⚠️ <b>网盘账号需要处理<\/b>\n账号 <b>主号<\/b> 的 cookie 已失效[\s\S]*来源：网盘监控/);
   assert.equal(await notify({ type: "account-alert", account: "主号", reason: "登录超时，请重新登录", source: "网盘监控" }), false, "一小时内不重复");
   assert.equal(await notify({ type: "account-alert", account: "小号", reason: "登录超时", source: "网盘监控" }), true, "别的账号照发");
   assert.equal(await notify({ type: "account-alert", account: "主号", reason: "您的访问被阻断 405", source: "同步" }), true, "同账号不同原因照发");
@@ -63,7 +63,7 @@ test("账号告警：认得出 cookie 失效和封控，同一账号同一原因
 
 test("启动失败：账号问题按账号告警去重（定时触发不会每半小时响一次），其它原因按任务去重", async () => {
   assert.equal(await notify({ type: "task-start-failed", task, reason: "读取 115 目录失败：登录超时，请重新登录", trigger: "cron" }), true);
-  assert.match(sent[0].text, /115 账号需要处理[\s\S]*来源：任务 tv\/&lt;剧集&gt; → tv/);
+  assert.match(sent[0].text, /网盘账号需要处理[\s\S]*来源：任务 tv\/&lt;剧集&gt; → tv/);
   assert.equal(await notify({ type: "task-start-failed", task, reason: "读取 115 目录失败：登录超时，请重新登录", trigger: "cron" }), false);
   assert.equal(await notify({ type: "account-alert", account: "主号", reason: "登录超时", source: "网盘监控" }), false, "监控撞到同一件事也不再响");
 

@@ -1,44 +1,25 @@
 /**
- * 生活事件 → 本地 strm 库的落地处理。
+ * 网盘变更事件 → 本地 strm 库的落地处理。
  *
  * 路径映射完全复用现有任务定义：
  *   事件的网盘绝对路径 P 命中某个 task.originPath 前缀
  *   → 本地位置 = DATA_DIR/<task.targetPath>/<P 相对 originPath 的部分>
- *   → strm 内容 = `${strmPrefix}/${P}`（与全量任务 routes/task/start.ts 完全一致）
+ *   → strm 内容 = `${strmPrefix}/${P}`（与全量任务 services/task/runner.ts 完全一致）
+ *
+ * 事件已经带着绝对路径（旧路径不知道就是 null）：115 的 id → 路径还原在 sources/cloud115.ts 里做，这里不认任何一家的 id。
  */
 import type { Dirent } from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { AppSettings, LifeEventMode, TaskDefinition } from "@openstrm/shared";
-import type { AccountInfo } from "../cloud-115/client.js";
-import { getDownloadUrlWeb } from "../cloud-115/client.js";
 import { downloadFile, writeStrm } from "../download/rate-limited.js";
-import { listDir, type LifeEvent } from "../cloud-115/life.js";
-import {
-  joinPanPath,
-  lookupCachedPath,
-  rememberPath,
-  rememberPaths,
-  resolveDirPath,
-} from "../cloud-115/path-resolver.js";
-import { dropSubtree, repathSubtree } from "../../db/repositories/life.js";
+import type { ChangeEvent, DriveEntry, DriveProvider } from "../drive/types.js";
 import { resolveInDataDir } from "../../paths.js";
 import { decodeSegments, strmContent, toStrmPath } from "../strm/naming.js";
 import { isDirectoryEntry, pathExists, removeEmptyParents } from "../../lib/fs.js";
 
-interface Deps {
-  /** pick_code → 下载直链。真实现打 115 接口，测试换成本地桩 */
-  getDownloadUrl: typeof getDownloadUrlWeb;
-}
-const realDeps: Deps = { getDownloadUrl: getDownloadUrlWeb };
-let deps: Deps = { ...realDeps };
-/** 测试用：传 null 恢复真实现 */
-export function setLifeHandlerDeps(partial: Partial<Deps> | null): void {
-  deps = partial ? { ...realDeps, ...partial } : { ...realDeps };
-}
-
 export interface LifeContext {
-  accountInfo: AccountInfo;
+  provider: DriveProvider;
   tasks: TaskDefinition[];
   settings: AppSettings;
   eventModes: Set<LifeEventMode>;
@@ -71,7 +52,7 @@ function normalizeOrigin(p: string): string {
 }
 
 /** 命中最长（最具体）的 originPath */
-export function matchTask(ctx: LifeContext, panPath: string): TaskMatch | null {
+export function matchTask(ctx: Pick<LifeContext, "tasks">, panPath: string): TaskMatch | null {
   let best: TaskMatch | null = null;
   for (const task of ctx.tasks) {
     const origin = normalizeOrigin(task.originPath);
@@ -112,13 +93,15 @@ function localPathFor(match: TaskMatch, ctx: LifeContext, relFile: string): stri
 
 /**
  * strm 文件的内容。
- * 必须和 routes/task/start.ts 逐字节一致：那边写的是 `${strmPrefix}/${originPath}/${rel}`，
+ * 必须和全量任务逐字节一致：那边写的是 `${strmPrefix}/${originPath}/${rel}`，
  * 用的是任务里存的原始 originPath（现网数据里它不带前导 /），
  * 所以这里也得用原始值拼，不能拿归一化后的网盘绝对路径去拼。
  */
 function strmUrlFor(task: TaskDefinition, relFile: string): string {
   return `${task.originPath}/${relFile}`;
 }
+
+const joinPan = (dir: string, name: string): string => (dir === "/" ? `/${name}` : `${dir}/${name}`);
 
 /* ------------------------------- 生成 ------------------------------- */
 
@@ -128,7 +111,7 @@ async function materializeFile(
   match: TaskMatch,
   relFile: string,
   panPath: string,
-  pickCode: string,
+  token: string | undefined,
 ): Promise<"strm" | "download" | "skip"> {
   const ext = extOf(relFile);
   const savePath = path.join(match.saveDir, relFile);
@@ -143,16 +126,9 @@ async function materializeFile(
   }
 
   if (downloadExts(ctx).has(ext)) {
-    if (!pickCode) {
-      ctx.log("warn", `缺少 pick_code，跳过下载: ${panPath}`);
-      return "skip";
-    }
-    const url = await deps.getDownloadUrl(pickCode, {
-      userAgent: ctx.settings["user-agent"],
-      accountInfo: ctx.accountInfo,
-    });
-    if (!url) return "skip";
-    await downloadFile(url, savePath, { displayPath: relFile });
+    const link = await ctx.provider.downloadLink(panPath, { token, signal: ctx.signal });
+    if (!link.url) return "skip";
+    await downloadFile(link.url, savePath, { displayPath: relFile, headers: link.headers });
     return "download";
   }
 
@@ -162,70 +138,45 @@ async function materializeFile(
 const MAX_WALK_ENTRIES = 20_000;
 
 /**
- * 展开一个新增目录：递归列目录，为其中每个文件生成 strm / 下载媒体信息，
- * 同时把途中遇到的每个子目录写进 path_cache（后续该目录下的事件就不用打接口了）。
+ * 展开一个新增目录：递归列目录，为其中每个文件生成 strm / 下载媒体信息；
+ * 列到的每一层都告诉网盘（115 借它维护路径缓存，后续该目录下的事件就不用打接口了）。
  */
 async function materializeFolder(
   ctx: LifeContext,
   match: TaskMatch,
-  folderCid: string,
+  folderId: string,
   folderPanPath: string,
 ): Promise<{ strm: number; download: number }> {
   const counters = { strm: 0, download: 0 };
-  const queue: Array<{ cid: string; panPath: string }> = [
-    { cid: folderCid, panPath: folderPanPath },
-  ];
+  const queue: Array<{ id: string; panPath: string }> = [{ id: folderId, panPath: folderPanPath }];
   let visited = 0;
 
   while (queue.length > 0) {
     if (ctx.signal?.aborted) break;
     const cur = queue.shift()!;
-    let offset = 0;
-    for (;;) {
-      if (ctx.signal?.aborted) break;
-      const { entries, total } = await listDir(ctx.accountInfo, cur.cid, offset, 1000);
-      if (entries.length === 0) break;
+    const entries: DriveEntry[] = await ctx.provider.listDir(cur.id, ctx.signal);
+    ctx.provider.rememberListing?.(cur.panPath, entries);
 
-      const cacheRows = entries.map((e) => ({
-        fileId: e.fileId,
-        parentId: e.parentId,
-        name: e.name,
-        path: joinPanPath(cur.panPath, e.name),
-        isDir: e.isDir,
-        accountName: ctx.accountInfo.name,
-      }));
-      rememberPaths(cacheRows);
-
-      for (const e of entries) {
-        visited++;
-        if (visited > MAX_WALK_ENTRIES) {
-          ctx.log("warn", `目录 ${folderPanPath} 条目超过 ${MAX_WALK_ENTRIES}，停止展开`);
-          return counters;
-        }
-        const childPan = joinPanPath(cur.panPath, e.name);
-        if (e.isDir) {
-          queue.push({ cid: e.fileId, panPath: childPan });
-          continue;
-        }
-        const childMatch = matchTask(ctx, childPan);
-        if (!childMatch) continue;
-        try {
-          const kind = await materializeFile(
-            ctx,
-            childMatch,
-            childMatch.relPath,
-            childPan,
-            e.pickCode,
-          );
-          if (kind === "strm") counters.strm++;
-          else if (kind === "download") counters.download++;
-        } catch (err) {
-          ctx.log("error", `生成失败 ${childPan}: ${err instanceof Error ? err.message : err}`);
-        }
+    for (const e of entries) {
+      visited++;
+      if (visited > MAX_WALK_ENTRIES) {
+        ctx.log("warn", `目录 ${folderPanPath} 条目超过 ${MAX_WALK_ENTRIES}，停止展开`);
+        return counters;
       }
-
-      offset += entries.length;
-      if (offset >= total) break;
+      const childPan = joinPan(cur.panPath, e.name);
+      if (e.isDir) {
+        queue.push({ id: e.id, panPath: childPan });
+        continue;
+      }
+      const childMatch = matchTask(ctx, childPan);
+      if (!childMatch) continue;
+      try {
+        const kind = await materializeFile(ctx, childMatch, childMatch.relPath, childPan, e.token);
+        if (kind === "strm") counters.strm++;
+        else if (kind === "download") counters.download++;
+      } catch (err) {
+        ctx.log("error", `生成失败 ${childPan}: ${err instanceof Error ? err.message : err}`);
+      }
     }
   }
 
@@ -296,70 +247,34 @@ async function rewriteStrmPrefixUnder(
 
 /* ------------------------------- 事件处理 ------------------------------- */
 
-/** 新增（上传 / 接收 / 复制）：1,2,14,18,23 */
-export async function handleCreate(ctx: LifeContext, ev: LifeEvent): Promise<HandleResult> {
+/** 新增（上传 / 接收 / 复制 / 快照里冒出来的） */
+export async function handleCreate(ctx: LifeContext, ev: ChangeEvent): Promise<HandleResult> {
   if (!ctx.eventModes.has("create")) return skipped("create 模式未开启");
 
-  const dir = await resolveDirPath(ctx.accountInfo, String(ev.parent_id));
-  if (!dir) return skipped(`父目录 ${ev.parent_id} 无法解析`);
-
-  const panPath = joinPanPath(dir, ev.file_name);
-  const isDir = Number(ev.file_category) === 0;
-
-  rememberPath({
-    fileId: String(ev.file_id),
-    parentId: String(ev.parent_id),
-    name: ev.file_name,
-    path: panPath,
-    isDir,
-    accountName: ctx.accountInfo.name,
-  });
-
+  const panPath = ev.path;
   const match = matchTask(ctx, panPath);
   if (!match) return skipped(`${panPath} 不在任何任务的 originPath 下`);
 
-  if (isDir) {
-    const c = await materializeFolder(ctx, match, String(ev.file_id), panPath);
+  if (ev.isDir) {
+    const c = await materializeFolder(ctx, match, ev.nodeId, panPath);
     return done(`目录 ${panPath} → strm ${c.strm} / 下载 ${c.download}`, c.strm + c.download > 0);
   }
 
-  const kind = await materializeFile(ctx, match, match.relPath, panPath, ev.pick_code);
+  const kind = await materializeFile(ctx, match, match.relPath, panPath, ev.token);
   if (kind === "skip") return skipped(`${panPath} 扩展名不在 strm/下载白名单`);
   return done(`${kind}: ${panPath}`);
 }
 
-/** 新建目录：17。只补缓存，不生成任何本地文件 */
-export async function handleNewFolder(ctx: LifeContext, ev: LifeEvent): Promise<HandleResult> {
-  const dir = await resolveDirPath(ctx.accountInfo, String(ev.parent_id));
-  if (!dir) return skipped(`父目录 ${ev.parent_id} 无法解析`);
-  const panPath = joinPanPath(dir, ev.file_name);
-  rememberPath({
-    fileId: String(ev.file_id),
-    parentId: String(ev.parent_id),
-    name: ev.file_name,
-    path: panPath,
-    isDir: true,
-    accountName: ctx.accountInfo.name,
-  });
-  return done(`记录目录 ${panPath}`, false);
+/** 新建目录：不生成任何本地文件（路径缓存由变更源自己维护） */
+export async function handleNewFolder(_ctx: LifeContext, ev: ChangeEvent): Promise<HandleResult> {
+  return done(`记录目录 ${ev.path}`, false);
 }
 
-/** 删除：22 */
-export async function handleRemove(ctx: LifeContext, ev: LifeEvent): Promise<HandleResult> {
+/** 删除 */
+export async function handleRemove(ctx: LifeContext, ev: ChangeEvent): Promise<HandleResult> {
   if (!ctx.eventModes.has("remove")) return skipped("remove 模式未开启");
 
-  const isDir = Number(ev.file_category) === 0;
-  let panPath = lookupCachedPath(ctx.accountInfo.name, String(ev.file_id));
-  let via = "缓存";
-
-  if (!panPath) {
-    // 缓存里没有就用 parent_id 反推。为防误删，只有反推出的本地路径确实存在时才动手。
-    const dir = await resolveDirPath(ctx.accountInfo, String(ev.parent_id));
-    if (!dir) return skipped(`无法确定 ${ev.file_name} 的路径，跳过删除`);
-    panPath = joinPanPath(dir, ev.file_name);
-    via = "parent_id 反推";
-  }
-
+  const panPath = ev.path;
   const match = matchTask(ctx, panPath);
   if (!match) return skipped(`${panPath} 不在任何任务的 originPath 下`);
   if (match.relPath === "") {
@@ -367,77 +282,50 @@ export async function handleRemove(ctx: LifeContext, ev: LifeEvent): Promise<Han
     return skipped("命中任务根目录，不做删除");
   }
 
-  const target = isDir
-    ? path.join(match.saveDir, match.relPath)
-    : localPathFor(match, ctx, match.relPath);
+  const target = ev.isDir ? path.join(match.saveDir, match.relPath) : localPathFor(match, ctx, match.relPath);
 
   if (!target) return skipped(`${panPath} 扩展名不在白名单，无需删除`);
-  if (!(await pathExists(target))) {
-    dropSubtree(panPath);
-    return skipped(`本地不存在 ${target}（${via}）`);
-  }
+  if (!(await pathExists(target))) return skipped(`本地不存在 ${target}`);
 
-  await fsp.rm(target, { recursive: isDir, force: true });
+  await fsp.rm(target, { recursive: ev.isDir, force: true });
   await removeEmptyParents(path.dirname(target), match.saveDir);
-  dropSubtree(panPath);
 
-  return done(`删除 ${target}（${via}）`);
+  return done(`删除 ${target}`);
 }
 
 /**
- * 移动：5,6。新路径来自 parent_id + file_name，旧路径只能来自 path_cache。
- * 旧路径未知时退化成「按新增处理」，本地可能残留一份旧 strm，
- * 由全量任务的 removeExtraFiles 兜底清理。
+ * 移动：新路径来自事件，旧路径只有变更源知道（115 靠 path_cache）。
+ * 旧路径未知时退化成「按新增处理」，本地可能残留一份旧 strm，由全量任务的 removeExtraFiles 兜底清理。
  */
-export async function handleMove(ctx: LifeContext, ev: LifeEvent): Promise<HandleResult> {
+export async function handleMove(ctx: LifeContext, ev: ChangeEvent): Promise<HandleResult> {
   if (!ctx.eventModes.has("move")) return skipped("move 模式未开启");
   return relocate(ctx, ev, "移动");
 }
 
-/** 改名：20,24。与移动同构，区别只在父目录不变 */
-export async function handleRename(ctx: LifeContext, ev: LifeEvent): Promise<HandleResult> {
+/** 改名：与移动同构，区别只在父目录不变 */
+export async function handleRename(ctx: LifeContext, ev: ChangeEvent): Promise<HandleResult> {
   if (!ctx.eventModes.has("rename")) return skipped("rename 模式未开启");
   return relocate(ctx, ev, "改名");
 }
 
-async function relocate(ctx: LifeContext, ev: LifeEvent, label: string): Promise<HandleResult> {
-  const isDir = Number(ev.file_category) === 0;
-  const oldPan = lookupCachedPath(ctx.accountInfo.name, String(ev.file_id));
+const asCreate = (ctx: LifeContext): LifeContext => ({ ...ctx, eventModes: new Set([...ctx.eventModes, "create"]) });
 
-  const dir = await resolveDirPath(ctx.accountInfo, String(ev.parent_id));
-  if (!dir) return skipped(`父目录 ${ev.parent_id} 无法解析`);
-  const newPan = joinPanPath(dir, ev.file_name);
-
-  const newEntry = {
-    fileId: String(ev.file_id),
-    parentId: String(ev.parent_id),
-    name: ev.file_name,
-    path: newPan,
-    isDir,
-    accountName: ctx.accountInfo.name,
-  };
+async function relocate(ctx: LifeContext, ev: ChangeEvent, label: string): Promise<HandleResult> {
+  const isDir = ev.isDir;
+  const oldPan = ev.oldPath;
+  const newPan = ev.path;
 
   if (!oldPan || oldPan === newPan) {
-    rememberPath(newEntry);
-    ctx.log(
-      "debug",
-      `${label}事件旧路径未知（${ev.file_name}），按新增处理；旧文件由全量任务兜底清理`,
-    );
-    return handleCreate({ ...ctx, eventModes: new Set([...ctx.eventModes, "create"]) }, ev);
+    ctx.log("debug", `${label}事件旧路径未知（${newPan}），按新增处理；旧文件由全量任务兜底清理`);
+    return handleCreate(asCreate(ctx), ev);
   }
 
   const oldMatch = matchTask(ctx, oldPan);
   const newMatch = matchTask(ctx, newPan);
 
-  // 缓存先更新：无论本地怎么处理，网盘侧的事实已经变了
-  rememberPath(newEntry);
-  if (isDir) repathSubtree(oldPan, newPan);
-
   // 移出监控范围 → 删本地
   if (oldMatch && !newMatch) {
-    const target = isDir
-      ? path.join(oldMatch.saveDir, oldMatch.relPath)
-      : localPathFor(oldMatch, ctx, oldMatch.relPath);
+    const target = isDir ? path.join(oldMatch.saveDir, oldMatch.relPath) : localPathFor(oldMatch, ctx, oldMatch.relPath);
     if (target && (await pathExists(target))) {
       await fsp.rm(target, { recursive: isDir, force: true });
       await removeEmptyParents(path.dirname(target), oldMatch.saveDir);
@@ -447,26 +335,18 @@ async function relocate(ctx: LifeContext, ev: LifeEvent, label: string): Promise
   }
 
   // 移入监控范围 → 当作新增
-  if (!oldMatch && newMatch) {
-    return handleCreate({ ...ctx, eventModes: new Set([...ctx.eventModes, "create"]) }, ev);
-  }
+  if (!oldMatch && newMatch) return handleCreate(asCreate(ctx), ev);
 
   if (!oldMatch || !newMatch) return skipped(`${oldPan} → ${newPan} 均不在监控范围`);
 
   // 范围内挪动 → 直接移动本地文件，省掉一次重新生成
-  const from = isDir
-    ? path.join(oldMatch.saveDir, oldMatch.relPath)
-    : localPathFor(oldMatch, ctx, oldMatch.relPath);
-  const to = isDir
-    ? path.join(newMatch.saveDir, newMatch.relPath)
-    : localPathFor(newMatch, ctx, newMatch.relPath);
+  const from = isDir ? path.join(oldMatch.saveDir, oldMatch.relPath) : localPathFor(oldMatch, ctx, oldMatch.relPath);
+  const to = isDir ? path.join(newMatch.saveDir, newMatch.relPath) : localPathFor(newMatch, ctx, newMatch.relPath);
 
   if (!from || !to) return skipped(`${newPan} 扩展名不在白名单`);
 
-  if (!(await pathExists(from))) {
-    // 本地本来就没有，退化成新增
-    return handleCreate({ ...ctx, eventModes: new Set([...ctx.eventModes, "create"]) }, ev);
-  }
+  // 本地本来就没有，退化成新增
+  if (!(await pathExists(from))) return handleCreate(asCreate(ctx), ev);
 
   await fsp.mkdir(path.dirname(to), { recursive: true });
   await fsp.rename(from, to);

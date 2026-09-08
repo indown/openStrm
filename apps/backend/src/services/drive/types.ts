@@ -72,6 +72,8 @@ export interface DriveProvider {
   walkSubtree?(path: string, opts?: { id?: string; signal?: AbortSignal }): Promise<SubtreeEntry[]>;
   downloadLink(path: string, opts?: { token?: string; signal?: AbortSignal }): Promise<DriveLink>;
   classifyError(err: unknown): AccountIssue | null;
+  /** 列过某个目录后把结果告诉网盘（115 借它维护 id → 路径缓存，变更监控靠它找移动前的旧路径）；别家不用实现 */
+  rememberListing?(dirPath: string, entries: DriveEntry[]): void;
   /** 给界面看的提示：校验页那句「115 目录信息有几分钟缓存」 */
   readonly notes?: { verify?: string };
   readonly share?: ShareProvider;
@@ -161,7 +163,7 @@ export interface ChangeEvent {
   /** 全局唯一：115 用事件 id，夸克合成 `q:<账号>:<扫描时间>:<kind>:<fid>` */
   id: string;
   kind: ChangeKind;
-  /** 网盘绝对路径（新路径） */
+  /** 网盘绝对路径（新路径），带前导 / */
   path: string;
   /** move / rename 的旧路径；不知道就是 null，处理时退化成新增 */
   oldPath: string | null;
@@ -169,9 +171,14 @@ export interface ChangeEvent {
   nodeId: string;
   size?: number;
   hash?: string;
+  /** 取直链用的凭据：115 pick_code，夸克 fid */
   token?: string;
   /** unix 秒 */
   at: number;
+  /** 来源没法把它变成完整事件（115 的父目录解析不出来之类）：监控只记一笔 skipped，不处理 */
+  problem?: string;
+  /** 来源自己的事件类型码（115 的 behavior type），只用于展示 */
+  rawType?: number;
 }
 
 export interface ChangeCursor {
@@ -179,14 +186,39 @@ export interface ChangeCursor {
   id: string;
 }
 
+export type ChangeLog = (level: "info" | "warn" | "error" | "debug", msg: string) => void;
+
+export interface PrepareResult {
+  ok: boolean;
+  message: string;
+  /** 值得告警的原因（cookie 失效 / 风控）；没有就不发通知 */
+  reason?: string;
+  /** 来源用网盘自己的规则认出的问题；不给就由通知那边从 reason 文案猜 */
+  issue?: AccountIssue | null;
+}
+
+export interface ProbeResult {
+  ok: boolean;
+  message: string;
+  events?: Array<{ id: string; kind: string; name: string; at: number }>;
+}
+
+export interface PullOptions {
+  tasks: TaskDefinition[];
+  signal: AbortSignal;
+  log?: ChangeLog;
+}
+
 export interface ChangeSource {
   /** 状态页「接口」列：proapi / webapi / snapshot */
   readonly label: string;
   readonly minIntervalSeconds: number;
-  /** 启动门禁：115 开生活事件开关并试拉一条；夸克列根目录验 cookie */
-  prepare(signal: AbortSignal): Promise<{ ok: boolean; message: string }>;
+  /** 启动门禁：115 开生活事件开关并试拉一条；夸克列根目录验 cookie。被中止时原样抛出 */
+  prepare(signal: AbortSignal, log?: ChangeLog): Promise<PrepareResult>;
   initialCursor(mode: LifePullMode, saved: ChangeCursor | null): ChangeCursor;
-  pull(cursor: ChangeCursor, opts: { tasks: TaskDefinition[]; signal: AbortSignal }): Promise<{ events: ChangeEvent[]; cursor: ChangeCursor }>;
+  pull(cursor: ChangeCursor, opts: PullOptions): Promise<{ events: ChangeEvent[]; cursor: ChangeCursor }>;
+  /** 页面上「测试连接」：只看不处理 */
+  probe?(limit: number, signal?: AbortSignal): Promise<ProbeResult>;
 }
 
 /* ------------------------------- 错误 ------------------------------- */

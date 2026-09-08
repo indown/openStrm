@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { sqliteTable, text, integer, index, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
@@ -102,13 +102,20 @@ export const pathCache = sqliteTable(
   }),
 );
 
-/** 已拉取到的 115 生活事件，主键就是事件 id，重复拉取时幂等覆盖 */
+/**
+ * 网盘变更事件，主键就是事件 id，重复拉取时幂等覆盖。
+ * 115 的生活事件原样记在 type / file_id / parent_id / pick_code 里；kind / path / old_path 是各家统一的形状（0010 加的），
+ * 夸克的快照对比事件只有这三列有意义。
+ */
 export const lifeEvents = sqliteTable(
   "life_events",
   {
     id: text("id").primaryKey(),
     accountName: text("account_name").notNull().default(""),
     type: integer("type").notNull(),
+    kind: text("kind").notNull().default(""),
+    path: text("path").notNull().default(""),
+    oldPath: text("old_path").notNull().default(""),
     fileId: text("file_id").notNull(),
     parentId: text("parent_id").notNull().default("0"),
     fileName: text("file_name").notNull().default(""),
@@ -131,6 +138,23 @@ export const lifeEvents = sqliteTable(
 
 export type PathCacheRow = typeof pathCache.$inferSelect;
 export type LifeEventRow = typeof lifeEvents.$inferSelect;
+
+/**
+ * 没有事件流的网盘（夸克）的监控快照：每个账号的每个任务根目录一份，entries 是整棵子树的 JSON。
+ * 下一轮扫描和它对比得出新增 / 删除 / 改名 / 移动。
+ */
+export const driveSnapshots = sqliteTable(
+  "drive_snapshots",
+  {
+    accountName: text("account_name").notNull(),
+    rootPath: text("root_path").notNull(),
+    entries: text("entries").notNull().default("[]"),
+    scannedAt: integer("scanned_at").notNull().default(0),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.accountName, t.rootPath] }),
+  }),
+);
 
 /**
  * 分享追更订阅：一条 = 分享里的某个目录 → 某个同步任务的子目录。

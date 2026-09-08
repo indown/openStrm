@@ -17,6 +17,7 @@ import {
   quarkWaitTask,
   type QuarkShareFile,
 } from "../../quark/share.js";
+import { QuarkSnapshotSource } from "../../life/sources/quark.js";
 import { listWholeShareDir, resolveSharePath } from "../share-walk.js";
 import { syncViewFromPaths } from "../subtree.js";
 import {
@@ -145,12 +146,14 @@ class QuarkShare implements ShareProvider {
 
 export class QuarkProvider implements DriveProvider {
   readonly kind = "quark" as const;
-  readonly capabilities = { share: true, changes: false };
+  readonly capabilities = { share: true, changes: true };
   readonly rootId = "0";
   readonly share: ShareProvider;
+  readonly changes: QuarkSnapshotSource;
 
   constructor(readonly account: AccountQuark) {
     this.share = new QuarkShare(account);
+    this.changes = new QuarkSnapshotSource(this);
   }
 
   async resolvePath(path: string, signal?: AbortSignal): Promise<DriveNode | null> {

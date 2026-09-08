@@ -1,52 +1,39 @@
 /**
- * 多账号监控的离线集成测试：拉取和「开生活事件开关」都换成本地桩，不打 115。
- *
- * 循环的第一轮在 startLifeMonitor 返回后立刻跑，第二轮要等 intervalSeconds（下限 5s），
- * 所以用例只看第一轮的结果，然后 stop（stop 会立刻叫醒等待中的循环）。
+ * 监控循环的通用行为，用 FakeDrive 的变更队列驱动，不认任何一家网盘：
+ * 拉到的事件按顺序交给 handlers 落盘、游标逐条推进、problem 事件只记 skipped、
+ * 处理失败不拦住后面的事件、夸克那样的快照来源也能挂进同一条循环。
+ * 115 专属的门禁 / 405 降级 / 路径还原在 sources/cloud115.itest.ts。
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/services/life/monitor.itest.ts
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { after, before, beforeEach, test } from "node:test";
-import type { AccountInfo } from "@openstrm/shared";
+import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
 import { KEY } from "../../db/keys.js";
-import { deleteAccount, listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
-import { deleteKv, listRecentLifeEvents, readKv, writeKv } from "../../db/repositories/life.js";
+import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
+import { deleteDriveSnapshots, deleteKv, listRecentLifeEvents, readKv } from "../../db/repositories/life.js";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
-import { rememberPath } from "../cloud-115/path-resolver.js";
-import type { LifeEvent, PullOptions } from "../cloud-115/life.js";
-import {
-  getLifeMonitorStatus,
-  probeLifeEvents,
-  resolveMonitoredAccountNames,
-  setLifeMonitorDeps,
-  startLifeMonitor,
-  stopLifeMonitor,
-} from "./monitor.js";
+import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
+import { DATA_DIR } from "../../paths.js";
+import { setDriveProviderFactory } from "../drive/registry.js";
+import type { ChangeEvent } from "../drive/types.js";
+import { FakeDrive } from "../../test/fake-drive.js";
+import { QuarkSnapshotSource } from "./sources/quark.js";
+import { getLifeMonitorStatus, probeLifeEvents, startLifeMonitor, stopLifeMonitor } from "./monitor.js";
 
-const baselineSettings = readAppSettings();
-const baselineAccounts = listAccounts();
+const baseline = { settings: readAppSettings(), accounts: listAccounts(), tasks: listTasks() };
+const acctA: AccountInfo = { accountType: "115", name: "A", cookie: "cookie-A" };
+const acctQ: AccountInfo = { accountType: "quark", name: "Q", cookie: "cookie-Q" };
+const taskA: TaskDefinition = { id: "m-a", account: "A", accountType: "115", originPath: "tv", targetPath: "monitor-itest/tv", strmPrefix: "/mnt/pan" };
+const taskQ: TaskDefinition = { id: "m-q", account: "Q", accountType: "quark", originPath: "kk", targetPath: "monitor-itest/kk", strmPrefix: "/mnt/kk" };
+const localRoot = path.join(DATA_DIR, "monitor-itest");
 
-const acct = (name: string, cookie = `cookie-${name}`): AccountInfo => ({ accountType: "115", name, cookie });
-
-const ev = (o: Partial<LifeEvent>): LifeEvent => ({
-  id: "1", type: 2, file_category: 1, file_id: "9001", parent_id: "10",
-  file_name: "ep1.mkv", file_size: 1, sha1: "", pick_code: "pc",
-  update_time: 1_900_000_000, create_time: 1_900_000_000, ...o,
-});
-
-/** 桩的行为：每个账号一轮返回什么、哪次调用要炸、哪次调用要挂住直到被中止 */
-let eventsFor: Record<string, LifeEvent[]> = {};
-let failFor: (opts: PullOptions) => Error | null = () => null;
-let hangFor: (opts: PullOptions) => boolean = () => false;
-let pulls: Array<{ account: string; app: string | undefined; gate: boolean }> = [];
+let dA: FakeDrive;
+let dQ: FakeDrive;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function configure(lifeMonitor: Record<string, unknown>) {
-  replaceAppSettings({ ...baselineSettings, lifeMonitor });
-}
-
 async function waitFor(cond: () => boolean, what: string, timeoutMs = 3000): Promise<void> {
   const until = Date.now() + timeoutMs;
   while (!cond()) {
@@ -54,265 +41,184 @@ async function waitFor(cond: () => boolean, what: string, timeoutMs = 3000): Pro
     await sleep(20);
   }
 }
-
 const statusOf = (name: string) => getLifeMonitorStatus().accounts.find((a) => a.name === name);
+const configure = (lifeMonitor: Record<string, unknown>) => replaceAppSettings({ ...baseline.settings, lifeMonitor });
 
-before(() => {
-  replaceAccounts([acct("A"), acct("B")]);
-  // 父目录预置进 path_cache：事件解析路径只查缓存，不会去打祖先链接口
-  rememberPath({ fileId: "10", parentId: "0", name: "a-dir", path: "/a-dir", isDir: true, accountName: "A" });
-  rememberPath({ fileId: "20", parentId: "0", name: "b-dir", path: "/b-dir", isDir: true, accountName: "B" });
-  setLifeMonitorDeps({
-    enable: async () => ({ ok: true, message: "已开启" }),
-    pull: (opts) => {
-      // 启动门禁只拉一条（maxPages 1 / firstBatchSize 1），和正式轮询区分开
-      const gate = opts.maxPages === 1 && opts.firstBatchSize === 1;
-      pulls.push({ account: opts.accountInfo.name, app: opts.app, gate });
-      if (hangFor(opts)) {
-        // 模拟 115 黑洞：请求只会在 signal 中止时结束
-        return new Promise((_, reject) =>
-          opts.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }),
-        );
-      }
-      const err = failFor(opts);
-      if (err) return Promise.reject(err);
-      return Promise.resolve(gate ? [] : (eventsFor[opts.accountInfo.name] ?? []));
-    },
-  });
+let seq = 0;
+const ev = (o: Partial<ChangeEvent> & Pick<ChangeEvent, "kind" | "path">): ChangeEvent => ({
+  id: `e${++seq}`,
+  oldPath: null,
+  isDir: false,
+  nodeId: `n${seq}`,
+  at: 1_900_000_000 + seq,
+  ...o,
 });
 
-beforeEach(() => {
-  eventsFor = {};
-  failFor = () => null;
-  hangFor = () => false;
-  pulls = [];
-  // 各用例之间不留游标 / 降级状态，谁也别依赖前一个用例写下的东西
-  for (const name of ["A", "B"]) {
-    deleteKv(KEY.lifeCursor(name));
-    deleteKv(KEY.lifeAppFallback(name));
-  }
+before(() => {
+  replaceAccounts([acctA, acctQ]);
+  replaceTasks([taskA, taskQ]);
+  replaceAppSettings({ ...baseline.settings, strmExtensions: [".mkv"], downloadExtensions: [".nfo"] });
+  setDriveProviderFactory((account) => (account.name === "A" ? dA : account.name === "Q" ? dQ : null));
+});
+
+beforeEach(async () => {
+  await stopLifeMonitor();
+  dA = new FakeDrive("115", acctA, { changes: true });
+  dQ = new FakeDrive("quark", acctQ, { changes: false });
+  // 夸克没有事件流：把快照来源挂到假网盘上，走的就是线上那条路径
+  Object.assign(dQ, { capabilities: { share: false, changes: true }, changes: new QuarkSnapshotSource(dQ) });
+  fs.rmSync(localRoot, { recursive: true, force: true });
+  for (const name of ["A", "Q"]) deleteKv(KEY.lifeCursor(name));
+  deleteDriveSnapshots();
 });
 
 after(async () => {
   await stopLifeMonitor();
-  setLifeMonitorDeps(null);
-  replaceAppSettings(baselineSettings);
-  replaceAccounts(baselineAccounts);
+  setDriveProviderFactory(null);
+  replaceTasks(baseline.tasks);
+  replaceAccounts(baseline.accounts);
+  replaceAppSettings(baseline.settings);
+  fs.rmSync(localRoot, { recursive: true, force: true });
+  deleteDriveSnapshots();
 });
 
-test("resolveMonitoredAccountNames：accounts 非空就是这些，否则全部；名字不 trim", () => {
-  const pool = [{ name: "A" }, { name: "B" }];
-  assert.deepEqual(resolveMonitoredAccountNames({}, pool), ["A", "B"]);
-  assert.deepEqual(resolveMonitoredAccountNames({ accounts: [] }, pool), ["A", "B"], "空数组 = 全部");
-  assert.deepEqual(resolveMonitoredAccountNames({ accounts: ["B", "B", "", "X"] }, pool), ["B", "X"], "保序去重，不认识的名字也留着");
-  assert.deepEqual(resolveMonitoredAccountNames({ accounts: [" B"] }, pool), [" B"], "账号名以账户表为准，带空格也原样比");
+test("事件按顺序落地：新增写 strm、改名搬文件、删除清理；游标逐条推进；problem 事件只记 skipped", async () => {
+  configure({ accounts: ["A"], pullMode: "latest", intervalSeconds: 5 });
+  dA.tree.addDir("/tv/Show");
+  dA.tree.addFile("/tv/Show/ep1.mkv");
+  dA.changes!.queue.push(
+    ev({ id: "c1", kind: "create", path: "/tv/Show/ep1.mkv" }),
+    ev({ id: "c2", kind: "rename", path: "/tv/Show/ep1 v2.mkv", oldPath: "/tv/Show/ep1.mkv" }),
+    ev({ id: "c3", kind: "create", path: "orphan.mkv", problem: "父目录 404 无法解析" }),
+    ev({ id: "c4", kind: "remove", path: "/tv/Show/ep1 v2.mkv" }),
+  );
+  const r = await startLifeMonitor();
+  try {
+    assert.equal(r.ok, true, r.message);
+    assert.equal(statusOf("A")?.source, "fake");
+    const settled = () => {
+      const st = statusOf("A")?.stats;
+      return !!st && st.handled + st.skipped + st.failed === 4;
+    };
+    await waitFor(settled, "第一轮四条都处理完");
+    const st = statusOf("A")!;
+    assert.equal(st.stats.events, 4);
+    assert.equal(st.stats.handled, 3);
+    assert.equal(st.stats.skipped, 1);
+    assert.ok(!fs.existsSync(path.join(localRoot, "tv", "Show")), "改名后又删除，本地不应留下东西");
+    const rows = listRecentLifeEvents(10);
+    assert.deepEqual(
+      rows.filter((e) => e.accountName === "A").map((e) => [e.id, e.status, e.kind]).sort(),
+      [["c1", "done", "create"], ["c2", "done", "rename"], ["c3", "skipped", "create"], ["c4", "done", "remove"]],
+    );
+    assert.equal(rows.find((e) => e.id === "c3")?.detail, "父目录 404 无法解析");
+    assert.equal(rows.find((e) => e.id === "c2")?.oldPath, "/tv/Show/ep1.mkv");
+    assert.deepEqual(readKv(KEY.lifeCursor("A")), { time: 1_900_000_000 + 4, id: "c4" });
+    assert.equal(getLifeMonitorStatus().db.snapshots, 0, "115 不建快照");
+  } finally {
+    await stopLifeMonitor();
+  }
 });
 
-test("未启动时状态就列出配置里的每个账号，游标显示上次停的位置", () => {
-  configure({ accounts: ["A", "B"] });
-  writeKv(KEY.lifeCursor("B"), { fromTime: 5, fromId: "77" });
-  const s = getLifeMonitorStatus();
-  assert.equal(s.running, false);
-  assert.deepEqual(s.accounts.map((a) => [a.name, a.running]), [["A", false], ["B", false]]);
-  assert.deepEqual(statusOf("B")?.cursor, { fromTime: 5, fromId: "77" });
-});
-
-test("两个账号各跑一条循环：事件按账号落库，游标各存各的", async () => {
-  configure({ accounts: ["A", "B"], pullMode: "latest", intervalSeconds: 5 });
-  eventsFor = {
-    A: [ev({ id: "1001", file_id: "9001", parent_id: "10", file_name: "a.mkv" })],
-    B: [ev({ id: "2001", file_id: "9002", parent_id: "20", file_name: "b.mkv" })],
+test("一条事件处理炸了记 failed，后面的照常处理", async () => {
+  configure({ accounts: ["A"], pullMode: "latest", intervalSeconds: 5 });
+  dA.tree.addDir("/tv/S");
+  dA.tree.addFile("/tv/S/a.mkv");
+  dA.tree.addFile("/tv/S/b.mkv");
+  // 下载类文件要打直链，让直链失败
+  dA.tree.addFile("/tv/S/a.nfo");
+  dA.changes!.queue.push(
+    ev({ id: "f1", kind: "create", path: "/tv/S/a.nfo" }),
+    ev({ id: "f2", kind: "create", path: "/tv/S/b.mkv" }),
+  );
+  dA.beforeCall = async () => {
+    if (dA.log[dA.log.length - 1]?.startsWith("downloadLink")) throw new Error("直链被风控");
   };
   const r = await startLifeMonitor();
   try {
     assert.equal(r.ok, true, r.message);
-    assert.match(r.message, /账号 A、B/);
-    assert.deepEqual(r.started, ["A", "B"]);
-    assert.deepEqual(r.failed, []);
-    await waitFor(
-      () => (statusOf("A")?.stats.skipped ?? 0) === 1 && (statusOf("B")?.stats.skipped ?? 0) === 1,
-      "两个账号各处理完一条事件（没有任务，跳过）",
-    );
-
-    const s = getLifeMonitorStatus();
-    assert.equal(s.running, true);
-    assert.deepEqual(s.accounts.map((a) => [a.name, a.running]), [["A", true], ["B", true]]);
-    assert.equal(s.stats.events, 2, "合计");
-    assert.ok(s.logs.some((l) => l.includes("[A] 拉到 1 条新事件")) && s.logs.some((l) => l.includes("[B] 拉到 1 条新事件")), "日志行带账号名");
-
+    await waitFor(() => (statusOf("A")?.stats.failed ?? 0) === 1 && (statusOf("A")?.stats.handled ?? 0) === 1, "一失败一成功");
     const rows = listRecentLifeEvents(10);
-    assert.equal(rows.find((e) => e.id === "1001")?.accountName, "A");
-    assert.equal(rows.find((e) => e.id === "2001")?.accountName, "B");
-
-    assert.equal(readKv<{ fromId: string }>(KEY.lifeCursor("A"))?.fromId, "1001");
-    assert.equal(readKv<{ fromId: string }>(KEY.lifeCursor("B"))?.fromId, "2001");
+    assert.equal(rows.find((e) => e.id === "f1")?.status, "failed");
+    assert.match(rows.find((e) => e.id === "f1")?.detail ?? "", /直链被风控/);
+    assert.equal(fs.readFileSync(path.join(localRoot, "tv", "S", "b.strm"), "utf8"), "/mnt/pan/tv/S/b.mkv");
+    assert.deepEqual(readKv(KEY.lifeCursor("A")), { time: 1_900_000_000 + seq, id: "f2" }, "失败的也推进游标，不会反复重放");
   } finally {
     await stopLifeMonitor();
   }
-  const s = getLifeMonitorStatus();
-  assert.equal(s.running, false);
-  assert.ok(s.accounts.every((a) => !a.running));
 });
 
-test("一个账号起不来不影响另一个：结果标成部分启动，状态里能看到原因和上次游标", async () => {
-  configure({ accounts: ["A", "B"], intervalSeconds: 5 });
-  writeKv(KEY.lifeCursor("B"), { fromTime: 5, fromId: "77" });
-  failFor = (opts) => (opts.accountInfo.name === "B" ? new Error("请重新登录") : null);
+test("快照来源挂进同一条循环：首轮只建快照，latest 模式不发事件；间隔按来源的下限抬高", async () => {
+  configure({ accounts: ["Q"], pullMode: "latest", intervalSeconds: 5 });
+  dQ.tree.addDir("/kk/Show");
+  dQ.tree.addFile("/kk/Show/ep1.mkv");
   const r = await startLifeMonitor();
   try {
     assert.equal(r.ok, true, r.message);
-    assert.deepEqual(r.started, ["A"]);
-    assert.equal(r.failed.length, 1);
-    assert.equal(r.failed[0]!.name, "B");
-    assert.match(r.message, /^生活事件监控已启动（账号 A）；B 未启动：115 生活事件不可用：请重新登录，请检查 cookie$/);
-    assert.equal(getLifeMonitorStatus().running, true);
-    assert.equal(statusOf("A")?.running, true);
-    assert.equal(statusOf("B")?.running, false);
-    assert.match(statusOf("B")?.lastError ?? "", /请重新登录/);
-    assert.deepEqual(statusOf("B")?.cursor, { fromTime: 5, fromId: "77" }, "起不来的账号照样显示库里的游标");
+    assert.equal(statusOf("Q")?.source, "snapshot");
+    await waitFor(() => (statusOf("Q")?.stats.rounds ?? 0) >= 1, "第一轮");
+    assert.equal(statusOf("Q")?.stats.events, 0);
+    assert.equal(getLifeMonitorStatus().db.snapshots, 1);
+    assert.ok(getLifeMonitorStatus().logs.some((l) => l.includes("[Q] 启动：来源 snapshot，模式 latest，间隔 300s")), "间隔抬到 5 分钟");
+    assert.ok(!fs.existsSync(path.join(localRoot, "kk")), "首轮不生成");
+    assert.equal(dQ.calls.walkSubtree, 1);
   } finally {
     await stopLifeMonitor();
   }
 });
 
-test("所有账号都起不来 → ok=false，消息逐个列出、账号名只出现一次", async () => {
-  configure({ accounts: ["A", "B"] });
-  failFor = () => new Error("请重新登录");
+test("快照来源 all 模式：首轮把现有文件全部当新增生成", async () => {
+  configure({ accounts: ["Q"], pullMode: "all", intervalSeconds: 5 });
+  dQ.tree.addDir("/kk/Show");
+  dQ.tree.addFile("/kk/Show/ep1.mkv");
+  dQ.tree.addFile("/kk/Show/ep2.mkv");
+  dQ.tree.addFile("/kk/top.mkv");
+  const r = await startLifeMonitor();
+  try {
+    assert.equal(r.ok, true, r.message);
+    await waitFor(() => (statusOf("Q")?.stats.handled ?? 0) === 2, "目录 + 顶层文件两条事件");
+    assert.equal(fs.readFileSync(path.join(localRoot, "kk", "Show", "ep1.strm"), "utf8"), "/mnt/kk/kk/Show/ep1.mkv");
+    assert.ok(fs.existsSync(path.join(localRoot, "kk", "Show", "ep2.strm")));
+    assert.ok(fs.existsSync(path.join(localRoot, "kk", "top.strm")));
+    const rows = listRecentLifeEvents(10).filter((e) => e.accountName === "Q");
+    assert.deepEqual(rows.map((e) => e.path).sort(), ["/kk/Show", "/kk/top.mkv"], "目录只报最上层那条");
+    assert.ok(rows.every((e) => e.id.startsWith("q:Q:")), "夸克事件 id 是合成的");
+  } finally {
+    await stopLifeMonitor();
+  }
+});
+
+test("快照来源的门禁：列根目录失败 → 该账号起不来并说明原因", async () => {
+  configure({ accounts: ["Q"] });
+  dQ.failWith = new Error("require login");
   const r = await startLifeMonitor();
   assert.equal(r.ok, false);
-  assert.equal(r.message, "A：115 生活事件不可用：请重新登录，请检查 cookie；B：115 生活事件不可用：请重新登录，请检查 cookie");
-  assert.equal(getLifeMonitorStatus().running, false);
+  assert.match(r.message, /^Q：网盘不可用：require login，请检查 cookie$/);
+  assert.equal(statusOf("Q")?.running, false);
 });
 
-test("配置里的账号不存在 → 该账号启动失败，其它照常", async () => {
-  configure({ accounts: ["A", "ghost"] });
+test("probe 对快照来源只验 cookie，并说明它没有事件流", async () => {
+  configure({ accounts: ["Q"] });
+  dQ.tree.addDir("/kk");
+  const r = await probeLifeEvents(5, "Q");
+  assert.equal(r.ok, true);
+  assert.match(r.message, /cookie 有效，根目录 1 项；这个网盘没有事件流/);
+});
+
+test("115 和夸克账号同时监控：各走各的来源", async () => {
+  configure({ accounts: ["A", "Q"], pullMode: "latest", intervalSeconds: 5 });
+  dA.tree.addDir("/tv");
+  dA.tree.addFile("/tv/a.mkv");
+  dA.changes!.queue.push(ev({ id: "x1", kind: "create", path: "/tv/a.mkv" }));
+  dQ.tree.addDir("/kk");
   const r = await startLifeMonitor();
   try {
     assert.equal(r.ok, true, r.message);
-    assert.match(r.message, /ghost 未启动：账户页里没有这个 115 账号/);
-    assert.equal(statusOf("ghost")?.running, false);
+    assert.deepEqual(r.started, ["A", "Q"]);
+    await waitFor(() => (statusOf("A")?.stats.handled ?? 0) === 1 && (statusOf("Q")?.stats.rounds ?? 0) >= 1, "两边各跑完一轮");
+    assert.deepEqual(getLifeMonitorStatus().accounts.map((a) => [a.name, a.source]), [["A", "fake"], ["Q", "snapshot"]]);
+    assert.ok(fs.existsSync(path.join(localRoot, "tv", "a.strm")));
   } finally {
     await stopLifeMonitor();
-  }
-});
-
-test("同一个 cookie 挂在两个账号名下只监控先出现的那个", async () => {
-  replaceAccounts([acct("A"), acct("B", "cookie-A")]);
-  configure({ accounts: ["A", "B"] });
-  const r = await startLifeMonitor();
-  try {
-    assert.equal(r.ok, true, r.message);
-    assert.deepEqual(r.started, ["A"]);
-    assert.match(r.failed[0]?.message ?? "", /cookie 和账号 A 相同/);
-    assert.equal(statusOf("B")?.running, false);
-    assert.equal(pulls.filter((p) => p.account === "B").length, 0, "B 一次接口都不该打");
-  } finally {
-    await stopLifeMonitor();
-    replaceAccounts([acct("A"), acct("B")]);
-  }
-});
-
-test("last 模式从该账号上次的游标继续，并沿用它自己的降级窗口", async () => {
-  writeKv(KEY.lifeCursor("B"), { fromTime: 123, fromId: "999" });
-  const webUntil = Date.now() + 3_600_000;
-  writeKv(KEY.lifeAppFallback("B"), { ios405Count: 0, webFallbackUntil: webUntil });
-  configure({ accounts: ["A", "B"], pullMode: "last" });
-  const r = await startLifeMonitor();
-  try {
-    assert.equal(r.ok, true, r.message);
-    assert.deepEqual(statusOf("B")?.cursor, { fromTime: 123, fromId: "999" });
-    assert.equal(statusOf("B")?.api, "web");
-    assert.ok(pulls.filter((p) => p.account === "B").every((p) => p.app === "web"), "B 走 webapi");
-    assert.ok(pulls.filter((p) => p.account === "A").every((p) => p.app === "ios"), "A 不受 B 的降级窗口影响");
-    assert.notDeepEqual(statusOf("A")?.cursor, { fromTime: 123, fromId: "999" }, "A 没有存过游标，从现在开始");
-  } finally {
-    await stopLifeMonitor();
-  }
-});
-
-test("proapi 405 降级按账号各记各的", async () => {
-  configure({ accounts: ["A", "B"], intervalSeconds: 5 });
-  failFor = (opts) =>
-    opts.accountInfo.name === "A" && opts.app === "ios" ? new Error("405 Method Not Allowed") : null;
-  const r = await startLifeMonitor();
-  try {
-    assert.equal(r.ok, true, r.message);
-    await waitFor(
-      () => (statusOf("A")?.stats.rounds ?? 0) >= 1 && (statusOf("B")?.stats.rounds ?? 0) >= 1,
-      "各自跑完第一轮",
-    );
-    // A：门禁一次 + 第一轮一次，都是 proapi 405 → webapi 成功；门禁也走降级，不然一次 405 就起不来
-    assert.deepEqual(pulls.filter((p) => p.account === "A").map((p) => p.app), ["ios", "web", "ios", "web"]);
-    assert.deepEqual(pulls.filter((p) => p.account === "B").map((p) => p.app), ["ios", "ios"]);
-    assert.deepEqual(readKv(KEY.lifeAppFallback("A")), { ios405Count: 2 });
-    assert.equal(readKv(KEY.lifeAppFallback("B")), null, "B 没碰过 405，不该被 A 连累");
-  } finally {
-    await stopLifeMonitor();
-  }
-});
-
-test("probe 不指定账号时把配置里的都测一遍，一个不通整体就不通；指定账号只测它", async () => {
-  configure({ accounts: ["A", "B"] });
-  failFor = (opts) => (opts.accountInfo.name === "B" ? new Error("cookie 失效") : null);
-  const r = await probeLifeEvents(5);
-  assert.equal(r.ok, false);
-  assert.deepEqual(r.accounts.map((a) => [a.account, a.ok]), [["A", true], ["B", false]]);
-  assert.equal(r.message, "A：拉到 0 条事件；B：cookie 失效");
-  const one = await probeLifeEvents(5, "A");
-  assert.equal(one.ok, true);
-  assert.equal(one.message, "拉到 0 条事件");
-});
-
-test("并发两次启动共用一次，门禁只走一遍", async () => {
-  configure({ accounts: ["A"] });
-  const [r1, r2] = await Promise.all([startLifeMonitor(), startLifeMonitor()]);
-  try {
-    assert.equal(r1.ok, true, r1.message);
-    assert.equal(r2.ok, true, r2.message);
-    assert.equal(pulls.filter((p) => p.account === "A" && p.gate).length, 1);
-  } finally {
-    await stopLifeMonitor();
-  }
-});
-
-test("启动刚发起就停止：启动按取消收场，不会留下循环", async () => {
-  configure({ accounts: ["A"] });
-  const starting = startLifeMonitor();
-  const stopped = await stopLifeMonitor();
-  assert.equal(stopped.message, "生活事件监控已停止");
-  assert.equal((await starting).message, "启动已取消");
-  assert.equal(getLifeMonitorStatus().running, false);
-});
-
-test("门禁请求卡住时停止能立刻掐断它，不用等超时", async () => {
-  configure({ accounts: ["A", "B"] });
-  hangFor = (opts) => opts.accountInfo.name === "A";
-  const starting = startLifeMonitor();
-  await waitFor(() => pulls.some((p) => p.account === "A"), "A 的门禁请求已发出");
-  const t0 = Date.now();
-  const stopped = await stopLifeMonitor();
-  assert.ok(Date.now() - t0 < 1000, "停止不该等门禁超时");
-  assert.equal(stopped.message, "生活事件监控已停止");
-  const r = await starting;
-  assert.equal(r.ok, false);
-  assert.equal(r.message, "启动已取消");
-  assert.equal(getLifeMonitorStatus().running, false);
-  assert.equal(statusOf("A")?.lastError, null, "被取消不算这个账号的错");
-});
-
-test("账号被删除后它的循环自己退出，其它账号继续", async () => {
-  configure({ accounts: ["A", "B"], intervalSeconds: 5 });
-  const r = await startLifeMonitor();
-  try {
-    assert.equal(r.ok, true, r.message);
-    await waitFor(() => (statusOf("B")?.stats.rounds ?? 0) >= 1, "B 跑完第一轮");
-    deleteAccount("B");
-    // 下一轮（间隔 5s 之后）现取账号发现没了
-    await waitFor(() => statusOf("B")?.running === false, "B 退出", 8000);
-    assert.match(statusOf("B")?.lastError ?? "", /账号已删除/);
-    assert.equal(statusOf("A")?.running, true);
-  } finally {
-    await stopLifeMonitor();
-    replaceAccounts([acct("A"), acct("B")]);
   }
 });

@@ -1,16 +1,16 @@
-/** 冷启动时从哪里开始拉生活事件 */
+/** 冷启动时从哪里开始拉变更：latest 只看启动之后的，all 把现有文件全当新增补齐，last 从上次停的游标继续 */
 export type LifePullMode = "latest" | "all" | "last";
 
-/** 生活事件里需要落到本地的动作类型 */
+/** 网盘变更里需要落到本地的动作类型 */
 export type LifeEventMode = "create" | "move" | "rename" | "remove";
 
 export type LifeMonitorSettings = {
   enabled?: boolean;
-  /** 要监控的 115 账号名；为空时监控全部带 cookie 的 115 账号，每个账号各跑一条轮询 */
+  /** 要监控的账号名（115 / 夸克）；为空时监控全部能监控的账号，每个账号各跑一条轮询 */
   accounts?: string[];
   /** latest=只处理启动之后的事件；all=全量补齐；last=从上次停止的游标继续 */
   pullMode?: LifePullMode;
-  /** 两轮轮询之间的间隔秒数，默认 15 */
+  /** 两轮轮询之间的间隔秒数，默认 15；夸克是快照对比，最短 300 */
   intervalSeconds?: number;
   /** 允许的事件动作，默认全开 */
   eventModes?: LifeEventMode[];
@@ -85,7 +85,7 @@ export type AppSettings = {
     apiKey?: string;
     baseUrl?: string;
   };
-  /** 115 生活事件监控（增量监测网盘文件变动） */
+  /** 网盘监控（增量监测网盘文件变动：115 生活事件流、夸克目录快照对比） */
   lifeMonitor?: LifeMonitorSettings;
   /** 云下载完成后，让 OpenList 把产物复制到另一个存储（如挂载的本地磁盘） */
   openlistCopy?: OpenlistCopySettings;

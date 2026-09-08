@@ -1,6 +1,6 @@
-import { sql, eq, inArray, desc, lt } from "drizzle-orm";
+import { and, sql, eq, inArray, desc, lt } from "drizzle-orm";
 import { db } from "../client.js";
-import { settings, pathCache, lifeEvents } from "../schema.js";
+import { settings, pathCache, lifeEvents, driveSnapshots } from "../schema.js";
 import type { PathCacheRow, LifeEventRow } from "../schema.js";
 
 /* ------------------------------------------------------------------ *
@@ -126,6 +126,9 @@ export interface LifeEventInput {
   id: string;
   accountName: string;
   type: number;
+  kind?: string;
+  path?: string;
+  oldPath?: string;
   fileId: string;
   parentId: string;
   fileName: string;
@@ -187,3 +190,47 @@ export function deleteLifeEventsBefore(cutoffSec: number): number {
 export function deletePathCacheNotTouchedSince(cutoffSec: number): number {
   return db.delete(pathCache).where(lt(pathCache.updatedAt, cutoffSec)).run().changes;
 }
+
+/* ------------------------------- drive_snapshots ------------------------------- */
+
+export interface DriveSnapshot<T = unknown> {
+  entries: T[];
+  /** unix 秒 */
+  scannedAt: number;
+}
+
+export function readDriveSnapshot<T = unknown>(accountName: string, rootPath: string): DriveSnapshot<T> | null {
+  const row = db
+    .select()
+    .from(driveSnapshots)
+    .where(and(eq(driveSnapshots.accountName, accountName), eq(driveSnapshots.rootPath, rootPath)))
+    .get();
+  if (!row) return null;
+  try {
+    return { entries: JSON.parse(row.entries) as T[], scannedAt: row.scannedAt };
+  } catch {
+    return null;
+  }
+}
+
+export function writeDriveSnapshot(accountName: string, rootPath: string, entries: unknown[], scannedAt: number): void {
+  db.insert(driveSnapshots)
+    .values({ accountName, rootPath, entries: JSON.stringify(entries), scannedAt })
+    .onConflictDoUpdate({
+      target: [driveSnapshots.accountName, driveSnapshots.rootPath],
+      set: { entries: JSON.stringify(entries), scannedAt },
+    })
+    .run();
+}
+
+/** 不指定账号就全清 */
+export function deleteDriveSnapshots(accountName?: string): void {
+  if (accountName === undefined) db.delete(driveSnapshots).run();
+  else db.delete(driveSnapshots).where(eq(driveSnapshots.accountName, accountName)).run();
+}
+
+export function countDriveSnapshots(): number {
+  const row = db.select({ n: sql<number>`count(*)` }).from(driveSnapshots).get();
+  return row?.n ?? 0;
+}
+

@@ -180,8 +180,9 @@ export type LifeMonitorStats = { rounds: number; events: number; handled: number
 export type LifeAccountStatus = {
   name: string;
   running: boolean;
-  cursor: { fromTime: number; fromId: string };
-  api: "web" | "ios" | "android";
+  cursor: { time: number; id: string };
+  /** 变更来源：115 是 proapi / webapi（生活事件流），夸克是 snapshot（定时对比目录） */
+  source: string;
   startedAt: number | null;
   lastPollAt: number | null;
   lastError: string | null;
@@ -197,7 +198,7 @@ export type LifeMonitorStatus = {
   lastPollAt: number | null;
   /** 各账号合计 */
   stats: LifeMonitorStats;
-  db: { lifeEvents: number; pathCache: number };
+  db: { lifeEvents: number; pathCache: number; snapshots: number };
   embyRefresh: { configured: boolean; pendingCount: number; pendingSince: number | null };
   logs: string[];
 };
@@ -211,6 +212,11 @@ export type LifeEventRow = {
   accountName: string;
   type: number;
   typeName: string;
+  /** 统一的动作：create / move / rename / remove / folder；旧数据为空 */
+  kind: string;
+  /** 网盘绝对路径；旧数据为空，界面退回显示 fileName */
+  path: string;
+  oldPath: string;
   fileName: string;
   fileCategory: number;
   updateTime: number;

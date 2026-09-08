@@ -23,6 +23,8 @@ import {
   shareExtractPayload,
   type ShareAttr,
 } from "../../cloud-115/share.js";
+import { upsertPathCache } from "../../../db/repositories/life.js";
+import { Cloud115ChangeSource } from "../../life/sources/cloud115.js";
 import { buildTree, collectFilesAndTopEmptyDirs, findExportedDir } from "../../task/tree.js";
 import { classifyAccountIssue } from "../../telegram/notify.js";
 import { resolveSharePath } from "../share-walk.js";
@@ -172,13 +174,30 @@ class Cloud115Share implements ShareProvider {
 
 export class Cloud115Provider implements DriveProvider {
   readonly kind = "115" as const;
-  readonly capabilities = { share: true, changes: false };
+  readonly capabilities = { share: true, changes: true };
   readonly rootId = "0";
   readonly notes = { verify: VERIFY_NOTE };
   readonly share: ShareProvider;
+  readonly changes: Cloud115ChangeSource;
 
   constructor(readonly account: Account115) {
     this.share = new Cloud115Share(account);
+    this.changes = new Cloud115ChangeSource(account);
+  }
+
+  /** 列过的目录写进 path_cache：变更监控靠它把事件里的 id 还原成路径、找移动前的旧路径 */
+  rememberListing(dirPath: string, entries: DriveEntry[]): void {
+    const dir = `/${splitPath(dirPath).join("/")}`;
+    upsertPathCache(
+      entries.map((e) => ({
+        fileId: e.id,
+        parentId: "",
+        name: e.name,
+        path: dir === "/" ? `/${e.name}` : `${dir}/${e.name}`,
+        isDir: e.isDir,
+        accountName: this.account.name,
+      })),
+    );
   }
 
   private ctx(signal?: AbortSignal) {

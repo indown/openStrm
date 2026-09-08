@@ -299,7 +299,7 @@ export async function writeStrm(
 export async function downloadFile(
   url: string,
   savePath: string,
-  opts?: Pick<DownloadOptions, "displayPath" | "idleTimeoutMs">,
+  opts?: Pick<DownloadOptions, "displayPath" | "idleTimeoutMs" | "headers">,
 ): Promise<void> {
   await lastValueFrom(downloadOrCreateStrm(url, savePath, { ...opts, asStrm: false }));
 }

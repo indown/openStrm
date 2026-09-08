@@ -5,6 +5,7 @@
  *   - 套中文模板、HTML 转义、发到配置的 chatId
  * 发送失败只记日志，绝不抛到调用方。
  */
+import type { AccountIssue as DriveAccountIssue } from "../drive/types.js";
 import type { AppSettings, TelegramNotifySettings } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { moduleLogger } from "../../lib/logger.js";
@@ -44,8 +45,11 @@ export type NotifyEvent =
   | { type: "follow-stale"; name: string; days: number }
   /** Emby 把新条目收进媒体库了；groups 为空表示这批太多、只报总数 */
   | { type: "emby-new"; groups: EmbyNewGroup[]; total: number }
-  /** 115 账号层面的问题（cookie 失效、被封控）；reason 里认不出这两种就不发 */
-  | { type: "account-alert"; account: string; reason: string; source: string };
+  /**
+   * 账号层面的问题（cookie 失效、被封控）。issue 是调用方用网盘自己的规则认出来的（见 issueFromDrive）；
+   * 没给就从 reason 文案里猜（115 的中文），两样都认不出就不发
+   */
+  | { type: "account-alert"; account: string; reason: string; source: string; issue?: AccountIssue | null };
 
 export const DEFAULT_NOTIFY: Required<TelegramNotifySettings> = {
   taskStart: false,
@@ -73,6 +77,13 @@ export interface EmbyNewGroup {
 }
 
 export type AccountIssue = "cookie" | "blocked";
+
+/** 网盘 Provider.classifyError 的结果换成通知这边的两档：分享失效（gone）不是账号问题 */
+export function issueFromDrive(issue: DriveAccountIssue | null | undefined): AccountIssue | null {
+  if (issue === "auth") return "cookie";
+  if (issue === "blocked") return "blocked";
+  return null;
+}
 
 /** 从错误文案里认出"该换 cookie 了"和"被封控了"这两种需要人来处理的情况 */
 export function classifyAccountIssue(message: string): AccountIssue | null {
@@ -109,8 +120,8 @@ function throttled(key: string, now = Date.now()): boolean {
 function accountAlertText(account: string, issue: AccountIssue, source: string, reason: string): string {
   const head =
     issue === "cookie"
-      ? `⚠️ <b>115 账号需要处理</b>\n账号 <b>${esc(account)}</b> 的 cookie 已失效，同步和监控都会失败，请到「账户」页更新。`
-      : `⚠️ <b>115 账号被封控</b>\n账号 <b>${esc(account)}</b> 的访问被阻断，请稍后再试或检查账号状态。`;
+      ? `⚠️ <b>网盘账号需要处理</b>\n账号 <b>${esc(account)}</b> 的 cookie 已失效，同步和监控都会失败，请到「账户」页更新。`
+      : `⚠️ <b>网盘账号被封控</b>\n账号 <b>${esc(account)}</b> 的访问被阻断，请稍后再试或检查账号状态。`;
   return `${head}\n来源：${esc(source)}\n<code>${esc(reason.slice(0, 200))}</code>`;
 }
 
@@ -175,7 +186,7 @@ function render(event: NotifyEvent): string {
       return `📥 <b>Emby 入库</b>\n${lines.join("\n")}`;
     }
     case "account-alert": {
-      const issue = classifyAccountIssue(event.reason);
+      const issue = event.issue ?? classifyAccountIssue(event.reason);
       return issue ? accountAlertText(event.account, issue, event.source, event.reason) : "";
     }
   }
@@ -258,7 +269,7 @@ export async function notify(event: NotifyEvent): Promise<boolean> {
         text = render(event);
         break;
       case "account-alert": {
-        const issue = classifyAccountIssue(event.reason);
+        const issue = event.issue ?? classifyAccountIssue(event.reason);
         if (!issue || !prefs.accountAlert) return false;
         if (throttled(`account:${event.account}:${issue}`)) return false;
         text = render(event);
