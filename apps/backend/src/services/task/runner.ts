@@ -18,7 +18,7 @@ import { resolveInDataDir } from "../../paths.js";
 import { DEFAULT_TIMEOUT_MS } from "../../lib/http.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { mapLimit } from "../../lib/async.js";
-import { isDirectoryEntry } from "../../lib/fs.js";
+import { isDirectoryEntry, removeEmptyParents } from "../../lib/fs.js";
 import { Cloud115Error, exportDirParse, fsDirGetId } from "../cloud-115/client.js";
 import { openlistLogin } from "../openlist/client.js";
 import {
@@ -87,21 +87,12 @@ async function getLocalTree(dirPath: string, parentKey = 0, depth = 0, keySeed =
 }
 
 async function removeExtraFiles(extraLocally: string[], saveDir: string): Promise<void> {
-  const removeEmptyParents = async (dir: string): Promise<void> => {
-    if (!dir.startsWith(saveDir) || dir === saveDir) return;
-    try {
-      if ((await fsp.readdir(dir)).length === 0) {
-        await fsp.rmdir(dir);
-        await removeEmptyParents(path.dirname(dir));
-      }
-    } catch { /* 非空或已不存在 */ }
-  };
   await mapLimit(extraLocally, 8, async (rel) => {
     const fp = path.join(saveDir, rel);
     try {
       // 文件、目录都行；已经不存在也不报错
       await fsp.rm(fp, { recursive: true, force: true });
-      await removeEmptyParents(path.dirname(fp));
+      await removeEmptyParents(path.dirname(fp), saveDir);
     } catch { /* 单个失败不影响其余 */ }
   });
 }

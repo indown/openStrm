@@ -20,3 +20,20 @@ export type {
   ShareFollowStatus,
   ShareFollowSummary,
 } from "./follow.js";
+export type {
+  StrmEntryKind,
+  StrmEntry,
+  StrmListResult,
+  StrmSearchHit,
+  StrmSearchResult,
+  StrmParseReason,
+  StrmFileInfo,
+  StrmIssueType,
+  StrmIssue,
+  StrmScanResult,
+  StrmRewriteResult,
+  StrmRegenerateMode,
+  StrmRegenerateResult,
+  StrmVerifyResult,
+  StrmDeleteResult,
+} from "./strm.js";
