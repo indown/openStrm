@@ -8,19 +8,25 @@ import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
 import { deleteDriveSnapshots, readDriveSnapshot } from "../../../db/repositories/life.js";
-import type { ChangeCursor, ChangeEvent } from "../../drive/types.js";
+import type { ChangeCursor, ChangeEvent, PullResult } from "../../drive/types.js";
 import { FakeDrive } from "../../../test/fake-drive.js";
 import { __test_resetQuarkSnapshotSource, QuarkSnapshotSource, type SnapEntry } from "./quark.js";
 
 const account: AccountInfo = { accountType: "quark", name: "snap", cookie: "c" };
-const tasks: TaskDefinition[] = [{ id: "t", account: "snap", accountType: "quark", originPath: "kk", targetPath: "snap-itest", strmPrefix: "/mnt" }];
+const taskKk: TaskDefinition = { id: "t", account: "snap", accountType: "quark", originPath: "kk", targetPath: "snap-itest", strmPrefix: "/mnt" };
+const taskGone: TaskDefinition = { id: "t2", account: "snap", accountType: "quark", originPath: "gone", targetPath: "snap-itest-gone", strmPrefix: "/mnt" };
+let tasks: TaskDefinition[] = [taskKk];
 let drive: FakeDrive;
 let source: QuarkSnapshotSource;
 let warned: string[];
 const brief = (events: ChangeEvent[]) => events.map((e) => `${e.kind} ${e.oldPath ? `${e.oldPath} -> ` : ""}${e.path}`);
 
-async function pull(cursor: ChangeCursor = { time: 1, id: "latest" }) {
-  return source.pull(cursor, { tasks, signal: new AbortController().signal, log: (level, msg) => level === "warn" && warned.push(msg) });
+/** 拉一轮：把 changes 解析成完整事件；commit 默认打开（模拟监控处理完这一轮） */
+async function pull(cursor: ChangeCursor = { time: 1, id: "latest" }, { commit = true } = {}): Promise<{ events: ChangeEvent[]; raw: PullResult }> {
+  const raw = await source.pull(cursor, { tasks, signal: new AbortController().signal, log: (level, msg) => level === "warn" && warned.push(msg) });
+  const events = await Promise.all(raw.changes.map((c) => c.resolve()));
+  if (commit) raw.commit?.();
+  return { events, raw };
 }
 
 beforeEach(() => {
@@ -29,6 +35,7 @@ beforeEach(() => {
   drive = new FakeDrive("quark", account);
   source = new QuarkSnapshotSource(drive);
   warned = [];
+  tasks = [taskKk];
   drive.tree.addDir("/kk");
 });
 
@@ -52,7 +59,7 @@ test("首轮只建快照；之后新增 / 改名 / 移动 / 删除各出一条�
   drive.tree.move("/kk/S2", "/kk/S1/S2");
   drive.tree.remove("/kk/S1/e2.mkv");
   const third = await pull();
-  assert.deepEqual(brief(third.events).sort(), ["move /kk/S2 -> /kk/S1/S2", "remove /kk/S1/e2.mkv"]);
+  assert.deepEqual(brief(third.events), ["remove /kk/S1/e2.mkv", "move /kk/S2 -> /kk/S1/S2"], "删除在搬动前面");
   assert.equal(readDriveSnapshot<SnapEntry>("snap", "/kk")?.entries.length, 4);
 });
 
@@ -103,3 +110,53 @@ test("大目录一轮少了三成以上：第一轮只告警不删、快照里�
   const again = await pull();
   assert.deepEqual(again.events, [], "上一轮已恢复，这轮的大删除重新从压一轮开始");
 });
+
+test("同名替换：旧 id 的删除排在新 id 的新增前面；目录搬进新建目录时先搬再建", async () => {
+  drive.tree.addDir("/kk/S1");
+  drive.tree.addFile("/kk/S1/e1.mkv");
+  drive.tree.addDir("/kk/A");
+  drive.tree.addFile("/kk/A/x.mkv");
+  await pull();
+  // S1 整个删掉再建同名的（新 id）；A 搬进新建的 N 里
+  drive.tree.remove("/kk/S1");
+  drive.tree.addDir("/kk/S1");
+  drive.tree.addFile("/kk/S1/e1.mkv");
+  drive.tree.addDir("/kk/N");
+  drive.tree.move("/kk/A", "/kk/N/A");
+  const { events } = await pull();
+  assert.deepEqual(brief(events), ["remove /kk/S1", "move /kk/A -> /kk/N/A", "create /kk/N", "create /kk/S1"]);
+});
+
+test("快照要等 commit 才落库：没 commit 的一轮，下一轮拿旧快照重新对比、事件再出一遍；游标一直带着模式", async () => {
+  drive.tree.addFile("/kk/a.mkv");
+  const first = await pull({ time: 0, id: "all" });
+  assert.deepEqual(brief(first.events), ["create /kk/a.mkv"]);
+  assert.equal(first.raw.cursor.id, "all", "模式跟着游标走，后来才扫到的根照样按 all 建快照");
+  drive.tree.addFile("/kk/b.mkv");
+  const uncommitted = await pull({ time: 1, id: "all" }, { commit: false });
+  assert.deepEqual(brief(uncommitted.events), ["create /kk/b.mkv"]);
+  assert.equal(readDriveSnapshot<SnapEntry>("snap", "/kk")?.entries.length, 1, "没 commit，库里还是上一轮的快照");
+  const again = await pull({ time: 2, id: "all" });
+  assert.deepEqual(brief(again.events), ["create /kk/b.mkv"], "重新对比，同样的事件再出一遍");
+  assert.equal(readDriveSnapshot<SnapEntry>("snap", "/kk")?.entries.length, 2);
+  const quiet = await pull({ time: 3, id: "all" });
+  assert.deepEqual(quiet.events, []);
+});
+
+test("某个根列不了：记进 warnings 跳过它，别的根照常出事件，commit 只写好的根的快照；根回来后按模式建快照", async () => {
+  tasks = [taskKk, taskGone];
+  drive.tree.addFile("/kk/a.mkv");
+  const first = await pull({ time: 0, id: "all" });
+  assert.deepEqual(brief(first.events), ["create /kk/a.mkv"]);
+  assert.match(first.raw.warnings?.[0] ?? "", /^\/gone 列目录失败：/);
+  assert.equal(readDriveSnapshot<SnapEntry>("snap", "/kk")?.entries.length, 1);
+  assert.equal(readDriveSnapshot<SnapEntry>("snap", "/gone"), null);
+
+  drive.tree.addDir("/gone");
+  drive.tree.addFile("/gone/g.mkv");
+  const second = await pull({ time: 1, id: "all" });
+  assert.equal(second.raw.warnings, undefined);
+  assert.deepEqual(brief(second.events), ["create /gone/g.mkv"], "根回来了，第一次扫到按 all 模式把现有的当新增");
+  assert.equal(readDriveSnapshot<SnapEntry>("snap", "/gone")?.entries.length, 1);
+});
+

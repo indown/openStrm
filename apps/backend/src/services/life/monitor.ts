@@ -293,8 +293,8 @@ class AccountMonitor {
           this.log("warn", this.lastError);
           break;
         }
-        await this.runOnce(provider, signal);
-        this.lastError = null;
+        // 部分根没拉到时 warnings 留在 lastError 让状态页看见；全好才清掉
+        this.lastError = (await this.runOnce(provider, signal)) ?? null;
         if (signal.aborted) break;
         await this.sleep(intervalMs);
       } catch (err) {
@@ -314,23 +314,26 @@ class AccountMonitor {
     this.log("info", "已退出网盘监控");
   }
 
-  private async runOnce(provider: DriveProvider, signal: AbortSignal): Promise<void> {
+  /** 返回这轮的告警文案（部分根没拉到）；全好返回 null */
+  private async runOnce(provider: DriveProvider, signal: AbortSignal): Promise<string | null> {
     const source = provider.changes!;
     this.source = source;
     const tasks = listTasks().filter((t) => t.account === this.name);
     const pulled = await source.pull(this.cursor, { tasks, signal, log: this.log });
     this.lastPollAt = Date.now();
     this.stats.rounds++;
-    const events = pulled.events;
-    if (events.length === 0) {
+    for (const w of pulled.warnings ?? []) this.log("warn", w);
+    const warning = pulled.warnings?.length ? pulled.warnings.join("；") : null;
+    const changes = pulled.changes;
+    if (changes.length === 0) {
       this.cursor = pulled.cursor;
       writeKv(KEY.lifeCursor(this.name), this.cursor);
-      return;
+      pulled.commit?.();
+      return warning;
     }
 
-    this.stats.events += events.length;
-    this.log("info", `拉到 ${events.length} 条新事件`);
-    upsertLifeEvents(events.map((ev) => toRow(this.name, ev)));
+    this.stats.events += changes.length;
+    this.log("info", `拉到 ${changes.length} 条新事件`);
 
     const settings = readAppSettings();
     const ctx: LifeContext = {
@@ -342,10 +345,14 @@ class AccountMonitor {
       signal,
     };
 
-    for (const ev of events) {
-      if (signal.aborted) return;
-      const id = ev.id;
+    for (const item of changes) {
+      // 被中止就不 commit：快照式来源下轮拿旧快照重新对比，事件流来源从游标接着拉
+      if (signal.aborted) return warning;
+      const id = item.id;
       if (isLifeEventHandled(id)) continue;
+      // 交给处理器前一刻才解析（115 在这里查旧路径、改缓存）；解析抛错按整轮失败处理，游标停在上一条，下轮重拉
+      const ev = await item.resolve();
+      upsertLifeEvents([toRow(this.name, ev)]);
 
       const name = KIND_NAME[ev.kind];
       if (ev.problem) {
@@ -374,11 +381,13 @@ class AccountMonitor {
       }
 
       // 每条处理完都推进游标，中途崩了也不会重放已完成的事件
-      this.cursor = { time: ev.at || this.cursor.time, id };
+      this.cursor = { time: item.at || this.cursor.time, id };
       writeKv(KEY.lifeCursor(this.name), this.cursor);
     }
     this.cursor = pulled.cursor;
     writeKv(KEY.lifeCursor(this.name), this.cursor);
+    pulled.commit?.();
+    return warning;
   }
 
   /** 可中断的等待：stop 掐掉 signal 就立刻醒 */

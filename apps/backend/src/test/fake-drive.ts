@@ -14,9 +14,11 @@ import {
   ShareGoneError,
   splitPath,
   type AccountIssue,
+  resolvedChange,
   type ChangeCursor,
   type ChangeEvent,
   type ChangeSource,
+  type PullResult,
   type DriveEntry,
   type DriveKind,
   type DriveLink,
@@ -140,6 +142,8 @@ export class FakeShare implements ShareProvider {
   pageSize = 100;
   /** 服务端「相对上次转存有没有新增」的信号；默认 unknown = 认不出，追更照常列目录 */
   updateSignal: ShareUpdateSignal = "unknown";
+  /** 列目录结果先过它一手：测试用来塞进树里表示不了的条目（比如名字带 /） */
+  listHook: ((dirId: string, entries: ShareEntry[]) => ShareEntry[]) | null = null;
   readonly updates: ShareUpdates = {
     check: async (s: ShareSession) => {
       this.calls.updates++;
@@ -209,7 +213,8 @@ export class FakeShare implements ShareProvider {
     const def = this.def(s.ref);
     const dir = def.tree.pathOf(dirId || "0");
     if (dir === null) return { entries: [], total: 0 };
-    const all = def.tree.children(dir).map(({ path, node }) => this.toEntry(path, node));
+    let all = def.tree.children(dir).map(({ path, node }) => this.toEntry(path, node));
+    if (this.listHook) all = this.listHook(dirId || "0", all);
     const page = Number(cursor ?? 0) || 0;
     const start = page * this.pageSize;
     const entries = all.slice(start, start + this.pageSize);
@@ -258,6 +263,10 @@ export class FakeChanges implements ChangeSource {
   readonly queue: ChangeEvent[] = [];
   prepareResult: { ok: boolean; message: string } = { ok: true, message: "ok" };
   pulls = 0;
+  /** 下一次 pull 一起带出去的告警（模拟某个根列不了） */
+  warnings: string[] = [];
+  /** 监控在事件处理完之后调用了几次 commit */
+  commits = 0;
 
   async prepare(): Promise<{ ok: boolean; message: string }> {
     return this.prepareResult;
@@ -268,11 +277,18 @@ export class FakeChanges implements ChangeSource {
     return { time: mode === "all" ? 0 : Math.floor(Date.now() / 1000), id: "0" };
   }
 
-  async pull(cursor: ChangeCursor, _opts: { tasks: TaskDefinition[]; signal: AbortSignal }): Promise<{ events: ChangeEvent[]; cursor: ChangeCursor }> {
+  async pull(cursor: ChangeCursor, _opts: { tasks: TaskDefinition[]; signal: AbortSignal }): Promise<PullResult> {
     this.pulls++;
     const events = this.queue.splice(0, this.queue.length);
     const last = events[events.length - 1];
-    return { events, cursor: last ? { time: last.at, id: last.id } : cursor };
+    return {
+      changes: events.map(resolvedChange),
+      cursor: last ? { time: last.at, id: last.id } : cursor,
+      warnings: this.warnings.length > 0 ? [...this.warnings] : undefined,
+      commit: () => {
+        this.commits++;
+      },
+    };
   }
 }
 

@@ -210,6 +210,30 @@ export interface PullOptions {
   log?: ChangeLog;
 }
 
+/**
+ * pull 交出来的一条：id / at 先给监控做去重和推游标；resolve 在交给处理器前一刻才把它变成完整事件——
+ * 115 在这里查旧路径、更新路径缓存，这样一轮中途被打断，没处理到的事件下轮重拉时缓存还是旧的
+ */
+export interface PendingChange {
+  id: string;
+  at: number;
+  resolve(): Promise<ChangeEvent>;
+}
+
+/** 已经是完整事件的来源（夸克快照、测试桩）用它包一下 */
+export function resolvedChange(ev: ChangeEvent): PendingChange {
+  return { id: ev.id, at: ev.at, resolve: async () => ev };
+}
+
+export interface PullResult {
+  changes: PendingChange[];
+  cursor: ChangeCursor;
+  /** 这轮的事件全部处理完（没被中止）后由监控调用；快照式来源在这里才把新快照写库，中途出事下轮重新对比 */
+  commit?(): void;
+  /** 这轮有一部分没拉到（某个根列不了）的说明；监控记进 lastError 让人看见，但不按整轮失败退避 */
+  warnings?: string[];
+}
+
 export interface ChangeSource {
   /** 状态页「接口」列：proapi / webapi / snapshot */
   readonly label: string;
@@ -217,7 +241,7 @@ export interface ChangeSource {
   /** 启动门禁：115 开生活事件开关并试拉一条；夸克列根目录验 cookie。被中止时原样抛出 */
   prepare(signal: AbortSignal, log?: ChangeLog): Promise<PrepareResult>;
   initialCursor(mode: LifePullMode, saved: ChangeCursor | null): ChangeCursor;
-  pull(cursor: ChangeCursor, opts: PullOptions): Promise<{ events: ChangeEvent[]; cursor: ChangeCursor }>;
+  pull(cursor: ChangeCursor, opts: PullOptions): Promise<PullResult>;
   /** 页面上「测试连接」：只看不处理 */
   probe?(limit: number, signal?: AbortSignal): Promise<ProbeResult>;
 }

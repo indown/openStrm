@@ -115,6 +115,7 @@ test("事件按顺序落地：新增写 strm、改名搬文件、删除清理；
     assert.equal(rows.find((e) => e.id === "c2")?.oldPath, "/tv/Show/ep1.mkv");
     assert.deepEqual(readKv(KEY.lifeCursor("A")), { time: 1_900_000_000 + 4, id: "c4" });
     assert.equal(getLifeMonitorStatus().db.snapshots, 0, "115 不建快照");
+    assert.equal(dA.changes!.commits, 1, "四条都处理完才 commit 一次");
   } finally {
     await stopLifeMonitor();
   }
@@ -222,3 +223,25 @@ test("115 和夸克账号同时监控：各走各的来源", async () => {
     await stopLifeMonitor();
   }
 });
+
+test("来源报 warnings（某个根列不了）：记进 lastError 让人看见，事件照常处理，不按整轮失败退避", async () => {
+  configure({ accounts: ["A"], pullMode: "latest", intervalSeconds: 5 });
+  dA.tree.addDir("/tv");
+  dA.tree.addFile("/tv/w.mkv");
+  dA.changes!.warnings = ["/gone 列目录失败：找不到"];
+  dA.changes!.queue.push(ev({ id: "w1", kind: "create", path: "/tv/w.mkv" }));
+  const r = await startLifeMonitor();
+  try {
+    assert.equal(r.ok, true, r.message);
+    await waitFor(() => (statusOf("A")?.stats.handled ?? 0) === 1, "事件处理完");
+    const st = statusOf("A")!;
+    assert.equal(st.running, true);
+    assert.equal(st.lastError, "/gone 列目录失败：找不到");
+    assert.equal(dA.changes!.commits, 1);
+    assert.ok(getLifeMonitorStatus().logs.some((l) => l.includes("[warn] [A] /gone 列目录失败")));
+    assert.ok(!getLifeMonitorStatus().logs.some((l) => l.includes("轮询失败")), "不是整轮失败");
+  } finally {
+    await stopLifeMonitor();
+  }
+});
+

@@ -3,7 +3,8 @@
  *
  * 115 会把用户在网盘上的每一次操作记成一条生活事件，倒序拉出来就能感知变动。
  * 事件只带 parent_id 不带路径，所以这里靠 path-resolver（内存 LRU → path_cache 表 → 祖先链接口）把它还原成绝对路径，
- * 移动 / 改名 / 删除的旧路径只能来自 path_cache——缓存也在这里维护：pull 的时候网盘侧的事实已经变了，先改缓存再交出去。
+ * 移动 / 改名 / 删除的旧路径只能来自 path_cache——缓存也在这里维护。还原和改缓存放在每条事件的 resolve 里，
+ * 由监控在交给处理器前一刻逐条调用：一轮中途被打断时，没处理到的事件下轮重拉，缓存里还是它们改动前的样子。
  *
  * proapi ↔ webapi 互为兜底：只有 405 才降级，连续 3 次就固定走 webapi 24 小时；状态按账号各存一份（KEY.lifeAppFallback）。
  */
@@ -34,9 +35,11 @@ import type {
   ChangeKind,
   ChangeLog,
   ChangeSource,
+  PendingChange,
   PrepareResult,
   ProbeResult,
   PullOptions,
+  PullResult,
 } from "../../drive/types.js";
 
 const WEB_FALLBACK_MS = 24 * 60 * 60 * 1000;
@@ -171,17 +174,18 @@ export class Cloud115ChangeSource implements ChangeSource {
     return { time: Math.floor(Date.now() / 1000), id: "0" };
   }
 
-  async pull(cursor: ChangeCursor, opts: PullOptions): Promise<{ events: ChangeEvent[]; cursor: ChangeCursor }> {
+  async pull(cursor: ChangeCursor, opts: PullOptions): Promise<PullResult> {
     const log = opts.log ?? noLog;
     const raw = await pullWithFallback(this.account, { fromTime: cursor.time, fromId: cursor.id }, opts.signal, log);
-    const events: ChangeEvent[] = [];
     // 事件是倒序拉回来的，按时间正序交出去才能保证「先建后删」这类因果关系
-    for (const ev of [...raw].reverse()) {
-      if (opts.signal.aborted) break;
-      events.push(await this.toChange(ev));
-    }
-    const last = events[events.length - 1];
-    return { events, cursor: last ? { time: last.at || cursor.time, id: last.id } : cursor };
+    const ordered = [...raw].reverse();
+    const changes: PendingChange[] = ordered.map((ev) => ({
+      id: String(ev.id),
+      at: Number(ev.update_time) || 0,
+      resolve: () => this.toChange(ev),
+    }));
+    const last = ordered[ordered.length - 1];
+    return { changes, cursor: last ? { time: Number(last.update_time) || cursor.time, id: String(last.id) } : cursor };
   }
 
   private async toChange(ev: LifeEvent): Promise<ChangeEvent> {

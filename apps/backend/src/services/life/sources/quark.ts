@@ -3,7 +3,11 @@
  *
  * 每轮把该账号每个同步任务的 originPath 整棵列一遍，和上一轮存在 drive_snapshots 里的对比，
  * 以网盘 id 为身份认出新增 / 删除 / 改名 / 移动。目录级的变化只报最上层那一条：新目录由处理器展开生成，
- * 移动 / 删除的目录本地整体搬 / 删，子项跟着走。
+ * 移动 / 删除的目录本地整体搬 / 删，子项跟着走。事件按删除、搬动、新增的顺序交出去：同名替换（旧 id 没了、
+ * 新 id 顶上）要先删旧的再建新的，目录搬进新建的目录要先搬再展开，反过来都会把刚生成的东西删掉或撞上非空目录。
+ *
+ * 新快照要等这一轮的事件全部处理完才写库（PullResult.commit）：中途被中止或某条解析失败，下轮拿旧快照重新对比，
+ * 重复出的事件处理器都能幂等地再来一遍。某个根列不了（目录改名 / 风控）只跳过它并记进 warnings，别的根照常。
  *
  * 安全阀：一轮里要删的超过快照的三成先不删，只告警；下一轮还是同样的结果才执行（真机上整个目录被删掉就是这样，
  * 只压不放会永远收敛不了）。列目录失败是抛错而不是回空，所以列到 0 条就是真的空了，照常对比。
@@ -13,7 +17,20 @@ import type { LifePullMode } from "@openstrm/shared";
 import { readDriveSnapshot, writeDriveSnapshot } from "../../../db/repositories/life.js";
 import { isAbortError } from "../../../lib/errors.js";
 import { moduleLogger } from "../../../lib/logger.js";
-import { normalizePath, type ChangeCursor, type ChangeEvent, type ChangeKind, type ChangeSource, type DriveProvider, type PrepareResult, type ProbeResult, type PullOptions, type SubtreeEntry } from "../../drive/types.js";
+import {
+  normalizePath,
+  resolvedChange,
+  type ChangeCursor,
+  type ChangeEvent,
+  type ChangeKind,
+  type ChangeSource,
+  type DriveProvider,
+  type PrepareResult,
+  type ProbeResult,
+  type PullOptions,
+  type PullResult,
+  type SubtreeEntry,
+} from "../../drive/types.js";
 
 const log = moduleLogger("life");
 
@@ -38,7 +55,7 @@ const parentOf = (p: string): string => {
 const isUnder = (p: string, dir: string): boolean => p.startsWith(`${dir}/`);
 const coveredBy = (p: string, dirs: string[]): boolean => dirs.some((d) => isUnder(p, d));
 
-/** 两份快照的差：只报最上层的目录变化；文件内容变了（大小 / 时间）按新增再报一次，处理器会重下附件 */
+/** 两份快照的差，按删除、搬动、新增、内容变化的顺序；只报最上层的目录变化；文件内容变了（大小 / 时间）按新增再报一次，处理器会重下附件 */
 export function diffSnapshot(prev: SnapEntry[], curr: SnapEntry[]): { changes: SnapshotChange[]; removed: number } {
   const prevById = new Map(prev.map((e) => [e.id, e]));
   const currById = new Map(curr.map((e) => [e.id, e]));
@@ -86,7 +103,7 @@ export function diffSnapshot(prev: SnapEntry[], curr: SnapEntry[]): { changes: S
     removed.push({ kind: "remove", path: e.path, oldPath: null, isDir: e.isDir, id: e.id });
     if (e.isDir) removedDirs.push(e.path);
   }
-  return { changes: [...created, ...moved, ...changed, ...removed], removed: removedCount };
+  return { changes: [...removed, ...moved, ...created, ...changed], removed: removedCount };
 }
 
 /** 一轮里要删的超过快照的这个比例先不删，下一轮还这样才删 */
@@ -117,26 +134,37 @@ export class QuarkSnapshotSource implements ChangeSource {
     }
   }
 
-  /** 游标的 id 记冷启动模式：首轮建快照时靠它决定要不要把现有文件当新增 */
+  /** 游标的 id 记冷启动模式，并且一直带着：某个根后来才第一次扫到（任务新加的、之前列不了的），照样按这个模式建快照 */
   initialCursor(mode: LifePullMode, saved: ChangeCursor | null): ChangeCursor {
     if (mode === "last" && saved) return { ...saved, id: "last" };
     return { time: mode === "all" ? 0 : Math.floor(Date.now() / 1000), id: mode };
   }
 
-  async pull(cursor: ChangeCursor, opts: PullOptions): Promise<{ events: ChangeEvent[]; cursor: ChangeCursor }> {
+  async pull(cursor: ChangeCursor, opts: PullOptions): Promise<PullResult> {
     const walk = this.provider.walkSubtree;
     if (!walk) throw new Error("这个网盘不支持快照监控");
     const account = this.provider.account.name;
     const scannedAt = Math.floor(Date.now() / 1000);
     const events: ChangeEvent[] = [];
+    const warnings: string[] = [];
+    /** 这轮扫出来的新快照，commit 时才写库 */
+    const pending: Array<{ root: string; entries: SnapEntry[] }> = [];
     const roots = [...new Set(opts.tasks.map((t) => normalizePath(t.originPath)))].filter((r) => r !== "/");
 
     for (const root of roots) {
       if (opts.signal.aborted) break;
+      let entries: SnapEntry[];
+      try {
+        entries = await walk.call(this.provider, root, { signal: opts.signal });
+      } catch (err) {
+        if (opts.signal.aborted || isAbortError(err)) throw err;
+        // 这个根列不了（目录改名 / 风控）：跳过它别拖累别的根，快照不动，下轮再试
+        warnings.push(`${root} 列目录失败：${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
       const prev = readDriveSnapshot<SnapEntry>(account, root);
-      const entries = await walk.call(this.provider, root, { signal: opts.signal });
       if (!prev) {
-        writeDriveSnapshot(account, root, entries, scannedAt);
+        pending.push({ root, entries });
         if (cursor.id === "all") {
           const { changes } = diffSnapshot([], entries);
           events.push(...changes.map((c) => this.toEvent(account, root, c, scannedAt)));
@@ -163,10 +191,17 @@ export class QuarkSnapshotSource implements ChangeSource {
         if (massRemoval) opts.log?.("warn", `${root} 连续两轮都少了 ${removed}/${prev.entries.length} 项，按真删除处理`);
         suppressedRoots.delete(key);
       }
-      writeDriveSnapshot(account, root, toStore, scannedAt);
+      pending.push({ root, entries: toStore });
       events.push(...list.map((c) => this.toEvent(account, root, c, scannedAt)));
     }
-    return { events, cursor: { time: scannedAt, id: "" } };
+    return {
+      changes: events.map(resolvedChange),
+      cursor: { time: scannedAt, id: cursor.id },
+      warnings: warnings.length > 0 ? warnings : undefined,
+      commit: () => {
+        for (const p of pending) writeDriveSnapshot(account, p.root, p.entries, scannedAt);
+      },
+    };
   }
 
   private toEvent(account: string, root: string, c: SnapshotChange, at: number): ChangeEvent {
