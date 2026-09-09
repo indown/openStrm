@@ -17,6 +17,7 @@ import {
   quarkWaitTask,
   type QuarkShareFile,
   quarkShareIncUpdate,
+  forgetQuarkShareToken,
 } from "../../quark/share.js";
 import { QuarkSnapshotSource } from "../../life/sources/quark.js";
 import { listWholeShareDir, resolveSharePath } from "../share-walk.js";
@@ -81,7 +82,7 @@ class QuarkShare implements ShareProvider {
   readonly updates: ShareUpdates = {
     check: async (s: ShareSession, signal?: AbortSignal) => {
       try {
-        return await quarkShareIncUpdate(this.account, s.ref.code, this.stoken(s), signal);
+        return await this.withStoken(s, (stoken) => quarkShareIncUpdate(this.account, s.ref.code, stoken, signal), signal);
       } catch (err) {
         throw shareError(err);
       }
@@ -104,7 +105,7 @@ class QuarkShare implements ShareProvider {
   async info(s: ShareSession, signal?: AbortSignal): Promise<ShareInfo> {
     try {
       const { title } = await quarkShareToken(this.account, s.ref.code, s.ref.password, signal);
-      const first = await quarkShareList(this.account, s.ref.code, this.stoken(s), "0", 1, signal);
+      const first = await this.withStoken(s, (stoken) => quarkShareList(this.account, s.ref.code, stoken, "0", 1, signal), signal);
       return { title: title || s.ref.code, fileCount: first.total };
     } catch (err) {
       throw shareError(err);
@@ -116,15 +117,33 @@ class QuarkShare implements ShareProvider {
     return s.token;
   }
 
+  /**
+   * 拿会话里的 stoken 调接口；stoken 失效（41008，分享者刷新过分享或缓存的那份过期了）就丢掉缓存、重新换一个再试一次，
+   * 新的写回会话，后面的调用直接用
+   */
+  private async withStoken<T>(s: ShareSession, fn: (stoken: string) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    try {
+      return await fn(this.stoken(s));
+    } catch (err) {
+      const code = err instanceof QuarkError || err instanceof QuarkShareError ? err.code : undefined;
+      if (code !== 41008) throw err;
+      forgetQuarkShareToken(this.account, s.ref.code, s.ref.password);
+      const { stoken } = await quarkShareToken(this.account, s.ref.code, s.ref.password, signal);
+      s.token = stoken;
+      return await fn(stoken);
+    }
+  }
+
   async list(s: ShareSession, dirId: string, cursor?: string, opts?: { signal?: AbortSignal }): Promise<ShareListPage> {
     const page = Math.max(1, Number(cursor ?? 1) || 1);
-    let r: { list: QuarkShareFile[]; total: number };
+    let r: { list: QuarkShareFile[]; total: number | undefined };
     try {
-      r = await quarkShareList(this.account, s.ref.code, this.stoken(s), dirId || "0", page, opts?.signal);
+      r = await this.withStoken(s, (stoken) => quarkShareList(this.account, s.ref.code, stoken, dirId || "0", page, opts?.signal), opts?.signal);
     } catch (err) {
       throw shareError(err);
     }
-    const more = r.list.length > 0 && page * QUARK_SHARE_PAGE_SIZE < r.total;
+    // 有 _total 按它翻；拿不到就看这页满不满
+    const more = r.total === undefined ? r.list.length === QUARK_SHARE_PAGE_SIZE : r.list.length > 0 && page * QUARK_SHARE_PAGE_SIZE < r.total;
     return { entries: r.list.map(toShareEntry), next: more ? String(page + 1) : undefined, total: r.total };
   }
 
@@ -146,7 +165,11 @@ class QuarkShare implements ShareProvider {
       withToken.push({ id: i.id, token });
     }
     try {
-      const { taskId } = await quarkShareSave(this.account, { pwdId: s.ref.code, stoken: this.stoken(s), items: withToken, toPdirFid: toDirId }, signal);
+      const { taskId } = await this.withStoken(
+        s,
+        (stoken) => quarkShareSave(this.account, { pwdId: s.ref.code, stoken, items: withToken, toPdirFid: toDirId }, signal),
+        signal,
+      );
       const done = await quarkWaitTask(this.account, taskId, { signal });
       return { topIds: done.topIds };
     } catch (err) {

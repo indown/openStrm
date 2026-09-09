@@ -15,6 +15,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { LRUCache } from "lru-cache";
 import type { AccountQuark } from "@openstrm/shared";
 import type { ShareUpdateSignal } from "../drive/types.js";
+import { isAbortError } from "../../lib/errors.js";
 import { QuarkError, quarkRequest, unescapeHtml } from "./client.js";
 
 const PAGE_SIZE = 50;
@@ -77,14 +78,21 @@ export function clearQuarkShareCaches(): void {
   stokenCache.clear();
 }
 
-/** stoken 按 pwd_id + 提取码缓存半小时；顺带拿到分享标题 */
+const stokenKey = (account: AccountQuark, pwdId: string, passcode: string): string => `${account.name}\0${pwdId}\0${passcode}`;
+
+/** stoken 失效（41008）时丢掉缓存，下次重新换 */
+export function forgetQuarkShareToken(account: AccountQuark, pwdId: string, passcode: string): void {
+  stokenCache.delete(stokenKey(account, pwdId, passcode));
+}
+
+/** stoken 按账号 + pwd_id + 提取码缓存半小时（stoken 是拿哪个账号换的就只对它有效）；顺带拿到分享标题 */
 export async function quarkShareToken(
   account: AccountQuark,
   pwdId: string,
   passcode: string,
   signal?: AbortSignal,
 ): Promise<{ stoken: string; title: string }> {
-  const key = `${pwdId}\0${passcode}`;
+  const key = stokenKey(account, pwdId, passcode);
   const cached = stokenCache.get(key);
   if (cached) return cached;
   let body: { data?: { stoken?: string; title?: string } };
@@ -111,7 +119,7 @@ export async function quarkShareList(
   pdirFid: string,
   page: number,
   signal?: AbortSignal,
-): Promise<{ list: QuarkShareFile[]; total: number }> {
+): Promise<{ list: QuarkShareFile[]; total: number | undefined }> {
   let body: { data?: { list?: RawShareFile[] }; metadata?: Record<string, unknown> };
   try {
     body = await quarkRequest<{ list?: RawShareFile[] }>(account, "GET", "/share/sharepage/detail", {
@@ -144,8 +152,9 @@ export async function quarkShareList(
       token: String(f.share_fid_token ?? ""),
       modifiedAt: Number(f.updated_at ?? 0),
     }));
+  // 拿不到 _total 就不猜：调用方按「这页满不满」决定翻不翻
   const total = Number(body.metadata?._total);
-  return { list, total: Number.isFinite(total) ? total : list.length };
+  return { list, total: Number.isFinite(total) ? total : undefined };
 }
 
 export const QUARK_SHARE_PAGE_SIZE = PAGE_SIZE;
@@ -237,11 +246,24 @@ export async function quarkWaitTask(
 ): Promise<QuarkTaskResult> {
   const deadline = Date.now() + timeoutMs;
   let delay = 500;
+  let pollFailures = 0;
   for (let retry = 0; ; retry++) {
-    const body = await quarkRequest<RawTask>(account, "GET", "/task", {
-      params: { task_id: taskId, retry_index: retry, __dt: Math.floor(60_000 + Math.random() * 240_000), __t: Date.now() },
-      signal,
-    });
+    let body: { data?: RawTask };
+    try {
+      body = await quarkRequest<RawTask>(account, "GET", "/task", {
+        params: { task_id: taskId, retry_index: retry, __dt: Math.floor(60_000 + Math.random() * 240_000), __t: Date.now() },
+        signal,
+      });
+      pollFailures = 0;
+    } catch (err) {
+      // 转存任务在服务端已经建好了，查进度抖一下不能算转存失败（追更会因此把同样的东西再存一遍）；
+      // 登录态没了或连着 5 次都查不到才放弃
+      const loggedOut = err instanceof QuarkError && (err.code === 31001 || err.code === 31004);
+      if (isAbortError(err) || loggedOut || ++pollFailures >= 5) throw err;
+      await sleep(delay, undefined, { signal });
+      delay = Math.min(Math.round(delay * 1.5), 2000);
+      continue;
+    }
     const d = body.data;
     const status = Number(d?.status ?? 0);
     const title = String(d?.task_title ?? "");

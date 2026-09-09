@@ -31,6 +31,10 @@ const shareTree: Record<string, RawFile[]> = {
 };
 const calls = { token: 0, detail: 0, save: 0, task: 0, inc: 0 };
 let lastInc: Record<string, unknown> | null = null;
+/** 分享者刷新分享：token 接口开始发新一代 stoken，旧的一律 41008 */
+let stokenGeneration = 1;
+/** /task 前几次回 500，模拟查进度抖动 */
+let flakyTaskPolls = 0;
 let saved: { fid_list: string[]; fid_token_list: string[]; to_pdir_fid: string; pwd_id: string; stoken: string } | null = null;
 
 const server = http.createServer((req, res) => {
@@ -47,15 +51,20 @@ const server = http.createServer((req, res) => {
       calls.token++;
       if (body.pwd_id === "gone") return json(400, { status: 400, code: 41007, message: "share not exist" });
       if (body.pwd_id === "locked" && body.passcode !== "abcd") return json(400, { status: 400, code: 41010, message: "passcode error" });
-      return json(200, { status: 200, code: 0, data: { stoken: `stk-${body.pwd_id}`, title: "The &amp; Show" } });
+      return json(200, { status: 200, code: 0, data: { stoken: `stk-${body.pwd_id}${stokenGeneration > 1 ? `-g${stokenGeneration}` : ""}`, title: "The &amp; Show" } });
     }
     if (url.pathname === "/share/sharepage/detail") {
       calls.detail++;
-      if (url.searchParams.get("stoken") !== `stk-${url.searchParams.get("pwd_id")}`) return json(400, { status: 400, code: 41008, message: "stoken invalid" });
+      const pwd = url.searchParams.get("pwd_id") ?? "";
+      const expected = `stk-${pwd}${stokenGeneration > 1 ? `-g${stokenGeneration}` : ""}`;
+      if (url.searchParams.get("stoken") !== expected) return json(400, { status: 400, code: 41008, message: "stoken invalid" });
       const all = shareTree[url.searchParams.get("pdir_fid") ?? "0"] ?? [];
       const page = Number(url.searchParams.get("_page") ?? 1);
       const size = Number(url.searchParams.get("_size") ?? 50);
-      return json(200, { status: 200, code: 0, data: { list: all.slice((page - 1) * size, page * size) }, metadata: { _total: all.length } });
+      const slice = all.slice((page - 1) * size, page * size);
+      // nototal：这个分享的接口不给 _total
+      if (pwd === "nototal") return json(200, { status: 200, code: 0, data: { list: slice }, metadata: {} });
+      return json(200, { status: 200, code: 0, data: { list: slice }, metadata: { _total: all.length } });
     }
     if (url.pathname === "/share/inc_update_list") {
       calls.inc++;
@@ -77,6 +86,10 @@ const server = http.createServer((req, res) => {
     }
     if (url.pathname === "/task") {
       calls.task++;
+      if (flakyTaskPolls > 0) {
+        flakyTaskPolls--;
+        return json(500, { status: 500, code: 15000, message: "inner error" });
+      }
       const id = url.searchParams.get("task_id");
       const retry = Number(url.searchParams.get("retry_index") ?? 0);
       if (id === "t-fail") return json(200, { status: 200, code: 0, data: { status: 3, task_title: "空间不足" } });
@@ -162,3 +175,52 @@ test("追更信号 inc_update_list：转存过且 list 空 / 41040 是 none，li
   assert.equal(calls.inc, 8);
 });
 
+test("stoken 失效（41008）：丢掉缓存重新换一个再试一次，新 stoken 写回会话", async () => {
+  const { QuarkProvider } = await import("../drive/providers/quark.js");
+  const provider = new QuarkProvider(account);
+  const share = provider.share!;
+  clearQuarkShareCaches();
+  stokenGeneration = 1;
+  const session = await share.open(share.parseLink("https://pan.quark.cn/s/abc123def456")!);
+  assert.equal(session.token, "stk-abc123def456");
+  const before = calls.token;
+  // 分享者刷新了分享：旧 stoken 全部 41008
+  stokenGeneration = 2;
+  try {
+    const page = await share.list(session, "0");
+    assert.equal(page.entries.length, 2);
+    assert.equal(session.token, "stk-abc123def456-g2", "新 stoken 写回会话");
+    assert.equal(calls.token, before + 1, "只重新换了一次");
+    await share.list(session, "0");
+    assert.equal(calls.token, before + 1, "后面的调用直接用会话里的新 stoken");
+  } finally {
+    stokenGeneration = 1;
+    clearQuarkShareCaches();
+  }
+});
+
+test("查转存进度抖动：前两次 500 不算失败，接着轮询到完成", async () => {
+  flakyTaskPolls = 2;
+  const before = calls.task;
+  const done = await quarkWaitTask(account, "t-ok", { timeoutMs: 10_000 });
+  assert.equal(done.status, 2);
+  assert.ok(calls.task - before >= 3, `500、500、然后才拿到结果，至少 3 次：${calls.task - before}`);
+  assert.equal(flakyTaskPolls, 0, "两次抖动都吃掉了");
+});
+
+test("分享接口不给 _total：页满就继续翻，半页收尾", async () => {
+  const { QuarkProvider } = await import("../drive/providers/quark.js");
+  shareTree["nt-dir"] = Array.from({ length: 100 }, (_, i) => ({ fid: `nt-${i + 1}`, file_name: `N${i + 1}.mkv`, dir: false, size: 1, share_fid_token: `tok-nt-${i + 1}` }));
+  const share = new QuarkProvider(account).share!;
+  const session = await share.open(share.parseLink("https://pan.quark.cn/s/nototal")!);
+  const p1 = await share.list(session, "nt-dir");
+  assert.equal(p1.entries.length, 50);
+  assert.equal(p1.total, undefined);
+  assert.equal(p1.next, "2", "页满了，接着翻");
+  const p2 = await share.list(session, "nt-dir", p1.next);
+  assert.equal(p2.entries.length, 50);
+  assert.equal(p2.next, "3", "还是满页，再翻一次才知道完了");
+  const p3 = await share.list(session, "nt-dir", p2.next);
+  assert.equal(p3.entries.length, 0);
+  assert.equal(p3.next, undefined);
+});

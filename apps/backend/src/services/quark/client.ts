@@ -251,9 +251,11 @@ export async function quarkListDir(account: AccountQuark, fid: string, signal?: 
       if (!f.fid) continue;
       entries.push(toEntry(f));
     }
-    // 以 _total 为准；拿不到 _total 时靠空页收尾
+    // 半页 / 空页就是最后一页；页是满的就再翻一页（_total 偶尔少算，只信它会把尾巴丢掉，同步会把对应的本地文件当多余删掉）。
+    // 服务端要是一直回满页，超过 _total 一整页就当它在胡说，停下
     const total = Number(body.metadata?._total);
-    if (list.length === 0 || (Number.isFinite(total) && entries.length >= total)) break;
+    if (list.length < PAGE_SIZE) break;
+    if (Number.isFinite(total) && entries.length >= total + PAGE_SIZE) break;
   }
   return entries;
 }

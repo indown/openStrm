@@ -6,6 +6,7 @@ import fsp from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { defer, lastValueFrom, Observable, retry, Subscription, throwError, timer } from "rxjs";
 import { Cloud115Error } from "../cloud-115/client.js";
+import { QuarkError } from "../quark/client.js";
 import type { AccountInfo } from "@openstrm/shared";
 import { providerFor } from "../drive/registry.js";
 import { isAbortError, PermanentError } from "../../lib/errors.js";
@@ -338,6 +339,8 @@ export function downloadOrCreateStrmLimited(
  */
 function isPermanentFailure(err: unknown): boolean {
   if (err instanceof PermanentError || isAbortError(err)) return true;
+  // 夸克登录态没了：每个文件再重试三次只是白等
+  if (err instanceof QuarkError && (err.code === 31001 || err.code === 31004 || err.status === 401)) return true;
   const status = axios.isAxiosError(err)
     ? err.response?.status
     : err instanceof Cloud115Error

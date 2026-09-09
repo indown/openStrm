@@ -35,6 +35,8 @@ const tree: Record<string, RawFile[]> = {
 
 let rotate = false;
 let failMode: "none" | "code" | "http401" = "none";
+/** 让 _total 少报一页，模拟服务端算错 */
+let underTotal = false;
 const sortCalls = new Map<string, number>();
 /** path_list 每次问了哪些路径 */
 let pathListCalls: string[][] = [];
@@ -68,7 +70,7 @@ const server = http.createServer((req, res) => {
       const extra: Record<string, string> = rotate ? { "set-cookie": "__puus=new-puus; Path=/; HttpOnly" } : {};
       return json(
         200,
-        { status: 200, code: 0, message: "ok", data: { list }, metadata: { _total: all.length, _page: page, _size: size } },
+        { status: 200, code: 0, message: "ok", data: { list }, metadata: { _total: underTotal ? Math.max(0, all.length - size) : all.length, _page: page, _size: size } },
         extra,
       );
     }
@@ -221,3 +223,15 @@ test("轮换写回只在库里还是这份 cookie 时才发生：用户刚换了
   assert.equal(holder.cookie, "b=2; __puus=user-new", "持有者改用库里的新 cookie");
 });
 
+test("_total 少算了：页是满的就继续翻，直到半页收尾，尾巴不丢", async () => {
+  clearQuarkCaches();
+  sortCalls.clear();
+  underTotal = true;
+  try {
+    const entries = await quarkListDir(account, "d-big");
+    assert.equal(entries.length, 250);
+    assert.equal(sortCalls.get("d-big"), 3, "100 + 100 + 50");
+  } finally {
+    underTotal = false;
+  }
+});
