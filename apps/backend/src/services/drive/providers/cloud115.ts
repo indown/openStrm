@@ -4,9 +4,8 @@
  */
 import type { Account115 } from "@openstrm/shared";
 import { readAppSettings } from "../../../db/repositories/settings.js";
-import { isAbortError, PermanentError } from "../../../lib/errors.js";
+import { PermanentError } from "../../../lib/errors.js";
 import {
-  Cloud115Error,
   exportDirParse,
   fsDirGetId,
   getDownloadUrlWeb,
@@ -23,7 +22,7 @@ import {
   shareExtractPayload,
   type ShareAttr,
 } from "../../cloud-115/share.js";
-import { upsertPathCache } from "../../../db/repositories/life.js";
+import { rememberPaths } from "../../cloud-115/path-resolver.js";
 import { Cloud115ChangeSource } from "../../life/sources/cloud115.js";
 import { buildTree, collectFilesAndTopEmptyDirs, findExportedDir } from "../../task/tree.js";
 import { classifyAccountIssue } from "../../telegram/notify.js";
@@ -172,6 +171,16 @@ class Cloud115Share implements ShareProvider {
   }
 }
 
+interface ClientDeps {
+  fsDirGetId: typeof fsDirGetId;
+}
+const realDeps: ClientDeps = { fsDirGetId };
+let deps: ClientDeps = { ...realDeps };
+/** 测试用：换掉打 115 的函数；传 null 恢复 */
+export function setCloud115ProviderDeps(partial: Partial<ClientDeps> | null): void {
+  deps = partial ? { ...realDeps, ...partial } : { ...realDeps };
+}
+
 export class Cloud115Provider implements DriveProvider {
   readonly kind = "115" as const;
   readonly capabilities = { share: true, changes: true };
@@ -185,10 +194,10 @@ export class Cloud115Provider implements DriveProvider {
     this.changes = new Cloud115ChangeSource(account);
   }
 
-  /** 列过的目录写进 path_cache：变更监控靠它把事件里的 id 还原成路径、找移动前的旧路径 */
+  /** 列过的目录写进路径缓存（内存 + path_cache 表）：变更监控靠它把事件里的 id 还原成路径、找移动前的旧路径 */
   rememberListing(dirPath: string, entries: DriveEntry[]): void {
     const dir = `/${splitPath(dirPath).join("/")}`;
-    upsertPathCache(
+    rememberPaths(
       entries.map((e) => ({
         fileId: e.id,
         parentId: "",
@@ -220,14 +229,12 @@ export class Cloud115Provider implements DriveProvider {
   }
 
   /** 目录 id；不存在是 null。接口对坏路径可能直接报错，那也是「没有」 */
+  /**
+   * 115 对不存在的路径回 id 0，这才是「目录不存在」；cookie 失效、超时这些是原样抛出的错误，
+   * 不能把它们也说成目录不存在——同步会误报「源目录已改名」，cookie 告警也发不出来
+   */
   private async dirId(path: string, signal?: AbortSignal): Promise<string | null> {
-    let res: { id?: number | string } | undefined;
-    try {
-      res = (await fsDirGetId(path, this.ctx(signal))) as { id?: number | string };
-    } catch (err) {
-      if (err instanceof Cloud115Error || isAbortError(err)) throw err;
-      return null;
-    }
+    const res = (await deps.fsDirGetId(path, this.ctx(signal))) as { id?: number | string } | undefined;
     const id = res?.id == null ? "" : String(res.id);
     return id && id !== "0" ? id : null;
   }
