@@ -258,7 +258,7 @@ export async function quarkWaitTask(
     } catch (err) {
       // 转存任务在服务端已经建好了，查进度抖一下不能算转存失败（追更会因此把同样的东西再存一遍）；
       // 登录态没了或连着 5 次都查不到才放弃
-      const loggedOut = err instanceof QuarkError && (err.code === 31001 || err.code === 31004);
+      const loggedOut = err instanceof QuarkError && (err.code === 31001 || err.code === 31004 || err.status === 401);
       if (isAbortError(err) || loggedOut || ++pollFailures >= 5) throw err;
       await sleep(delay, undefined, { signal });
       delay = Math.min(Math.round(delay * 1.5), 2000);

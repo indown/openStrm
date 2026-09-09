@@ -113,8 +113,12 @@ export function cookieFromSetCookie(headers: string[] | string | undefined, name
  * 整轮复用同一个对象，后面的请求才拿得到新值；同时写库，下一次任务从库里读到的也是新的。
  * 并发请求各自带回不同的值时后写胜出——它们都是同一会话的刷新，旧值短时间内仍有效，不值得为此串行化。
  */
-function rememberRotatedCookies(account: AccountQuark, setCookie: string[] | string | undefined): void {
-  const before = account.cookie;
+/**
+ * @param sent 发这个请求时用的 cookie：轮换出来的 __puus 属于它那个会话，持有者在这期间换过 cookie 的话这份轮换就作废
+ */
+function rememberRotatedCookies(account: AccountQuark, setCookie: string[] | string | undefined, sent: string): void {
+  if (account.cookie !== sent) return;
+  const before = sent;
   let merged = before;
   for (const name of ROTATED_COOKIES) {
     const value = cookieFromSetCookie(setCookie, name);
@@ -175,13 +179,15 @@ export async function quarkRequest<T>(
   return scheduleForAccount(
     `${account.name}:normal`,
     async () => {
+      // 记住发这个请求时的 cookie：响应里轮换出来的 __puus 只属于它，中途换了 cookie 的话这份轮换作废
+      const sent = account.cookie;
       const config: AxiosRequestConfig = {
         url: `${apiBase}${path}`,
         method,
         params: { pr: "ucpro", fr: "pc", ...params },
         data,
         headers: {
-          Cookie: account.cookie,
+          Cookie: sent,
           Referer: QUARK_REFERER,
           "User-Agent": QUARK_UA,
           Accept: "application/json, text/plain, */*",
@@ -191,7 +197,7 @@ export async function quarkRequest<T>(
         validateStatus: () => true,
       };
       const res = await axios.request<Envelope<T> | string>(config);
-      rememberRotatedCookies(account, res.headers["set-cookie"]);
+      rememberRotatedCookies(account, res.headers["set-cookie"], sent);
       const body = res.data;
       if (!body || typeof body !== "object") {
         throw new QuarkError(`夸克 ${path} 失败：HTTP ${res.status}`, res.status);
@@ -252,10 +258,12 @@ export async function quarkListDir(account: AccountQuark, fid: string, signal?: 
       entries.push(toEntry(f));
     }
     // 半页 / 空页就是最后一页；页是满的就再翻一页（_total 偶尔少算，只信它会把尾巴丢掉，同步会把对应的本地文件当多余删掉）。
-    // 服务端要是一直回满页，超过 _total 一整页就当它在胡说，停下
+    // 服务端要是一直回满页、超过 _total 一整页还没到头，说明它在胡说：抛错，别把截断的列表当完整的交出去
     const total = Number(body.metadata?._total);
     if (list.length < PAGE_SIZE) break;
-    if (Number.isFinite(total) && entries.length >= total + PAGE_SIZE) break;
+    if (Number.isFinite(total) && entries.length >= total + PAGE_SIZE) {
+      throw new Error(`夸克：目录 ${fid} 列到 ${entries.length} 条已超过 _total（${total}）一整页还没到头，服务端返回异常`);
+    }
   }
   return entries;
 }

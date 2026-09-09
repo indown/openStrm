@@ -37,6 +37,8 @@ let rotate = false;
 let failMode: "none" | "code" | "http401" = "none";
 /** 让 _total 少报一页，模拟服务端算错 */
 let underTotal = false;
+/** 直接指定 _total（优先于 underTotal） */
+let overrideTotal: number | null = null;
 const sortCalls = new Map<string, number>();
 /** path_list 每次问了哪些路径 */
 let pathListCalls: string[][] = [];
@@ -70,7 +72,7 @@ const server = http.createServer((req, res) => {
       const extra: Record<string, string> = rotate ? { "set-cookie": "__puus=new-puus; Path=/; HttpOnly" } : {};
       return json(
         200,
-        { status: 200, code: 0, message: "ok", data: { list }, metadata: { _total: underTotal ? Math.max(0, all.length - size) : all.length, _page: page, _size: size } },
+        { status: 200, code: 0, message: "ok", data: { list }, metadata: { _total: overrideTotal ?? (underTotal ? Math.max(0, all.length - size) : all.length), _page: page, _size: size } },
         extra,
       );
     }
@@ -233,5 +235,19 @@ test("_total 少算了：页是满的就继续翻，直到半页收尾，尾巴�
     assert.equal(sortCalls.get("d-big"), 3, "100 + 100 + 50");
   } finally {
     underTotal = false;
+  }
+});
+
+test("列到的条数超过 _total 一整页还没到头：抛错，不把截断的列表当完整的交出去", async () => {
+  clearQuarkCaches();
+  underTotal = true;
+  // d-big 有 250 条，_total 被报成 150：翻到第三页（250 条）时超过 150 一整页 → 第三页是半页会先收尾；
+  // 改成 _total 少报两页（50）才会触发：用 overrideTotal
+  overrideTotal = 50;
+  try {
+    await assert.rejects(quarkListDir(account, "d-big"), /超过 _total（50）一整页/);
+  } finally {
+    underTotal = false;
+    overrideTotal = null;
   }
 });

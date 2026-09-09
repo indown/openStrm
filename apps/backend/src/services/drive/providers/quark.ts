@@ -142,8 +142,8 @@ class QuarkShare implements ShareProvider {
     } catch (err) {
       throw shareError(err);
     }
-    // 有 _total 按它翻；拿不到就看这页满不满
-    const more = r.total === undefined ? r.list.length === QUARK_SHARE_PAGE_SIZE : r.list.length > 0 && page * QUARK_SHARE_PAGE_SIZE < r.total;
+    // 页是满的就再翻（_total 少算会把尾巴丢掉，追更会漏集）；有 _total 且它说还有也翻
+    const more = r.list.length === QUARK_SHARE_PAGE_SIZE || (r.total !== undefined && r.list.length > 0 && page * QUARK_SHARE_PAGE_SIZE < r.total);
     return { entries: r.list.map(toShareEntry), next: more ? String(page + 1) : undefined, total: r.total };
   }
 

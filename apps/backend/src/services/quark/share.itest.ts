@@ -224,3 +224,17 @@ test("分享接口不给 _total：页满就继续翻，半页收尾", async () =
   assert.equal(p3.entries.length, 0);
   assert.equal(p3.next, undefined);
 });
+
+test("分享列表有 _total 但这页是满的：照样翻下一页，下一页空了才收尾", async () => {
+  const { QuarkProvider } = await import("../drive/providers/quark.js");
+  shareTree["exact"] = Array.from({ length: 50 }, (_, i) => ({ fid: `ex-${i + 1}`, file_name: `X${i + 1}.mkv`, dir: false, size: 1, share_fid_token: `tok-ex-${i + 1}` }));
+  const share = new QuarkProvider(account).share!;
+  const session = await share.open(share.parseLink("https://pan.quark.cn/s/abc123def456")!);
+  const p1 = await share.list(session, "exact");
+  assert.equal(p1.entries.length, 50);
+  assert.equal(p1.total, 50);
+  assert.equal(p1.next, "2", "_total 说完了，但页是满的，再确认一页");
+  const p2 = await share.list(session, "exact", p1.next);
+  assert.equal(p2.entries.length, 0);
+  assert.equal(p2.next, undefined);
+});
