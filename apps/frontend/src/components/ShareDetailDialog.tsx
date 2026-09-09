@@ -97,14 +97,14 @@ export function ShareDetailDialog({
   const seqRef = useRef(0);
 
   const fetchList = useCallback(
-    async (dirId: string, nextPage: number, cursor?: string, crumbs?: Array<{ id: string; name: string }>) => {
+    async (dirId: string, nextPage: number, cursor?: string, crumbs?: BreadcrumbItem[]): Promise<boolean> => {
       const link = shareLink.trim();
-      if (!link) return;
+      if (!link) return false;
       const seq = ++seqRef.current;
       setLoading(true);
       try {
         const result = await api.share.list(link, dirId, cursor, SHARE_PAGE_SIZE);
-        if (seq !== seqRef.current) return;
+        if (seq !== seqRef.current) return false;
         // 面包屑等目录真的拉到了再换：失败时列表还是原来那层，面包屑不能先跑到子目录去
         if (crumbs) setBreadcrumb(crumbs);
         setCurrentList(result.entries ?? []);
@@ -116,9 +116,11 @@ export function ShareDetailDialog({
           copy[nextPage - 1] = cursor;
           return copy;
         });
+        return true;
       } catch (err) {
-        if (seq !== seqRef.current) return;
+        if (seq !== seqRef.current) return false;
         toast.error(apiErrorMessage(err, "加载目录失败"));
+        return false;
       } finally {
         if (seq === seqRef.current) setLoading(false);
       }
@@ -129,6 +131,8 @@ export function ShareDetailDialog({
   // 弹框打开时用根目录列表初始化；带 startCid 时直接拉那一层
   useEffect(() => {
     if (!open) return;
+    // 上一次打开时还没回来的目录请求作废，别让它带着面包屑落到这次的分享上
+    seqRef.current++;
     setSelectedItems(new Map());
     setPage(1);
     setCursors([undefined]);
@@ -159,18 +163,17 @@ export function ShareDetailDialog({
     toast.info("换了目录，之前的勾选已清空；勾选只对当前目录有效");
   };
 
-  const handleOpenFolder = (item: ShareEntry) => {
+  // 勾选等目录真的换成功了再清：加载失败时列表还是原来那层，勾选也该还在
+  const handleOpenFolder = async (item: ShareEntry) => {
     if (!item.isDir) return;
-    leaveFolder();
-    fetchList(item.id, 1, undefined, [...breadcrumb, { id: item.id, name: item.name }]);
+    if (await fetchList(item.id, 1, undefined, [...breadcrumb, { id: item.id, name: item.name }])) leaveFolder();
   };
 
-  const handleBreadcrumbClick = (index: number) => {
+  const handleBreadcrumbClick = async (index: number) => {
     if (index === breadcrumb.length - 1) return;
     const item = breadcrumb[index];
     if (!item.id) return;
-    leaveFolder();
-    fetchList(item.id, 1, undefined, breadcrumb.slice(0, index + 1));
+    if (await fetchList(item.id, 1, undefined, breadcrumb.slice(0, index + 1))) leaveFolder();
   };
 
   const currentDirId = breadcrumb[breadcrumb.length - 1].id;
