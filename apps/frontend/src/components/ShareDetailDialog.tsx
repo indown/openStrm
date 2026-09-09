@@ -97,14 +97,15 @@ export function ShareDetailDialog({
   const seqRef = useRef(0);
 
   const fetchList = useCallback(
-    async (dirId: string, nextPage: number, cursor?: string, crumbs?: BreadcrumbItem[]): Promise<boolean> => {
+    /** 返回 true 拉到了并已应用；false 失败（列表还是原来那层）；null 被更晚的请求顶掉了 */
+    async (dirId: string, nextPage: number, cursor?: string, crumbs?: BreadcrumbItem[]): Promise<boolean | null> => {
       const link = shareLink.trim();
       if (!link) return false;
       const seq = ++seqRef.current;
       setLoading(true);
       try {
         const result = await api.share.list(link, dirId, cursor, SHARE_PAGE_SIZE);
-        if (seq !== seqRef.current) return false;
+        if (seq !== seqRef.current) return null;
         // 面包屑等目录真的拉到了再换：失败时列表还是原来那层，面包屑不能先跑到子目录去
         if (crumbs) setBreadcrumb(crumbs);
         setCurrentList(result.entries ?? []);
@@ -118,7 +119,7 @@ export function ShareDetailDialog({
         });
         return true;
       } catch (err) {
-        if (seq !== seqRef.current) return false;
+        if (seq !== seqRef.current) return null;
         toast.error(apiErrorMessage(err, "加载目录失败"));
         return false;
       } finally {
@@ -138,17 +139,20 @@ export function ShareDetailDialog({
     setCursors([undefined]);
     const startCidStr = startCid != null ? String(startCid) : "";
     const crumbs = startCrumbsRef.current;
-    if (startCidStr && startCidStr !== "0" && crumbs && crumbs.length > 0) {
-      setBreadcrumb([{ id: "0", name: "根目录" }, ...crumbs]);
-      setCurrentList([]);
-      setTotalCount(0);
-      setNext(undefined);
-      fetchList(startCidStr, 1);
-    } else {
+    const showRoot = () => {
       setBreadcrumb([{ id: "0", name: "根目录" }]);
       setCurrentList(initialFileList);
       setTotalCount(initialFileCount);
       setNext(initialNext);
+    };
+    if (startCidStr && startCidStr !== "0" && crumbs && crumbs.length > 0) {
+      // 先按根目录显示，子目录拉到了再换面包屑；拉不到（分享失效、目录没了）就留在根目录，别显示成一个空目录
+      showRoot();
+      void fetchList(startCidStr, 1, undefined, [{ id: "0", name: "根目录" }, ...crumbs]).then((ok) => {
+        if (ok === false) showRoot();
+      });
+    } else {
+      showRoot();
     }
   }, [open, initialFileList, initialFileCount, initialNext, startCid, startKey, fetchList]);
 

@@ -101,7 +101,7 @@ before(() => {
     generate: async (p) => {
       generated.push(p);
       if (generateError) throw generateError;
-      return { generatedCount: 3, skippedCount: 1 };
+      return { generatedCount: 3, skippedCount: 1, invalidNames: [] };
     },
     notify: async (ev) => { notified.push(ev); },
     openlist: {

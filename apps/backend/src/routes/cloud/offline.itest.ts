@@ -83,7 +83,7 @@ before(async () => {
   setOfflineTransport(transport);
   setOfflineServiceDeps({
     resolveDirId: async (_acc, path) => { resolved.push(path); return "999"; },
-    generate: async () => ({ generatedCount: 1, skippedCount: 0 }),
+    generate: async () => ({ generatedCount: 1, skippedCount: 0, invalidNames: [] }),
     notify: async () => {},
   });
 

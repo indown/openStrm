@@ -18,6 +18,9 @@ export function notifySaveToTaskResult(
     });
   } else if (typeof data.generatedCount === "number") {
     toast.success(`保存成功，生成 ${data.generatedCount} 个 strm（跳过 ${data.skippedCount ?? 0} 个）`);
+    if (data.invalidNames && data.invalidNames.length > 0) {
+      toast.warning(`${data.invalidNames.length} 个条目的名字含 / 之类没法落成本地文件，网盘上已转存但没生成 strm：${data.invalidNames.slice(0, 3).join("、")}`);
+    }
   } else {
     toast.success("保存成功");
   }

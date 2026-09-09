@@ -35,7 +35,7 @@ export interface SaveSelectionOpts {
 }
 
 export type SaveSelectionResult =
-  | { mode: "sync"; generatedCount: number; skippedCount: number }
+  | { mode: "sync"; generatedCount: number; skippedCount: number; invalidNames: string[] }
   | { mode: "async"; taskId?: string; message?: string }
   | { mode: "async"; error: unknown };
 
@@ -89,8 +89,8 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
     const ids = topIds && topIds.length === items.length ? topIds : [];
     const selectedItems: SelectedItem[] = items.map((i, idx) => ({ name: i.name, isDir: i.isDir, id: ids[idx] }));
     try {
-      const { generatedCount, skippedCount } = await generateStrmForSelected({ task, provider, selectedItems, settings, subPath });
-      return { mode: "sync", generatedCount, skippedCount };
+      const { generatedCount, skippedCount, invalidNames } = await generateStrmForSelected({ task, provider, selectedItems, settings, subPath });
+      return { mode: "sync", generatedCount, skippedCount, invalidNames };
     } catch (err) {
       throw driveErrorToHttp(err, "生成 strm 失败");
     }

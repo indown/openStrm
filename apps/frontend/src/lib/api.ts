@@ -79,6 +79,8 @@ export type ShareReceiveResult = Record<string, unknown> & {
   message?: string;
   generatedCount?: number;
   skippedCount?: number;
+  /** 名字没法落成本地路径而没生成 strm 的条目（网盘上已经转存了） */
+  invalidNames?: string[];
   strmGenerated?: boolean;
   /** 带 follow 参数时：建成的订阅，或没建成的原因（转存本身已成功） */
   follow?: ShareFollowSummary;

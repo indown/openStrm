@@ -646,7 +646,8 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
   const item: SelectedItem = { name: t.resultName || t.name, isDir: t.isDir, id: t.isDir && t.resultId ? String(t.resultId) : undefined };
   try {
     const r = await deps.generate({ task, accountInfo, settings: readAppSettings(), subPath: f.subPath, item });
-    finish(f, "done", `已生成 ${r.generatedCount} 个 strm（跳过 ${r.skippedCount} 个）`);
+    const invalid = r.invalidNames.length > 0 ? `，${r.invalidNames.length} 个名字不合法没生成` : "";
+    finish(f, "done", `已生成 ${r.generatedCount} 个 strm（跳过 ${r.skippedCount} 个${invalid}）`);
     log.info(`云下载完成：${t.name} → ${f.detail}`);
     if (r.generatedCount > 0) scheduleEmbyRefresh();
     void deps

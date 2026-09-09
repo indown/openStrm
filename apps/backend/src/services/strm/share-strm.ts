@@ -28,7 +28,10 @@ export interface SelectedItem {
 
 export interface GenerateResult {
   generatedCount: number;
+  /** 本地已经有同名 strm 的 */
   skippedCount: number;
+  /** 名字没法落成本地路径（含 /、是 . 或 ..）而跳过的条目：接口层已拒绝这种名字，这里兜住影库 / 追更 / Telegram 那些不经过接口校验的入口 */
+  invalidNames: string[];
 }
 
 async function writeOneStrm(
@@ -68,11 +71,12 @@ export async function generateStrmForSelected(params: {
 
   let generatedCount = 0;
   let skippedCount = 0;
+  const invalidNames: string[] = [];
 
   for (const item of selectedItems) {
     if (!isSafeItemName(item.name)) {
       log.warn(`分享条目「${item.name}」的名字没法落成本地路径，跳过`);
-      skippedCount++;
+      invalidNames.push(item.name);
       continue;
     }
     if (!item.isDir) {
@@ -106,5 +110,5 @@ export async function generateStrmForSelected(params: {
     }
   }
 
-  return { generatedCount, skippedCount };
+  return { generatedCount, skippedCount, invalidNames };
 }
