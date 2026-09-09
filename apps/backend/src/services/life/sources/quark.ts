@@ -5,8 +5,8 @@
  * 以网盘 id 为身份认出新增 / 删除 / 改名 / 移动。目录级的变化只报最上层那一条：新目录由处理器展开生成，
  * 移动 / 删除的目录本地整体搬 / 删，子项跟着走。
  *
- * 安全阀：某个根这轮列到 0 条而快照非空，按失败处理（对应全量任务的「远端为空拒删」）；
- * 一轮里要删的超过快照的三成只告警不删，被压下的删除留在快照里下轮再看。
+ * 安全阀：一轮里要删的超过快照的三成先不删，只告警；下一轮还是同样的结果才执行（真机上整个目录被删掉就是这样，
+ * 只压不放会永远收敛不了）。列目录失败是抛错而不是回空，所以列到 0 条就是真的空了，照常对比。
  * 首轮：latest / last 只存快照不发事件，all 把现有文件全部当新增。
  */
 import type { LifePullMode } from "@openstrm/shared";
@@ -89,9 +89,16 @@ export function diffSnapshot(prev: SnapEntry[], curr: SnapEntry[]): { changes: S
   return { changes: [...created, ...moved, ...changed, ...removed], removed: removedCount };
 }
 
-/** 一轮里要删的超过快照的这个比例就不删 */
+/** 一轮里要删的超过快照的这个比例先不删，下一轮还这样才删 */
 const REMOVE_RATIO_LIMIT = 0.3;
 const REMOVE_RATIO_MIN_ENTRIES = 10;
+/** 哪些根上一轮压下过大比例删除（`账号\0根`）；进程重启就忘，最多再多等一轮 */
+const suppressedRoots = new Set<string>();
+
+/** 仅供测试 */
+export function __test_resetQuarkSnapshotSource(): void {
+  suppressedRoots.clear();
+}
 
 export class QuarkSnapshotSource implements ChangeSource {
   readonly label = "snapshot";
@@ -128,10 +135,6 @@ export class QuarkSnapshotSource implements ChangeSource {
       if (opts.signal.aborted) break;
       const prev = readDriveSnapshot<SnapEntry>(account, root);
       const entries = await walk.call(this.provider, root, { signal: opts.signal });
-      if (prev && prev.entries.length > 0 && entries.length === 0) {
-        opts.log?.("warn", `${root} 这轮列到 0 条而上次有 ${prev.entries.length} 条，像是列目录失败，跳过本轮`);
-        continue;
-      }
       if (!prev) {
         writeDriveSnapshot(account, root, entries, scannedAt);
         if (cursor.id === "all") {
@@ -145,14 +148,20 @@ export class QuarkSnapshotSource implements ChangeSource {
       const { changes, removed } = diffSnapshot(prev.entries, entries);
       let list = changes;
       let toStore = entries;
-      if (prev.entries.length >= REMOVE_RATIO_MIN_ENTRIES && removed / prev.entries.length > REMOVE_RATIO_LIMIT) {
-        const msg = `${root} 这轮有 ${removed}/${prev.entries.length} 项消失，超过 ${REMOVE_RATIO_LIMIT * 100}%，本轮不删本地文件；被压下的删除下轮再看`;
+      const key = `${account}\0${root}`;
+      const massRemoval = prev.entries.length >= REMOVE_RATIO_MIN_ENTRIES && removed / prev.entries.length > REMOVE_RATIO_LIMIT;
+      if (massRemoval && !suppressedRoots.has(key)) {
+        // 第一次看到：先不删，被压下的删除留在快照里，下轮还是这样才执行
+        suppressedRoots.add(key);
+        const msg = `${root} 这轮有 ${removed}/${prev.entries.length} 项消失，超过 ${REMOVE_RATIO_LIMIT * 100}%，先不删本地文件；下一轮还是这样才删`;
         opts.log?.("warn", msg);
         log.warn({ account, root }, msg);
         list = list.filter((c) => c.kind !== "remove");
-        // 被压下的删除留在快照里，下轮再对
         const currIds = new Set(entries.map((e) => e.id));
         toStore = [...entries, ...prev.entries.filter((e) => !currIds.has(e.id))];
+      } else {
+        if (massRemoval) opts.log?.("warn", `${root} 连续两轮都少了 ${removed}/${prev.entries.length} 项，按真删除处理`);
+        suppressedRoots.delete(key);
       }
       writeDriveSnapshot(account, root, toStore, scannedAt);
       events.push(...list.map((c) => this.toEvent(account, root, c, scannedAt)));
