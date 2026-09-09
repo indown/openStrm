@@ -393,14 +393,14 @@ export function AddTaskDialog({
                   <FormLabel>Strm 前缀</FormLabel>
                   <div className="flex items-center gap-1">
                     <FormControl>
-                      <Input {...field} placeholder="例如：http://192.168.1.10:8091/d" className="flex-1" />
+                      <Input {...field} placeholder="例如：/mnt/115 或 /CloudNAS/115（rclone、CloudDrive2 的挂载路径）" className="flex-1" />
                     </FormControl>
                     {appendAccount && account && (
                       <Input value={`/${account}`} disabled className="w-[120px] bg-muted font-medium shrink-0" title="开启 302 后自动拼上账号名" />
                     )}
                   </div>
                   <FormDescription className="text-xs">
-                    写进 strm 文件的地址前缀，播放器要能访问到。
+                    写进 strm 文件的地址前缀，一般填 rclone 或 CloudDrive2 把网盘挂到本机的路径，Emby 要能读到。
                     {preview && (
                       <>
                         {" "}
@@ -408,6 +408,11 @@ export function AddTaskDialog({
                       </>
                     )}
                   </FormDescription>
+                  {prefixIsHttp && (
+                    <p className="text-xs text-warning">
+                      填的是 http(s) 地址：strm 里会写成 OpenList 的 /d/ 链接，对应存储必须关掉签名才能播放，关掉后知道路径的人都能直接下载。OpenList 只要 Emby 能访问到即可，不要暴露在公网。
+                    </p>
+                  )}
                   <FormMessage />
                 </FormItem>
               )}
