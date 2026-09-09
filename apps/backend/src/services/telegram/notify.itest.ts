@@ -104,3 +104,10 @@ test("Emby 入库：按剧聚合、连号折叠、电影带年份；批量只报
   replaceAppSettings({ ...baseline, telegram: { botToken: "t", chatId: "-100", notify: { embyNew: false } } });
   assert.equal(await notify({ type: "emby-new", groups, total: 5 }), false);
 });
+
+test("启动失败带着网盘自己认出的账号问题：夸克的 require login 文案认不出，也按账号告警发", async () => {
+  const quarkTask = { ...task, id: "t-quark-alert", account: "夸克号" };
+  assert.equal(await notify({ type: "task-start-failed", task: quarkTask, reason: "读取夸克网盘目录失败：夸克 /file/sort 失败：require login [guest]", trigger: "cron", issue: "cookie" }), true);
+  assert.match(sent.at(-1)!.text, /网盘账号需要处理[\s\S]*夸克号/);
+  assert.equal(await notify({ type: "task-start-failed", task: quarkTask, reason: "读取夸克网盘目录失败：夸克 /file/sort 失败：require login [guest]", trigger: "cron", issue: "cookie" }), false, "同一账号同一原因一小时只发一次");
+});

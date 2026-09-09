@@ -18,7 +18,7 @@ import { moduleLogger } from "../../lib/logger.js";
 import { mapLimit } from "../../lib/async.js";
 import { isDirectoryEntry, removeEmptyParents } from "../../lib/fs.js";
 import { KIND_LABEL, providerFor } from "../drive/registry.js";
-import { RemoteDirNotFoundError, splitPath, type DriveProvider } from "../drive/types.js";
+import { RemoteDirNotFoundError, splitPath, type AccountIssue, type DriveProvider } from "../drive/types.js";
 import {
   downloadOrCreateStrm,
   downloadOrCreateStrmLimited,
@@ -32,7 +32,7 @@ import {
 } from "../task-history.js";
 import { refreshEmbyNow } from "../media-server.js";
 import { extOf, extSet } from "../strm/naming.js";
-import { notify, type TaskTrigger } from "../telegram/notify.js";
+import { notify, type TaskTrigger, issueFromDrive } from "../telegram/notify.js";
 import {
   getRunningTask,
   registerRunningTask,
@@ -55,9 +55,9 @@ export interface StartTaskResult {
 
 const log = moduleLogger("task");
 
-const fail = (status: number, message: string, detail?: string): StartTaskResult => ({
+const fail = (status: number, message: string, detail?: string, issue?: AccountIssue | null): StartTaskResult => ({
   status,
-  body: detail ? { message, details: detail } : { message },
+  body: { message, ...(detail ? { details: detail } : {}), ...(issue ? { issue } : {}) },
 });
 
 /* ------------------------------- 本地目录 ------------------------------- */
@@ -112,15 +112,17 @@ async function loadRemoteEntries(
     return { entries: await provider.listSubtree(originPath) };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    if (provider.classifyError(error) === "blocked") {
-      return { fail: fail(403, `${label}账号被封控`, "账号访问被阻断，请检查账号状态或稍后重试") };
+    const issue = provider.classifyError(error);
+    if (issue === "blocked") {
+      return { fail: fail(403, `${label}账号被封控`, "账号访问被阻断，请检查账号状态或稍后重试", issue) };
     }
     // 找不到源目录就中止：接着按"远端为空"跑会把本地库整个当多余删掉
     if (error instanceof RemoteDirNotFoundError) {
       return { fail: fail(500, "远端目录树里找不到源目录", `${originPath} 不存在或已改名，已中止，避免把本地文件当多余删掉`) };
     }
-    // ensureOk 的 message 自带"115："前缀，这里外面还有一层"读取目录失败"，别叠成"…失败：115：…"
-    return { fail: fail(500, `读取${label}目录失败`, msg.replace(/^115：/, "")) };
+    // ensureOk 的 message 自带"115："前缀，这里外面还有一层"读取目录失败"，别叠成"…失败：115：…"；
+    // 网盘自己认出的账号问题（夸克的 require login）一起带给通知，别指望它从文案里猜
+    return { fail: fail(500, `读取${label}目录失败`, msg.replace(/^115：/, ""), issue) };
   }
 }
 
@@ -167,7 +169,8 @@ export async function startTask(taskId: string, opts: StartTaskOptions = {}): Pr
 function recordFailedStart(task: TaskDefinition, body: Record<string, unknown>, trigger?: TaskTrigger): void {
   const message = typeof body.message === "string" && body.message ? body.message : "启动失败";
   const details = typeof body.details === "string" && body.details ? `：${body.details}` : "";
-  void notify({ type: "task-start-failed", task, reason: `${message}${details}`, trigger });
+  const issue = body.issue === "auth" || body.issue === "blocked" || body.issue === "gone" ? body.issue : undefined;
+  void notify({ type: "task-start-failed", task, reason: `${message}${details}`, trigger, issue: issueFromDrive(issue) });
   try {
     const execution = createTaskExecution(task.id, {
       account: task.account,

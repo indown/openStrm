@@ -382,3 +382,26 @@ test("夸克账号整条跑通：逐层列目录建树、strm 落盘、附件带
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("源目录在网盘上不存在：500 中止，本地文件一个不动，历史记 failed 并说明原因", async () => {
+  const id = `${TASK}-quark-missing`;
+  insertTask({ id, account: "qk", accountType: "quark", originPath: "/media/Renamed", targetPath: `${TASK}/quark-missing`, strmPrefix: "http://strm.local" });
+  const dir = path.join(process.env.DATA_DIR!, TASK, "quark-missing");
+  fs.mkdirSync(path.join(dir, "S1"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "S1", "keep.strm"), "http://strm.local/media/Renamed/S1/keep.mkv");
+  try {
+    const res = await startTask(id);
+    assert.equal(res.status, 500, JSON.stringify(res.body));
+    assert.equal(res.body.message, "远端目录树里找不到源目录");
+    assert.match(String(res.body.details), /已中止，避免把本地文件当多余删掉/);
+    assert.ok(fs.existsSync(path.join(dir, "S1", "keep.strm")), "本地文件不能动");
+    await waitFor(() => getTaskHistory(id).length > 0, "历史里有失败记录");
+    const [h] = getTaskHistory(id);
+    assert.equal(h.status, "failed");
+    assert.match(String(h.summary.errorMessage), /找不到源目录/);
+  } finally {
+    for (const h of getTaskHistory(id)) deleteTaskExecution(h.id);
+    deleteTask(id);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -28,7 +28,8 @@ export type NotifyEvent =
       durationMs: number;
       message?: string;
     }
-  | { type: "task-start-failed"; task: TaskRef; reason: string; trigger?: TaskTrigger }
+  /** issue：网盘自己认出的账号问题（见 issueFromDrive）；没给就从 reason 文案里猜 */
+  | { type: "task-start-failed"; task: TaskRef; reason: string; trigger?: TaskTrigger; issue?: AccountIssue | null }
   | { type: "offline-done"; name: string; detail: string; target: string }
   | { type: "offline-failed"; name: string; detail: string }
   /** 云下载完成后由 OpenList 复制到了目标目录 */
@@ -234,7 +235,7 @@ export async function notify(event: NotifyEvent): Promise<boolean> {
         break;
       case "task-start-failed": {
         // 起不来多半是账号的问题：按账号告警去重，别每次定时触发都来一条
-        const issue = classifyAccountIssue(event.reason);
+        const issue = event.issue ?? classifyAccountIssue(event.reason);
         if (issue) {
           if (!prefs.accountAlert) return false;
           if (throttled(`account:${event.task.account}:${issue}`)) return false;
