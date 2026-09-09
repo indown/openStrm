@@ -437,3 +437,33 @@ test("分享里名字带 / 的条目：建订阅和检查都跳过它，不当�
   assert.equal(received(), 0);
 });
 
+test("改订阅的任务：换到别的网盘类型的任务 400，同类的可以", async () => {
+  const quarkAccount: AccountInfo = { accountType: "quark", name: "qacc", cookie: "c" };
+  const quarkTask: TaskDefinition = { id: "tq", account: "qacc", accountType: "quark", originPath: "kk", targetPath: "kk", strmPrefix: "/mnt" };
+  const sibling: TaskDefinition = { ...task, id: "t1b", targetPath: "tv-b" };
+  const quarkDrive = new FakeDrive("quark", quarkAccount, { share: true });
+  replaceAccounts([account, quarkAccount]);
+  replaceTasks([task, sibling, quarkTask]);
+  setDriveProviderFactory((a) => (a.name === "acc" ? drive : a.name === "qacc" ? quarkDrive : null));
+  const s = await subscribe();
+  await assert.rejects(
+    async () => updateFollow(s.id, { taskId: "tq" }),
+    (e: unknown) => e instanceof HttpError && e.status === 400 && /不能换到 夸克网盘/.test(e.message),
+  );
+  assert.equal(updateFollow(s.id, { taskId: "t1b" }).taskId, "t1b");
+});
+
+test("同一分享在同一账号上还有别的订阅：服务端信号不信，照常列目录", async () => {
+  const s1 = await subscribe();
+  const extras = share.get("/Extras")!;
+  const s2 = await subscribe({ watchCid: extras.id, watchPath: "Extras", subPath: "The Show/Extras", name: "Extras" });
+  const fake = drive.share!;
+  fake.updateSignal = "none";
+  share.addFile("/E03.mkv", { hash: "c" });
+  const updatesBefore = fake.calls.updates;
+  now += HOUR;
+  const { run } = await checkFollow(s1.id);
+  assert.deepEqual(run?.added, ["E03.mkv"], "没信信号，列目录发现了新集");
+  assert.equal(fake.calls.updates, updatesBefore, "根本没问信号");
+  assert.ok(s2.id);
+});
