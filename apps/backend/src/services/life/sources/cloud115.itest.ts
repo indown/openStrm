@@ -350,3 +350,25 @@ test("115 事件还原成路径：按时间正序处理，移动事件的旧路�
     await stopLifeMonitor();
   }
 });
+
+test("目录改名后，内存缓存里它子孙的旧路径也作废：新文件落到改名后的位置", async () => {
+  configure({ accounts: ["A"], pullMode: "latest", intervalSeconds: 5 });
+  rememberPath({ fileId: "40", parentId: "10", name: "Show", path: "/a-dir/Show", isDir: true, accountName: "A" });
+  rememberPath({ fileId: "41", parentId: "40", name: "S1", path: "/a-dir/Show/S1", isDir: true, accountName: "A" });
+  eventsFor = {
+    A: [
+      ev({ id: "5002", type: 2, file_id: "9501", parent_id: "41", file_name: "E02.mkv", update_time: 1_900_000_012 }),
+      ev({ id: "5001", type: 24, file_category: 0, file_id: "40", parent_id: "10", file_name: "Show (2026)", update_time: 1_900_000_011 }),
+    ],
+  };
+  const r = await startLifeMonitor();
+  try {
+    assert.equal(r.ok, true, r.message);
+    await waitFor(() => (statusOf("A")?.stats.skipped ?? 0) === 2, "两条都处理完（没有任务，跳过）");
+    const rows = listRecentLifeEvents(10);
+    assert.equal(rows.find((e) => e.id === "5001")?.path, "/a-dir/Show (2026)");
+    assert.equal(rows.find((e) => e.id === "5002")?.path, "/a-dir/Show (2026)/S1/E02.mkv", "S1 的路径来自改名后的表，不是半小时内的旧内存值");
+  } finally {
+    await stopLifeMonitor();
+  }
+});

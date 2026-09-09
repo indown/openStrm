@@ -60,3 +60,34 @@ test("输出顺序：删除在前、搬动其次、新增最后（搬进新建�
   const curr = [d("B", "d1"), f("B/x.mkv", "f1"), d("N", "d3"), f("N/deep.mkv", "f4"), f("n.mkv", "f5")];
   assert.deepEqual(brief(diffSnapshot(prev, curr)), ["remove old.mkv", "rename A -> B", "create N", "create n.mkv"]);
 });
+
+test("同名替换的删除标 replaced，不计入消失数；真正消失的计入", () => {
+  const r = diffSnapshot([d("S", "d1"), f("S/e1.mkv", "f1"), f("gone.mkv", "f2")], [d("S", "d9"), f("S/e1.mkv", "f8")]);
+  assert.deepEqual(brief(r), ["remove gone.mkv", "remove S", "create S"]);
+  assert.equal(r.changes[0]!.replaced, undefined);
+  assert.equal(r.changes[1]!.replaced, true);
+  assert.equal(r.removed, 1, "S 和它下面的 e1 都被新 id 顶替了，只有 gone.mkv 算消失");
+});
+
+test("目录搬走时子项只有相对位置没变才算跟着走；位置变了的成环退化成先删后建", () => {
+  const prev = [d("D", "d1"), d("D/sub", "d2"), f("D/a.mkv", "f1")];
+  const curr = [d("E", "d1"), d("E/sub", "d2"), f("E/sub/a.mkv", "f1")];
+  // a.mkv 既要在 D 搬走前离开 D，又要等 E 到位才能进 E/sub：成环 → 删旧建新
+  assert.deepEqual(brief(diffSnapshot(prev, curr)), ["remove D/a.mkv", "rename D -> E", "create E/sub/a.mkv"]);
+});
+
+test("改名链按依赖排序：B→C 先于 A→B；互换成环退化成先删后建", () => {
+  const chain = diffSnapshot([d("A", "d1"), d("B", "d2")], [d("B", "d1"), d("C", "d2")]);
+  assert.deepEqual(brief(chain), ["rename B -> C", "rename A -> B"]);
+  // 互换：退化其中一个解环（删旧位置、新位置重建），另一个照常改名；先删、再改名、最后建
+  const swap = diffSnapshot([f("a.mkv", "f1"), f("b.mkv", "f2")], [f("b.mkv", "f1"), f("a.mkv", "f2")]);
+  assert.deepEqual(brief(swap), ["remove b.mkv", "rename a.mkv -> b.mkv", "create a.mkv"]);
+  assert.equal(swap.changes[0]!.replaced, true, "退化掉的那个删除，路径被占着，不算消失");
+  assert.equal(swap.removed, 0);
+});
+
+test("搬进刚搬过去的目录：目录先到位，文件再进去", () => {
+  const prev = [d("D", "d1"), f("x.mkv", "f1")];
+  const curr = [d("E", "d1"), f("E/x.mkv", "f1")];
+  assert.deepEqual(brief(diffSnapshot(prev, curr)), ["rename D -> E", "move x.mkv -> E/x.mkv"]);
+});

@@ -21,11 +21,14 @@ let source: QuarkSnapshotSource;
 let warned: string[];
 const brief = (events: ChangeEvent[]) => events.map((e) => `${e.kind} ${e.oldPath ? `${e.oldPath} -> ` : ""}${e.path}`);
 
-/** 拉一轮：把 changes 解析成完整事件；commit 默认打开（模拟监控处理完这一轮） */
-async function pull(cursor: ChangeCursor = { time: 1, id: "latest" }, { commit = true } = {}): Promise<{ events: ChangeEvent[]; raw: PullResult }> {
+/** 拉一轮：把 changes 解析成完整事件；commit 默认打开（模拟监控处理完这一轮），failed 是处理失败的事件 id */
+async function pull(
+  cursor: ChangeCursor = { time: 1, id: "latest" },
+  { commit = true, failed = [] as string[] } = {},
+): Promise<{ events: ChangeEvent[]; raw: PullResult }> {
   const raw = await source.pull(cursor, { tasks, signal: new AbortController().signal, log: (level, msg) => level === "warn" && warned.push(msg) });
   const events = await Promise.all(raw.changes.map((c) => c.resolve()));
-  if (commit) raw.commit?.();
+  if (commit) raw.commit?.(failed);
   return { events, raw };
 }
 
@@ -160,3 +163,48 @@ test("某个根列不了：记进 warnings 跳过它，别的根照常出事件�
   assert.equal(readDriveSnapshot<SnapEntry>("snap", "/gone")?.entries.length, 1);
 });
 
+test("删除阀门碰上同名替换：替换的那份不算消失、照常先删后建；真正消失的才压一轮", async () => {
+  drive.tree.addDir("/kk/S1");
+  for (let i = 1; i <= 6; i++) drive.tree.addFile(`/kk/S1/e${i}.mkv`);
+  drive.tree.addDir("/kk/S2");
+  for (let i = 1; i <= 6; i++) drive.tree.addFile(`/kk/S2/e${i}.mkv`);
+  await pull();
+  // S1 删了再转存同名的（新 id）；S2 真的删了
+  drive.tree.remove("/kk/S1");
+  drive.tree.addDir("/kk/S1");
+  for (let i = 1; i <= 6; i++) drive.tree.addFile(`/kk/S1/e${i}.mkv`);
+  drive.tree.remove("/kk/S2");
+  const first = await pull();
+  assert.deepEqual(brief(first.events), ["remove /kk/S1", "create /kk/S1"], "同名替换照常先删后建；S2 的删除先压下");
+  assert.match(warned[0] ?? "", /7\/14 项消失/);
+  const second = await pull();
+  assert.deepEqual(brief(second.events), ["remove /kk/S2"], "第二轮只放行真正消失的 S2，不会再删已经换好的 S1");
+  assert.equal(readDriveSnapshot<SnapEntry>("snap", "/kk")?.entries.length, 7);
+});
+
+test("处理失败的变更不进新快照：下一轮重新对比会再发一次；成功的不再发", async () => {
+  drive.tree.addFile("/kk/a.mkv");
+  await pull();
+  drive.tree.addDir("/kk/New");
+  drive.tree.addFile("/kk/New/n.mkv");
+  drive.tree.addFile("/kk/b.mkv");
+  drive.tree.remove("/kk/a.mkv");
+  const r = await pull({ time: 1, id: "latest" }, { commit: false });
+  assert.deepEqual(brief(r.events), ["remove /kk/a.mkv", "create /kk/b.mkv", "create /kk/New"]);
+  const failedNew = r.events.find((e) => e.path === "/kk/New")!.id;
+  const failedRemove = r.events.find((e) => e.kind === "remove")!.id;
+  r.raw.commit?.([failedNew, failedRemove]);
+  const again = await pull();
+  assert.deepEqual(brief(again.events), ["remove /kk/a.mkv", "create /kk/New"], "失败的两条再来一次，b.mkv 已经记进快照不再发");
+  assert.deepEqual((await pull()).events, []);
+});
+
+test("某个根列不了：目录不存在只是 warning；cookie 失效这类账号错误原样抛出去让监控告警退避", async () => {
+  tasks = [taskKk, taskGone];
+  drive.tree.addFile("/kk/a.mkv");
+  const r = await pull({ time: 0, id: "all" });
+  assert.deepEqual(brief(r.events), ["create /kk/a.mkv"]);
+  assert.match(r.raw.warnings?.[0] ?? "", /^\/gone 列目录失败/);
+  drive.failWith = new Error("require login [guest]");
+  await assert.rejects(pull(), /require login/);
+});

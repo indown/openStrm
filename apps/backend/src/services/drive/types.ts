@@ -218,6 +218,8 @@ export interface PendingChange {
   id: string;
   at: number;
   resolve(): Promise<ChangeEvent>;
+  /** 这条处理完之后该存的游标；事件流来源（115）逐条给，快照来源不给（它的事件 id 不是游标） */
+  cursor?: ChangeCursor;
 }
 
 /** 已经是完整事件的来源（夸克快照、测试桩）用它包一下 */
@@ -228,8 +230,11 @@ export function resolvedChange(ev: ChangeEvent): PendingChange {
 export interface PullResult {
   changes: PendingChange[];
   cursor: ChangeCursor;
-  /** 这轮的事件全部处理完（没被中止）后由监控调用；快照式来源在这里才把新快照写库，中途出事下轮重新对比 */
-  commit?(): void;
+  /**
+   * 这轮的事件全部处理完（没被中止）后由监控调用，带上处理失败的事件 id；
+   * 快照式来源在这里才把新快照写库，失败的那些条目不记进去，下轮重新对比会再发一次
+   */
+  commit?(failedIds: string[]): void;
   /** 这轮有一部分没拉到（某个根列不了）的说明；监控记进 lastError 让人看见，但不按整轮失败退避 */
   warnings?: string[];
 }

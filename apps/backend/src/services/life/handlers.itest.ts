@@ -205,3 +205,15 @@ test("下载类文件（nfo）整个落盘，直链带的请求头一起发出�
     await new Promise<void>((r) => server.close(() => r()));
   }
 });
+
+test("展开新目录时被中止：抛出 AbortError，不能按「完成」返回", async () => {
+  drive.tree.addDir("/tv/Abort");
+  drive.tree.addFile("/tv/Abort/e1.mkv");
+  const ctl = new AbortController();
+  ctl.abort();
+  const aborted: LifeContext = { ...ctx, signal: ctl.signal };
+  await assert.rejects(
+    handleCreate(aborted, ev({ kind: "create", path: "/tv/Abort", isDir: true, nodeId: drive.tree.get("/tv/Abort")!.id })),
+    (e: unknown) => e instanceof Error && e.name === "AbortError",
+  );
+});

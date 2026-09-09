@@ -328,7 +328,7 @@ class AccountMonitor {
     if (changes.length === 0) {
       this.cursor = pulled.cursor;
       writeKv(KEY.lifeCursor(this.name), this.cursor);
-      pulled.commit?.();
+      pulled.commit?.([]);
       return warning;
     }
 
@@ -345,6 +345,7 @@ class AccountMonitor {
       signal,
     };
 
+    const failedIds: string[] = [];
     for (const item of changes) {
       // 被中止就不 commit：快照式来源下轮拿旧快照重新对比，事件流来源从游标接着拉
       if (signal.aborted) return warning;
@@ -373,20 +374,25 @@ class AccountMonitor {
             this.log("debug", `${name} 跳过：${res.detail}`);
           }
         } catch (err) {
+          // 处理到一半被中止：这条不算处理过，游标不动、不 commit，下次启动重来
+          if (signal.aborted || isAbortError(err)) return warning;
           this.stats.failed++;
+          failedIds.push(id);
           const msg = err instanceof Error ? err.message : String(err);
           markLifeEvent(id, "failed", msg);
           this.log("error", `${name} ${ev.path} 处理失败：${msg}`);
         }
       }
 
-      // 每条处理完都推进游标，中途崩了也不会重放已完成的事件
-      this.cursor = { time: item.at || this.cursor.time, id };
-      writeKv(KEY.lifeCursor(this.name), this.cursor);
+      // 事件流来源逐条给游标：每条处理完都推进，中途崩了也不会重放已完成的事件
+      if (item.cursor) {
+        this.cursor = item.cursor;
+        writeKv(KEY.lifeCursor(this.name), this.cursor);
+      }
     }
     this.cursor = pulled.cursor;
     writeKv(KEY.lifeCursor(this.name), this.cursor);
-    pulled.commit?.();
+    pulled.commit?.(failedIds);
     return warning;
   }
 

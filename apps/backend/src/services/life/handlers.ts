@@ -152,7 +152,8 @@ async function materializeFolder(
   let visited = 0;
 
   while (queue.length > 0) {
-    if (ctx.signal?.aborted) break;
+    // 被中止就抛出去：按「完成」返回会让这条事件带着只生成了一半的目录推进游标
+    ctx.signal?.throwIfAborted();
     const cur = queue.shift()!;
     const entries: DriveEntry[] = await ctx.provider.listDir(cur.id, ctx.signal);
     ctx.provider.rememberListing?.(cur.panPath, entries);

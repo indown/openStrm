@@ -45,6 +45,8 @@ export interface SnapshotChange {
   isDir: boolean;
   id: string;
   size?: number;
+  /** remove 专用：这个路径现在被另一个 id 占着（同名替换），不算「消失」，删除阀门不管它 */
+  replaced?: boolean;
 }
 
 const depthOf = (p: string): number => p.split("/").length;
@@ -53,15 +55,69 @@ const parentOf = (p: string): string => {
   return i < 0 ? "" : p.slice(0, i);
 };
 const isUnder = (p: string, dir: string): boolean => p.startsWith(`${dir}/`);
+const atOrUnder = (p: string, dir: string): boolean => p === dir || isUnder(p, dir);
 const coveredBy = (p: string, dirs: string[]): boolean => dirs.some((d) => isUnder(p, d));
 
-/** 两份快照的差，按删除、搬动、新增、内容变化的顺序；只报最上层的目录变化；文件内容变了（大小 / 时间）按新增再报一次，处理器会重下附件 */
+/**
+ * 搬动之间的先后：
+ *   - b 的目标压在 a 的旧位置上（a 搬走才能腾出来）→ a 先；
+ *   - a 是目录、b 的旧位置在 a 的旧位置下面（b 用的是搬前的路径）→ b 先；
+ *   - a 是目录、b 的目标在 a 的新位置下面（目标目录得先到位）→ a 先。
+ * 拓扑排序；成环的（互换、进出同一个搬动的目录）挑一个退化成「删旧位置 + 在新位置重新生成」来解环，
+ * 优先挑文件（目录退化意味着整棵重新生成），处理器都是幂等的。
+ */
+function orderMoves(moves: SnapshotChange[]): { ordered: SnapshotChange[]; degraded: SnapshotChange[] } {
+  const n = moves.length;
+  const before = new Set<string>();
+  const key = (a: number, b: number) => `${a}>${b}`;
+  for (let a = 0; a < n; a++) {
+    for (let b = 0; b < n; b++) {
+      if (a === b) continue;
+      const A = moves[a]!;
+      const B = moves[b]!;
+      if (atOrUnder(B.path, A.oldPath!)) before.add(key(a, b));
+      if (A.isDir && isUnder(B.oldPath!, A.oldPath!)) before.add(key(b, a));
+      if (A.isDir && isUnder(B.path, A.path)) before.add(key(a, b));
+    }
+  }
+  const indeg = new Array<number>(n).fill(0);
+  for (const k of before) indeg[Number(k.split(">")[1])]!++;
+  const ordered: SnapshotChange[] = [];
+  const degraded: SnapshotChange[] = [];
+  const done = new Array<boolean>(n).fill(false);
+  const release = (i: number) => {
+    done[i] = true;
+    for (let b = 0; b < n; b++) if (before.has(key(i, b))) indeg[b]!--;
+  };
+  for (;;) {
+    const next = moves.findIndex((_, i) => !done[i] && indeg[i] === 0);
+    if (next >= 0) {
+      ordered.push(moves[next]!);
+      release(next);
+      continue;
+    }
+    // 成环：挑一个退化，先挑文件
+    const stuck = moves.findIndex((m, i) => !done[i] && !m.isDir);
+    const victim = stuck >= 0 ? stuck : moves.findIndex((_, i) => !done[i]);
+    if (victim < 0) break;
+    degraded.push(moves[victim]!);
+    release(victim);
+  }
+  return { ordered, degraded };
+}
+
+/**
+ * 两份快照的差，按删除、搬动、新增、内容变化的顺序交出去；只报最上层的目录变化；
+ * 文件内容变了（大小 / 时间）按新增再报一次，处理器会重下附件。
+ * removed 只数真正消失的条目（路径没被别的 id 占着），给删除阀门用。
+ */
 export function diffSnapshot(prev: SnapEntry[], curr: SnapEntry[]): { changes: SnapshotChange[]; removed: number } {
   const prevById = new Map(prev.map((e) => [e.id, e]));
   const currById = new Map(curr.map((e) => [e.id, e]));
+  const currPaths = new Set(curr.map((e) => e.path));
   const byDepth = (a: SnapEntry, b: SnapEntry) => depthOf(a.path) - depthOf(b.path) || a.path.localeCompare(b.path);
   const created: SnapshotChange[] = [];
-  const moved: SnapshotChange[] = [];
+  const moves: SnapshotChange[] = [];
   const changed: SnapshotChange[] = [];
   const removed: SnapshotChange[] = [];
   const newDirs: string[] = [];
@@ -77,9 +133,9 @@ export function diffSnapshot(prev: SnapEntry[], curr: SnapEntry[]): { changes: S
       continue;
     }
     if (old.path !== e.path) {
-      // 整个目录搬了：下面的条目路径都跟着变，不再单报
-      if (movedDirs.some((m) => isUnder(old.path, m.from) && isUnder(e.path, m.to))) continue;
-      moved.push({
+      // 整个目录搬了、而且它在目录里的相对位置没变：跟着目录走，不单报
+      if (movedDirs.some((m) => isUnder(old.path, m.from) && e.path === `${m.to}${old.path.slice(m.from.length)}`)) continue;
+      moves.push({
         kind: parentOf(old.path) === parentOf(e.path) ? "rename" : "move",
         path: e.path,
         oldPath: old.path,
@@ -98,12 +154,19 @@ export function diffSnapshot(prev: SnapEntry[], curr: SnapEntry[]): { changes: S
   let removedCount = 0;
   for (const e of [...prev].sort(byDepth)) {
     if (currById.has(e.id)) continue;
-    removedCount++;
+    const replaced = currPaths.has(e.path);
+    if (!replaced) removedCount++;
     if (coveredBy(e.path, removedDirs)) continue;
-    removed.push({ kind: "remove", path: e.path, oldPath: null, isDir: e.isDir, id: e.id });
+    removed.push({ kind: "remove", path: e.path, oldPath: null, isDir: e.isDir, id: e.id, ...(replaced ? { replaced: true } : {}) });
     if (e.isDir) removedDirs.push(e.path);
   }
-  return { changes: [...removed, ...moved, ...created, ...changed], removed: removedCount };
+
+  const { ordered, degraded } = orderMoves(moves);
+  for (const m of degraded) {
+    removed.push({ kind: "remove", path: m.oldPath!, oldPath: null, isDir: m.isDir, id: m.id, replaced: currPaths.has(m.oldPath!) });
+    created.push({ kind: "create", path: m.path, oldPath: null, isDir: m.isDir, id: m.id, size: m.size });
+  }
+  return { changes: [...removed, ...ordered, ...created, ...changed], removed: removedCount };
 }
 
 /** 一轮里要删的超过快照的这个比例先不删，下一轮还这样才删 */
@@ -111,6 +174,28 @@ const REMOVE_RATIO_LIMIT = 0.3;
 const REMOVE_RATIO_MIN_ENTRIES = 10;
 /** 哪些根上一轮压下过大比例删除（`账号\0根`）；进程重启就忘，最多再多等一轮 */
 const suppressedRoots = new Set<string>();
+
+/**
+ * 处理失败的变更从新快照里剔掉，让下轮重新对比时再发一次：
+ * 新增 → 新快照里不记它（目录连子树）；删除 → 把旧条目放回去；搬动 → 新位置不记、旧位置放回去。
+ */
+function revertChange(entries: SnapEntry[], prev: SnapEntry[], c: SnapshotChange): SnapEntry[] {
+  const drop = (list: SnapEntry[], path: string, isDir: boolean) => list.filter((e) => !(e.path === path || (isDir && isUnder(e.path, path))));
+  const restore = (list: SnapEntry[], path: string, isDir: boolean) => {
+    const ids = new Set(list.map((e) => e.id));
+    return [...list, ...prev.filter((e) => (e.path === path || (isDir && isUnder(e.path, path))) && !ids.has(e.id))];
+  };
+  switch (c.kind) {
+    case "create":
+    case "folder":
+      return drop(entries, c.path, c.isDir);
+    case "remove":
+      return restore(entries, c.path, c.isDir);
+    case "move":
+    case "rename":
+      return restore(drop(entries, c.path, c.isDir), c.oldPath ?? c.path, c.isDir);
+  }
+}
 
 /** 仅供测试 */
 export function __test_resetQuarkSnapshotSource(): void {
@@ -145,10 +230,10 @@ export class QuarkSnapshotSource implements ChangeSource {
     if (!walk) throw new Error("这个网盘不支持快照监控");
     const account = this.provider.account.name;
     const scannedAt = Math.floor(Date.now() / 1000);
-    const events: ChangeEvent[] = [];
     const warnings: string[] = [];
-    /** 这轮扫出来的新快照，commit 时才写库 */
-    const pending: Array<{ root: string; entries: SnapEntry[] }> = [];
+    /** 每个根这轮的结果：新快照（commit 时才写库）+ 发出去的变更，处理失败的要从新快照里剔掉 */
+    const rounds: Array<{ root: string; prev: SnapEntry[]; toStore: SnapEntry[]; emitted: Map<string, SnapshotChange> }> = [];
+    const changes: ChangeEvent[] = [];
     const roots = [...new Set(opts.tasks.map((t) => normalizePath(t.originPath)))].filter((r) => r !== "/");
 
     for (const root of roots) {
@@ -158,48 +243,64 @@ export class QuarkSnapshotSource implements ChangeSource {
         entries = await walk.call(this.provider, root, { signal: opts.signal });
       } catch (err) {
         if (opts.signal.aborted || isAbortError(err)) throw err;
-        // 这个根列不了（目录改名 / 风控）：跳过它别拖累别的根，快照不动，下轮再试
+        // cookie 失效 / 风控是账号的事，所有根都一样：原样抛出去让监控告警、退避
+        if (this.provider.classifyError(err)) throw err;
+        // 这个根自己列不了（目录改名 / 服务端返回异常）：跳过它别拖累别的根，快照不动，下轮再试
         warnings.push(`${root} 列目录失败：${err instanceof Error ? err.message : String(err)}`);
         continue;
       }
       const prev = readDriveSnapshot<SnapEntry>(account, root);
-      if (!prev) {
-        pending.push({ root, entries });
-        if (cursor.id === "all") {
-          const { changes } = diffSnapshot([], entries);
-          events.push(...changes.map((c) => this.toEvent(account, root, c, scannedAt)));
-        } else {
-          opts.log?.("info", `${root} 首轮建立快照：${entries.length} 项记为现有`);
+      const emitted = new Map<string, SnapshotChange>();
+      const emit = (list: SnapshotChange[]) => {
+        for (const c of list) {
+          const ev = this.toEvent(account, root, c, scannedAt);
+          emitted.set(ev.id, c);
+          changes.push(ev);
         }
+      };
+      if (!prev) {
+        if (cursor.id === "all") emit(diffSnapshot([], entries).changes);
+        else opts.log?.("info", `${root} 首轮建立快照：${entries.length} 项记为现有`);
+        rounds.push({ root, prev: [], toStore: entries, emitted });
         continue;
       }
-      const { changes, removed } = diffSnapshot(prev.entries, entries);
-      let list = changes;
+      const { changes: diff, removed } = diffSnapshot(prev.entries, entries);
+      let list = diff;
       let toStore = entries;
       const key = `${account}\0${root}`;
       const massRemoval = prev.entries.length >= REMOVE_RATIO_MIN_ENTRIES && removed / prev.entries.length > REMOVE_RATIO_LIMIT;
       if (massRemoval && !suppressedRoots.has(key)) {
-        // 第一次看到：先不删，被压下的删除留在快照里，下轮还是这样才执行
+        // 第一次看到：真正消失的先不删，留在快照里下轮还是这样才执行；同名替换（路径被新 id 占着）不在此列，照常先删后建
         suppressedRoots.add(key);
         const msg = `${root} 这轮有 ${removed}/${prev.entries.length} 项消失，超过 ${REMOVE_RATIO_LIMIT * 100}%，先不删本地文件；下一轮还是这样才删`;
         opts.log?.("warn", msg);
         log.warn({ account, root }, msg);
-        list = list.filter((c) => c.kind !== "remove");
+        list = list.filter((c) => c.kind !== "remove" || c.replaced);
         const currIds = new Set(entries.map((e) => e.id));
-        toStore = [...entries, ...prev.entries.filter((e) => !currIds.has(e.id))];
+        const currPaths = new Set(entries.map((e) => e.path));
+        toStore = [...entries, ...prev.entries.filter((e) => !currIds.has(e.id) && !currPaths.has(e.path))];
       } else {
         if (massRemoval) opts.log?.("warn", `${root} 连续两轮都少了 ${removed}/${prev.entries.length} 项，按真删除处理`);
         suppressedRoots.delete(key);
       }
-      pending.push({ root, entries: toStore });
-      events.push(...list.map((c) => this.toEvent(account, root, c, scannedAt)));
+      emit(list);
+      rounds.push({ root, prev: prev.entries, toStore, emitted });
     }
     return {
-      changes: events.map(resolvedChange),
+      changes: changes.map(resolvedChange),
       cursor: { time: scannedAt, id: cursor.id },
       warnings: warnings.length > 0 ? warnings : undefined,
-      commit: () => {
-        for (const p of pending) writeDriveSnapshot(account, p.root, p.entries, scannedAt);
+      commit: (failedIds) => {
+        const failed = new Set(failedIds);
+        for (const r of rounds) {
+          let entries = r.toStore;
+          for (const [id, c] of r.emitted) {
+            if (!failed.has(id)) continue;
+            // 这条没处理成：新快照里当它没发生过，下轮重新对比会再发一次
+            entries = revertChange(entries, r.prev, c);
+          }
+          writeDriveSnapshot(account, r.root, entries, scannedAt);
+        }
       },
     };
   }

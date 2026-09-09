@@ -59,6 +59,15 @@ export function forgetPath(accountName: string, fileId: string): void {
   memo.delete(memoKey(accountName, String(fileId)));
 }
 
+/** 目录改名 / 删除后：内存里所有落在这个前缀下面的路径都不可信了，清掉让它们下次从表里（已 repath / drop）读 */
+export function forgetPathsUnder(accountName: string, dirPath: string): void {
+  const prefix = `${dirPath.replace(/\/+$/, "")}/`;
+  const keyPrefix = `${accountName}:`;
+  for (const [key, value] of memo.entries()) {
+    if (key.startsWith(keyPrefix) && (value === dirPath || value.startsWith(prefix))) memo.delete(key);
+  }
+}
+
 /** 清空内存层（DB 层由调用方决定是否一起清） */
 export function clearPathMemo(): void {
   memo.clear();

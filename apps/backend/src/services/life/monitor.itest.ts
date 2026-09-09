@@ -144,6 +144,8 @@ test("一条事件处理炸了记 failed，后面的照常处理", async () => {
     assert.match(rows.find((e) => e.id === "f1")?.detail ?? "", /直链被风控/);
     assert.equal(fs.readFileSync(path.join(localRoot, "tv", "S", "b.strm"), "utf8"), "/mnt/pan/tv/S/b.mkv");
     assert.deepEqual(readKv(KEY.lifeCursor("A")), { time: 1_900_000_000 + seq, id: "f2" }, "失败的也推进游标，不会反复重放");
+    assert.equal(dA.changes!.commits, 1);
+    assert.deepEqual(dA.changes!.committedFailed, ["f1"], "失败的事件 id 交给来源，快照式来源据此不记这条");
   } finally {
     await stopLifeMonitor();
   }

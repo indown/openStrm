@@ -28,7 +28,7 @@ import {
   type LifeEvent,
   type PullOptions as LifePullOptions,
 } from "../../cloud-115/life.js";
-import { joinPanPath, lookupCachedPath, rememberPath, resolveDirPath } from "../../cloud-115/path-resolver.js";
+import { forgetPathsUnder, joinPanPath, lookupCachedPath, rememberPath, resolveDirPath } from "../../cloud-115/path-resolver.js";
 import type {
   ChangeCursor,
   ChangeEvent,
@@ -179,13 +179,13 @@ export class Cloud115ChangeSource implements ChangeSource {
     const raw = await pullWithFallback(this.account, { fromTime: cursor.time, fromId: cursor.id }, opts.signal, log);
     // 事件是倒序拉回来的，按时间正序交出去才能保证「先建后删」这类因果关系
     const ordered = [...raw].reverse();
-    const changes: PendingChange[] = ordered.map((ev) => ({
-      id: String(ev.id),
-      at: Number(ev.update_time) || 0,
-      resolve: () => this.toChange(ev),
-    }));
-    const last = ordered[ordered.length - 1];
-    return { changes, cursor: last ? { time: Number(last.update_time) || cursor.time, id: String(last.id) } : cursor };
+    let time = cursor.time;
+    const changes: PendingChange[] = ordered.map((ev) => {
+      time = Number(ev.update_time) || time;
+      return { id: String(ev.id), at: Number(ev.update_time) || 0, cursor: { time, id: String(ev.id) }, resolve: () => this.toChange(ev) };
+    });
+    const last = changes[changes.length - 1];
+    return { changes, cursor: last?.cursor ?? cursor };
   }
 
   private async toChange(ev: LifeEvent): Promise<ChangeEvent> {
@@ -217,6 +217,7 @@ export class Cloud115ChangeSource implements ChangeSource {
         path = joinPanPath(dir, name);
       }
       dropSubtree(path);
+      if (isDir) forgetPathsUnder(accountName, path);
       return { ...base, kind, path, oldPath: null };
     }
 
@@ -226,7 +227,11 @@ export class Cloud115ChangeSource implements ChangeSource {
     const oldPath = kind === "move" || kind === "rename" ? lookupCachedPath(accountName, fileId) : null;
     // 缓存先更新：无论本地怎么处理，网盘侧的事实已经变了
     rememberPath({ fileId, parentId, name, path, isDir, accountName });
-    if (isDir && oldPath && oldPath !== path) repathSubtree(oldPath, path);
+    if (isDir && oldPath && oldPath !== path) {
+      repathSubtree(oldPath, path);
+      // 表改好了，内存里子孙的旧路径也得作废，不然半小时内还会往老位置写
+      forgetPathsUnder(accountName, oldPath);
+    }
     return { ...base, kind, path, oldPath: oldPath && oldPath !== path ? oldPath : null };
   }
 

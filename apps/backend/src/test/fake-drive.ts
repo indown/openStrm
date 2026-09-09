@@ -265,8 +265,9 @@ export class FakeChanges implements ChangeSource {
   pulls = 0;
   /** 下一次 pull 一起带出去的告警（模拟某个根列不了） */
   warnings: string[] = [];
-  /** 监控在事件处理完之后调用了几次 commit */
+  /** 监控在事件处理完之后调用了几次 commit，以及最近一次带来的失败事件 id */
   commits = 0;
+  committedFailed: string[] = [];
 
   async prepare(): Promise<{ ok: boolean; message: string }> {
     return this.prepareResult;
@@ -285,8 +286,9 @@ export class FakeChanges implements ChangeSource {
       changes: events.map(resolvedChange),
       cursor: last ? { time: last.at, id: last.id } : cursor,
       warnings: this.warnings.length > 0 ? [...this.warnings] : undefined,
-      commit: () => {
+      commit: (failedIds) => {
         this.commits++;
+        this.committedFailed = [...failedIds];
       },
     };
   }
