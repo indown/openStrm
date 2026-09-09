@@ -3,7 +3,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { encodePathSegments, strmContent } from "./naming.js";
+import { encodePathSegments, isHttpPrefix, normalizeStrmPrefix, strmContent } from "./naming.js";
 import { safeDecode } from "../resolve/direct-link.js";
 
 test("不编码：前缀 + 路径原样拼接", () => {
@@ -24,4 +24,27 @@ test("编码后的内容能被代理那头的 safeDecode 原样还原", () => {
   const encoded = strmContent("/mnt/pan", plain, true);
   assert.equal(safeDecode(encoded), `/mnt/pan/${plain}`);
   assert.equal(encodePathSegments("a/b c/d"), "a/b%20c/d");
+});
+
+test("normalizeStrmPrefix：去首尾空白和尾斜杠，拼出来的内容里没有 //", () => {
+  assert.equal(normalizeStrmPrefix(" http://h:5244/d/ "), "http://h:5244/d");
+  assert.equal(normalizeStrmPrefix("/mnt/pan//"), "/mnt/pan");
+  assert.equal(normalizeStrmPrefix("http://h:5244/d"), "http://h:5244/d", "本来就干净的原样返回");
+  assert.equal(strmContent(normalizeStrmPrefix("http://h:5244/d/"), "tv/a.mkv", false), "http://h:5244/d/tv/a.mkv");
+  assert.equal(strmContent(normalizeStrmPrefix("http://h:5244/d/"), "tv/a b.mkv", true), "http://h:5244/d/tv/a%20b.mkv");
+});
+
+test("normalizeStrmPrefix：只有斜杠的前缀保留一个 /，不会被剥成空串", () => {
+  assert.equal(normalizeStrmPrefix("/"), "/");
+  assert.equal(normalizeStrmPrefix("///"), "/");
+  assert.equal(normalizeStrmPrefix("  "), "");
+});
+
+test("isHttpPrefix：只认 http:// 和 https://，大小写不敏感", () => {
+  assert.equal(isHttpPrefix("http://h/d"), true);
+  assert.equal(isHttpPrefix("HTTPS://h/d"), true);
+  assert.equal(isHttpPrefix("/mnt/pan"), false);
+  assert.equal(isHttpPrefix("smb://nas/pan"), false);
+  assert.equal(isHttpPrefix(""), false);
+  assert.equal(isHttpPrefix(undefined), false);
 });

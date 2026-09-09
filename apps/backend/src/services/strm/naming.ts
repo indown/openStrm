@@ -66,3 +66,13 @@ export function strmContent(strmPrefix: string | undefined, remotePath: string, 
   const prefix = strmPrefix ?? "";
   return encode ? `${encodeURI(prefix)}/${encodePathSegments(remotePath)}` : `${prefix}/${remotePath}`;
 }
+
+/** 用户填的 strm 前缀：去首尾空白和尾斜杠（只剩一个 `/` 的保留），`http://h/d/` 拼出来才不会是 `http://h/d//tv/…` */
+export function normalizeStrmPrefix(input: string): string {
+  return input.trim().replace(/(.)\/+$/, "$1");
+}
+
+/** 前缀是不是 http(s) 地址。302 只认本地挂载路径，路径编码也只对 URL 有意义 */
+export function isHttpPrefix(prefix: string | undefined): boolean {
+  return /^https?:\/\//i.test(prefix ?? "");
+}

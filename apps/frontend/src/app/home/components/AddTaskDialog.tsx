@@ -44,6 +44,10 @@ import { LocalDirectoryTreeDialog } from "./LocalDirectoryTreeDialog";
 /** 5 段（或带秒的 6 段）就放行，字段是否合法由后端的 cron 库校验，失败会以 400 回来 */
 const CRON_SHAPE = /^\S+(?:\s+\S+){4,5}$/;
 
+/** 和后端 services/strm/naming.ts 的 normalizeStrmPrefix 同一条规则：去首尾空白和尾斜杠，只剩一个 `/` 的保留 */
+const normalizePrefix = (v: string): string => v.trim().replace(/(.)\/+$/, "$1");
+const isHttpPrefix = (v: string): boolean => /^https?:\/\//i.test(v.trim());
+
 export const taskFormSchema = z.object({
   account: z.string().min(1, "请选择账户"),
   originPath: z.string().trim().min(1, "远程路径不能为空"),
@@ -159,6 +163,23 @@ function pathEncodingHint(prefixIsHttp: boolean, is302: boolean): { allowed: boo
   };
 }
 
+/**
+ * 302 靠「strm 里写的是本地挂载路径」认出自己的媒体，前缀是 http(s) 地址时代理认不出来，
+ * 还会把账号名拼进 URL 写坏 strm；后端也会拒绝这个组合。这里直接把勾灰掉并说明原因。
+ */
+function redirectHint(prefixIsHttp: boolean): { allowed: boolean; description: string } {
+  if (prefixIsHttp) {
+    return {
+      allowed: false,
+      description: "前缀是 http(s) 地址时用不了 302：代理靠本地挂载路径识别媒体，改成 /mnt/115 这样的挂载路径再开。",
+    };
+  }
+  return {
+    allowed: true,
+    description: "播放时由本工具的代理直接 302 到 115 直链，不再中转流量。前缀会自动拼上 /账号名，代理靠它识别挂载点。",
+  };
+}
+
 export function AddTaskDialog({
   task,
   trigger,
@@ -191,15 +212,21 @@ export function AddTaskDialog({
   const is115Account = accountType === "115";
   /** 115、夸克和 OpenList 都能列目录（/api/directory/remote/list 按账号类型分流），远程路径旁边给个浏览按钮 */
   const canBrowseRemote = account !== "" && (is115Account || accountType === "openlist" || accountType === "quark");
-  const prefixIsHttp = /^https?:\/\//i.test(strmPrefix.trim());
-  const encoding = pathEncodingHint(prefixIsHttp, is115Account && enable302);
+  const prefixIsHttp = isHttpPrefix(strmPrefix);
+  const redirect = redirectHint(prefixIsHttp);
+  /** 302 真正生效的条件：115 账号、勾了、且前缀不是 http(s)——勾会被下面的 effect 摘掉，这里不等下一轮渲染 */
+  const is302 = is115Account && enable302 && redirect.allowed;
+  const encoding = pathEncodingHint(prefixIsHttp, is302);
 
-  // 编码没意义的场景下把它关掉，别让一个灰掉的勾继续生效
+  // 编码 / 302 没意义的场景下把它关掉，别让一个灰掉的勾继续生效
   React.useEffect(() => {
     if (!encoding.allowed && form.getValues("enablePathEncoding")) {
       form.setValue("enablePathEncoding", false);
     }
-  }, [encoding.allowed, form]);
+    if (!redirect.allowed && form.getValues("enable302")) {
+      form.setValue("enable302", false);
+    }
+  }, [encoding.allowed, redirect.allowed, form]);
 
   const setOpen = (next: boolean) => {
     if (!isControlled) setOpenState(next);
@@ -225,20 +252,21 @@ export function AddTaskDialog({
   }, [isControlled, openProp, task, form]);
 
   /** 115 + 302 时前缀后面会拼上 /账号名；示例路径让用户看到最终写进 strm 的样子 */
-  const effectivePrefix =
-    is115Account && enable302 && account ? `${strmPrefix.replace(/\/+$/, "")}/${account}` : strmPrefix.replace(/\/+$/, "");
+  const cleanPrefix = normalizePrefix(strmPrefix);
+  const effectivePrefix = is302 && account ? `${cleanPrefix}/${account}` : cleanPrefix;
   const preview =
     strmPrefix || originPath ? `${effectivePrefix}/${originPath.replace(/^\/+/, "").replace(/\/+$/, "")}/…/abc.mkv` : "";
 
   const onSubmit = async (values: TaskFormValues) => {
     setLoading(true);
     try {
-      // 如果是 115 账户且开启了 302，在 strmPrefix 后拼接账户名（代理按这个前缀识别 302 挂载点）
-      let finalStrmPrefix = values.strmPrefix;
-      if (is115Account && values.enable302 && values.account) {
-        finalStrmPrefix = finalStrmPrefix.replace(/\/+$/, "") + "/" + values.account;
-      }
-      const taskData = { ...values, strmPrefix: finalStrmPrefix, accountType };
+      // 前缀先去掉尾斜杠（后端也会归一化，这里先做是为了拼账号名时不出现 //）。
+      // 前缀是 http(s) 地址时 302 一律按关掉提交：勾已经灰掉，后端也会拒绝这个组合
+      const prefix = normalizePrefix(values.strmPrefix);
+      const enable302 = !!values.enable302 && !isHttpPrefix(prefix);
+      // 115 + 302 时在前缀后拼接账户名，代理按这个前缀识别 302 挂载点
+      const use302 = is115Account && enable302 && !!values.account;
+      const taskData = { ...values, strmPrefix: use302 ? `${prefix}/${values.account}` : prefix, enable302, accountType };
 
       if (task?.id) {
         await api.tasks.update(task.id, taskData);
@@ -373,7 +401,7 @@ export function AddTaskDialog({
                     <FormControl>
                       <Input {...field} placeholder="例如：http://192.168.1.10:8091/d" className="flex-1" />
                     </FormControl>
-                    {is115Account && enable302 && account && (
+                    {is302 && account && (
                       <Input value={`/${account}`} disabled className="w-[120px] bg-muted font-medium shrink-0" title="开启 302 后自动拼上账号名" />
                     )}
                   </div>
@@ -452,7 +480,8 @@ export function AddTaskDialog({
                   control={form.control}
                   name="enable302"
                   label="Emby 302 直链"
-                  description="播放时由本工具的代理直接 302 到 115 直链，不再中转流量。前缀会自动拼上 /账号名，代理靠它识别挂载点。"
+                  description={redirect.description}
+                  disabled={!redirect.allowed}
                 />
               )}
               <CheckboxRow
