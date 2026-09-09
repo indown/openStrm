@@ -97,7 +97,7 @@ export function ShareDetailDialog({
   const seqRef = useRef(0);
 
   const fetchList = useCallback(
-    async (dirId: string, nextPage: number, cursor?: string) => {
+    async (dirId: string, nextPage: number, cursor?: string, crumbs?: Array<{ id: string; name: string }>) => {
       const link = shareLink.trim();
       if (!link) return;
       const seq = ++seqRef.current;
@@ -105,6 +105,8 @@ export function ShareDetailDialog({
       try {
         const result = await api.share.list(link, dirId, cursor, SHARE_PAGE_SIZE);
         if (seq !== seqRef.current) return;
+        // 面包屑等目录真的拉到了再换：失败时列表还是原来那层，面包屑不能先跑到子目录去
+        if (crumbs) setBreadcrumb(crumbs);
         setCurrentList(result.entries ?? []);
         setTotalCount(result.total ?? result.entries?.length ?? 0);
         setNext(result.next);
@@ -114,9 +116,9 @@ export function ShareDetailDialog({
           copy[nextPage - 1] = cursor;
           return copy;
         });
-      } catch {
+      } catch (err) {
         if (seq !== seqRef.current) return;
-        toast.error("加载目录失败");
+        toast.error(apiErrorMessage(err, "加载目录失败"));
       } finally {
         if (seq === seqRef.current) setLoading(false);
       }
@@ -160,8 +162,7 @@ export function ShareDetailDialog({
   const handleOpenFolder = (item: ShareEntry) => {
     if (!item.isDir) return;
     leaveFolder();
-    setBreadcrumb((prev) => [...prev, { id: item.id, name: item.name }]);
-    fetchList(item.id, 1);
+    fetchList(item.id, 1, undefined, [...breadcrumb, { id: item.id, name: item.name }]);
   };
 
   const handleBreadcrumbClick = (index: number) => {
@@ -169,8 +170,7 @@ export function ShareDetailDialog({
     const item = breadcrumb[index];
     if (!item.id) return;
     leaveFolder();
-    setBreadcrumb((prev) => prev.slice(0, index + 1));
-    fetchList(item.id, 1);
+    fetchList(item.id, 1, undefined, breadcrumb.slice(0, index + 1));
   };
 
   const currentDirId = breadcrumb[breadcrumb.length - 1].id;

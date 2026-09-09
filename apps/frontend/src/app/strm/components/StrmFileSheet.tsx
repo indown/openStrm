@@ -73,7 +73,7 @@ export function StrmFileSheet({ taskId, path, onOpenChange, onDelete, onDeleted 
       const res = await api.strm.verify(taskId, path);
       if (res.errors.length > 0) toast.error(`没能确认：${res.errors[0].message}`);
       else if (res.unparsable.length > 0) toast.warning(`无法解析出网盘路径：${PARSE_REASON_LABEL[res.unparsable[0].reason]}`);
-      else if (res.missing.length > 0) toast.warning("网盘上找不到这个文件；目录信息可能有几分钟缓存，刚转存的稍后再试");
+      else if (res.missing.length > 0) toast.warning(res.note ? `网盘上找不到这个文件；${res.note}` : "网盘上找不到这个文件");
       else toast.success("网盘上还在");
     } catch (err) {
       toast.error(strmErrorMessage(err, "校验失败"));
