@@ -22,7 +22,6 @@ import {
   getShareFollow,
   insertShareFollow,
   listDueShareFollows,
-  listShareFollows,
   listShareFollowSummaries,
   replaceShareFollows,
   toSummary,
@@ -32,7 +31,7 @@ import { HttpError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, KIND_LABEL, parseShareRef, providerForTask } from "../drive/registry.js";
-import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession, ShareUpdateSignal } from "../drive/types.js";
+import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession, ShareUpdateSignal, DriveKind } from "../drive/types.js";
 import { saveSelectionToTask } from "../share/receive.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
@@ -337,9 +336,13 @@ export function updateFollow(id: string, input: UpdateFollowInput): ShareFollowS
   if (input.name !== undefined) patch.name = input.name.trim() || f.name;
   if (input.taskId !== undefined && input.taskId !== f.taskId) {
     const target = resolveTask(input.taskId);
-    // 分享的网盘得和新任务的账号同类：115 的分享码在夸克账号上打不开，换过去只会一路失败到 expired
-    const kind = parseShareRef(f.shareUrl)?.kind ?? resolveTask(f.taskId).provider.kind;
-    if (target.provider.kind !== kind) throw new HttpError(400, `这个订阅盯的是 ${KIND_LABEL[kind]} 的分享，不能换到 ${KIND_LABEL[target.provider.kind]} 账号的任务`);
+    // 分享的网盘得和新任务的账号同类：115 的分享码在夸克账号上打不开，换过去只会一路失败到 expired。
+    // 旧任务可能已经删了（换任务正是为了这个），类型从分享链接或旧任务记录里拿，两样都没有就不拦
+    const oldTask = getTask(f.taskId);
+    const kind = parseShareRef(f.shareUrl)?.kind ?? (oldTask?.accountType as DriveKind | undefined);
+    if (kind && target.provider.kind !== kind) {
+      throw new HttpError(400, `这个订阅盯的是 ${KIND_LABEL[kind]} 的分享，不能换到 ${KIND_LABEL[target.provider.kind]} 账号的任务`);
+    }
     patch.taskId = target.task.id;
   }
   if (input.subPath !== undefined) patch.subPath = normalizeSubPath(input.subPath);
@@ -448,7 +451,7 @@ async function serverSaysUnchanged(f: ShareFollow, share: ShareProvider, session
   const updates = share.updates;
   if (!updates || f.errorStreak > 0) return false;
   // 信号是「这个账号相对上次转存」的：同一分享在这个账号上还有别的订阅时，上次转存可能是它做的，不信
-  if (listShareFollows().some((o) => o.id !== f.id && o.shareCode === f.shareCode && getTask(o.taskId)?.account === account)) return false;
+  if (listShareFollowSummaries().some((o) => o.id !== f.id && o.shareCode === f.shareCode && getTask(o.taskId)?.account === account)) return false;
   const skips = signalSkips.get(f.id) ?? 0;
   if (skips >= UPDATE_SIGNAL_TRUST) return false;
   let signal: ShareUpdateSignal;

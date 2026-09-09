@@ -426,15 +426,22 @@ test("服务端更新信号（夸克）：说没更新就不列目录；连续 3
 });
 
 test("分享里名字带 / 的条目：建订阅和检查都跳过它，不当成子目录去转存，也不算错误", async () => {
-  drive.share!.listHook = (dirId, entries) => (dirId === "0" ? [...entries, { id: "weird", name: "part 1/2.mkv", isDir: false, token: "tok-weird" }] : entries);
+  const hook = (dirId: string, entries: Parameters<NonNullable<typeof drive.share>["listHook"] & object>[1]) =>
+    dirId === "0" ? [...entries, { id: "weird", name: "part 1/2.mkv", isDir: false, token: "tok-weird" }] : entries;
+  drive.share!.listHook = hook;
   const s = await subscribe();
-  assert.ok(!getShareFollow(s.id)!.known.some((e) => e.path.includes("part 1")), "快照里没有它");
+  assert.ok(!getShareFollow(s.id)!.known.some((e) => e.path.includes("part 1")), "建订阅时快照里没有它");
+  drive.share!.listHook = null;
+  const clean = await subscribe({ shareCode: "other", name: "other" });
+  // 建订阅时没有、检查时才出现：同样跳过，不当新增去转存
+  drive.share!.listHook = hook;
   now += HOUR;
-  const { run, follow } = await checkFollow(s.id);
+  const { run, follow } = await checkFollow(clean.id);
   assert.equal(run, null);
   assert.equal(follow.status, "idle");
   assert.equal(follow.errorStreak, 0);
   assert.equal(received(), 0);
+  assert.ok(!getShareFollow(clean.id)!.known.some((e) => e.path.includes("part 1")));
 });
 
 test("改订阅的任务：换到别的网盘类型的任务 400，同类的可以", async () => {
@@ -466,4 +473,11 @@ test("同一分享在同一账号上还有别的订阅：服务端信号不信�
   assert.deepEqual(run?.added, ["E03.mkv"], "没信信号，列目录发现了新集");
   assert.equal(fake.calls.updates, updatesBefore, "根本没问信号");
   assert.ok(s2.id);
+});
+
+test("改订阅的任务：旧任务已经删了也能换到同类的新任务", async () => {
+  const sibling: TaskDefinition = { ...task, id: "t1b", targetPath: "tv-b" };
+  const s = await subscribe();
+  replaceTasks([sibling]);
+  assert.equal(updateFollow(s.id, { taskId: "t1b" }).taskId, "t1b");
 });
