@@ -64,7 +64,11 @@ const server = http.createServer((req, res) => {
       if (body.pwd_id === "never") return json(403, { status: 403, code: 41043, message: "用户未转存过此分享" });
       if (body.pwd_id === "gone") return json(400, { status: 400, code: 41007, message: "share not exist" });
       if (body.pwd_id === "loggedout") return json(401, { status: 401, code: 31001, message: "require login [guest]" });
-      return json(200, { status: 200, code: 0, data: { share_inc_update: { list: [{ fid: "f-new" }] } } });
+      // 真机：自己转存过的分享回 200，list 空就是没更新
+      if (body.pwd_id === "saved") return json(200, { status: 200, code: 0, data: { finish: true, task_id: "t", share_inc_update: { list: [], total: 0 } } });
+      if (body.pwd_id === "pending") return json(200, { status: 200, code: 0, data: { finish: false, task_id: "t" } });
+      if (body.pwd_id === "odd") return json(200, { status: 200, code: 0, data: {} });
+      return json(200, { status: 200, code: 0, data: { finish: true, share_inc_update: { list: [{ fid: "f-new" }], total: 1 } } });
     }
     if (url.pathname === "/share/sharepage/save") {
       calls.save++;
@@ -145,13 +149,16 @@ test("转存：fid 和 token 一一对应地提交，轮询到完成拿到顶层
   await assert.rejects(quarkWaitTask(account, failing.taskId), (e: unknown) => e instanceof QuarkTaskError && /空间不足/.test(e.message));
 });
 
-test("追更信号 inc_update_list：41040 是 none、41043 没转存过是 unknown、有更新是 some；分享没了是 QuarkShareError，登录态问题仍是 QuarkError", async () => {
+test("追更信号 inc_update_list：转存过且 list 空 / 41040 是 none，list 非空是 some；没转存过、没算完、结构不认识都是 unknown；分享没了是 QuarkShareError，登录态问题仍是 QuarkError", async () => {
+  assert.equal(await quarkShareIncUpdate(account, "saved", "stk-saved"), "none");
+  assert.deepEqual(lastInc, { pwd_id: "saved", stoken: "stk-saved", page: 1, page_size: 50 });
   assert.equal(await quarkShareIncUpdate(account, "quiet", "stk-quiet"), "none");
-  assert.deepEqual(lastInc, { pwd_id: "quiet", stoken: "stk-quiet", page: 1, page_size: 50 });
-  assert.equal(await quarkShareIncUpdate(account, "never", "stk-never"), "unknown");
   assert.equal(await quarkShareIncUpdate(account, "fresh", "stk-fresh"), "some");
+  assert.equal(await quarkShareIncUpdate(account, "never", "stk-never"), "unknown");
+  assert.equal(await quarkShareIncUpdate(account, "pending", "stk-pending"), "unknown");
+  assert.equal(await quarkShareIncUpdate(account, "odd", "stk-odd"), "unknown");
   await assert.rejects(quarkShareIncUpdate(account, "gone", "x"), QuarkShareError);
   await assert.rejects(quarkShareIncUpdate(account, "loggedout", "x"), (e: unknown) => e instanceof QuarkError && !(e instanceof QuarkShareError));
-  assert.equal(calls.inc, 5);
+  assert.equal(calls.inc, 8);
 });
 

@@ -6,7 +6,8 @@
  *   - GET  share/sharepage/detail?pwd_id&stoken&pdir_fid&_page&_size=50 → data.list[{fid, file_name, dir, size, updated_at, share_fid_token}]，metadata._total 翻页
  *   - POST share/sharepage/save {fid_list, fid_token_list, to_pdir_fid, pwd_id, stoken, pdir_fid:"0", scene:"link"} → data.task_id
  *   - GET  task?task_id&retry_index → data.status 2 完成 / 3 失败 / 4 暂停；data.save_as.save_as_top_fids 是转存进来的顶层 fid
- *   - POST share/inc_update_list {pwd_id, stoken, page, page_size} → 相对上次转存有没有新增：41040 没更新，41043 没转存过
+ *   - POST share/inc_update_list {pwd_id, stoken, page, page_size} → data.share_inc_update.list 是相对上次转存的新增（空就是没更新）；
+ *          41043 没转存过；41040 也是没更新
  *
  * 分享级失败（分享不存在、stoken 失效、提取码错）抛 QuarkShareError；登录态问题仍是 QuarkError；转存任务失败是 QuarkTaskError。
  */
@@ -149,10 +150,16 @@ export async function quarkShareList(
 
 export const QUARK_SHARE_PAGE_SIZE = PAGE_SIZE;
 
+interface RawIncUpdate {
+  /** 服务端是异步算的：false 表示还没算完 */
+  finish?: boolean;
+  share_inc_update?: { list?: unknown[]; total?: number };
+}
+
 /**
  * 相对这个账号上次转存，分享有没有新增（追更用）。
- * 真 cookie 验证过请求体和 41040 / 41043 两个错误码；有更新时的返回结构没验证过（开放平台同名接口是 data.share_inc_update.list），
- * 所以只当信号用：具体新增了什么仍靠整棵列目录对比。
+ * 真 cookie 验证过：自己转存过的分享回 200，`share_inc_update.list` 为空就是没更新；没转存过回 41043；41040 也是没更新。
+ * 只当信号用：具体新增了什么仍靠整棵列目录对比，所以列表非空、算不出来（finish=false / 结构不认识）都按「不知道」处理。
  */
 export async function quarkShareIncUpdate(
   account: AccountQuark,
@@ -161,11 +168,16 @@ export async function quarkShareIncUpdate(
   signal?: AbortSignal,
 ): Promise<ShareUpdateSignal> {
   try {
-    await quarkRequest<unknown>(account, "POST", "/share/inc_update_list", {
+    const body = await quarkRequest<RawIncUpdate>(account, "POST", "/share/inc_update_list", {
       data: { pwd_id: pwdId, stoken, page: 1, page_size: PAGE_SIZE },
       signal,
     });
-    return "some";
+    const d = body.data;
+    if (!d || d.finish === false) return "unknown";
+    const inc = d.share_inc_update;
+    const n = Array.isArray(inc?.list) ? inc.list.length : Number(inc?.total);
+    if (!Number.isFinite(n)) return "unknown";
+    return n > 0 ? "some" : "none";
   } catch (err) {
     if (err instanceof QuarkError) {
       if (err.code === 41040) return "none";
