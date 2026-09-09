@@ -21,12 +21,13 @@ let memo = { value: "0", at: 0 };
 function fingerprint(): string {
   const settings = readSettingsSafe();
   // 账号只取 name + cookie 的哈希：换了 cookie 必须让旧直链失效，
-  // 但没必要把 cookie 原文带进内存里的 key
+  // 但没必要把 cookie 原文带进内存里的 key。
+  // 夸克不参与 302，而且它的 cookie 每次请求都可能轮换 __puus，算进去会让 115 的直链缓存跟着作废
   const accounts = listAccounts().map((a) => [
     a.name,
     a.accountType,
     createHash("sha1")
-      .update("cookie" in a ? (a.cookie ?? "") : "")
+      .update("cookie" in a && a.accountType !== "quark" ? (a.cookie ?? "") : "")
       .digest("base64url")
       .slice(0, 8),
   ]);

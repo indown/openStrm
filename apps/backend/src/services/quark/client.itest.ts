@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import http from "node:http";
 import type { AccountQuark } from "@openstrm/shared";
-import { getAccount, listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
+import { getAccount, listAccounts, replaceAccounts, updateAccount } from "../../db/repositories/accounts.js";
 import { PermanentError } from "../../lib/errors.js";
 import { clearRateLimiters } from "../download/rate-limited.js";
 import {
@@ -203,3 +203,21 @@ test("直链：url 加上取文件必须带的 Cookie / Referer / UA", async () 
   assert.equal(link.headers.Referer, QUARK_REFERER);
   assert.equal(link.headers["User-Agent"], QUARK_UA);
 });
+
+test("轮换写回只在库里还是这份 cookie 时才发生：用户刚换了新 cookie 的话不覆盖，持有者改用新的", async () => {
+  clearQuarkCaches();
+  const holder: AccountQuark = { ...account, cookie: "a=1; __puus=old-puus" };
+  replaceAccounts([{ ...holder }]);
+  // 用户在账户页换了新 cookie
+  updateAccount(NAME, { cookie: "b=2; __puus=user-new" });
+  rotate = true;
+  try {
+    await quarkListDir(holder, "0");
+  } finally {
+    rotate = false;
+  }
+  const stored = getAccount(NAME) as AccountQuark;
+  assert.equal(stored.cookie, "b=2; __puus=user-new", "库里用户的新 cookie 没被旧会话的轮换盖掉");
+  assert.equal(holder.cookie, "b=2; __puus=user-new", "持有者改用库里的新 cookie");
+});
+

@@ -18,8 +18,8 @@ import type { ShareUpdateSignal } from "../drive/types.js";
 import { QuarkError, quarkRequest, unescapeHtml } from "./client.js";
 
 const PAGE_SIZE = 50;
-/** 分享没了 / 提取码不对这类换多少次都一样的错误码；其余靠 message 认 */
-const SHARE_GONE_CODES = new Set([41007, 41008]);
+/** 分享没了 / 提取码不对这类换多少次都一样的错误码（41006 分享不存在是真机见过的）；其余靠 message 认 */
+const SHARE_GONE_CODES = new Set([41006, 41007, 41008]);
 const SHARE_GONE_MESSAGE = /share not exist|stoken|passcode|提取码|分享.*(取消|失效|不存在|过期|删除)|已失效|not found/i;
 
 export class QuarkShareError extends Error {

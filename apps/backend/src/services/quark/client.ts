@@ -15,7 +15,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
 import { LRUCache } from "lru-cache";
 import type { AccountQuark } from "@openstrm/shared";
-import { updateAccount } from "../../db/repositories/accounts.js";
+import { updateAccountWith } from "../../db/repositories/accounts.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { scheduleForAccount } from "../download/rate-limited.js";
 import { PermanentError, isAbortError } from "../../lib/errors.js";
@@ -114,14 +114,26 @@ export function cookieFromSetCookie(headers: string[] | string | undefined, name
  * 并发请求各自带回不同的值时后写胜出——它们都是同一会话的刷新，旧值短时间内仍有效，不值得为此串行化。
  */
 function rememberRotatedCookies(account: AccountQuark, setCookie: string[] | string | undefined): void {
-  let merged = account.cookie;
+  const before = account.cookie;
+  let merged = before;
   for (const name of ROTATED_COOKIES) {
     const value = cookieFromSetCookie(setCookie, name);
     if (value) merged = mergeCookie(merged, name, value);
   }
-  if (merged === account.cookie) return;
+  if (merged === before) return;
+  // 只在库里还是发请求时那份 cookie 时才写回：用户刚在账户页换了新的，旧会话轮换出来的 __puus 不能盖上去，
+  // 这个持有者改用库里的新 cookie
+  const row = updateAccountWith(account.name, (current) => {
+    const stored = "cookie" in current ? (current.cookie ?? "") : "";
+    return stored === before ? { cookie: merged } : null;
+  });
+  const stored = row && "cookie" in row ? (row.cookie ?? "") : "";
+  if (stored && stored !== merged) {
+    account.cookie = stored;
+    log.debug(`夸克账号 ${account.name} 的 cookie 已被别处更新，改用新的`);
+    return;
+  }
   account.cookie = merged;
-  updateAccount(account.name, { cookie: merged });
   log.debug(`夸克账号 ${account.name} 的 cookie 已轮换并写回`);
 }
 

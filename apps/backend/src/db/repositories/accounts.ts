@@ -33,6 +33,28 @@ export function insertAccount(account: AccountInfo): void {
 }
 
 /** 合并给出的字段；name 是主键不可改。账号不存在时返回 null */
+/**
+ * 读改写在一个事务里，patch 由回调按库里的当前值算出来：
+ * 夸克写回轮换的 __puus 时要先确认库里还是发出请求时那份 cookie，用户刚换了新的就不能盖上去。回调返回 null 表示不改
+ */
+export function updateAccountWith(
+  name: string,
+  compute: (current: AccountInfo) => Record<string, unknown> | null,
+): AccountInfo | null {
+  return db.transaction((tx) => {
+    const current = getAccount(name);
+    if (!current) return null;
+    const patch = compute(current);
+    if (!patch) return current;
+    const merged = { ...current, ...patch, name } as AccountInfo;
+    tx.update(accounts)
+      .set({ ...columns(merged), updatedAt: sql`(unixepoch())` })
+      .where(eq(accounts.name, name))
+      .run();
+    return merged;
+  });
+}
+
 export function updateAccount(name: string, patch: Record<string, unknown>): AccountInfo | null {
   // 读改写放进一个事务：界面保存和 runner 写回 openlist token 同时发生也不会互相抹掉
   return db.transaction((tx) => {
