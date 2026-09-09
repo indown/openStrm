@@ -26,6 +26,8 @@ function setSettings(next: Parameters<typeof replaceAppSettings>[0]) {
 
 const MOUNT = "/mnt/pan";
 const PAN_FILE = `${MOUNT}/tv/Show/ep1.mkv`;
+const HTTP_MOUNT = "http://192.168.5.103:8098";
+const HTTP_PAN_FILE = `${HTTP_MOUNT}/tv/Show/ep1.mkv`;
 const LOCAL_FILE = "/media/local/movie.mkv";
 /**
  * 真实形态的 115 直链：文件名已经是转义过的，签名里带 `+` 和 `=`。
@@ -59,6 +61,7 @@ const emby = http.createServer((req, res) => {
     res.end(JSON.stringify({
       MediaSources: [
         { Id: "ms-pan", Path: PAN_FILE, Container: "mkv", SupportsDirectPlay: false, SupportsDirectStream: false, DirectStreamUrl: "/emby/Videos/ms-pan/stream.mkv?api_key=k" },
+        { Id: "ms-http", Path: HTTP_PAN_FILE, Container: "mkv", SupportsDirectPlay: false, SupportsDirectStream: false, DirectStreamUrl: "/emby/Videos/ms-http/stream.mkv?api_key=k" },
         { Id: "ms-local", Path: LOCAL_FILE, Container: "mp4", SupportsDirectPlay: false, SupportsDirectStream: false, DirectStreamUrl: "/emby/Videos/ms-local/stream.mp4?api_key=k" },
       ],
     }));
@@ -334,6 +337,23 @@ test("挂载点里的媒体源被标成可直连，本地源不动", async () =>
     assert.match(pan.DirectStreamUrl, /api_key=k/, "查询串要保留，丢了客户端就没法鉴权");
 
     assert.equal(local.SupportsDirectPlay, false, "本地源不该被改");
+  });
+
+test("HTTP 挂载前缀里的媒体源被标成可直连", async () => {
+    const now = readAppSettings();
+    setSettings({ ...now, mediaMountPath: [HTTP_MOUNT] });
+    try {
+      const res = await app.inject({ method: "POST", url: "/emby/Items/item-http/PlaybackInfo", payload: {} });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      const http = body.MediaSources.find((s: { Id: string }) => s.Id === "ms-http");
+
+      assert.equal(http.SupportsDirectPlay, true);
+      assert.equal(http.SupportsDirectStream, true);
+      assert.match(http.DirectStreamUrl, /^\/Videos\/item-http\/stream\.mkv\?/);
+    } finally {
+      setSettings(now);
+    }
   });
 
 test("只在任务上开了 302、没手填 mediaMountPath：PlaybackInfo 同样改写", async () => {

@@ -45,7 +45,7 @@ import { scheduleEmbyRefresh } from "../media-server.js";
 import { isTaskRunning } from "../task/registry.js";
 import { classifyAccountIssue } from "../telegram/notify.js";
 import { episodeKey, inspectStrm, isForeignStrm, showDirOf } from "./inspect.js";
-import { extOf, extSet, toStrmPath } from "./naming.js";
+import { collapseSlashes, extOf, extSet, toStrmPath } from "./naming.js";
 import { exportDirFiles, RemoteDirNotFoundError } from "./share-strm.js";
 
 const log = moduleLogger("strm-manage");
@@ -641,8 +641,6 @@ export async function regenerate(
 }
 
 /* ------------------------------- 校验 ------------------------------- */
-
-const collapseSlashes = (p: string): string => p.replace(/\/{2,}/g, "/");
 
 export async function verify(task: TaskDefinition, accountInfo: AccountInfo, rel: string): Promise<StrmVerifyResult> {
   const mp = await resolveManagedPath(task, rel);

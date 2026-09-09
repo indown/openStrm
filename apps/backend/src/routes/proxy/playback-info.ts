@@ -8,7 +8,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { EmbyMediaSource } from "../../services/emby/api.js";
 import { clientApiKey } from "../../services/emby/api.js";
-import { currentMountPaths, safeDecode, stripMountPath } from "../../services/resolve/direct-link.js";
+import { collapseSlashes, safeDecode } from "../../services/strm/naming.js";
+import { currentMountPaths, stripMountPath } from "../../services/resolve/direct-link.js";
 import { fetchUpstream, relayResponse, toEmby } from "./upstream.js";
 
 /**
@@ -18,7 +19,7 @@ import { fetchUpstream, relayResponse, toEmby } from "./upstream.js";
  */
 function isOurs(source: EmbyMediaSource, mountPaths: string[]): boolean {
   if (!source.Path) return false;
-  return stripMountPath(safeDecode(source.Path).replace(/\/{2,}/g, "/"), mountPaths) !== null;
+  return stripMountPath(collapseSlashes(safeDecode(source.Path)), mountPaths) !== null;
 }
 
 /**

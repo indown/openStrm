@@ -32,14 +32,9 @@ export type ResolveResult =
   | { ok: false; reason: ResolveFailure };
 
 /** strm 落盘时可能被 encodeURI 过（任务的 enablePathEncoding），解不开就按原样用 */
-import { safeDecode } from "../strm/naming.js";
+import { collapseSlashes, safeDecode } from "../strm/naming.js";
 // 老调用方还从这里拿 safeDecode，保留导出
 export { safeDecode };
-
-/** 合并重复斜杠。originPath 带不带前导 `/` 都有人这么配，拼出来会有 `//` */
-function collapseSlashes(p: string): string {
-  return p.replace(/\/{2,}/g, "/");
-}
 
 function trimTrailing(p: string): string {
   return p.replace(/\/+$/, "");

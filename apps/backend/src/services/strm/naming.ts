@@ -47,6 +47,11 @@ export function safeDecode(p: string): string {
   }
 }
 
+/** 合并重复斜杠，但保留 URL 协议头里的 `://` */
+export function collapseSlashes(p: string): string {
+  return p.replace(/^([a-z][a-z0-9+.-]*:\/\/)|\/{2,}/gi, (_match, scheme: string | undefined) => scheme ?? "/");
+}
+
 /** 按段解码：某一段里有解不开的 `%` 也不影响其它段 */
 export function decodeSegments(p: string): string {
   return p.split("/").map(safeDecode).join("/");

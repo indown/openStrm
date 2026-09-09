@@ -3,7 +3,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { encodePathSegments, strmContent } from "./naming.js";
+import { collapseSlashes, encodePathSegments, strmContent } from "./naming.js";
 import { safeDecode } from "../resolve/direct-link.js";
 
 test("不编码：前缀 + 路径原样拼接", () => {
@@ -24,4 +24,10 @@ test("编码后的内容能被代理那头的 safeDecode 原样还原", () => {
   const encoded = strmContent("/mnt/pan", plain, true);
   assert.equal(safeDecode(encoded), `/mnt/pan/${plain}`);
   assert.equal(encodePathSegments("a/b c/d"), "a/b%20c/d");
+});
+
+test("合并重复斜杠时保留 URL 协议头", () => {
+  assert.equal(collapseSlashes("http://192.168.5.103:8098/a//b"), "http://192.168.5.103:8098/a/b");
+  assert.equal(collapseSlashes("https://example.com//a"), "https://example.com/a");
+  assert.equal(collapseSlashes("/mnt//pan/a"), "/mnt/pan/a");
 });
