@@ -178,41 +178,18 @@ test("POST/PUT /api/task：strmPrefix 去掉首尾空白和尾斜杠再入库", 
   await call("DELETE", `/api/task?id=${id}`);
 });
 
-test("POST/PUT /api/task：开 302 时前缀不能是 http(s) 地址，PUT 按合并后的结果查", async () => {
-  const bad = await call("POST", "/api/task", {
-    account: "acc",
-    originPath: "tv",
-    targetPath: "tv",
-    strmPrefix: "http://h:5244/d/main",
-    enable302: true,
-  });
-  assert.equal(bad.statusCode, 400);
-  assert.equal(bad.json().code, "VALIDATION");
-  assert.match(bad.json().message, /302/);
-  assert.equal(listTasks().length, 0, "被拒的任务不能落库");
-
+test("POST /api/task：开 302 的任务也可以用 http(s) 前缀——代理按 URL 匹配挂载点，换不到直链回给 Emby", async () => {
   const created = await call("POST", "/api/task", {
     account: "acc",
     originPath: "tv",
     targetPath: "tv",
-    strmPrefix: "/mnt/115/main",
+    strmPrefix: "http://ol.local:5244/d/115/",
     enable302: true,
   });
   assert.equal(created.statusCode, 201);
-  const id = created.json().id;
-
-  // 只改前缀：库里 302 还开着，换成 http 地址就该被拒，库里的值不能动
-  const flipPrefix = await call("PUT", "/api/task", { id, strmPrefix: "https://h/d/main" });
-  assert.equal(flipPrefix.statusCode, 400);
-  assert.match(flipPrefix.json().message, /302/);
-  assert.equal(listTasks().find((t) => t.id === id)?.strmPrefix, "/mnt/115/main");
-
-  // 同一次关掉 302 再换 http 前缀可以；之后只发 enable302: true 也要被拒
-  assert.equal((await call("PUT", "/api/task", { id, strmPrefix: "http://h/d", enable302: false })).statusCode, 200);
-  const flipFlag = await call("PUT", "/api/task", { id, enable302: true });
-  assert.equal(flipFlag.statusCode, 400);
-  assert.equal(listTasks().find((t) => t.id === id)?.enable302, false);
-  await call("DELETE", `/api/task?id=${id}`);
+  assert.equal(created.json().strmPrefix, "http://ol.local:5244/d/115");
+  assert.equal(created.json().enable302, true);
+  await call("DELETE", `/api/task?id=${created.json().id}`);
 });
 
 test("库里已有解析不了的表达式：启动不炸，其余任务照常排程", async () => {

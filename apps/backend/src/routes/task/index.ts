@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { TaskDefinition } from "@openstrm/shared";
-import { deleteTask, getTask, insertTask, listTasks, updateTask } from "../../db/repositories/tasks.js";
+import { deleteTask, insertTask, listTasks, updateTask } from "../../db/repositories/tasks.js";
 import { isTaskRunning, listRunningTaskIds } from "../../services/task/registry.js";
 import { getLatestExecutions } from "../../services/task-history.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
-import { assertTaskConfig, taskInputSchema, taskPatchSchema } from "../../schemas/entities.js";
+import { taskInputSchema, taskPatchSchema } from "../../schemas/entities.js";
 
 const idQuerySchema = z.object({ id: z.string().min(1, "Task ID required") });
 
@@ -37,7 +37,6 @@ export default async function (fastify: FastifyInstance) {
 
   fastify.post("/api/task", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const task: TaskDefinition = { ...parse(taskInputSchema, request.body), id: randomUUID() };
-    assertTaskConfig(task);
     insertTask(task);
     resyncCron();
     return reply.code(201).send(task);
@@ -45,10 +44,6 @@ export default async function (fastify: FastifyInstance) {
 
   fastify.put("/api/task", { preHandler: [fastify.authenticate] }, async (request) => {
     const { id, ...patch } = parse(taskPatchSchema, request.body);
-    // 302 和前缀的组合要看合并后的结果：只发 enable302 或只发 strmPrefix 的 PUT，单看 body 查不出来
-    const current = getTask(id);
-    if (!current) throw new HttpError(404, "Task not found");
-    assertTaskConfig({ ...current, ...patch });
     const updated = updateTask(id, patch);
     if (!updated) throw new HttpError(404, "Task not found");
     resyncCron();

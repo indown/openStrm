@@ -18,7 +18,12 @@ import { fetchUpstream, relayResponse, toEmby } from "./upstream.js";
  */
 function isOurs(source: EmbyMediaSource, mountPaths: string[]): boolean {
   if (!source.Path) return false;
-  return stripMountPath(safeDecode(source.Path).replace(/\/{2,}/g, "/"), mountPaths) !== null;
+  return stripMountPath(safeDecode(source.Path), mountPaths) !== null;
+}
+
+/** strm 里写的是 OpenList 那种 http(s) 地址，而不是本地挂载路径 */
+function isHttpSource(source: EmbyMediaSource): boolean {
+  return /^https?:\/\//i.test(source.Path ?? "");
 }
 
 /**
@@ -75,7 +80,12 @@ export function rewritePlaybackInfo(
     if (!isOurs(source, mountPaths)) continue;
     if (source.IsInfiniteStream) continue; // 直播流不做直连改写
 
-    source.SupportsDirectPlay = true;
+    /**
+     * strm 里是 http(s) 地址时不能标"可直接播放"：那意味着客户端自己去取 strm 里的 URL，
+     * 根本不经过代理（Emby Web 还会撞 CORS）。只留 DirectStream，播放一律走本代理的 stream 路径——
+     * 换到直链就 302，换不到再回给 Emby 按 URL 拉流。本地挂载路径的源照旧两个都开。
+     */
+    source.SupportsDirectPlay = !isHttpSource(source);
     source.SupportsDirectStream = true;
     /**
      * 转码必须关掉。留着的话限码率的客户端会判定超标、转而去要 TranscodingUrl，

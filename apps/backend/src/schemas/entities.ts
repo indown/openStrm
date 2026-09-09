@@ -5,8 +5,7 @@
 import { z } from "zod";
 import { validateCronExpression } from "cron";
 import type { AppSettings, LifeMonitorSettings, TaskDefinition } from "@openstrm/shared";
-import { HttpError } from "../lib/http-error.js";
-import { isHttpPrefix, normalizeStrmPrefix } from "../services/strm/naming.js";
+import { normalizeStrmPrefix } from "../services/strm/naming.js";
 
 /** 115 的 id 超过 JS 安全整数，前端有的地方传字符串、有的传数字 */
 export const cidSchema = z.union([z.string(), z.number()]);
@@ -36,18 +35,6 @@ export const taskInputSchema = z.looseObject({
 }) satisfies z.ZodType<Omit<TaskDefinition, "id">>;
 
 export const taskPatchSchema = taskInputSchema.partial().extend({ id: z.string().min(1) });
-
-/**
- * 302 靠「strm 里写的是本地挂载路径」认出自己的媒体：代理拿到 Emby 给的路径，剥掉前缀再反查任务。
- * 前缀是 http(s) 地址时这条路走不通——代理先合并重复斜杠，`http://` 变成 `http:/`，永远匹配不上挂载点；
- * 前端还会把账号名拼进 URL，写出来的 strm 直接 404。
- * 不能写成 schema 的 refine：zod v4 不允许对带 refine 的对象做 partial。POST 查提交的整条，PUT 查合并后的结果。
- */
-export function assertTaskConfig(task: Pick<TaskDefinition, "strmPrefix" | "enable302">): void {
-  if (task.enable302 && isHttpPrefix(task.strmPrefix)) {
-    throw new HttpError(400, "开启 302 时 strm 前缀必须是本地挂载路径，不能是 http(s) 地址", { code: "VALIDATION" });
-  }
-}
 
 /** 转存接口顺手建追更订阅时的选项；间隔的上下限在 services/follow/service.ts 里夹 */
 export const followOptionSchema = z.object({ intervalMinutes: z.number().int().optional() });

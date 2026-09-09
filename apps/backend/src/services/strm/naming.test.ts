@@ -3,7 +3,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { encodePathSegments, isHttpPrefix, normalizeStrmPrefix, strmContent } from "./naming.js";
+import { encodePathSegments, normalizeStrmPrefix, strmContent } from "./naming.js";
 import { safeDecode } from "../resolve/direct-link.js";
 
 test("不编码：前缀 + 路径原样拼接", () => {
@@ -38,13 +38,4 @@ test("normalizeStrmPrefix：只有斜杠的前缀保留一个 /，不会被剥�
   assert.equal(normalizeStrmPrefix("/"), "/");
   assert.equal(normalizeStrmPrefix("///"), "/");
   assert.equal(normalizeStrmPrefix("  "), "");
-});
-
-test("isHttpPrefix：只认 http:// 和 https://，大小写不敏感", () => {
-  assert.equal(isHttpPrefix("http://h/d"), true);
-  assert.equal(isHttpPrefix("HTTPS://h/d"), true);
-  assert.equal(isHttpPrefix("/mnt/pan"), false);
-  assert.equal(isHttpPrefix("smb://nas/pan"), false);
-  assert.equal(isHttpPrefix(""), false);
-  assert.equal(isHttpPrefix(undefined), false);
 });

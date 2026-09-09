@@ -3,7 +3,9 @@
  *
  * 调用方是 Emby 302 路由：拿到的是 strm 文件里写的路径，形如
  * `${strmPrefix}/${originPath}/${相对路径}`，需要先剥掉挂载前缀，
- * 再反查任务表确定是哪个账号的盘。
+ * 再反查任务表确定是哪个账号的盘。前缀既可以是本地挂载路径（`/mnt/115/主号`），
+ * 也可以是 OpenList 的 `/d/` 地址（`http://host:5244/d/115`）：后者换不到直链时回给 Emby，
+ * Emby 按 strm 里的 URL 自己去拉，所以不需要本机有挂载。
  *
  * 直链和请求时用的 UA 是绑定的，所以 UA 必须由调用方传进来——
  * 302 场景要用客户端自己的 UA，否则客户端拿着这条链接去下会被 115 拒掉。
@@ -36,13 +38,23 @@ import { safeDecode } from "../strm/naming.js";
 // 老调用方还从这里拿 safeDecode，保留导出
 export { safeDecode };
 
-/** 合并重复斜杠。originPath 带不带前导 `/` 都有人这么配，拼出来会有 `//` */
-function collapseSlashes(p: string): string {
-  return p.replace(/\/{2,}/g, "/");
+/**
+ * 合并重复斜杠。originPath 带不带前导 `/` 都有人这么配，拼出来会有 `//`。
+ * scheme 后面的 `//` 得留着：前缀是 `http://host/d` 时压成 `http:/` 就和任务里的前缀永远对不上了。
+ */
+export function normalizeMediaPath(p: string): string {
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.exec(p);
+  const head = scheme ? scheme[0] : "";
+  return head + p.slice(head.length).replace(/\/{2,}/g, "/");
 }
 
 function trimTrailing(p: string): string {
   return p.replace(/\/+$/, "");
+}
+
+/** 挂载前缀的比较形态：手填的、任务里的、Emby 报上来的路径都先过这一步，两边才对得上 */
+function normalizeMount(p: string): string {
+  return trimTrailing(normalizeMediaPath(p));
 }
 
 function accounts115(): Account115[] {
@@ -52,12 +64,14 @@ function accounts115(): Account115[] {
 /**
  * 剥掉 mediaMountPath 前缀。多个前缀时取最长匹配，
  * 避免 `/mnt/115` 和 `/mnt/115-4k` 这种互为前缀的配置选错。
+ * 路径和前缀都先归一化（重复斜杠、尾斜杠），返回的 mount 是归一化后的形态。
  */
 export function stripMountPath(
-  path: string,
+  rawPath: string,
   mountPaths: string[],
 ): { mount: string; rest: string } | null {
-  const candidates = [...new Set(mountPaths.filter(Boolean).map(trimTrailing))].sort(
+  const path = normalizeMediaPath(rawPath);
+  const candidates = [...new Set(mountPaths.filter(Boolean).map(normalizeMount))].sort(
     (a, b) => b.length - a.length,
   );
   for (const mount of candidates) {
@@ -74,11 +88,11 @@ export function stripMountPath(
  * 列表只增不减，早就删掉的前缀还在被代理接管。
  */
 export function mountPathsFromTasks(tasks: TaskDefinition[]): string[] {
-  return tasks.filter((t) => t.enable302 && t.strmPrefix).map((t) => trimTrailing(t.strmPrefix!));
+  return tasks.filter((t) => t.enable302 && t.strmPrefix).map((t) => normalizeMount(t.strmPrefix!));
 }
 
 export function effectiveMountPaths(settings: AppSettings, tasks: TaskDefinition[]): string[] {
-  const manual = (settings.mediaMountPath ?? []).filter(Boolean).map(trimTrailing);
+  const manual = (settings.mediaMountPath ?? []).filter(Boolean).map(normalizeMount);
   return [...new Set([...manual, ...mountPathsFromTasks(tasks)])];
 }
 
@@ -109,8 +123,8 @@ export function accountNameByTask(
   // 取第一个命中的话，/tv 和 /tv/anime 两个任务并存时会按任务顺序选错盘。
   let best: { account: string; length: number } | null = null;
   for (const t of tasks) {
-    if (!t.strmPrefix || trimTrailing(t.strmPrefix) !== mount) continue;
-    const origin = trimTrailing(collapseSlashes(`/${t.originPath ?? ""}`));
+    if (!t.strmPrefix || normalizeMount(t.strmPrefix) !== mount) continue;
+    const origin = trimTrailing(normalizeMediaPath(`/${t.originPath ?? ""}`));
     // originPath 为空或就是根，说明整个挂载点都是这个任务的
     const matched = !origin || origin === "/" || rest === origin || rest.startsWith(`${origin}/`);
     if (!matched) continue;
@@ -173,9 +187,8 @@ export async function resolveEmbyPath(
    * 都会记一条 no-account 的 warn——而"这个路径不归我们管"才是实情，
    * 跟有没有账号无关。
    */
-  const decoded = collapseSlashes(safeDecode(embyPath));
   const tasks = listTasks();
-  const stripped = stripMountPath(decoded, effectiveMountPaths(readSettingsSafe(), tasks));
+  const stripped = stripMountPath(safeDecode(embyPath), effectiveMountPaths(readSettingsSafe(), tasks));
   if (!stripped) return { ok: false, reason: "not-mounted" };
 
   const list = accounts115();

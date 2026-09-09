@@ -7,8 +7,8 @@
  */
 import assert from "node:assert/strict";
 import { test as t } from "node:test";
-import type { TaskDefinition } from "@openstrm/shared";
-import { accountNameByTask, safeDecode, stripMountPath } from "./direct-link.js";
+import type { AppSettings, TaskDefinition } from "@openstrm/shared";
+import { accountNameByTask, effectiveMountPaths, normalizeMediaPath, safeDecode, stripMountPath } from "./direct-link.js";
 // ---- stripMountPath ----
 t("剥掉挂载前缀，剩下的就是盘内路径", () => {
   const r = stripMountPath("/mnt/pan/tv/Show/ep1.mkv", ["/mnt/pan"]);
@@ -108,4 +108,31 @@ t("任务顺序颠倒也取最长匹配", () => {
     { id: "a", account: "主号", originPath: "/tv", targetPath: "/d1", strmPrefix: "/mnt/pan" },
   ];
   assert.equal(accountNameByTask("/mnt/pan", "/tv/anime/ep1.mkv", reversed), "小号");
+});
+
+// ---- strm 前缀是 OpenList 地址 ----
+t("normalizeMediaPath：压掉重复斜杠，但 scheme 后面的 // 保留", () => {
+  assert.equal(normalizeMediaPath("/mnt/pan//tv///a.mkv"), "/mnt/pan/tv/a.mkv");
+  assert.equal(normalizeMediaPath("http://ol:5244/d//115/tv//a.mkv"), "http://ol:5244/d/115/tv/a.mkv");
+  assert.equal(normalizeMediaPath("HTTPS://ol/d/a.mkv"), "HTTPS://ol/d/a.mkv");
+});
+
+t("URL 前缀按 URL 剥挂载点：尾斜杠、重复斜杠都不影响，目录边界照样要对", () => {
+  const r = stripMountPath("http://ol:5244/d/115//tv/Show/ep1.mkv", ["/mnt/pan", "http://ol:5244/d/115/"]);
+  assert.deepEqual(r, { mount: "http://ol:5244/d/115", rest: "/tv/Show/ep1.mkv" });
+  assert.equal(stripMountPath("http://ol:5244/d/other/a.mkv", ["http://ol:5244/d/115"]), null, "别的存储不归我们管");
+  assert.equal(stripMountPath("http://ol:5244/d/1150/a.mkv", ["http://ol:5244/d/115"]), null, "不是目录边界不算命中");
+  // 本地挂载路径的行为不变
+  assert.deepEqual(stripMountPath("/mnt/pan//tv/a.mkv", ["/mnt/pan", "http://ol:5244/d/115"]), { mount: "/mnt/pan", rest: "/tv/a.mkv" });
+});
+
+t("URL 前缀的任务也能反查到账号，不需要路径里带账号名", () => {
+  const web: TaskDefinition[] = [
+    { id: "w", account: "主号", originPath: "tv", targetPath: "tv", strmPrefix: "http://ol:5244/d/115/", enable302: true },
+    { id: "l", account: "小号", originPath: "tv", targetPath: "tv2", strmPrefix: "/mnt/pan/小号", enable302: true },
+  ];
+  assert.equal(accountNameByTask("http://ol:5244/d/115", "/tv/Show/ep1.mkv", web), "主号");
+  assert.equal(accountNameByTask("/mnt/pan/小号", "/tv/Show/ep1.mkv", web), "小号");
+  const settings = { mediaMountPath: ["/mnt/manual/"] } as unknown as AppSettings;
+  assert.deepEqual(effectiveMountPaths(settings, web), ["/mnt/manual", "http://ol:5244/d/115", "/mnt/pan/小号"]);
 });

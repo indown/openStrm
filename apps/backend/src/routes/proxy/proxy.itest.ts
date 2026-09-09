@@ -27,6 +27,9 @@ function setSettings(next: Parameters<typeof replaceAppSettings>[0]) {
 const MOUNT = "/mnt/pan";
 const PAN_FILE = `${MOUNT}/tv/Show/ep1.mkv`;
 const LOCAL_FILE = "/media/local/movie.mkv";
+/** strm 里写 OpenList 地址的那种任务：前缀是 URL，代理按 URL 匹配挂载点 */
+const HTTP_MOUNT = "http://ol.local:5244/d/115";
+const HTTP_FILE = `${HTTP_MOUNT}/tv/Show/ep1.mkv`;
 /**
  * 真实形态的 115 直链：文件名已经是转义过的，签名里带 `+` 和 `=`。
  * 必须**原样**出现在 Location 里：再做一次 encodeURI 的话
@@ -48,8 +51,8 @@ const emby = http.createServer((req, res) => {
   }
   if (url.includes("/Items?Ids=")) {
     const id = new URL(url, "http://x").searchParams.get("Ids");
-    // item-local 指向本地文件，其余都指向挂载点里的 strm
-    const path = id === "item-local" ? LOCAL_FILE : PAN_FILE;
+    // item-local 指向本地文件，item-http 是 strm 里写 OpenList 地址的条目，其余都指向挂载点里的 strm
+    const path = id === "item-local" ? LOCAL_FILE : id === "item-http" ? HTTP_FILE : PAN_FILE;
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ Items: [{ Name: "Show", Path: path, MediaSources: [{ Id: id, Path: path, Container: "mkv" }] }] }));
     return;
@@ -60,6 +63,7 @@ const emby = http.createServer((req, res) => {
       MediaSources: [
         { Id: "ms-pan", Path: PAN_FILE, Container: "mkv", SupportsDirectPlay: false, SupportsDirectStream: false, DirectStreamUrl: "/emby/Videos/ms-pan/stream.mkv?api_key=k" },
         { Id: "ms-local", Path: LOCAL_FILE, Container: "mp4", SupportsDirectPlay: false, SupportsDirectStream: false, DirectStreamUrl: "/emby/Videos/ms-local/stream.mp4?api_key=k" },
+        { Id: "ms-http", Path: HTTP_FILE, Container: "mkv", SupportsDirectPlay: false, SupportsDirectStream: false, DirectStreamUrl: "/emby/Videos/ms-http/stream.mkv?api_key=k" },
       ],
     }));
     return;
@@ -100,7 +104,7 @@ let lastResolvedUa: string | undefined;
 setLinkResolver(async (embyPath, userAgent) => {
   resolveCalls++;
   lastResolvedUa = userAgent;
-  return embyPath.startsWith(MOUNT)
+  return embyPath.startsWith(MOUNT) || embyPath.startsWith(HTTP_MOUNT)
     ? { ok: true, url: DIRECT_URL, accountName: "主号", panPath: embyPath }
     : { ok: false, reason: "not-mounted" };
 });
@@ -263,6 +267,29 @@ test("HEAD 探测直接回源，不去换直链", async () => {
     assert.equal(resolveCalls, 0, "HEAD 不该触发直链解析");
   });
 
+test("strm 里是 OpenList 地址的条目：换到直链就 302，换不到就回给 Emby 按 URL 拉流", async () => {
+    reset();
+    const hit = await app.inject({ method: "GET", url: "/emby/Videos/item-http/stream.mkv?api_key=k" });
+    assert.equal(hit.statusCode, 302);
+    assert.equal(hit.headers.location, DIRECT_URL);
+
+    // 盘里找不到这个文件：回源，Emby 自己按 strm 里的 OpenList 地址去拉
+    setLinkResolver(async () => ({ ok: false, reason: "not-found" }));
+    try {
+      clearLinkCache();
+      const miss = await app.inject({ method: "GET", url: "/emby/Videos/item-http/stream.mkv?api_key=k" });
+      assert.equal(miss.statusCode, 200);
+      assert.equal(miss.body, "upstream-ok");
+    } finally {
+      setLinkResolver(async (embyPath) => {
+        resolveCalls++;
+        return embyPath.startsWith(MOUNT) || embyPath.startsWith(HTTP_MOUNT)
+          ? { ok: true, url: DIRECT_URL, accountName: "主号", panPath: embyPath }
+          : { ok: false, reason: "not-mounted" };
+      });
+    }
+  });
+
 test("本地文件不被 302，老老实实回源", async () => {
     reset();
     const res = await app.inject({ method: "GET", url: "/emby/Videos/item-local/stream.mkv?api_key=k" });
@@ -295,7 +322,7 @@ test("解析抛异常也回源，不让播放直接失败", async () => {
     // 复原
     setLinkResolver(async (embyPath) => {
       resolveCalls++;
-      return embyPath.startsWith(MOUNT)
+      return embyPath.startsWith(MOUNT) || embyPath.startsWith(HTTP_MOUNT)
         ? { ok: true, url: DIRECT_URL, accountName: "主号", panPath: embyPath }
         : { ok: false, reason: "not-mounted" };
     });
@@ -354,6 +381,28 @@ test("只在任务上开了 302、没手填 mediaMountPath：PlaybackInfo 同样
     } finally {
       deleteTask("pi-302");
       setSettings(now);
+    }
+  });
+test("strm 里是 http 地址的媒体源：只标 DirectStream 不标 DirectPlay，播放一律经过代理", async () => {
+    const before = await app.inject({ method: "POST", url: "/emby/Items/item-1/PlaybackInfo", payload: {} });
+    const untouched = JSON.parse(before.body).MediaSources.find((s: { Id: string }) => s.Id === "ms-http");
+    assert.match(untouched.DirectStreamUrl, /^\/emby\/Videos\/ms-http/, "没有任务用这个 URL 前缀时不该改写");
+
+    // 前缀带尾斜杠也要对得上：任务存的和 Emby 报的都先归一化
+    insertTask({ id: "pi-http", account: "主号", originPath: "tv", targetPath: "tv", strmPrefix: `${HTTP_MOUNT}/`, enable302: true });
+    try {
+      const res = await app.inject({ method: "POST", url: "/emby/Items/item-1/PlaybackInfo", payload: {} });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      const web = body.MediaSources.find((s: { Id: string }) => s.Id === "ms-http");
+      assert.equal(web.SupportsDirectPlay, false, "直接播放会让客户端自己去取 strm 里的 URL，绕过代理");
+      assert.equal(web.SupportsDirectStream, true);
+      assert.equal(web.SupportsTranscoding, false);
+      assert.match(web.DirectStreamUrl, /^\/Videos\/item-1\/stream\.mkv\?/);
+      const pan = body.MediaSources.find((s: { Id: string }) => s.Id === "ms-pan");
+      assert.equal(pan.SupportsDirectPlay, true, "本地挂载路径的源不受影响");
+    } finally {
+      deleteTask("pi-http");
     }
   });
 // ---- System/Info 端口改写 ----
@@ -432,7 +481,7 @@ test("非 ASCII 直链才转义，且只转非 ASCII 部分", async () => {
     assert.equal(res.headers.location, "https://cdn.115.com/%E7%9B%B4%E9%93%BE?t=1");
     setLinkResolver(async (embyPath) => {
       resolveCalls++;
-      return embyPath.startsWith(MOUNT)
+      return embyPath.startsWith(MOUNT) || embyPath.startsWith(HTTP_MOUNT)
         ? { ok: true, url: DIRECT_URL, accountName: "主号", panPath: embyPath }
         : { ok: false, reason: "not-mounted" };
     });

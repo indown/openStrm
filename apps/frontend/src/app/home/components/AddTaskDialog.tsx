@@ -89,10 +89,13 @@ interface AddTaskDialogProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-/** 编辑时，如果启用了 302 且 strmPrefix 以账号结尾，需要去掉账号后缀（保存时会再拼回去） */
+/**
+ * 编辑时，如果启用了 302 且 strmPrefix 以账号结尾，需要去掉账号后缀（保存时会再拼回去）。
+ * http(s) 前缀不拼账号名，也就不能剥：OpenList 存储正好叫账号名时会把最后一段吃掉。
+ */
 function stripAccountSuffix(task: TaskEditable): string {
   let prefix = task.strmPrefix || "";
-  if (task.enable302 && task.account && prefix.endsWith("/" + task.account)) {
+  if (task.enable302 && task.account && !isHttpPrefix(prefix) && prefix.endsWith("/" + task.account)) {
     prefix = prefix.slice(0, -(task.account.length + 1));
   }
   return prefix;
@@ -151,33 +154,29 @@ function CheckboxRow({
 }
 
 /**
- * 路径编码只对 http(s) 前缀有意义：strm 内容是 URL 时空格、# 之类才是问题。
- * 302 任务写的是本地挂载路径，不经过 URL；前缀不是 http(s) 时 strm 是文件路径，编码了反而对不上文件。
+ * 路径编码只对 http(s) 前缀有意义：strm 内容是 URL 时空格、# 之类才是问题（开不开 302 都一样，代理那头会解码）。
+ * 前缀是本地挂载路径时 strm 是文件路径，编码了反而对不上文件。
  */
 function pathEncodingHint(prefixIsHttp: boolean, is302: boolean): { allowed: boolean; description: string } {
+  if (prefixIsHttp) {
+    return {
+      allowed: true,
+      description: "把网盘路径按段做 URL 编码（空格、#、?、中文）。文件名带空格时 ffmpeg 和 Apple 系播放器才打得开，建议开。",
+    };
+  }
   if (is302) return { allowed: false, description: "302 模式写的是本地挂载路径，不经过 URL，不需要编码。" };
-  if (!prefixIsHttp) return { allowed: false, description: "前缀不是 http(s) 地址时 strm 里是本地路径，编码了反而对不上文件。" };
-  return {
-    allowed: true,
-    description: "把网盘路径按段做 URL 编码（空格、#、?、中文）。文件名带空格时 ffmpeg 和 Apple 系播放器才打得开，建议开。",
-  };
+  return { allowed: false, description: "前缀不是 http(s) 地址时 strm 里是本地路径，编码了反而对不上文件。" };
 }
 
 /**
- * 302 靠「strm 里写的是本地挂载路径」认出自己的媒体，前缀是 http(s) 地址时代理认不出来，
- * 还会把账号名拼进 URL 写坏 strm；后端也会拒绝这个组合。这里直接把勾灰掉并说明原因。
+ * 302 的两种前缀：本地挂载路径会拼上 /账号名，代理靠它识别挂载点；
+ * http(s) 地址（OpenList 的 /d/）不拼账号名，代理按任务反查账号，换不到直链时回给 Emby 按 strm 里的 URL 播。
  */
-function redirectHint(prefixIsHttp: boolean): { allowed: boolean; description: string } {
+function redirectHint(prefixIsHttp: boolean): string {
   if (prefixIsHttp) {
-    return {
-      allowed: false,
-      description: "前缀是 http(s) 地址时用不了 302：代理靠本地挂载路径识别媒体，改成 /mnt/115 这样的挂载路径再开。",
-    };
+    return "播放时代理换到 115 直链就 302，换不到时回给 Emby 按 strm 里的地址播放。http(s) 前缀不拼账号名，OpenList 上挂的要是同一个 115 账号。";
   }
-  return {
-    allowed: true,
-    description: "播放时由本工具的代理直接 302 到 115 直链，不再中转流量。前缀会自动拼上 /账号名，代理靠它识别挂载点。",
-  };
+  return "播放时由本工具的代理直接 302 到 115 直链，不再中转流量。前缀会自动拼上 /账号名，代理靠它识别挂载点。";
 }
 
 export function AddTaskDialog({
@@ -213,20 +212,17 @@ export function AddTaskDialog({
   /** 115、夸克和 OpenList 都能列目录（/api/directory/remote/list 按账号类型分流），远程路径旁边给个浏览按钮 */
   const canBrowseRemote = account !== "" && (is115Account || accountType === "openlist" || accountType === "quark");
   const prefixIsHttp = isHttpPrefix(strmPrefix);
-  const redirect = redirectHint(prefixIsHttp);
-  /** 302 真正生效的条件：115 账号、勾了、且前缀不是 http(s)——勾会被下面的 effect 摘掉，这里不等下一轮渲染 */
-  const is302 = is115Account && enable302 && redirect.allowed;
+  const is302 = is115Account && enable302;
+  /** 只有本地挂载路径才拼 /账号名；http(s) 前缀靠任务反查账号 */
+  const appendAccount = is302 && !prefixIsHttp;
   const encoding = pathEncodingHint(prefixIsHttp, is302);
 
-  // 编码 / 302 没意义的场景下把它关掉，别让一个灰掉的勾继续生效
+  // 编码没意义的场景下把它关掉，别让一个灰掉的勾继续生效
   React.useEffect(() => {
     if (!encoding.allowed && form.getValues("enablePathEncoding")) {
       form.setValue("enablePathEncoding", false);
     }
-    if (!redirect.allowed && form.getValues("enable302")) {
-      form.setValue("enable302", false);
-    }
-  }, [encoding.allowed, redirect.allowed, form]);
+  }, [encoding.allowed, form]);
 
   const setOpen = (next: boolean) => {
     if (!isControlled) setOpenState(next);
@@ -253,7 +249,7 @@ export function AddTaskDialog({
 
   /** 115 + 302 时前缀后面会拼上 /账号名；示例路径让用户看到最终写进 strm 的样子 */
   const cleanPrefix = normalizePrefix(strmPrefix);
-  const effectivePrefix = is302 && account ? `${cleanPrefix}/${account}` : cleanPrefix;
+  const effectivePrefix = appendAccount && account ? `${cleanPrefix}/${account}` : cleanPrefix;
   const preview =
     strmPrefix || originPath ? `${effectivePrefix}/${originPath.replace(/^\/+/, "").replace(/\/+$/, "")}/…/abc.mkv` : "";
 
@@ -261,12 +257,10 @@ export function AddTaskDialog({
     setLoading(true);
     try {
       // 前缀先去掉尾斜杠（后端也会归一化，这里先做是为了拼账号名时不出现 //）。
-      // 前缀是 http(s) 地址时 302 一律按关掉提交：勾已经灰掉，后端也会拒绝这个组合
+      // 115 + 302 且前缀是本地挂载路径时拼上账户名，代理按这个前缀识别挂载点；http(s) 前缀不拼，代理按任务反查账号
       const prefix = normalizePrefix(values.strmPrefix);
-      const enable302 = !!values.enable302 && !isHttpPrefix(prefix);
-      // 115 + 302 时在前缀后拼接账户名，代理按这个前缀识别 302 挂载点
-      const use302 = is115Account && enable302 && !!values.account;
-      const taskData = { ...values, strmPrefix: use302 ? `${prefix}/${values.account}` : prefix, enable302, accountType };
+      const withAccount = is115Account && !!values.enable302 && !!values.account && !isHttpPrefix(prefix);
+      const taskData = { ...values, strmPrefix: withAccount ? `${prefix}/${values.account}` : prefix, accountType };
 
       if (task?.id) {
         await api.tasks.update(task.id, taskData);
@@ -401,7 +395,7 @@ export function AddTaskDialog({
                     <FormControl>
                       <Input {...field} placeholder="例如：http://192.168.1.10:8091/d" className="flex-1" />
                     </FormControl>
-                    {is302 && account && (
+                    {appendAccount && account && (
                       <Input value={`/${account}`} disabled className="w-[120px] bg-muted font-medium shrink-0" title="开启 302 后自动拼上账号名" />
                     )}
                   </div>
@@ -480,8 +474,7 @@ export function AddTaskDialog({
                   control={form.control}
                   name="enable302"
                   label="Emby 302 直链"
-                  description={redirect.description}
-                  disabled={!redirect.allowed}
+                  description={redirectHint(prefixIsHttp)}
                 />
               )}
               <CheckboxRow
