@@ -5,6 +5,7 @@ import { readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 import { driveErrorToHttp } from "../../services/drive/errors.js";
+import { isSafeItemName } from "../../services/strm/share-strm.js";
 import { assertSameKind, providerForTask, shareForLink } from "../../services/drive/registry.js";
 import { createFollowAfterSave } from "../../services/follow/service.js";
 import { scopeFromSelection } from "../../services/follow/diff.js";
@@ -14,7 +15,7 @@ import { followOptionSchema } from "../../schemas/entities.js";
 
 const itemSchema = z.object({
   id: z.string().min(1),
-  name: z.string(),
+  name: z.string().refine(isSafeItemName, "文件名不能为空，也不能是 . / .. 或含有 /"),
   isDir: z.boolean(),
   token: z.string().optional(),
 });

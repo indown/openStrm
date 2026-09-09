@@ -54,6 +54,8 @@ before(async () => {
   const sQuark = dQuark.share!.define("qk123", { title: "夸克剧", password: "abcd" });
   sQuark.addFile("/E01.mkv");
   sQuark.addFile("/E02.mkv");
+  sQuark.addDir("/Extras");
+  sQuark.addFile("/Extras/making.mkv");
   setDriveProviderFactory((account) => (account.name === "a" ? d115 : account.name === "q" ? dQuark : null));
   setFollowServiceDeps({ notify: async () => {}, random: () => 0.5, gapMs: 0 });
 
@@ -101,7 +103,7 @@ test("info / list：按链接挑同类账号，条目归一化，夸克条目带
   assert.equal(qinfo.json().account, "q");
   const qlist = await post({ action: "list", url: LINK_QUARK, dirId: "0" });
   const qentries = qlist.json().entries as Array<{ id: string; name: string; token?: string }>;
-  assert.equal(qentries.length, 2);
+  assert.equal(qentries.length, 3, "两个文件 + Extras 目录");
   assert.ok(qentries.every((e) => e.token?.startsWith("tok-")), "夸克转存要的 token 跟着条目一起给前端");
 });
 
@@ -137,10 +139,23 @@ test("夸克 receive：带 token 转存，夸克给的顶层 id 直接用来列�
   const items = qlist.json().entries as Array<{ id: string; name: string; isDir: boolean; token?: string }>;
   const res = await post({ action: "receive", url: LINK_QUARK, taskId: "s-quark", subPath: "Show", mode: "sync", items });
   assert.equal(res.statusCode, 200, res.body);
-  assert.equal(res.json().generatedCount, 2);
+  assert.equal(res.json().generatedCount, 3, "两个文件 + 目录里的一个");
   assert.ok(dQuark.tree.get("/kk/Show/E01.mkv"));
   assert.ok(fs.existsSync(path.join(DATA_DIR, "share-itest", "kk", "Show", "E02.strm")));
+  assert.ok(fs.existsSync(path.join(DATA_DIR, "share-itest", "kk", "Show", "Extras", "making.strm")));
   assert.equal(dQuark.share!.calls.receive, 1);
+  const extrasId = dQuark.tree.get("/kk/Show/Extras")!.id;
+  assert.ok(dQuark.log.includes(`listSubtree ${extrasId}`), `目录要按转存回来的顶层 id 列子树，实际调用：${dQuark.log.join(" | ")}`);
+  assert.ok(!dQuark.log.includes("listSubtree /kk/Show/Extras"), "不该退回按路径找");
+});
+
+test("receive 的条目名字不能含 / 或是 . / ..：接口层 400，网盘不会被碰", async () => {
+  const before = d115.share!.calls.receive;
+  for (const name of ["../x.mkv", "a/b.mkv", "..", ""]) {
+    const res = await post({ action: "receive", url: LINK_115, taskId: "s-115", subPath: "Show", mode: "sync", items: [{ id: "s-abc-1", name, isDir: false }] });
+    assert.equal(res.statusCode, 400, `${JSON.stringify(name)} → ${res.body}`);
+  }
+  assert.equal(d115.share!.calls.receive, before);
 });
 
 test("receive 到网盘目录（不生成 strm）：toDirId 或 toPath 二选一，都没有 400", async () => {

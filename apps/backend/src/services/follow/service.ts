@@ -181,6 +181,11 @@ async function walk(
   out: ListedEntry[],
 ): Promise<void> {
   for (const item of await listAll(share, session, dirId, budget)) {
+    // 名字带 / 的条目没法用路径表示（会被当成子目录去找落点，每轮都失败），网盘侧的遍历同样跳过它
+    if (item.name.includes("/")) {
+      log.warn(`追更：分享里「${prefix ? `${prefix}/` : ""}${item.name}」的名字带 /，跳过`);
+      continue;
+    }
     const entry = toEntry(item, prefix);
     out.push(entry);
     if (out.length > FOLLOW.MAX_ENTRIES) {

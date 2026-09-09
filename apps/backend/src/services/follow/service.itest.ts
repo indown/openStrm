@@ -425,3 +425,15 @@ test("服务端更新信号（夸克）：说没更新就不列目录；连续 3
   assert.equal(retry.follow.errorStreak, 0);
 });
 
+test("分享里名字带 / 的条目：建订阅和检查都跳过它，不当成子目录去转存，也不算错误", async () => {
+  drive.share!.listHook = (dirId, entries) => (dirId === "0" ? [...entries, { id: "weird", name: "part 1/2.mkv", isDir: false, token: "tok-weird" }] : entries);
+  const s = await subscribe();
+  assert.ok(!getShareFollow(s.id)!.known.some((e) => e.path.includes("part 1")), "快照里没有它");
+  now += HOUR;
+  const { run, follow } = await checkFollow(s.id);
+  assert.equal(run, null);
+  assert.equal(follow.status, "idle");
+  assert.equal(follow.errorStreak, 0);
+  assert.equal(received(), 0);
+});
+

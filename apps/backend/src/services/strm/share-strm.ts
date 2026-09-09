@@ -8,7 +8,16 @@ import type { TaskDefinition, AppSettings } from "@openstrm/shared";
 import type { DriveProvider } from "../drive/types.js";
 import { writeStrm } from "../download/rate-limited.js";
 import { resolveInDataDir } from "../../paths.js";
+import { moduleLogger } from "../../lib/logger.js";
 import { toStrmPath } from "./naming.js";
+
+const log = moduleLogger("share");
+
+/** 能当作本地文件名的名字：不空、不是 . / ..、不含 /（含了就会写到别的目录去） */
+export function isSafeItemName(name: string): boolean {
+  const n = name.trim();
+  return n !== "" && n !== "." && n !== ".." && !n.includes("/");
+}
 
 export interface SelectedItem {
   name: string;
@@ -61,6 +70,11 @@ export async function generateStrmForSelected(params: {
   let skippedCount = 0;
 
   for (const item of selectedItems) {
+    if (!isSafeItemName(item.name)) {
+      log.warn(`分享条目「${item.name}」的名字没法落成本地路径，跳过`);
+      skippedCount++;
+      continue;
+    }
     if (!item.isDir) {
       const ext = path.extname(item.name).toLowerCase();
       if (strmExts.length > 0 && !strmExts.includes(ext)) continue;
