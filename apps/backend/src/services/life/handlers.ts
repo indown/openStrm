@@ -13,7 +13,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import type { AppSettings, LifeEventMode, TaskDefinition } from "@openstrm/shared";
 import { downloadFile, writeStrm } from "../download/rate-limited.js";
-import type { ChangeEvent, DriveEntry, DriveProvider } from "../drive/types.js";
+import { normalizePath, type ChangeEvent, type DriveEntry, type DriveProvider } from "../drive/types.js";
 import { resolveInDataDir } from "../../paths.js";
 import { decodeSegments, strmContent, toStrmPath } from "../strm/naming.js";
 import { isDirectoryEntry, pathExists, removeEmptyParents } from "../../lib/fs.js";
@@ -46,9 +46,9 @@ interface TaskMatch {
   saveDir: string;
 }
 
+/** 和变更源算事件路径用同一套归一化（按段 trim、去重复斜杠），`tv//show ` 这种 originPath 才对得上 */
 function normalizeOrigin(p: string): string {
-  const s = (p || "").trim().replace(/\/+$/, "");
-  return s.startsWith("/") ? s : `/${s}`;
+  return normalizePath(p || "");
 }
 
 /** 命中最长（最具体）的 originPath */

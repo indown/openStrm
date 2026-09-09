@@ -98,3 +98,12 @@ t("命中最长（最具体）的 originPath", () => {
 t("不在任何 originPath 下 → null", () => assert.equal(matchTask(ctx, "/other/x.mkv"), null));
 t("前缀相同但不是子路径 → 不命中", () => assert.equal(matchTask(ctx, "/tvshows/x.mkv"), null));
 t("originPath 自身 → relPath 为空", () => assert.equal(matchTask(ctx, "/tv")?.relPath, ""));
+
+t("originPath 写得不规范（重复斜杠、段首尾空格）也按归一化后的路径命中，和变更源算出来的事件路径一致", () => {
+  const tasks: TaskDefinition[] = [{ id: "odd", account: "a", accountType: "quark", originPath: "tv// show /", targetPath: "tv-odd", strmPrefix: "/mnt" }];
+  const ctx = { tasks } as unknown as LifeContext;
+  const m = matchTask(ctx, "/tv/show/S1/e1.mkv");
+  assert.equal(m?.task.id, "odd");
+  assert.equal(m?.relPath, "S1/e1.mkv");
+  assert.equal(matchTask(ctx, "/tv/showx/e1.mkv"), null);
+});
