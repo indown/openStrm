@@ -2,7 +2,7 @@
  * 整理的持久化：run / unit / item 三张表 + 识别记忆 + TMDB 缓存。
  * item 的 src_path / dst_path 是网盘绝对路径（带前导 /）；时间戳一律秒。
  */
-import { and, asc, desc, eq, gt, inArray, like, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, like, lt, ne, or, sql } from "drizzle-orm";
 import type {
   OrganizeAction,
   OrganizeConfidence,
@@ -393,6 +393,7 @@ const baseOfPath = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
  *   - 撤销过的项（reverted）：新路径是 srcPath，或者反向的中间路径 `目标目录/旧名字`
  *   - 建目录项（mkdir done）：夸克快照会把新目录报成 create，115 报成 folder
  *   - 删目录的事件（kind = remove）：只按节点认执行时删掉的源目录（rmdir done）和撤销时删掉的自建目录（mkdir reverted）
+ *   - 执行中的项（pending 且 cur_path 非空）：已经原地改了名还没挪走，改名事件的路径是中间名字，移动事件的路径是目标
  * 只认操作之后 24 小时内、且事件时间不早于操作的；每项最多认 OWN_MAX_HITS 条，之后同一节点再动就是用户动的
  */
 export function findOwnOperation(nodeId: string, path: string, at: number, kind: "remove" | "other" = "other"): OrganizeItem | null {
@@ -401,12 +402,27 @@ export function findOwnOperation(nodeId: string, path: string, at: number, kind:
   const rows = db
     .select()
     .from(organizeItems)
-    .where(and(eq(organizeItems.nodeId, nodeId), gt(organizeItems.finishedAt, cutoff), inArray(organizeItems.status, ["done", "reverted"]), lt(organizeItems.hits, OWN_MAX_HITS)))
+    .where(
+      and(
+        eq(organizeItems.nodeId, nodeId),
+        lt(organizeItems.hits, OWN_MAX_HITS),
+        or(
+          and(inArray(organizeItems.status, ["done", "reverted"]), gt(organizeItems.finishedAt, cutoff)),
+          // 执行中：原地改完名还没挪走的项（大范围整理要跑好几分钟，监控会在这个窗口里拉到改名事件）
+          and(eq(organizeItems.status, "pending"), ne(organizeItems.curPath, "")),
+        ),
+      ),
+    )
     .orderBy(desc(organizeItems.finishedAt))
     .limit(10)
     .all()
     .map(toItem);
   for (const it of rows) {
+    if (it.status === "pending") {
+      // 改名事件报的是中间名字；批量挪完、还没来得及记账时移动事件报的是目标
+      if (kind !== "remove" && (path === it.curPath || path === it.dstPath)) return it;
+      continue;
+    }
     // 事件比操作还早（快照式来源的时间是扫描时间，给 5 分钟余量）
     if (it.finishedAt !== null && at > 0 && at < it.finishedAt - 300) continue;
     // 删目录的事件：目录已经不在路径缓存里，事件报的路径靠不住，按节点认——执行时删掉的腾空源目录（撤销时重建的是新节点，

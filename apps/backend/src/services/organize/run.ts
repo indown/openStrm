@@ -674,9 +674,9 @@ async function execute(job: Job, runId: string): Promise<void> {
     if (blockedError(ctx, err)) fatal = `网盘拒绝了请求（${msg}），整理已停下，稍后再继续`;
   };
   /** 网盘上动完之后同步本地；失败不影响网盘那边已经完成的事实，但要记在项上（监控见到 error 非空就不跳过这条事件，让它把本地补回来） */
-  const mirror = async (oldPath: string, newPath: string, isDir: boolean): Promise<string> => {
+  const mirror = async (oldPath: string, newPath: string, isDir: boolean, oldPathAlt?: string): Promise<string> => {
     try {
-      await mirrorRelocate({ oldPath, newPath, isDir }, { tasks: ctx.tasks, settings });
+      await mirrorRelocate({ oldPath, newPath, isDir, oldPathAlt }, { tasks: ctx.tasks, settings });
       return "";
     } catch (err) {
       const msg = `本地镜像失败：${errMsg(err)}`;
@@ -685,7 +685,9 @@ async function execute(job: Job, runId: string): Promise<void> {
     }
   };
   const finishItem = async (it: OrganizeItem, nodeId: string, isDir: boolean) => {
-    const error = await mirror(it.srcPath, it.dstPath, isDir);
+    // 跨目录且改了名的项在源目录里有过一个中间名字：本地文件可能已经被监控按它改过名
+    const intermediate = it.action === "move" && baseOf(it.srcPath) !== baseOf(it.dstPath) ? `${dirOf(it.srcPath)}/${baseOf(it.dstPath)}` : undefined;
+    const error = await mirror(it.srcPath, it.dstPath, isDir, intermediate);
     updateItem(it.id, { status: "done", nodeId, finishedAt: now(), curPath: "", error });
     done++;
   };

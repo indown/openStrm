@@ -338,6 +338,12 @@ test("中途取消：改了名还没挪走的项记着 cur_path，续跑接着�
   assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E01.mkv"), "网盘上文件已经是新名字、还在原目录");
   assert.ok(localExists("inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.strm"), "本地还没动");
   assert.equal(getRunDetail(run.id).revertable.ok, true, "改过名就能撤");
+  // 这个窗口里监控拉到的改名事件（路径是中间名字）要认成整理自己的，不能当用户改名去动本地
+  const inflight = partial.find((i) => i.status === "pending") ?? partial[0];
+  const nowSec = Math.floor(Date.now() / 1000);
+  assert.ok(findOwnOperation(inflight.nodeId, inflight.curPath, nowSec), "改了名还没挪走：按中间名字认");
+  assert.ok(findOwnOperation(inflight.nodeId, inflight.dstPath, nowSec), "挪到目标还没记账：按目标认");
+  assert.equal(findOwnOperation(inflight.nodeId, "/tv/other/x.mkv", nowSec), null);
   // 续跑：不会再改一次名，直接挪
   drive.failWriteOn = null;
   const renamesBefore = drive.calls.rename;
@@ -359,6 +365,19 @@ test("中途取消：改了名还没挪走的项记着 cur_path，续跑接着�
   await untilStatus(run2.id, ["reverted"]);
   assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv"), "名字改回去了");
   assert.equal(drive.tree.get("/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E01.mkv"), undefined);
+});
+
+test("监控抢先把本地 strm 按中间名字改了：镜像接着按它搬，不在旧目录留副本", async () => {
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  // 模拟监控在「原地改完名、还没挪走」的窗口里把本地文件改成了新名字（老版本没认出这是整理自己做的）
+  fs.renameSync(path.join(LOCAL, "inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.strm"), path.join(LOCAL, "inbox/BEEF.S01.1080p/怒呛人生 - S01E01.strm"));
+  fs.writeFileSync(path.join(LOCAL, "inbox/BEEF.S01.1080p/怒呛人生 - S01E01.strm"), "/mnt/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E01.mkv");
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.equal(localRead("怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.strm"), "/mnt/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv");
+  assert.ok(!localExists("inbox/BEEF.S01.1080p/怒呛人生 - S01E01.strm"), "改了名的那份被搬走了，不是另写一份");
+  assert.ok(!localExists("inbox/BEEF.S01.1080p"), "源目录腾空后本地目录也没了");
 });
 
 test("失败的项再执行会重试；记忆按新路径写、不被旧记忆盖掉", async () => {

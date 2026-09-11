@@ -20,13 +20,26 @@ export interface MirrorDeps {
 
 export type MirrorOutcome = "moved" | "created" | "removed" | "none";
 
-/** 网盘上 oldPath → newPath（绝对路径）之后同步本地 */
-export async function mirrorRelocate(op: { oldPath: string; newPath: string; isDir: boolean }, deps: MirrorDeps): Promise<MirrorOutcome> {
+/**
+ * 网盘上 oldPath → newPath（绝对路径）之后同步本地。
+ * oldPathAlt：文件在网盘上经过的中间位置（整理先原地改名再挪走时的 `源目录/新名字`）——网盘监控可能抢在镜像前面
+ * 把本地文件按中间名字改过了，按原名找不到时就按它找，别在新位置另写一份、把改了名的旧文件留在原地
+ */
+export async function mirrorRelocate(op: { oldPath: string; newPath: string; isDir: boolean; oldPathAlt?: string }, deps: MirrorDeps): Promise<MirrorOutcome> {
   const ctx = { tasks: deps.tasks, settings: deps.settings };
-  const oldMatch = matchTask(ctx, op.oldPath);
+  let oldMatch = matchTask(ctx, op.oldPath);
   const newMatch = matchTask(ctx, op.newPath);
-  const from = oldMatch ? (op.isDir ? path.join(oldMatch.saveDir, oldMatch.relPath) : localPathFor(oldMatch, ctx, oldMatch.relPath)) : null;
-  const to = newMatch ? (op.isDir ? path.join(newMatch.saveDir, newMatch.relPath) : localPathFor(newMatch, ctx, newMatch.relPath)) : null;
+  const localOf = (m: NonNullable<typeof oldMatch>) => (op.isDir ? path.join(m.saveDir, m.relPath) : localPathFor(m, ctx, m.relPath));
+  let from = oldMatch ? localOf(oldMatch) : null;
+  if (op.oldPathAlt && !(from && (await pathExists(from)))) {
+    const altMatch = matchTask(ctx, op.oldPathAlt);
+    const alt = altMatch ? localOf(altMatch) : null;
+    if (alt && (await pathExists(alt))) {
+      from = alt;
+      oldMatch = altMatch;
+    }
+  }
+  const to = newMatch ? localOf(newMatch) : null;
 
   if (from && (await pathExists(from))) {
     if (!to || !newMatch) {
