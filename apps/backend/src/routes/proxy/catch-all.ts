@@ -2,11 +2,18 @@ import type { FastifyInstance } from "fastify";
 import httpProxy from "@fastify/http-proxy";
 import { embyUpstream } from "../../services/emby/api.js";
 import { applyForwardedHeaders } from "./upstream.js";
+import { handleBareStrm } from "./bare-strm.js";
 
 /**
  * 兜底反代到 Emby。必须最后注册，让拦截路由优先。
  */
 export default async function catchAllProxy(fastify: FastifyInstance) {
+  // @fastify/http-proxy 自己注册 /*，不能再注册一个同样的通配路由。
+  // 在父作用域挂 preHandler，确保它也作用于下面的 proxy 子插件路由。
+  fastify.addHook("preHandler", async (request, reply) => {
+    if (await handleBareStrm(request, reply)) return reply;
+  });
+
   await fastify.register(httpProxy, {
     /**
      * 故意不填 upstream，全部交给 getUpstream 每请求现读。

@@ -30,6 +30,9 @@ const LOCAL_FILE = "/media/local/movie.mkv";
 /** strm 里写 OpenList 地址的那种任务：前缀是 URL，代理按 URL 匹配挂载点 */
 const HTTP_MOUNT = "http://ol.local:5244/d/115";
 const HTTP_FILE = `${HTTP_MOUNT}/tv/Show/ep1.mkv`;
+/** 生成的裸 STRM URL：host/path 必须作为任务边界参与匹配 */
+const BARE_STRM_HOST = "strm.local:8098";
+const BARE_STRM_PREFIX = `http://${BARE_STRM_HOST}/main`;
 /**
  * 真实形态的 115 直链：文件名已经是转义过的，签名里带 `+` 和 `=`。
  * 必须**原样**出现在 Location 里：再做一次 encodeURI 的话
@@ -39,6 +42,30 @@ const DIRECT_URL =
   "https://cdn-qn.115.com/lab/%E4%B8%AD%E6%96%87%E5%90%8D.mkv?t=1&u=a%2Bb&sign=xY%3D%3D";
 /** 混进非 ASCII 的异常直链，只有这种才需要转义 */
 const UNICODE_URL = "https://cdn.115.com/直链?t=1";
+
+const MEDIA_BYTES = Buffer.from("0123456789abcdef");
+const media = http.createServer((request, response) => {
+  if (request.headers.range === "bytes=0-3") {
+    const body = MEDIA_BYTES.subarray(0, 4);
+    response.writeHead(206, {
+      "accept-ranges": "bytes",
+      "content-length": body.length,
+      "content-range": `bytes 0-3/${MEDIA_BYTES.length}`,
+      "content-type": "video/x-matroska",
+    });
+    response.end(body);
+    return;
+  }
+  response.writeHead(200, {
+    "accept-ranges": "bytes",
+    "content-length": MEDIA_BYTES.length,
+    "content-type": "video/x-matroska",
+  });
+  response.end(MEDIA_BYTES);
+});
+await new Promise<void>((resolve) => media.listen(0, "127.0.0.1", resolve));
+const mediaPort = (media.address() as { port: number }).port;
+const MEDIA_URL = `http://127.0.0.1:${mediaPort}/media.mkv`;
 
 // ---- 假 Emby ----
 const emby = http.createServer((req, res) => {
@@ -98,13 +125,21 @@ setSettings({
 const app = Fastify({ logger: false });
 await app.register(proxyPlugin);
 await app.ready();
+insertTask({
+  id: "bare-strm-302",
+  account: "主号",
+  originPath: "library",
+  targetPath: "library",
+  strmPrefix: BARE_STRM_PREFIX,
+  enable302: true,
+});
 
 let resolveCalls = 0;
 let lastResolvedUa: string | undefined;
 setLinkResolver(async (embyPath, userAgent) => {
   resolveCalls++;
   lastResolvedUa = userAgent;
-  return embyPath.startsWith(MOUNT) || embyPath.startsWith(HTTP_MOUNT)
+  return embyPath.startsWith(MOUNT) || embyPath.startsWith(HTTP_MOUNT) || embyPath.startsWith(BARE_STRM_PREFIX)
     ? { ok: true, url: DIRECT_URL, accountName: "主号", panPath: embyPath }
     : { ok: false, reason: "not-mounted" };
 });
@@ -121,6 +156,64 @@ test("挂载点里的条目 302 到直链", async () => {
     const res = await app.inject({ method: "GET", url: "/emby/Videos/item-1/stream.mkv?api_key=k" });
     assert.equal(res.statusCode, 302);
     assert.equal(res.headers.location, DIRECT_URL, "已转义的直链必须原样透传，不能二次编码");
+  });
+
+test("裸 STRM URL 在 catch-all 前被解析并 302，HEAD 复用缓存", async () => {
+    reset();
+    const headers = { host: BARE_STRM_HOST, "user-agent": "Lavf/59.27.100" };
+    const get = await app.inject({ method: "GET", url: "/main/library/movie.mkv", headers });
+    assert.equal(get.statusCode, 302);
+    assert.equal(get.headers.location, DIRECT_URL);
+    assert.equal(resolveCalls, 1, "裸 URL 应调用一次直链解析器");
+
+    const head = await app.inject({ method: "HEAD", url: "/main/library/movie.mkv", headers });
+    assert.equal(head.statusCode, 302);
+    assert.equal(head.headers.location, DIRECT_URL);
+    assert.equal(resolveCalls, 1, "同一裸 URL/UA 的 HEAD 应命中缓存");
+
+    const outsideOrigin = await app.inject({
+      method: "GET",
+      url: "/main/private/movie.mkv",
+      headers,
+    });
+    assert.equal(outsideOrigin.statusCode, 200, "originPath 外的请求必须继续回源 Emby");
+    assert.equal(outsideOrigin.body, "upstream-ok");
+  });
+
+test("裸 STRM 的 302 可跟随到支持 Range 的媒体字节端点", async () => {
+    reset();
+    setLinkResolver(async (embyPath, userAgent) => {
+      resolveCalls++;
+      lastResolvedUa = userAgent;
+      return embyPath.startsWith(BARE_STRM_PREFIX)
+        ? { ok: true, url: MEDIA_URL, accountName: "主号", panPath: embyPath }
+        : { ok: false, reason: "not-mounted" };
+    });
+    try {
+      const redirect = await app.inject({
+        method: "GET",
+        url: "/main/library/movie.mkv",
+        headers: { host: BARE_STRM_HOST, "user-agent": "Lavf/59.27.100", range: "bytes=0-3" },
+      });
+      assert.equal(redirect.statusCode, 302);
+      assert.equal(redirect.headers.location, MEDIA_URL);
+
+      const mediaResponse = await fetch(redirect.headers.location!, {
+        headers: { range: "bytes=0-3" },
+        redirect: "manual",
+      });
+      assert.equal(mediaResponse.status, 206);
+      assert.equal(mediaResponse.headers.get("content-range"), `bytes 0-3/${MEDIA_BYTES.length}`);
+      assert.equal(Buffer.from(await mediaResponse.arrayBuffer()).toString(), "0123");
+    } finally {
+      setLinkResolver(async (embyPath, userAgent) => {
+        resolveCalls++;
+        lastResolvedUa = userAgent;
+        return embyPath.startsWith(MOUNT) || embyPath.startsWith(HTTP_MOUNT) || embyPath.startsWith(BARE_STRM_PREFIX)
+          ? { ok: true, url: DIRECT_URL, accountName: "主号", panPath: embyPath }
+          : { ok: false, reason: "not-mounted" };
+      });
+    }
   });
 
 test("小写路径同样命中（客户端大小写不统一）", async () => {
@@ -609,7 +702,9 @@ test("改配置后旧缓存自动失效（跨进程）", async () => {
   });
 
 after(async () => {
+  deleteTask("bare-strm-302");
   setSettings(baseline);
   await app.close();
   emby.close();
+  media.close();
 });

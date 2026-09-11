@@ -79,6 +79,46 @@ function safeLocation(url: string): string {
 }
 
 /**
+ * 直接请求 .strm 内容里的 URL 时没有 Emby Item ID，也通常没有 Emby token。
+ *
+ * 这条入口只由 bare-strm.ts 在已匹配任务的前提下调用：strmPrefix 本身就是
+ * 请求能力边界，解析仍复用现有的 115 任务路径解析和直链缓存。返回 false
+ * 表示继续走 catch-all 回源，保持旧的失败兜底语义。
+ */
+export async function redirectBareStrm(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  embyPath: string,
+  cacheScope: string,
+): Promise<boolean> {
+  const userAgent = request.headers["user-agent"];
+  const cacheKey = `${configRevision()}:bare:${cacheScope}:${userAgent ?? ""}`;
+  const cached = linkCache.get(cacheKey);
+  if (cached) {
+    request.log.debug({ scope: cacheScope }, "裸 STRM 302 缓存命中");
+    reply.redirect(cached, 302);
+    return true;
+  }
+
+  try {
+    const resolved = await resolveLink(embyPath, userAgent);
+    if (!resolved.ok) {
+      request.log.debug({ scope: cacheScope, reason: resolved.reason }, "裸 STRM 未解析，回源");
+      return false;
+    }
+
+    const target = safeLocation(resolved.url);
+    linkCache.set(cacheKey, target);
+    request.log.info({ scope: cacheScope, account: resolved.accountName }, "裸 STRM 302 到直链");
+    reply.redirect(target, 302);
+    return true;
+  } catch (err) {
+    request.log.error({ err, scope: cacheScope }, "裸 STRM 解析失败，回源");
+    return false;
+  }
+}
+
+/**
  * 需要"两跳"的客户端。
  *
  * 115 直链和换链时用的 User-Agent 严格绑定（实测：用 A 换的链接拿 B 去取，CDN 直接 403）。
