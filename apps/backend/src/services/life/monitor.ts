@@ -30,6 +30,8 @@ import {
   upsertLifeEvents,
   writeKv,
 } from "../../db/repositories/life.js";
+import { bumpOwnHit, findOwnOperation } from "../../db/repositories/organize.js";
+import { maybeAutoOrganize } from "../organize/auto.js";
 import { providerFor } from "../drive/registry.js";
 import type { AccountIssue, ChangeCursor, ChangeEvent, ChangeKind, ChangeLog, ChangeSource, DriveProvider, ProbeResult } from "../drive/types.js";
 import { flushEmbyRefresh, getEmbyRefreshState, scheduleEmbyRefresh } from "../media-server.js";
@@ -39,6 +41,7 @@ import {
   handleNewFolder,
   handleRemove,
   handleRename,
+  matchTask,
   type HandleResult,
   type LifeContext,
 } from "./handlers.js";
@@ -362,13 +365,22 @@ class AccountMonitor {
         this.log("debug", `${name} 跳过：${ev.problem}`);
       } else {
         try {
-          const res = await dispatch(ctx, ev);
+          // 整理自己做的改名 / 移动 / 建目录 / 删空目录会以事件的形式再回来一遍：本地已经镜像过了，跳过；
+          // 镜像失败的那些项不算（error 非空），让事件照常处理把本地补回来
+          const own = findOwnOperation(ev.nodeId, ev.path, ev.at, ev.kind === "remove" ? "remove" : "other");
+          const ownOk = own !== null && own.error === "";
+          if (ownOk) bumpOwnHit(own.id);
+          const res: HandleResult = ownOk ? { status: "skipped", detail: "整理已处理，本地已镜像", changed: false } : await dispatch(ctx, ev);
           markLifeEvent(id, res.status, res.detail);
           if (res.status === "done") {
             this.stats.handled++;
             // 防抖攒着：事件一条一条来，逐条触发全库扫描会把 Emby 打瘫
             if (res.changed) scheduleEmbyRefresh();
             this.log("info", `${name} ${res.detail}`);
+            if (ev.kind === "create" && res.changed) {
+              const m = matchTask(ctx, ev.path);
+              if (m?.relPath) maybeAutoOrganize({ task: m.task, paths: [m.relPath], trigger: "monitor", debounce: true });
+            }
           } else {
             this.stats.skipped++;
             this.log("debug", `${name} 跳过：${res.detail}`);

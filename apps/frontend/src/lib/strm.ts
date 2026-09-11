@@ -41,6 +41,11 @@ export const ISSUE_META: Record<
     hint: "同一集有多个 strm，播放器里会显示成多条；也可能只是不同画质的版本",
   },
   "leftover-part": { label: "残留分段", tone: "neutral", hint: "下载中断留下的 .part 文件", batch: "delete" },
+  "nonstandard-name": {
+    label: "命名不规范",
+    tone: "info",
+    hint: "文件名带发布组 / 画质 / 编码这类噪音，媒体库靠猜容易识别错；到「整理」页可以按 TMDB 规范成标准命名",
+  },
 };
 
 export const PARSE_REASON_LABEL: Record<StrmParseReason, string> = {

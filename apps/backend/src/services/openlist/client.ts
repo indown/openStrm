@@ -230,3 +230,23 @@ export async function openlistCopyTasks(
   ]);
   return { undone: (undone ?? []).map(normalizeTask), done: (done ?? []).map(normalizeTask) };
 }
+
+/* ------------------------------- 写操作（整理用） ------------------------------- */
+
+export async function openlistMkdir(account: AccountOpenlist, path: string, signal?: AbortSignal): Promise<void> {
+  await request(account, "POST", "/api/fs/mkdir", { path }, signal);
+}
+
+export async function openlistRename(account: AccountOpenlist, path: string, name: string, signal?: AbortSignal): Promise<void> {
+  await request(account, "POST", "/api/fs/rename", { path, name }, signal);
+}
+
+export async function openlistMove(account: AccountOpenlist, srcDir: string, dstDir: string, names: string[], signal?: AbortSignal): Promise<void> {
+  if (names.length === 0) return;
+  await request(account, "POST", "/api/fs/move", { src_dir: srcDir, dst_dir: dstDir, names }, signal);
+}
+
+export async function openlistRemove(account: AccountOpenlist, dir: string, names: string[], signal?: AbortSignal): Promise<void> {
+  if (names.length === 0) return;
+  await request(account, "POST", "/api/fs/remove", { dir, names }, signal);
+}

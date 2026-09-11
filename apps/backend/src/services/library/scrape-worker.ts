@@ -1,4 +1,4 @@
-import { searchMulti, searchMovie, searchTv, type TmdbSearchResult } from "../tmdb.js";
+import { searchMulti, searchMovie, searchTv, throttleTmdb, type TmdbSearchResult } from "../tmdb.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import {
   getById,
@@ -12,25 +12,15 @@ import { moduleLogger } from "../../lib/logger.js";
 
 const log = moduleLogger("scrape-worker");
 
-/** 全局 throttle 用的是同一条 `lastRequestAt` 时间线，因此并行 worker 实际被串行化。
- *  保持 CONCURRENCY=1 以避免 "伪并发" 带来的误解；TMDB 速率由 MIN_INTERVAL_MS 控制 (≈4 req/s)。 */
+/** 节流和整理功能共用 services/tmdb.ts 的 throttleTmdb（同一条时间线，≈4 req/s）；worker 本身串行 */
 const CONCURRENCY = 1;
-const MIN_INTERVAL_MS = 250;
 
-let lastRequestAt = 0;
 let activeCount = 0;
 const queue: string[] = [];
 const queued = new Set<string>();
 let tickScheduled = false;
 
-async function throttle(): Promise<void> {
-  const now = Date.now();
-  const wait = lastRequestAt + MIN_INTERVAL_MS - now;
-  if (wait > 0) {
-    await new Promise((r) => setTimeout(r, wait));
-  }
-  lastRequestAt = Date.now();
-}
+const throttle = throttleTmdb;
 
 function scheduleTick() {
   if (tickScheduled) return;

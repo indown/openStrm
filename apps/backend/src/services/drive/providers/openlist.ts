@@ -5,7 +5,16 @@
 import type { AccountOpenlist } from "@openstrm/shared";
 import { readAppSettings } from "../../../db/repositories/settings.js";
 import { scheduleForAccount } from "../../download/rate-limited.js";
-import { OpenlistError, openlistListDir, openlistRawUrl, type OpenlistFsEntry } from "../../openlist/client.js";
+import {
+  OpenlistError,
+  openlistListDir,
+  openlistMkdir,
+  openlistMove,
+  openlistRawUrl,
+  openlistRemove,
+  openlistRename,
+  type OpenlistFsEntry,
+} from "../../openlist/client.js";
 import { syncViewFromPaths } from "../subtree.js";
 import {
   normalizePath,
@@ -15,7 +24,9 @@ import {
   type DriveEntry,
   type DriveNode,
   type DriveProvider,
+  type DriveWriteOps,
   type SubtreeEntry,
+  type WriteNode,
 } from "../types.js";
 
 const join = (dir: string, name: string): string => (dir === "/" ? `/${name}` : `${dir}/${name}`);
@@ -32,10 +43,13 @@ function modifiedAtOf(e: OpenlistFsEntry): number | undefined {
 
 export class OpenlistProvider implements DriveProvider {
   readonly kind = "openlist" as const;
-  readonly capabilities = { share: false, changes: false };
+  readonly capabilities = { share: false, changes: false, write: true };
   readonly rootId = "/";
+  readonly write: DriveWriteOps;
 
-  constructor(readonly account: AccountOpenlist) {}
+  constructor(readonly account: AccountOpenlist) {
+    this.write = new OpenlistWrite(account);
+  }
 
   async resolvePath(path: string, signal?: AbortSignal): Promise<DriveNode | null> {
     const p = normalizePath(path);
@@ -111,5 +125,44 @@ export class OpenlistProvider implements DriveProvider {
   classifyError(err: unknown): AccountIssue | null {
     if (err instanceof OpenlistError && (err.code === 401 || err.code === 403)) return "auth";
     return null;
+  }
+}
+
+/** OpenList 的 id 就是路径：改名 / 移动之后返回新路径当 id */
+class OpenlistWrite implements DriveWriteOps {
+  constructor(private readonly account: AccountOpenlist) {}
+
+  async mkdir(parent: { id: string; path: string }, name: string, signal?: AbortSignal): Promise<DriveNode> {
+    const p = join(normalizePath(parent.path), name);
+    await openlistMkdir(this.account, p, signal);
+    return { id: p, isDir: true };
+  }
+
+  async rename(node: WriteNode, newName: string, signal?: AbortSignal): Promise<{ id: string }> {
+    const p = normalizePath(node.path);
+    await openlistRename(this.account, p, newName, signal);
+    return { id: join(normalizePath(splitPath(p).slice(0, -1).join("/")), newName) };
+  }
+
+  async move(nodes: WriteNode[], to: { id: string; path: string }, signal?: AbortSignal): Promise<Array<{ id: string }>> {
+    const dst = normalizePath(to.path);
+    const bySrc = new Map<string, string[]>();
+    for (const n of nodes) {
+      const p = normalizePath(n.path);
+      const dir = normalizePath(splitPath(p).slice(0, -1).join("/"));
+      const list = bySrc.get(dir) ?? [];
+      list.push(splitPath(p).pop() ?? "");
+      bySrc.set(dir, list);
+    }
+    for (const [dir, names] of bySrc) await openlistMove(this.account, dir, dst, names, signal);
+    return nodes.map((n) => ({ id: join(dst, splitPath(n.path).pop() ?? "") }));
+  }
+
+  async rmdirIfEmpty(node: WriteNode, signal?: AbortSignal): Promise<boolean> {
+    const p = normalizePath(node.path);
+    const entries = await openlistListDir(this.account, p, { refresh: true, signal });
+    if (entries.length > 0) return false;
+    await openlistRemove(this.account, normalizePath(splitPath(p).slice(0, -1).join("/")), [splitPath(p).pop() ?? ""], signal);
+    return true;
   }
 }

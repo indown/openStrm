@@ -58,7 +58,8 @@ export type StrmIssueType =
   | "stale-content"
   | "unparsable"
   | "duplicate-episode"
-  | "leftover-part";
+  | "leftover-part"
+  | "nonstandard-name";
 
 export interface StrmIssue {
   type: StrmIssueType;

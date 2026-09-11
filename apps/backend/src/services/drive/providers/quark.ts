@@ -7,7 +7,20 @@ import type { AccountQuark } from "@openstrm/shared";
 import { mapLimit } from "../../../lib/async.js";
 import { PermanentError } from "../../../lib/errors.js";
 import { moduleLogger } from "../../../lib/logger.js";
-import { QuarkError, quarkDownloadLink, quarkListDir, quarkResolvePath, type QuarkEntry } from "../../quark/client.js";
+import {
+  forgetQuarkPaths,
+  QuarkError,
+  quarkDelete,
+  quarkDownloadLink,
+  quarkListDir,
+  quarkMkdir,
+  quarkMove,
+  quarkRename,
+  quarkResolvePath,
+  rememberQuarkDir,
+  type QuarkEntry,
+  type QuarkTaskHandle,
+} from "../../quark/client.js";
 import {
   QUARK_SHARE_PAGE_SIZE,
   QuarkShareError,
@@ -30,6 +43,7 @@ import {
   type DriveLink,
   type DriveNode,
   type DriveProvider,
+  type DriveWriteOps,
   type ReceiveItem,
   type ReceiveResult,
   type ShareEntry,
@@ -40,6 +54,7 @@ import {
   type ShareSession,
   type SubtreeEntry,
   type ShareUpdates,
+  type WriteNode,
 } from "../types.js";
 
 const log = moduleLogger("quark");
@@ -182,14 +197,16 @@ class QuarkShare implements ShareProvider {
 
 export class QuarkProvider implements DriveProvider {
   readonly kind = "quark" as const;
-  readonly capabilities = { share: true, changes: true };
+  readonly capabilities = { share: true, changes: true, write: true };
   readonly rootId = "0";
   readonly share: ShareProvider;
   readonly changes: QuarkSnapshotSource;
+  readonly write: DriveWriteOps;
 
   constructor(readonly account: AccountQuark) {
     this.share = new QuarkShare(account);
     this.changes = new QuarkSnapshotSource(this);
+    this.write = new QuarkWrite(account);
   }
 
   async resolvePath(path: string, signal?: AbortSignal): Promise<DriveNode | null> {
@@ -266,3 +283,52 @@ export class QuarkProvider implements DriveProvider {
     return null;
   }
 }
+
+/* ------------------------------- 写操作 ------------------------------- */
+
+const baseName = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
+const joinPan = (dir: string, name: string): string => (dir === "/" || dir === "" ? `/${name}` : `${dir}/${name}`);
+
+/** 夸克没有批量改名，逐个来（账号限流器管节奏）；移动 / 删除是异步任务，没完成就轮询 */
+class QuarkWrite implements DriveWriteOps {
+  constructor(private readonly account: AccountQuark) {}
+
+  private async settle(handle: QuarkTaskHandle, signal?: AbortSignal): Promise<void> {
+    if (handle.finish || !handle.taskId) return;
+    await quarkWaitTask(this.account, handle.taskId, { signal });
+  }
+
+  async mkdir(parent: { id: string; path: string }, name: string, signal?: AbortSignal): Promise<DriveNode> {
+    const fid = await quarkMkdir(this.account, parent.id, name, signal);
+    rememberQuarkDir(this.account, joinPan(parent.path, name), { fid, name, isDir: true, size: 0, category: 0, modifiedAt: Date.now() });
+    return { id: fid, isDir: true };
+  }
+
+  async rename(node: WriteNode, newName: string, signal?: AbortSignal): Promise<{ id: string }> {
+    await quarkRename(this.account, node.id, newName, signal);
+    if (node.isDir) forgetQuarkPaths(this.account, [node.path]);
+    return { id: node.id };
+  }
+
+  async move(nodes: WriteNode[], to: { id: string; path: string }, signal?: AbortSignal): Promise<Array<{ id: string }>> {
+    if (nodes.length === 0) return [];
+    // 一次别塞太多：接口没写上限，按 50 个一批
+    for (let i = 0; i < nodes.length; i += 50) {
+      const batch = nodes.slice(i, i + 50);
+      await this.settle(await quarkMove(this.account, batch.map((n) => n.id), to.id, signal), signal);
+      forgetQuarkPaths(this.account, batch.filter((n) => n.isDir).map((n) => n.path));
+    }
+    return nodes.map((n) => ({ id: n.id }));
+  }
+
+  async rmdirIfEmpty(node: WriteNode, signal?: AbortSignal): Promise<boolean> {
+    const entries = await quarkListDir(this.account, node.id, signal);
+    if (entries.length > 0) return false;
+    await this.settle(await quarkDelete(this.account, [node.id], signal), signal);
+    forgetQuarkPaths(this.account, [node.path]);
+    return true;
+  }
+}
+
+/** 给日志用：节点名 */
+export { baseName as quarkBaseName };

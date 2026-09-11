@@ -10,6 +10,7 @@ import { HttpError } from "../../lib/http-error.js";
 import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareRef } from "../drive/types.js";
+import { maybeAutoOrganize } from "../organize/auto.js";
 import { generateStrmForSelected, type SelectedItem } from "../strm/share-strm.js";
 import { startTask } from "../task/runner.js";
 
@@ -32,6 +33,8 @@ export interface SaveSelectionOpts {
   mode: "sync" | "async";
   settings: AppSettings;
   signal?: AbortSignal;
+  /** 转存完顺手整理：不给就按任务的自动整理设置；true = 至少生成待确认清单（任务设了 auto 就直接执行） */
+  organize?: boolean;
 }
 
 export type SaveSelectionResult =
@@ -90,6 +93,9 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
     const selectedItems: SelectedItem[] = items.map((i, idx) => ({ name: i.name, isDir: i.isDir, id: ids[idx] }));
     try {
       const { generatedCount, skippedCount, invalidNames } = await generateStrmForSelected({ task, provider, selectedItems, settings, subPath });
+      // 任务开了自动整理（或这次勾了「转存后整理」）：刚转存进来的这些条目交给整理，识别失败或没开都不影响这次转存
+      const forced = opts.organize ? (task.organize?.mode === "auto" ? "auto" : "review") : undefined;
+      maybeAutoOrganize({ task, paths: items.map((i) => (subPath ? `${subPath}/${i.name}` : i.name)), trigger: "share", mode: forced });
       return { mode: "sync", generatedCount, skippedCount, invalidNames };
     } catch (err) {
       throw driveErrorToHttp(err, "生成 strm 失败");

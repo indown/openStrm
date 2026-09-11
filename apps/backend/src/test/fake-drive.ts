@@ -24,6 +24,7 @@ import {
   type DriveLink,
   type DriveNode,
   type DriveProvider,
+  type DriveWriteOps,
   type ReceiveItem,
   type ReceiveResult,
   type ShareEntry,
@@ -35,6 +36,7 @@ import {
   type SubtreeEntry,
   type ShareUpdateSignal,
   type ShareUpdates,
+  type WriteNode,
 } from "../services/drive/types.js";
 
 export interface FakeNode {
@@ -297,6 +299,8 @@ export class FakeChanges implements ChangeSource {
 export interface FakeDriveOptions {
   share?: boolean;
   changes?: boolean;
+  /** 改名 / 移动 / 建目录；默认开 */
+  write?: boolean;
   /** 分享 / 目录条目带不带内容哈希（115 有、夸克没有） */
   withHash?: boolean;
   /** 直链的前缀：`${linkBase}/dl<path>` */
@@ -307,19 +311,22 @@ export interface FakeDriveOptions {
 export class FakeDrive implements DriveProvider {
   readonly tree: FakeTree;
   readonly rootId = "0";
-  readonly capabilities: { share: boolean; changes: boolean };
+  readonly capabilities: { share: boolean; changes: boolean; write: boolean };
   readonly share?: FakeShare;
   readonly changes?: FakeChanges;
+  readonly write?: FakeWrite;
   readonly notes?: { verify?: string };
   readonly withHash: boolean;
   readonly linkBase: string;
-  readonly calls = { resolvePath: 0, listDir: 0, listSubtree: 0, walkSubtree: 0, downloadLink: 0 };
+  readonly calls = { resolvePath: 0, listDir: 0, listSubtree: 0, walkSubtree: 0, downloadLink: 0, mkdir: 0, rename: 0, move: 0, rmdir: 0 };
   /** 每次网盘调用记一行 `<方法> <参数>`，测试断言调用顺序 / 次数用 */
   readonly log: string[] = [];
   /** 设了就让所有网盘调用抛这个错（模拟 cookie 失效 / 风控） */
   failWith: Error | null = null;
   /** 每次网盘调用前先等它（模拟慢接口 / 卡住） */
   beforeCall: (() => Promise<void>) | null = null;
+  /** 写操作前先问它：返回错误就让这次写失败（模拟某个文件改不了名） */
+  failWriteOn: ((op: "mkdir" | "rename" | "move" | "rmdir", path: string) => Error | null) | null = null;
 
   constructor(
     readonly kind: DriveKind,
@@ -329,13 +336,15 @@ export class FakeDrive implements DriveProvider {
     this.tree = new FakeTree(`${kind}-${account.name}-`);
     this.withHash = opts.withHash ?? kind === "115";
     this.linkBase = opts.linkBase ?? "http://127.0.0.1:1";
-    this.capabilities = { share: !!opts.share, changes: !!opts.changes };
+    const write = opts.write ?? true;
+    this.capabilities = { share: !!opts.share, changes: !!opts.changes, write };
     if (opts.share) this.share = new FakeShare(kind, this);
     if (opts.changes) this.changes = new FakeChanges();
+    if (write) this.write = new FakeWrite(this);
     this.notes = opts.notes;
   }
 
-  private async guard(method: string, arg: string): Promise<void> {
+  async guard(method: string, arg: string): Promise<void> {
     this.log.push(`${method} ${arg}`);
     if (this.beforeCall) await this.beforeCall();
     if (this.failWith) throw this.failWith;
@@ -407,5 +416,70 @@ export class FakeDrive implements DriveProvider {
     if (/cookie|login|登录/i.test(msg)) return "auth";
     if (/blocked|405|阻断|封控/i.test(msg)) return "blocked";
     return null;
+  }
+}
+
+/** 假网盘的写操作：直接改 FakeTree，id 不变；每一步记进 drive.log */
+export class FakeWrite implements DriveWriteOps {
+  constructor(private readonly drive: FakeDrive) {}
+
+  private async check(op: "mkdir" | "rename" | "move" | "rmdir", path: string): Promise<void> {
+    await this.drive.guard(op, path);
+    const err = this.drive.failWriteOn?.(op, path);
+    if (err) throw err;
+  }
+
+  async mkdir(parent: { id: string; path: string }, name: string): Promise<DriveNode> {
+    const p = `${normalizePath(parent.path) === "/" ? "" : normalizePath(parent.path)}/${name}`;
+    this.drive.calls.mkdir++;
+    await this.check("mkdir", p);
+    const parentNode = this.drive.tree.get(parent.path);
+    if (!parentNode || !parentNode.isDir) throw new Error(`fake mkdir: parent missing ${parent.path}`);
+    const node = this.drive.tree.addDir(p);
+    return { id: node.id, isDir: true };
+  }
+
+  async rename(node: WriteNode, newName: string): Promise<{ id: string }> {
+    const from = normalizePath(node.path);
+    const to = `${parentOf(from) === "/" ? "" : parentOf(from)}/${newName}`;
+    this.drive.calls.rename++;
+    await this.check("rename", from);
+    this.drive.log.push(`rename ${from} -> ${newName}`);
+    if (!this.drive.tree.get(from)) throw new Error(`fake rename: no such path ${from}`);
+    if (this.drive.tree.get(to)) throw new Error(`fake rename: target exists ${to}`);
+    this.drive.tree.move(from, to);
+    return { id: node.id };
+  }
+
+  /** 一批要么全挪要么全不挪（像真网盘的批量接口那样），先把每一项都检查完再动树 */
+  async move(nodes: WriteNode[], to: { id: string; path: string }): Promise<Array<{ id: string }>> {
+    const dst = normalizePath(to.path);
+    this.drive.calls.move++;
+    const dstNode = this.drive.tree.get(dst);
+    if (!dstNode || !dstNode.isDir) throw new Error(`fake move: target dir missing ${dst}`);
+    const planned: Array<{ from: string; target: string }> = [];
+    for (const node of nodes) {
+      const from = normalizePath(node.path);
+      const target = `${dst === "/" ? "" : dst}/${baseOf(from)}`;
+      await this.check("move", from);
+      if (!this.drive.tree.get(from)) throw new Error(`fake move: no such path ${from}`);
+      if (this.drive.tree.get(target)) throw new Error(`fake move: target exists ${target}`);
+      planned.push({ from, target });
+    }
+    for (const { from, target } of planned) {
+      this.drive.log.push(`move ${from} -> ${dst}`);
+      this.drive.tree.move(from, target);
+    }
+    return nodes.map((n) => ({ id: n.id }));
+  }
+
+  async rmdirIfEmpty(node: WriteNode): Promise<boolean> {
+    const p = normalizePath(node.path);
+    this.drive.calls.rmdir++;
+    await this.check("rmdir", p);
+    if (this.drive.tree.children(p).length > 0) return false;
+    this.drive.log.push(`rmdir ${p}`);
+    this.drive.tree.remove(p);
+    return true;
   }
 }

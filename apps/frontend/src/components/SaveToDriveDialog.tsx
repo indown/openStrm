@@ -38,6 +38,8 @@ export interface SaveToTaskChoice {
   mode: "sync" | "async";
   /** 勾了「转存后追更」才有 */
   follow?: { intervalMinutes: number };
+  /** 勾了「转存后整理」 */
+  organize?: boolean;
 }
 
 interface SaveToDriveDialogProps {
@@ -72,6 +74,7 @@ export function SaveToDriveDialog({
   const [subdirLoading, setSubdirLoading] = useState(false);
   const [followChecked, setFollowChecked] = useState(false);
   const [followInterval, setFollowInterval] = useState(String(DEFAULT_FOLLOW_INTERVAL));
+  const [organizeChecked, setOrganizeChecked] = useState(false);
 
   // 任务列表只在打开时拉一次；默认选中用函数式更新，别把 selectedTaskId 放进依赖里反复重拉
   useEffect(() => {
@@ -80,6 +83,7 @@ export function SaveToDriveDialog({
     setLoading(true);
     setSubSegments([]);
     setFollowChecked(false);
+    setOrganizeChecked(false);
     api.tasks
       .list()
       .then((rows) => {
@@ -153,6 +157,7 @@ export function SaveToDriveDialog({
       subPath,
       mode,
       ...(followHint && followChecked ? { follow: { intervalMinutes: Number(followInterval) } } : {}),
+      ...(mode === "sync" && organizeChecked ? { organize: true } : {}),
     });
   };
 
@@ -328,6 +333,18 @@ export function SaveToDriveDialog({
                 </div>
               )}
             </div>
+          )}
+
+          {mode === "sync" && (
+            <label className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
+              <Checkbox checked={organizeChecked} onCheckedChange={(v) => setOrganizeChecked(v === true)} className="mt-0.5" />
+              <div>
+                <div className="text-sm font-medium">转存后整理</div>
+                <div className="text-xs text-muted-foreground">
+                  转存完按 TMDB 识别并规划改名 / 归位：任务设了「把握大的直接执行」就直接整理，否则生成待确认清单，到「整理」页看。
+                </div>
+              </div>
+            </label>
           )}
         </div>
 

@@ -196,3 +196,116 @@ export const shareFollows = sqliteTable(
     taskIdx: index("share_follows_task_id_idx").on(t.taskId),
   }),
 );
+
+/* ------------------------------- 整理与规范化命名 ------------------------------- */
+
+/**
+ * 一次整理：范围、状态、统计、最近的日志行。items 是计划也是执行流水账（撤销按它逆序退回）。
+ * 时间戳秒；id 字符串。
+ */
+export const organizeRuns = sqliteTable(
+  "organize_runs",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").notNull(),
+    accountName: text("account_name").notNull().default(""),
+    scopePath: text("scope_path").notNull().default(""),
+    scopePaths: text("scope_paths").notNull().default("[]"),
+    mode: text("mode").notNull().default("manual"),
+    trigger: text("trigger").notNull().default("manual"),
+    status: text("status").notNull().default("planning"),
+    stats: text("stats").notNull().default("{}"),
+    error: text("error").notNull().default(""),
+    log: text("log").notNull().default("[]"),
+    createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+    startedAt: integer("started_at"),
+    finishedAt: integer("finished_at"),
+  },
+  (t) => ({
+    taskIdx: index("organize_runs_task_idx").on(t.taskId, t.createdAt),
+    statusIdx: index("organize_runs_status_idx").on(t.status),
+  }),
+);
+
+/** 一个作品单元：识别结果 + 用户的修改；items 按 unit_key 挂在它下面 */
+export const organizeUnits = sqliteTable(
+  "organize_units",
+  {
+    runId: text("run_id").notNull(),
+    key: text("key").notNull(),
+    rootPath: text("root_path").notNull().default(""),
+    rawName: text("raw_name").notNull().default(""),
+    parsedTitle: text("parsed_title").notNull().default(""),
+    parsedYear: text("parsed_year").notNull().default(""),
+    match: text("match"),
+    seasonOverride: integer("season_override"),
+    episodeOffset: integer("episode_offset").notNull().default(0),
+    dstRoot: text("dst_root").notNull().default(""),
+    selected: integer("selected", { mode: "boolean" }).notNull().default(true),
+    remember: integer("remember", { mode: "boolean" }).notNull().default(false),
+    fileCount: integer("file_count").notNull().default(0),
+    videoCount: integer("video_count").notNull().default(0),
+    referencedBy: integer("referenced_by").notNull().default(0),
+    notes: text("notes").notNull().default("[]"),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.runId, t.key] }),
+  }),
+);
+
+/**
+ * 计划项 / 流水账。src_path / dst_path 是网盘绝对路径（带前导 /）：
+ * 网盘监控用 (node_id, dst_path) 认出「这是整理自己做的改名 / 移动」，跳过不重复处理。
+ */
+export const organizeItems = sqliteTable(
+  "organize_items",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull(),
+    unitKey: text("unit_key").notNull().default(""),
+    seq: integer("seq").notNull().default(0),
+    kind: text("kind").notNull().default("other"),
+    action: text("action").notNull().default("skip"),
+    srcPath: text("src_path").notNull().default(""),
+    dstPath: text("dst_path").notNull().default(""),
+    nodeId: text("node_id").notNull().default(""),
+    reason: text("reason").notNull().default(""),
+    status: text("status").notNull().default("pending"),
+    error: text("error").notNull().default(""),
+    finishedAt: integer("finished_at"),
+    /** 移动项先原地改名再挪：改完名还没挪走时文件的当前路径，续跑 / 撤销都靠它；挪完清空 */
+    curPath: text("cur_path").notNull().default(""),
+    /** 网盘监控已经按「整理自己做的」跳过了几条事件；一条 rename + 一条 move 最多两条，之后的就是别人动的 */
+    hits: integer("hits").notNull().default(0),
+  },
+  (t) => ({
+    runIdx: index("organize_items_run_idx").on(t.runId, t.seq),
+    nodeIdx: index("organize_items_node_idx").on(t.nodeId),
+  }),
+);
+
+/** 用户在预览里改过并勾了「记住」的识别结果：同账号同目录下次直接用 */
+export const organizeMatches = sqliteTable(
+  "organize_matches",
+  {
+    accountName: text("account_name").notNull(),
+    srcPath: text("src_path").notNull(),
+    mediaType: text("media_type").notNull().default("tv"),
+    tmdbId: integer("tmdb_id").notNull(),
+    title: text("title").notNull().default(""),
+    year: text("year").notNull().default(""),
+    season: integer("season"),
+    episodeOffset: integer("episode_offset").notNull().default(0),
+    updatedAt: integer("updated_at").notNull().default(sql`(unixepoch())`),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.accountName, t.srcPath] }),
+  }),
+);
+
+/** TMDB 详情 / 搜索结果缓存：key 是 `kind:参数`，value 是 JSON */
+export const tmdbCache = sqliteTable("tmdb_cache", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull().default("{}"),
+  fetchedAt: integer("fetched_at").notNull().default(0),
+});

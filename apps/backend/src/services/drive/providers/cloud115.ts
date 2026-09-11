@@ -7,12 +7,17 @@ import { readAppSettings } from "../../../db/repositories/settings.js";
 import { PermanentError } from "../../../lib/errors.js";
 import {
   exportDirParse,
+  fsBatchRename,
+  fsDeleteMany,
   fsDirGetId,
+  fsMkdir,
+  fsMove,
   getDownloadUrlWeb,
   getIdToPath,
   listDirEntries,
   type DriveEntry as RawEntry,
 } from "../../cloud-115/client.js";
+import { dropSubtree, repathSubtree } from "../../../db/repositories/life.js";
 import {
   getShareData,
   getShareDirList,
@@ -22,7 +27,7 @@ import {
   shareExtractPayload,
   type ShareAttr,
 } from "../../cloud-115/share.js";
-import { rememberPaths } from "../../cloud-115/path-resolver.js";
+import { forgetPathsUnder, rememberPath, rememberPaths } from "../../cloud-115/path-resolver.js";
 import { Cloud115ChangeSource } from "../../life/sources/cloud115.js";
 import { buildTree, collectFilesAndTopEmptyDirs, findExportedDir } from "../../task/tree.js";
 import { classifyAccountIssue } from "../../telegram/notify.js";
@@ -36,6 +41,7 @@ import {
   type DriveLink,
   type DriveNode,
   type DriveProvider,
+  type DriveWriteOps,
   type ReceiveItem,
   type ReceiveResult,
   type ShareEntry,
@@ -44,6 +50,7 @@ import {
   type ShareProvider,
   type ShareRef,
   type ShareSession,
+  type WriteNode,
 } from "../types.js";
 
 const VERIFY_NOTE = "115 的目录信息有几分钟缓存：刚转存进去或刚删掉的文件，几分钟内校验结果可能还是旧的";
@@ -181,17 +188,22 @@ export function setCloud115ProviderDeps(partial: Partial<ClientDeps> | null): vo
   deps = partial ? { ...realDeps, ...partial } : { ...realDeps };
 }
 
+/** 115 批量接口一次带多少个：改名 / 移动接口没写上限，保守一点 */
+const WRITE_BATCH = 50;
+
 export class Cloud115Provider implements DriveProvider {
   readonly kind = "115" as const;
-  readonly capabilities = { share: true, changes: true };
+  readonly capabilities = { share: true, changes: true, write: true };
   readonly rootId = "0";
   readonly notes = { verify: VERIFY_NOTE };
   readonly share: ShareProvider;
   readonly changes: Cloud115ChangeSource;
+  readonly write: DriveWriteOps;
 
   constructor(readonly account: Account115) {
     this.share = new Cloud115Share(account);
     this.changes = new Cloud115ChangeSource(account);
+    this.write = new Cloud115Write(account, (signal) => this.ctx(signal));
   }
 
   /** 列过的目录写进路径缓存（内存 + path_cache 表）：变更监控靠它把事件里的 id 还原成路径、找移动前的旧路径 */
@@ -286,5 +298,66 @@ export class Cloud115Provider implements DriveProvider {
     if (issue === "blocked") return "blocked";
     if (err instanceof ShareApiError) return "gone";
     return null;
+  }
+}
+
+const joinPan = (dir: string, name: string): string => (dir === "/" || dir === "" ? `/${name}` : `${dir}/${name}`);
+const parentOf = (p: string): string => `/${splitPath(p).slice(0, -1).join("/")}`;
+
+/**
+ * 115 的写操作。每一步都同步维护 path_cache（内存 + 表）：整理完之后生活事件流会把这些改名 / 移动再报一遍，
+ * 监控靠缓存里的路径认出「这是整理自己做的」并跳过；目录挪走后其下所有缓存路径也要跟着改（repathSubtree）。
+ */
+class Cloud115Write implements DriveWriteOps {
+  constructor(
+    private readonly account: Account115,
+    private readonly ctx: (signal?: AbortSignal) => { accountInfo: Account115; userAgent?: string; signal?: AbortSignal },
+  ) {}
+
+  private noteRelocated(node: WriteNode, newPath: string): void {
+    const name = newPath.slice(newPath.lastIndexOf("/") + 1);
+    if (node.isDir) {
+      repathSubtree(node.path, newPath);
+      forgetPathsUnder(this.account.name, node.path);
+    }
+    rememberPath({ fileId: node.id, parentId: "", name, path: newPath, isDir: node.isDir, accountName: this.account.name });
+  }
+
+  async mkdir(parent: { id: string; path: string }, name: string, signal?: AbortSignal): Promise<DriveNode> {
+    const id = await fsMkdir(name, parent.id, this.ctx(signal));
+    rememberPath({ fileId: id, parentId: parent.id, name, path: joinPan(parent.path, name), isDir: true, accountName: this.account.name });
+    return { id, isDir: true };
+  }
+
+  async rename(node: WriteNode, newName: string, signal?: AbortSignal): Promise<{ id: string }> {
+    const [r] = await this.renameMany([{ node, newName }], signal);
+    return r;
+  }
+
+  async renameMany(items: Array<{ node: WriteNode; newName: string }>, signal?: AbortSignal): Promise<Array<{ id: string }>> {
+    for (let i = 0; i < items.length; i += WRITE_BATCH) {
+      const batch = items.slice(i, i + WRITE_BATCH);
+      await fsBatchRename(batch.map(({ node, newName }) => [node.id, newName]), this.ctx(signal));
+      for (const { node, newName } of batch) this.noteRelocated(node, joinPan(parentOf(node.path), newName));
+    }
+    return items.map(({ node }) => ({ id: node.id }));
+  }
+
+  async move(nodes: WriteNode[], to: { id: string; path: string }, signal?: AbortSignal): Promise<Array<{ id: string }>> {
+    for (let i = 0; i < nodes.length; i += WRITE_BATCH) {
+      const batch = nodes.slice(i, i + WRITE_BATCH);
+      await fsMove(batch.map((n) => n.id), to.id, this.ctx(signal));
+      for (const node of batch) this.noteRelocated(node, joinPan(to.path, node.path.slice(node.path.lastIndexOf("/") + 1)));
+    }
+    return nodes.map((n) => ({ id: n.id }));
+  }
+
+  async rmdirIfEmpty(node: WriteNode, signal?: AbortSignal): Promise<boolean> {
+    const entries = await listDirEntries(node.id, this.ctx(signal));
+    if (entries.length > 0) return false;
+    await fsDeleteMany([node.id], this.ctx(signal));
+    dropSubtree(node.path);
+    forgetPathsUnder(this.account.name, node.path);
+    return true;
   }
 }

@@ -2,6 +2,7 @@ import {
   Bot,
   CloudDownload,
   Files,
+  FolderTree,
   History,
   KeyRound,
   Library,
@@ -29,6 +30,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { title: "任务", url: "/home", icon: ListChecks, match: ["/log"] },
       { title: "strm 管理", url: "/strm", icon: Files },
+      { title: "整理", url: "/organize", icon: FolderTree },
       // 影库入口暂时隐藏（lib/features.ts）；直接访问 /library 仍可用
       ...(FEATURES.libraryEntry ? [{ title: "影库", url: "/library", icon: Library }] : []),
       { title: "追更", url: "/follow", icon: Rss },

@@ -43,7 +43,8 @@ import { scheduleEmbyRefresh } from "../media-server.js";
 import { isTaskRunning } from "../task/registry.js";
 import { RemoteDirNotFoundError, type DriveProvider } from "../drive/types.js";
 import { episodeKey, inspectStrm, isForeignStrm, showDirOf } from "./inspect.js";
-import { extOf, extSet, toStrmPath } from "./naming.js";
+import { extOf, extSet, stripStrmExt, toStrmPath } from "./naming.js";
+import { hasReleaseNoise } from "../organize/parse-name.js";
 
 const log = moduleLogger("strm-manage");
 
@@ -326,7 +327,7 @@ export async function search(task: TaskDefinition, q: string, limit: number = ST
 
 /* ------------------------------- 体检 ------------------------------- */
 
-const ISSUE_TYPES: StrmIssueType[] = ["nested-same-name", "empty-dir", "stale-content", "unparsable", "duplicate-episode", "leftover-part"];
+const ISSUE_TYPES: StrmIssueType[] = ["nested-same-name", "empty-dir", "stale-content", "unparsable", "duplicate-episode", "leftover-part", "nonstandard-name"];
 
 export async function scan(task: TaskDefinition, rel: string): Promise<StrmScanResult> {
   const mp = await resolveManagedPath(task, rel);
@@ -406,6 +407,7 @@ export async function scan(task: TaskDefinition, rel: string): Promise<StrmScanR
       } else if (!ins.matches) {
         add("stale-content", eRel, ins.reason ? REASON_LABEL[ins.reason] : "内容和任务现在的 originPath / 编码设置对不上");
       }
+      if (hasReleaseNoise(stripStrmExt(e.name))) add("nonstandard-name", eRel, "文件名带发布组 / 画质 / 编码这类噪音，媒体库靠猜容易识别错；「整理」页可以规范成标准命名");
       const key = episodeKey(e.name);
       if (key) {
         const k = `${showDirOf(eRel)}\0S${key.season}E${key.episode}`;

@@ -44,6 +44,8 @@ const bodySchema = z.looseObject({
   watchDirId: z.string().optional(),
   watchPath: z.string().optional(),
   name: z.string().optional(),
+  /** 转存完顺手整理（sync 模式才有意义） */
+  organize: z.boolean().optional(),
 });
 
 export default async function (fastify: FastifyInstance) {
@@ -90,6 +92,7 @@ export default async function (fastify: FastifyInstance) {
               subPath,
               mode: body.mode === "async" ? "async" : "sync",
               settings: readAppSettings(),
+              organize: body.organize,
             });
             // async 模式下引擎拒绝启动时仍是 200：转存已经成功，只是没排上后台同步
             const strmGenerated = !("error" in result);

@@ -38,6 +38,7 @@ const NOTIFY: Array<{ key: keyof TelegramNotifySettings; label: string; hint: st
   { key: "offline", label: "云下载", hint: "从任务目录下载完成并生成 strm，或回执失败。" },
   { key: "follow", label: "分享追更", hint: "追更到新文件、分享失效、长期没更新时提醒。" },
   { key: "embyNew", label: "Emby 入库", hint: "Emby 把新条目收进媒体库时提醒（按剧聚合），需要配好 Emby 地址和 API Key。" },
+  { key: "organize", label: "整理", hint: "整理执行完成、自动整理生成了待确认的清单时提醒。" },
   { key: "taskStart", label: "任务开始", hint: "每次同步开始都发一条，比较吵，默认关。" },
 ];
 

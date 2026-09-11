@@ -53,6 +53,32 @@ export type AccountIssue = "auth" | "blocked" | "gone";
 export interface DriveCapabilities {
   share: boolean;
   changes: boolean;
+  /** 能改名 / 移动 / 建目录：整理功能只对有这项能力的网盘开放 */
+  write: boolean;
+}
+
+/** 写操作的对象：id + 当前绝对路径（带前导 /）。路径给各家维护自己的缓存用（115 的 path_cache、夸克的路径缓存） */
+export interface WriteNode {
+  id: string;
+  path: string;
+  isDir: boolean;
+}
+
+/**
+ * 网盘写操作（整理用）。约定：
+ *   - 只改名 / 移动 / 建目录 / 删空目录，绝不删文件。
+ *   - 返回改动后的 id：115 / 夸克的 id 不变，OpenList 的 id 就是路径，改名 / 移动后会变。
+ *   - 各家自己更新缓存（115 的 path_cache 让监控之后还能认出旧路径）。
+ */
+export interface DriveWriteOps {
+  mkdir(parent: { id: string; path: string }, name: string, signal?: AbortSignal): Promise<DriveNode>;
+  rename(node: WriteNode, newName: string, signal?: AbortSignal): Promise<{ id: string }>;
+  /** 批量改名（115 一次一批）；没实现就逐个 rename */
+  renameMany?(items: Array<{ node: WriteNode; newName: string }>, signal?: AbortSignal): Promise<Array<{ id: string }>>;
+  /** 挪到另一个目录，名字不变；返回挪动后的 id，顺序同入参 */
+  move(nodes: WriteNode[], to: { id: string; path: string }, signal?: AbortSignal): Promise<Array<{ id: string }>>;
+  /** 目录空了才删；非空返回 false */
+  rmdirIfEmpty(node: WriteNode, signal?: AbortSignal): Promise<boolean>;
 }
 
 export interface DriveProvider {
@@ -78,6 +104,7 @@ export interface DriveProvider {
   readonly notes?: { verify?: string };
   readonly share?: ShareProvider;
   readonly changes?: ChangeSource;
+  readonly write?: DriveWriteOps;
 }
 
 /* ------------------------------- 分享 ------------------------------- */

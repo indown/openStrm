@@ -11,7 +11,7 @@ import { parseQuarkShareLink, QuarkProvider } from "./providers/quark.js";
 import type { DriveCapabilities, DriveKind, DriveProvider, ShareRef } from "./types.js";
 
 export const KIND_LABEL: Record<DriveKind, string> = { "115": "115 网盘", quark: "夸克网盘", openlist: "OpenList" };
-const CAP_LABEL: Record<keyof DriveCapabilities, string> = { share: "分享转存", changes: "网盘监控" };
+const CAP_LABEL: Record<keyof DriveCapabilities, string> = { share: "分享转存", changes: "网盘监控", write: "整理（改名 / 移动）" };
 
 export type ProviderFactory = (account: AccountInfo) => DriveProvider | null;
 let override: ProviderFactory | null = null;

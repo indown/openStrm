@@ -799,3 +799,66 @@ export function ensureOk<T>(resp: T, url?: string): NonNullable<T> {
   }
   return resp as NonNullable<T>;
 }
+
+/* ------------------------ 写操作（整理用）：建目录 / 批量改名 / 移动 / 删空目录 ------------------------ */
+
+/** 写过之后目录 id、目录内容两份缓存都不可信了；缓存本来就是缓存，整个清掉最省事 */
+export function invalidate115Caches(): void {
+  dirIdCache.clear();
+  filesListCache.clear();
+}
+
+/** POST files/add：建目录，返回新目录的 cid。名字不能带 " < > 三个字符（115 的限制） */
+export async function fsMkdir(cname: string, pid: string | number, { userAgent, accountInfo, signal }: RequestCtx): Promise<string> {
+  if (!accountInfo?.cookie) throw new Error("accountInfo.cookie is required");
+  const form = new URLSearchParams({ cname, pid: String(pid) });
+  const resp = await request115<{ state?: boolean; cid?: string | number; file_id?: string | number; error?: string }>(
+    "https://webapi.115.com/files/add",
+    { method: "POST", data: form, userAgent, useCommonHeaders: true, accountInfo, ensureOk: true, rawText: true, signal },
+  );
+  // rawText：cid 超过 JS 安全整数，JSON.parse 会把它变成近似值
+  const text = typeof resp === "string" ? resp : JSON.stringify(resp);
+  ensureOk(JSON.parse(text) as Record<string, unknown>, "https://webapi.115.com/files/add");
+  const m = /"(?:cid|file_id)"\s*:\s*"?(\d+)"?/.exec(text);
+  if (!m) throw new Error(`115：建目录 ${cname} 没有返回 cid`);
+  invalidate115Caches();
+  return m[1];
+}
+
+/** POST files/batch_rename：一次改一批名字，`files_new_name[<fid>]=<新名字>` */
+export async function fsBatchRename(pairs: Array<[id: string, name: string]>, { userAgent, accountInfo, signal }: RequestCtx): Promise<void> {
+  if (!accountInfo?.cookie) throw new Error("accountInfo.cookie is required");
+  if (pairs.length === 0) return;
+  const form = new URLSearchParams();
+  for (const [id, name] of pairs) form.append(`files_new_name[${id}]`, name);
+  await request115("https://webapi.115.com/files/batch_rename", {
+    method: "POST", data: form, userAgent, useCommonHeaders: true, accountInfo, ensureOk: true, signal,
+  });
+  invalidate115Caches();
+}
+
+/** POST files/move：把一批文件 / 目录挪到 pid 下。接口注明别并发，调用方按批串行 */
+export async function fsMove(fids: string[], pid: string | number, { userAgent, accountInfo, signal }: RequestCtx): Promise<void> {
+  if (!accountInfo?.cookie) throw new Error("accountInfo.cookie is required");
+  if (fids.length === 0) return;
+  const form = new URLSearchParams();
+  fids.forEach((fid, i) => form.append(`fid[${i}]`, fid));
+  form.set("pid", String(pid));
+  await request115("https://webapi.115.com/files/move", {
+    method: "POST", data: form, userAgent, useCommonHeaders: true, accountInfo, ensureOk: true, signal,
+  });
+  invalidate115Caches();
+}
+
+/** POST rb/delete：进回收站。整理只用它删腾空的目录 */
+export async function fsDeleteMany(fids: string[], { userAgent, accountInfo, signal }: RequestCtx): Promise<void> {
+  if (!accountInfo?.cookie) throw new Error("accountInfo.cookie is required");
+  if (fids.length === 0) return;
+  const form = new URLSearchParams();
+  fids.forEach((fid, i) => form.append(`fid[${i}]`, fid));
+  form.set("ignore_warn", "1");
+  await request115("https://webapi.115.com/rb/delete", {
+    method: "POST", data: form, userAgent, useCommonHeaders: true, accountInfo, ensureOk: true, signal,
+  });
+  invalidate115Caches();
+}

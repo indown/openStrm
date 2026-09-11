@@ -10,6 +10,12 @@ import type {
   AppSettings,
   LifeMonitorSettings,
   MediaLibraryEntry,
+  OrganizeMatchMemory,
+  OrganizeRun,
+  OrganizeRunDetail,
+  OrganizeTemplatePreview,
+  OrganizeUnit,
+  OrganizeUnitPatch,
   ShareFollowRun,
   ShareFollowSummary,
   StrmDeleteResult,
@@ -130,6 +136,8 @@ export type SaveToTaskChoice = {
   mode: "sync" | "async";
   /** 勾了「转存后追更」就带上；后端转存成功后顺手建订阅 */
   follow?: { intervalMinutes: number };
+  /** 勾了「转存后整理」：后端转存成功后建一次整理（任务设了自动执行就直接执行，否则待确认） */
+  organize?: boolean;
 };
 
 export interface TmdbSearchResult {
@@ -490,7 +498,28 @@ export const api = {
       follow?: { intervalMinutes: number };
       watchPath?: string;
       name?: string;
+      organize?: boolean;
     }) => data(axiosInstance.post<ShareReceiveResult>("/api/share", { action: "receive", ...body }, { timeout: 180_000 })),
+  },
+
+  /** 整理与规范化命名：预览 / 执行 / 撤销都是后台作业，接口立刻返回，轮询 get 看进度 */
+  organize: {
+    createRun: (input: { taskId: string; subPath?: string; paths?: string[] }) =>
+      data(axiosInstance.post<OrganizeRun>("/api/organize/runs", input)),
+    listRuns: (taskId?: string, limit = 30) =>
+      data(axiosInstance.get<{ runs: OrganizeRun[] }>("/api/organize/runs", { params: { taskId: taskId || undefined, limit } })),
+    getRun: (id: string) => data(axiosInstance.get<OrganizeRunDetail>(`/api/organize/runs/${encodeURIComponent(id)}`)),
+    patchUnit: (id: string, key: string, patch: OrganizeUnitPatch) =>
+      data(axiosInstance.put<OrganizeUnit>(`/api/organize/runs/${encodeURIComponent(id)}/unit`, { key, ...patch }, { timeout: 60_000 })),
+    apply: (id: string) => data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/apply`)),
+    cancel: (id: string) => data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/cancel`)),
+    revert: (id: string) => data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/revert`)),
+    remove: (id: string) => data(axiosInstance.delete<{ success: true }>(`/api/organize/runs/${encodeURIComponent(id)}`)),
+    previewName: (body: { templates?: { movie?: string; tv?: string }; idTag?: string; colon?: string; episodeTitle?: boolean; rules?: string[] }) =>
+      data(axiosInstance.post<OrganizeTemplatePreview>("/api/organize/preview-name", body)),
+    matches: (account?: string) => data(axiosInstance.get<{ matches: OrganizeMatchMemory[] }>("/api/organize/matches", { params: { account } })),
+    forgetMatch: (accountName: string, srcPath: string) =>
+      data(axiosInstance.delete<{ success: boolean }>("/api/organize/matches", { data: { accountName, srcPath } })),
   },
 
   drive115: {

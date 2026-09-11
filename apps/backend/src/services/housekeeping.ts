@@ -7,12 +7,16 @@
  *   删掉后对应文件的改名事件退化成"按新增处理"，旧 strm 由全量任务的 removeExtraFiles 兜底。
  */
 import { deleteLifeEventsBefore, deletePathCacheNotTouchedSince } from "../db/repositories/life.js";
+import { deleteFinishedRunsBefore, deleteTmdbCacheBefore } from "../db/repositories/organize.js";
 import { cleanupOldHistory } from "./task-history.js";
 import { moduleLogger } from "../lib/logger.js";
 
 const DAY_S = 24 * 60 * 60;
 export const LIFE_EVENT_RETENTION_S = 30 * DAY_S;
 export const PATH_CACHE_RETENTION_S = 180 * DAY_S;
+/** 整理记录：30 天，且每个任务至少留最近 5 次（撤销要用） */
+export const ORGANIZE_RUN_RETENTION_S = 30 * DAY_S;
+export const TMDB_CACHE_RETENTION_S = 30 * DAY_S;
 
 const log = moduleLogger("housekeeping");
 
@@ -20,7 +24,9 @@ export function runHousekeeping(now = Math.floor(Date.now() / 1000)): { lifeEven
   cleanupOldHistory();
   const lifeEvents = deleteLifeEventsBefore(now - LIFE_EVENT_RETENTION_S);
   const pathCache = deletePathCacheNotTouchedSince(now - PATH_CACHE_RETENTION_S);
-  if (lifeEvents || pathCache) log.info({ lifeEvents, pathCache }, "清理过期记录");
+  const organizeRuns = deleteFinishedRunsBefore(now - ORGANIZE_RUN_RETENTION_S);
+  const tmdbCache = deleteTmdbCacheBefore(now - TMDB_CACHE_RETENTION_S);
+  if (lifeEvents || pathCache || organizeRuns || tmdbCache) log.info({ lifeEvents, pathCache, organizeRuns, tmdbCache }, "清理过期记录");
   return { lifeEvents, pathCache };
 }
 

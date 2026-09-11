@@ -38,6 +38,7 @@ type Props = {
 type Tab = "all" | StrmIssueType;
 
 const TAB_ORDER: StrmIssueType[] = [
+  "nonstandard-name",
   "nested-same-name",
   "stale-content",
   "unparsable",

@@ -73,6 +73,8 @@ import strmRoute from "./routes/strm/index.js";
 
 // 115 life-event monitor (incremental cloud-drive change detection)
 import lifeMonitorRoute from "./routes/life/index.js";
+import organizeRoute from "./routes/organize/index.js";
+import { cancelAllRuns, reconcileInterruptedRuns } from "./services/organize/run.js";
 import { startLifeMonitor, stopLifeMonitor } from "./services/life/monitor.js";
 import { flushEmbyRefresh } from "./services/media-server.js";
 
@@ -94,6 +96,8 @@ registerErrorHandling(app);
 // 上个进程退出时还在跑的任务已经没了，历史里不能永远挂着 running
 const interrupted = reconcileInterruptedExecutions();
 if (interrupted > 0) app.log.warn(`[history] ${interrupted} 条执行记录因进程重启被标为失败`);
+const interruptedRuns = reconcileInterruptedRuns();
+if (interruptedRuns > 0) app.log.warn(`[organize] ${interruptedRuns} 次整理因进程重启被标为失败，可以重新执行`);
 // 只增不减的几张表：启动清一次，之后每天一次
 startHousekeeping();
 
@@ -147,6 +151,9 @@ await app.register(strmRoute);
 
 // 115 life-event monitor
 await app.register(lifeMonitorRoute);
+
+// 整理与规范化命名
+await app.register(organizeRoute);
 
 // System routes
 await app.register(clearDirectoryRoute);
@@ -221,6 +228,7 @@ async function shutdown() {
   try { await stopEmbyNewWatcher(); } catch { /* ignore */ }
   try { flushEmbyRefresh(); } catch { /* ignore */ }
   try { cancelAllRunningTasks(); } catch { /* ignore */ }
+  try { cancelAllRuns(); } catch { /* ignore */ }
 
   const timeout = new Promise<void>((resolve) => setTimeout(resolve, 1500));
   const closeAll = app.close();

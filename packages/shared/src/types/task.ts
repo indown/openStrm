@@ -1,3 +1,5 @@
+import type { TaskOrganizeSettings } from "./organize.js";
+
 export interface TaskDefinition {
   id: string;
   account: string;
@@ -11,6 +13,8 @@ export interface TaskDefinition {
   cronExpression?: string;
   /** 表单里的 strm 类型（local / …），引擎不读它 */
   strmType?: string;
+  /** 整理：库类型先验 + 自动整理策略 */
+  organize?: TaskOrganizeSettings;
 }
 
 /** 列表接口给的是这个：不带 logs。每条记录最多几千行日志，列表里没人看，白传几十 MB */

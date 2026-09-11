@@ -46,6 +46,10 @@ export type NotifyEvent =
   | { type: "follow-stale"; name: string; days: number }
   /** Emby 把新条目收进媒体库了；groups 为空表示这批太多、只报总数 */
   | { type: "emby-new"; groups: EmbyNewGroup[]; total: number }
+  /** 整理执行完了 */
+  | { type: "organize-done"; task: TaskRef; runId: string; units: number; done: number; failed: number; reverted?: boolean }
+  /** 自动整理生成了待确认的清单（review 模式，或 auto 模式下有拿不准的） */
+  | { type: "organize-review"; task: TaskRef; runId: string; units: number; planned: number; unsure: number; conflicts: number }
   /**
    * 账号层面的问题（cookie 失效、被封控）。issue 是调用方用网盘自己的规则认出来的（见 issueFromDrive）；
    * 没给就从 reason 文案里猜（115 的中文），两样都认不出就不发
@@ -60,6 +64,7 @@ export const DEFAULT_NOTIFY: Required<TelegramNotifySettings> = {
   accountAlert: true,
   follow: true,
   embyNew: true,
+  organize: true,
 };
 
 export function notifyPrefs(settings: AppSettings): Required<TelegramNotifySettings> {
@@ -186,6 +191,14 @@ function render(event: NotifyEvent): string {
       if (event.groups.length > 12) lines.push(`…还有 ${event.groups.length - 12} 部`);
       return `📥 <b>Emby 入库</b>\n${lines.join("\n")}`;
     }
+    case "organize-done": {
+      const head = event.reverted ? "↩️ <b>整理已撤销</b>" : event.failed > 0 ? "⚠️ <b>整理完成（有失败）</b>" : "🗂 <b>整理完成</b>";
+      return `${head}\n${esc(taskLabel(event.task))}\n${event.units} 部作品，${event.done} 项已${event.reverted ? "退回" : "改名 / 移动"}${event.failed > 0 ? `，失败 ${event.failed}` : ""}`;
+    }
+    case "organize-review": {
+      const extra = [event.unsure > 0 ? `${event.unsure} 部识别把握不大` : "", event.conflicts > 0 ? `${event.conflicts} 项冲突` : ""].filter(Boolean).join("，");
+      return `🗂 <b>整理待确认</b>\n${esc(taskLabel(event.task))}\n${event.units} 部作品、${event.planned} 项待处理${extra ? `（${extra}）` : ""}\n到「整理」页确认后执行。`;
+    }
     case "account-alert": {
       const issue = event.issue ?? classifyAccountIssue(event.reason);
       return issue ? accountAlertText(event.account, issue, event.source, event.reason) : "";
@@ -267,6 +280,11 @@ export async function notify(event: NotifyEvent): Promise<boolean> {
         break;
       case "emby-new":
         if (!prefs.embyNew) return false;
+        text = render(event);
+        break;
+      case "organize-done":
+      case "organize-review":
+        if (!prefs.organize) return false;
         text = render(event);
         break;
       case "account-alert": {

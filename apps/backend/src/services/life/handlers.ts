@@ -39,7 +39,7 @@ const done = (detail: string, changed = true): HandleResult => ({ status: "done"
 
 /* ----------------------------- 路径与扩展名 ----------------------------- */
 
-interface TaskMatch {
+export interface TaskMatch {
   task: TaskDefinition;
   /** 相对 originPath 的路径，可能为空串（事件对象就是 originPath 本身） */
   relPath: string;
@@ -72,18 +72,18 @@ function extOf(name: string): string {
   return path.extname(name).toLowerCase();
 }
 
-function strmExts(ctx: LifeContext): Set<string> {
+function strmExts(ctx: Pick<LifeContext, "settings">): Set<string> {
   return new Set((ctx.settings.strmExtensions || []).map((e) => e.toLowerCase()));
 }
 
-function downloadExts(ctx: LifeContext): Set<string> {
+function downloadExts(ctx: Pick<LifeContext, "settings">): Set<string> {
   return new Set((ctx.settings.downloadExtensions || []).map((e) => e.toLowerCase()));
 }
 
 export { toStrmPath };
 
 /** 本地对应文件的最终落盘路径（strm 类换扩展名，下载类保持原名） */
-function localPathFor(match: TaskMatch, ctx: LifeContext, relFile: string): string | null {
+export function localPathFor(match: TaskMatch, ctx: Pick<LifeContext, "settings">, relFile: string): string | null {
   const ext = extOf(relFile);
   const full = path.join(match.saveDir, relFile);
   if (strmExts(ctx).has(ext)) return toStrmPath(full);
@@ -97,7 +97,7 @@ function localPathFor(match: TaskMatch, ctx: LifeContext, relFile: string): stri
  * 用的是任务里存的原始 originPath（现网数据里它不带前导 /），
  * 所以这里也得用原始值拼，不能拿归一化后的网盘绝对路径去拼。
  */
-function strmUrlFor(task: TaskDefinition, relFile: string): string {
+export function strmUrlFor(task: TaskDefinition, relFile: string): string {
   return `${task.originPath}/${relFile}`;
 }
 
@@ -191,7 +191,7 @@ async function materializeFolder(
  * 旧版整体 encodeURI 写的文件（`&`、`:` 这些没转）和新版按段 encodeURIComponent 写的都能对上。
  * 命中后按新任务的开关整体重写，旧写法的文件顺手规范成新的。
  */
-async function rewriteStrmPrefixUnder(
+export async function rewriteStrmPrefixUnder(
   dir: string,
   oldTask: TaskDefinition,
   oldRel: string,

@@ -1,3 +1,5 @@
+import type { OrganizeSettings } from "./organize.js";
+
 /** 冷启动时从哪里开始拉变更：latest 只看启动之后的，all 把现有文件全当新增补齐，last 从上次停的游标继续 */
 export type LifePullMode = "latest" | "all" | "last";
 
@@ -32,6 +34,8 @@ export type TelegramNotifySettings = {
   follow?: boolean;
   /** Emby 入库：新条目被收进媒体库（按剧聚合） */
   embyNew?: boolean;
+  /** 整理：执行完成、有待确认的清单 */
+  organize?: boolean;
 };
 
 export type TelegramSettings = {
@@ -89,6 +93,8 @@ export type AppSettings = {
   lifeMonitor?: LifeMonitorSettings;
   /** 云下载完成后，让 OpenList 把产物复制到另一个存储（如挂载的本地磁盘） */
   openlistCopy?: OpenlistCopySettings;
+  /** 整理与规范化命名：模板、id 标签、识别词、分类、自动整理默认策略 */
+  organize?: OrganizeSettings;
 } & Record<string, unknown>;
 
 /** 「复制到 OpenList」：三项都填了才算配置完成 */

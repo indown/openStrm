@@ -20,6 +20,7 @@ const bodySchema = z.object({
   mode: z.enum(["sync", "async"]).optional(),
   /** 转存完顺手建追更订阅：盯这条影库条目对应的分享目录 */
   follow: followOptionSchema.optional(),
+  organize: z.boolean().optional(),
 });
 
 export default async function (fastify: FastifyInstance) {
@@ -73,7 +74,7 @@ export default async function (fastify: FastifyInstance) {
       throw driveErrorToHttp(err, "列分享目录失败");
     }
 
-    const result = await saveSelectionToTask({ task, provider, ref, items, subPath, mode, settings: readAppSettings() });
+    const result = await saveSelectionToTask({ task, provider, ref, items, subPath, mode, settings: readAppSettings(), organize: body.organize });
     if (!body.follow) return result;
     // 子目录条目转存的是目录本身，落在 subPath/目录名 下，追更就盯那个目录、落到同一处；
     // 整个分享的条目盯分享根目录

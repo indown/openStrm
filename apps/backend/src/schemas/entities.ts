@@ -6,6 +6,8 @@ import { z } from "zod";
 import { validateCronExpression } from "cron";
 import type { AppSettings, LifeMonitorSettings, TaskDefinition } from "@openstrm/shared";
 import { normalizeStrmPrefix } from "../services/strm/naming.js";
+import { validateTemplate } from "../services/organize/template.js";
+import { parseRules } from "../services/organize/rules.js";
 
 /** 115 的 id 超过 JS 安全整数，前端有的地方传字符串、有的传数字 */
 export const cidSchema = z.union([z.string(), z.number()]);
@@ -32,6 +34,12 @@ export const taskInputSchema = z.looseObject({
   enablePathEncoding: z.boolean().optional(),
   enable302: z.boolean().optional(),
   cronExpression: cronExpressionSchema.optional(),
+  organize: z
+    .object({
+      mode: z.enum(["off", "review", "auto"]).optional(),
+      libraryType: z.enum(["movie", "tv", "mixed"]).optional(),
+    })
+    .optional(),
 }) satisfies z.ZodType<Omit<TaskDefinition, "id">>;
 
 export const taskPatchSchema = taskInputSchema.partial().extend({ id: z.string().min(1) });
@@ -104,6 +112,35 @@ export const lifeMonitorSchema = z.looseObject({
   mediaServerRefreshMaxWait: z.number().int().min(0).optional(),
 }) satisfies z.ZodType<LifeMonitorSettings>;
 
+const categoryRuleSchema = z.object({
+  name: z.string().trim().min(1),
+  genreIds: z.array(z.number().int()).optional(),
+  countries: z.array(z.string()).optional(),
+  languages: z.array(z.string()).optional(),
+});
+
+/** 整理设置：模板和识别词在入口就校验，坏模板存进去每次预览都会炸 */
+export const organizeSettingsSchema = z
+  .looseObject({
+    templates: z
+      .object({
+        movie: z.string().refine((v) => !v.trim() || validateTemplate(v).length === 0, { error: (iss) => `电影模板：${validateTemplate(String(iss.input)).join("；")}` }).optional(),
+        tv: z.string().refine((v) => !v.trim() || validateTemplate(v).length === 0, { error: (iss) => `剧集模板：${validateTemplate(String(iss.input)).join("；")}` }).optional(),
+      })
+      .optional(),
+    idTag: z.enum(["emby", "jellyfin", "plex", "none"]).optional(),
+    colon: z.enum(["smart", "delete", "dash", "spaceDash"]).optional(),
+    episodeTitle: z.boolean().optional(),
+    categories: z.looseObject({ enabled: z.boolean().optional(), movie: z.array(categoryRuleSchema).optional(), tv: z.array(categoryRuleSchema).optional() }).optional(),
+    rules: z
+      .array(z.string())
+      .refine((lines) => parseRules(lines).errors.length === 0, { error: (iss) => `识别词：${parseRules(iss.input as string[]).errors.join("；")}` })
+      .optional(),
+    cleanupEmptyDirs: z.boolean().optional(),
+    extras: z.enum(["keep", "move"]).optional(),
+    auto: z.enum(["off", "review", "auto"]).optional(),
+  });
+
 /** PUT /api/settings 的 body：只校验认识的键的类型，多出来的顶层键原样存 */
 export const settingsPatchSchema = z.looseObject({
   "user-agent": z.string().optional(),
@@ -136,6 +173,7 @@ export const settingsPatchSchema = z.looseObject({
           accountAlert: z.boolean().optional(),
           follow: z.boolean().optional(),
           embyNew: z.boolean().optional(),
+          organize: z.boolean().optional(),
         })
         .optional(),
     })
@@ -153,4 +191,5 @@ export const settingsPatchSchema = z.looseObject({
   openlistCopy: z
     .looseObject({ account: z.string().optional(), srcDir: z.string().optional(), dstDir: z.string().optional() })
     .optional(),
+  organize: organizeSettingsSchema.optional(),
 }) satisfies z.ZodType<Partial<AppSettings>>;

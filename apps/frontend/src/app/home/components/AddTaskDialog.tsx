@@ -61,6 +61,9 @@ export const taskFormSchema = z.object({
     .string()
     .trim()
     .refine((v) => v === "" || CRON_SHAPE.test(v), "cron 表达式应为 5 段，例如 0 3 * * *"),
+  /** 整理：库类型先验；自动整理策略（空串 = 跟随全局设置） */
+  libraryType: z.enum(["mixed", "movie", "tv"]).optional(),
+  organizeMode: z.enum(["", "off", "review", "auto"]).optional(),
 });
 
 export type TaskFormValues = z.infer<typeof taskFormSchema>;
@@ -113,6 +116,8 @@ function defaultsFor(task: TaskEditable | undefined): TaskFormValues {
     enable302: task?.enable302 ?? false,
     enablePathEncoding: task?.enablePathEncoding ?? false,
     cronExpression: task?.cronExpression ?? "",
+    libraryType: task?.organize?.libraryType ?? "mixed",
+    organizeMode: task?.organize?.mode ?? "",
   };
 }
 
@@ -260,7 +265,13 @@ export function AddTaskDialog({
       // 115 + 302 且前缀是本地挂载路径时拼上账户名，代理按这个前缀识别挂载点；http(s) 前缀不拼，代理按任务反查账号
       const prefix = normalizePrefix(values.strmPrefix);
       const withAccount = is115Account && !!values.enable302 && !!values.account && !isHttpPrefix(prefix);
-      const taskData = { ...values, strmPrefix: withAccount ? `${prefix}/${values.account}` : prefix, accountType };
+      const { libraryType, organizeMode, ...rest } = values;
+      const taskData = {
+        ...rest,
+        strmPrefix: withAccount ? `${prefix}/${values.account}` : prefix,
+        accountType,
+        organize: { ...(organizeMode ? { mode: organizeMode } : {}), libraryType: libraryType ?? "mixed" },
+      };
 
       if (task?.id) {
         await api.tasks.update(task.id, taskData);
@@ -472,6 +483,54 @@ export function AddTaskDialog({
                 );
               }}
             />
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <FormField
+                control={form.control}
+                name="libraryType"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>库类型</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value ?? "mixed"}>
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent className="z-[60]">
+                        <SelectItem value="mixed">混合（按识别结果分流）</SelectItem>
+                        <SelectItem value="movie">电影</SelectItem>
+                        <SelectItem value="tv">剧集</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription className="text-xs">整理时的先验：看不出是电影还是剧的文件按它来。</FormDescription>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="organizeMode"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>自动整理</FormLabel>
+                    <Select onValueChange={(v) => field.onChange(v === "__global__" ? "" : v)} value={field.value || "__global__"}>
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent className="z-[60]">
+                        <SelectItem value="__global__">跟随全局设置</SelectItem>
+                        <SelectItem value="off">关</SelectItem>
+                        <SelectItem value="review">生成待确认清单</SelectItem>
+                        <SelectItem value="auto">把握大的直接执行</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription className="text-xs">转存 / 追更 / 云下载 / 监控到新文件时要不要自动整理。</FormDescription>
+                  </FormItem>
+                )}
+              />
+            </div>
 
             <div className="space-y-2">
               {is115Account && (

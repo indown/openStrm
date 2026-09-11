@@ -386,3 +386,66 @@ export async function quarkDownloadLink(account: AccountQuark, fid: string, sign
   if (!url) throw new PermanentError(`夸克：没有拿到 ${fid} 的下载直链`);
   return { url, headers: quarkLinkHeaders(account) };
 }
+
+/* ------------------------------- 写操作（整理用） ------------------------------- */
+
+/** 改名 / 移动 / 删除之后，这些路径（含子孙）的目录缓存都不可信了 */
+export function forgetQuarkPaths(account: AccountQuark, paths: string[]): void {
+  const prefix = `${account.name}\0`;
+  const targets = paths.map((p) => splitPath(p).join("/")).filter(Boolean);
+  if (targets.length === 0) return;
+  for (const key of [...pathCache.keys()]) {
+    if (!key.startsWith(prefix)) continue;
+    const p = key.slice(prefix.length);
+    if (targets.some((t) => p === t || p.startsWith(`${t}/`))) pathCache.delete(key);
+  }
+}
+
+/** 建好的目录直接进缓存，接下来往里挪文件不用再列一遍 */
+export function rememberQuarkDir(account: AccountQuark, path: string, entry: QuarkEntry): void {
+  const segments = splitPath(path);
+  if (segments.length === 0) return;
+  pathCache.set(cacheKey(account, segments), entry);
+}
+
+/** POST /file：在 pdirFid 下建目录，返回新目录的 fid */
+export async function quarkMkdir(account: AccountQuark, pdirFid: string, name: string, signal?: AbortSignal): Promise<string> {
+  const body = await quarkRequest<{ fid?: string }>(account, "POST", "/file", {
+    data: { pdir_fid: pdirFid, file_name: name, dir_path: "", dir_init_lock: false },
+    signal,
+  });
+  const fid = body.data?.fid;
+  if (!fid) throw new Error(`夸克：建目录 ${name} 没有返回 fid`);
+  return String(fid);
+}
+
+/** POST /file/rename */
+export async function quarkRename(account: AccountQuark, fid: string, name: string, signal?: AbortSignal): Promise<void> {
+  await quarkRequest(account, "POST", "/file/rename", { data: { fid, file_name: name }, signal });
+}
+
+/** 移动 / 删除是异步任务：finish 为 false 时要拿 task_id 去 /task 轮询（见 share.ts 的 quarkWaitTask） */
+export interface QuarkTaskHandle {
+  taskId?: string;
+  finish: boolean;
+}
+
+/** POST /file/move：把一批 fid 挪到 toPdirFid 下（名字不变） */
+export async function quarkMove(account: AccountQuark, fids: string[], toPdirFid: string, signal?: AbortSignal): Promise<QuarkTaskHandle> {
+  if (fids.length === 0) return { finish: true };
+  const body = await quarkRequest<{ task_id?: string; finish?: boolean }>(account, "POST", "/file/move", {
+    data: { action_type: 1, exclude_fids: [], filelist: fids, to_pdir_fid: toPdirFid },
+    signal,
+  });
+  return { taskId: body.data?.task_id ? String(body.data.task_id) : undefined, finish: body.data?.finish !== false };
+}
+
+/** POST /file/delete：进回收站。整理只用它删腾空的目录 */
+export async function quarkDelete(account: AccountQuark, fids: string[], signal?: AbortSignal): Promise<QuarkTaskHandle> {
+  if (fids.length === 0) return { finish: true };
+  const body = await quarkRequest<{ task_id?: string; finish?: boolean }>(account, "POST", "/file/delete", {
+    data: { action_type: 1, exclude_fids: [], filelist: fids },
+    signal,
+  });
+  return { taskId: body.data?.task_id ? String(body.data.task_id) : undefined, finish: body.data?.finish !== false };
+}

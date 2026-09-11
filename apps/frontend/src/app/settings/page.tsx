@@ -18,6 +18,7 @@ import { FormSkeleton } from "@/components/loading";
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import type { AppSettings } from "@openstrm/shared";
+import { OrganizeSection } from "./components/OrganizeSection";
 
 type Settings = AppSettings;
 
@@ -85,6 +86,7 @@ export default function SettingsPage() {
         tmdb: data.tmdb,
         hdhive: data.hdhive,
         openlistCopy: data.openlistCopy,
+        organize: data.organize,
       };
 
       await api.settings.patch(saveData);
@@ -467,6 +469,8 @@ export default function SettingsPage() {
             </div>
           </div>
         </section>
+
+        <OrganizeSection value={data.organize ?? {}} onChange={(organize) => setData({ ...data, organize })} />
 
         <div className="flex flex-wrap items-center gap-3">
           <Button disabled={saving} onClick={onSave}>

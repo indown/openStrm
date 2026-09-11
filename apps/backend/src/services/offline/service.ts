@@ -38,6 +38,7 @@ import {
   type OfflineTask,
 } from "../cloud-115/offline.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
+import { maybeAutoOrganize } from "../organize/auto.js";
 import {
   copyStateSucceeded,
   openlistCopy,
@@ -650,6 +651,7 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
     finish(f, "done", `已生成 ${r.generatedCount} 个 strm（跳过 ${r.skippedCount} 个${invalid}）`);
     log.info(`云下载完成：${t.name} → ${f.detail}`);
     if (r.generatedCount > 0) scheduleEmbyRefresh();
+    maybeAutoOrganize({ task, paths: [f.subPath ? `${f.subPath}/${item.name}` : item.name], trigger: "offline" });
     void deps
       .notify({ type: "offline-done", name: t.name, detail: f.detail, target: `${task.originPath}${f.subPath ? `/${f.subPath}` : ""}` })
       .catch(() => {});
@@ -775,6 +777,30 @@ async function pollOpenlistCopies(items: OfflineFollowup[]): Promise<void> {
 }
 
 /** 仅供测试：清掉所有回执并停循环 */
+/**
+ * 整理把任务下的目录挪走后，还没兑现的回执落点跟着改（同 follow/service.ts 的 rewriteFollowSubPaths）。
+ * dryRun 只返回会受影响的 subPath
+ */
+export function rewriteOfflineSubPaths(taskId: string, mappings: Array<{ from: string; to: string }>, dryRun = false): string[] {
+  const rows = listFollowups();
+  const hit: string[] = [];
+  let changed = false;
+  for (const f of rows) {
+    if (f.taskId !== taskId || !f.subPath || f.status !== "pending") continue;
+    if (dryRun) {
+      hit.push(f.subPath);
+      continue;
+    }
+    const m = mappings.find((x) => f.subPath === x.from || f.subPath.startsWith(`${x.from}/`));
+    if (!m) continue;
+    hit.push(f.subPath);
+    f.subPath = normalizeSubPath(f.subPath === m.from ? m.to : `${m.to}${f.subPath.slice(m.from.length)}`);
+    changed = true;
+  }
+  if (changed) saveFollowups(rows);
+  return hit;
+}
+
 export async function __test_resetOffline(): Promise<void> {
   await stopOfflineWatcher();
   writeKv(FOLLOWUP_KEY, []);

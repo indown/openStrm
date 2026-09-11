@@ -22,6 +22,7 @@ import {
   getShareFollow,
   insertShareFollow,
   listDueShareFollows,
+  listShareFollows,
   listShareFollowSummaries,
   replaceShareFollows,
   toSummary,
@@ -33,6 +34,7 @@ import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, KIND_LABEL, parseShareRef, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession, ShareUpdateSignal, DriveKind } from "../drive/types.js";
 import { saveSelectionToTask } from "../share/receive.js";
+import { maybeAutoOrganize } from "../organize/auto.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
 import { notify, type NotifyEvent } from "../telegram/notify.js";
@@ -507,6 +509,8 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
   const diff = diffShareListing(f.known, listing.entries);
   const settings: AppSettings = readAppSettings();
   const received: string[] = [];
+  /** 落到任务目录里的相对路径（subPath/条目名），交给自动整理 */
+  const landed: string[] = [];
   const failed: string[] = [];
   const errors: string[] = [];
   let generated = 0;
@@ -524,6 +528,7 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
       });
       if ("generatedCount" in r) generated += r.generatedCount;
       received.push(...group.items.map((i) => i.path));
+      landed.push(...group.items.map((i) => normalizeSubPath(`${subPath}/${baseName(i.path)}`)));
     } catch (err) {
       failed.push(...group.items.map((i) => i.path));
       errors.push(`${group.parent || "."}：${errMsg(err)}`);
@@ -564,6 +569,7 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
   if (received.length) {
     log.info(`追更「${f.name}」新增 ${received.length} 项 → ${target2}，生成 ${generated} 个 strm`);
     if (generated > 0) scheduleEmbyRefresh();
+    maybeAutoOrganize({ task, paths: landed, trigger: "follow" });
     void deps.notify({ type: "follow-added", name: f.name, added: received.map(baseName), generated, target: target2 }).catch(() => {});
   }
   if (errors.length) {
@@ -652,6 +658,27 @@ export async function tickFollows(): Promise<void> {
     if (i < due.length - 1 && deps.gapMs > 0) await sleep(deps.gapMs);
   }
   lastTickAt = deps.now();
+}
+
+/**
+ * 整理把任务下的目录挪走后，订阅的落点跟着改：sub_path 等于或位于 from 之下的改成 to。
+ * dryRun 只返回会受影响的 subPath（预览里显示「被 N 条追更引用」）。返回改过（或会改）的 subPath 列表
+ */
+export function rewriteFollowSubPaths(taskId: string, mappings: Array<{ from: string; to: string }>, dryRun = false): string[] {
+  const hit: string[] = [];
+  for (const f of listShareFollows()) {
+    if (f.taskId !== taskId || !f.subPath) continue;
+    if (dryRun) {
+      hit.push(f.subPath);
+      continue;
+    }
+    const m = mappings.find((x) => f.subPath === x.from || f.subPath.startsWith(`${x.from}/`));
+    if (!m) continue;
+    const next = f.subPath === m.from ? m.to : `${m.to}${f.subPath.slice(m.from.length)}`;
+    updateShareFollow(f.id, { subPath: normalizeSubPath(next) });
+    hit.push(f.subPath);
+  }
+  return hit;
 }
 
 /** 仅供测试：清掉所有订阅并停循环 */

@@ -5,8 +5,7 @@
  * 通过 behavior/detail 接口可以按倒序把它们拉出来，从而在不做全量目录扫描的前提下
  * 感知网盘文件变动。
  *
- * 参考实现：DDSRem-Dev/MoviePilot-Plugins 的 p115strmhelper 插件，
- * 以及本仓库 vendored 的 p115client/p115client/tool/life.py。
+ * 接口用法参考本仓库 vendored 的 p115client/p115client/tool/life.py。
  */
 import axios from "axios";
 import { request115, type AccountInfo } from "./client.js";

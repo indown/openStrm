@@ -183,6 +183,7 @@ test("scan：六类问题各一例、只报最上层、跳过别的任务的根�
     unparsable: 2,
     "duplicate-episode": 1,
     "leftover-part": 1,
+    "nonstandard-name": 0,
   });
   const sub = await scan(main, "Show/Season 1");
   assert.deepEqual(sub.skippedRoots, []);
@@ -194,7 +195,7 @@ test("scan：六类问题各一例、只报最上层、跳过别的任务的根�
     dirs: 0,
     truncated: false,
     skippedRoots: [],
-    counts: { "nested-same-name": 0, "empty-dir": 0, "stale-content": 0, unparsable: 0, "duplicate-episode": 0, "leftover-part": 0 },
+    counts: { "nested-same-name": 0, "empty-dir": 0, "stale-content": 0, unparsable: 0, "duplicate-episode": 0, "leftover-part": 0, "nonstandard-name": 0 },
     issues: [],
   });
 });
