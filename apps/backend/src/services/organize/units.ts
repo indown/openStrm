@@ -174,13 +174,15 @@ export function buildUnits(entries: ScopeEntry[], opts: BuildUnitsOptions): Unit
     const common = mostCommon(keys.filter((k) => !k.startsWith("|")));
     const commonShare = common ? keys.filter((k) => k === common).length / videos.length : 0;
     const anyMarker = videos.some((v) => hasEpisodeMarker(v.parsed) || v.seasonFromDir !== undefined);
-    const single = dirTitleOk ? distinct.size <= 1 || commonShare >= 0.6 || anyMarker : distinct.size <= 1;
+    // 范围目录本身（任务根 / 用户选的那一层）名字不可靠（tv、movie、inbox…），散在里面的文件只看文件标题：
+    // 标题一致才算一个作品，否则按标题拆开；里面的目录名可靠时，有集标记或多数文件同名就当一个作品
+    const atScopeRoot = root === scopePath;
+    const single = atScopeRoot ? distinct.size <= 1 : dirTitleOk ? distinct.size <= 1 || commonShare >= 0.6 || anyMarker : distinct.size <= 1;
 
     if (single) {
       const fileParsed = videos.find((v) => titleKey(v.parsed) === common)?.parsed ?? videos[0].parsed;
-      // 范围目录本身（用户选的那一层 / 任务根）名字不可靠：文件有一致的标题就用文件的；里面的目录名优先
-      const atScopeRoot = root === scopePath;
-      const useFiles = !dirTitleOk || (atScopeRoot && !!common && commonShare >= 0.6);
+      // 范围根用文件的标题；任务根（""）的名字是任务目录名，文件没标题也不能拿它去搜；用户选的那一层文件没标题时才退回目录名
+      const useFiles = !dirTitleOk || root === "" || (atScopeRoot && !!common);
       const parsed: ParsedName = useFiles ? { ...fileParsed } : { ...rootParsed.parsed };
       // 另一边的标题也留作搜索候选（目录叫「怒呛人生」、文件叫 BEEF，两个都该试）
       const extra = (useFiles ? (dirTitleOk ? rootParsed.parsed.titles : []) : fileParsed.titles).filter((t) => t && !parsed.titles.includes(t));

@@ -289,6 +289,41 @@ test("本地镜像只认同账号的任务：别的账号同名 originPath 的�
   assert.ok(!fs.existsSync(path.join(DATA_DIR, "organize-itest", "other-tv")));
 });
 
+test("散在任务根目录的文件：按标题各自成单元挪进作品目录，作品目录已存在就直接进去，根目录不删", async () => {
+  // 根目录下：一部已经整理好的剧、一集散落的 BEEF（带字幕）、一个散落的沙丘 1080p（inbox 里还有它的 2160p）
+  drive.tree.addDir("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01");
+  drive.tree.addFile("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv");
+  drive.tree.addFile("/tv/BEEF.S01E03.1080p.WEB-DL.mkv");
+  drive.tree.addFile("/tv/BEEF.S01E03.1080p.WEB-DL.chs.srt");
+  drive.tree.addFile("/tv/Dune.Part.Two.2024.1080p.WEB-DL.mkv");
+  writeLocalStrm("BEEF.S01E03.1080p.WEB-DL.strm", "tv/BEEF.S01E03.1080p.WEB-DL.mkv");
+  const run = await createRun({ taskId: "t1", subPath: "" });
+  await untilStatus(run.id, ["ready"]);
+  const detail = getRunDetail(run.id);
+  const rootUnits = detail.units.filter((u) => u.rootPath === "");
+  assert.deepEqual(rootUnits.map((u) => u.dstRoot).sort(), ["怒呛人生 (2023) [tmdbid=153312]", "沙丘：第二部 (2024) [tmdbid=693134]"], "根目录按标题拆成两个单元");
+  const byDst = (suffix: string) => detail.items.find((i) => i.dstPath.endsWith(suffix))!;
+  assert.equal(byDst("Season 01/怒呛人生 - S01E03.mkv").srcPath, "/tv/BEEF.S01E03.1080p.WEB-DL.mkv");
+  assert.equal(byDst("Season 01/怒呛人生 - S01E03.zh-CN.srt").srcPath, "/tv/BEEF.S01E03.1080p.WEB-DL.chs.srt");
+  assert.equal(byDst("沙丘：第二部 (2024) - 1080p.mkv").srcPath, "/tv/Dune.Part.Two.2024.1080p.WEB-DL.mkv");
+  assert.equal(byDst("沙丘：第二部 (2024) - 2160p.mkv").srcPath, "/tv/inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv", "inbox 里的另一个版本进同一个作品目录");
+  const mkdirs = detail.items.filter((i) => i.action === "mkdir").map((i) => i.dstPath);
+  assert.ok(!mkdirs.some((d) => d.includes("怒呛人生")), "已存在的作品目录和季目录不再建");
+  const existing = detail.units.find((u) => u.rootPath === "怒呛人生 (2023) [tmdbid=153312]")!;
+  assert.equal(existing.match?.confidence, "high", "目录名里的 tmdbid 标签直接认");
+  assert.equal(detail.items.filter((i) => i.unitKey === existing.key && i.action !== "keep").length, 0, "已经规范的文件一个都不动");
+  assert.ok(!detail.items.some((i) => i.action === "rmdir" && i.srcPath === "/tv"), "任务根目录永远不删");
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.equal(drive.tree.get("/tv/BEEF.S01E03.1080p.WEB-DL.mkv"), undefined);
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E03.mkv"));
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv"), "原来的文件还在");
+  assert.ok(drive.tree.get("/tv/沙丘：第二部 (2024) [tmdbid=693134]/沙丘：第二部 (2024) - 1080p.mkv"));
+  assert.ok(drive.tree.get("/tv/沙丘：第二部 (2024) [tmdbid=693134]/沙丘：第二部 (2024) - 2160p.mkv"));
+  assert.equal(localRead("怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E03.strm"), "/mnt/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E03.mkv");
+  assert.ok(!localExists("BEEF.S01E03.1080p.WEB-DL.strm"));
+});
+
 test("中途取消：改了名还没挪走的项记着 cur_path，续跑接着挪，撤销也能改回去", async () => {
   // 改名一律成功，移动一到就中止：模拟第一次 apply 在 2b 和 2c 之间被掐断
   const run = await createRun({ taskId: "t1", subPath: "inbox" });

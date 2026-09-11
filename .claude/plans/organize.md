@@ -293,7 +293,7 @@ interface DriveWriteOps {
 - [x] 路由 `routes/organize/*`、设置 schema（模板 / 识别词入口校验）、任务 `organize` 字段、Telegram `organize-done / organize-review`
 - [x] strm 管理体检新增「命名不规范」
 - [x] 前端：`/organize` 页（范围 → 预览 → 单元卡片 / 换匹配 / 季与集偏移 / 勾选 / 记住 → 执行 → 撤销 → 历史）、设置页「整理」区块（模板实时试算、id 标签、冒号、分类、识别词、自动策略）、任务弹框（库类型 / 自动整理）、转存弹框「转存后整理」、Telegram 开关
-- [x] 测试：后端 630 个全过（新增 parse-name 66、rules 7、template 6、units 6、plan 9、identify 7、run.itest 16、organize 路由 4）；前端 typecheck / lint / next build 干净
+- [x] 测试：后端 631 个全过（新增 parse-name 66、rules 7、template 6、units 6、plan 9、identify 7、run.itest 17、organize 路由 4）；前端 typecheck / lint / next build 干净
 - [x] 2026-09-11 评审一轮（自审 + 自动化评审），修掉的：监控只认最终路径、认不出「先原地改名」的中间事件（现在 `findOwnOperation` 认中间路径 / 反向路径 / 建目录，按事件时间和 hits ≤ 2 限定）；按路径自动触发的 run 不列范围外目标目录（现在按整棵列过的 roots 判）；改名后没挪走的中间状态不落库（加了 `cur_path`，续跑不重复改名、撤销能改回去）；本地镜像失败被吞、监控又跳过（镜像先于 done、失败记在 error、监控见 error 不跳）；失败项再执行不重试；记忆被 repath 的旧记忆盖掉（先 repath 后 remember）；`nonstandard-name` 把集名里的 Web / Cam 当噪音（先认规范形状）；「转存后整理」的 review 语义被丢（run.mode 现在有 review）；同秒建的 run 撤销判定靠随机 id（改 rowid）；`..` 范围路径；mkdir 前先看目录在不在；夸克批量移动分批；TMDB 节流和影库刮削共用一条时间线
 - [x] 2026-09-11 真机验证（本机浏览器 + 115 / 夸克真账号）：115 电影目录（`Captain.America.Brave.New.World.2025...` → `美国队长4 (2025) [tmdbid=822119]/美国队长4 (2025) - 2160p.mkv`，nfo 跟随）、115 剧集目录（`Lord.of.the.Flies.S01...` → `蝇王 (2026) [tmdbid=270572]/Season 01/蝇王 - S01Exx.mkv`）、夸克剧集目录（`亿万地堡（2025）/S01/...` → `亿万地堡 (2025) [tmdbid=245648]/Season 01/...`）各走完 预览 → 执行 → 本地 strm 镜像（内容按段 URL 编码，和生成器一致）→ 监控把自己的事件认出来跳过 → 撤销 → 网盘 / 本地都回原样；115 `files/add` 回 `cid`、夸克 `/file/move` 走任务轮询都确认了；换匹配弹框的 TMDB 搜索也在真机看过。真机暴露并修掉的：
   - 本地镜像按路径匹配任务会串到别的账号（115 和夸克都有 `tv`，夸克的整理把 strm 写进了 115 任务的本地目录）：`ExecCtx.tasks` 只放同账号的任务（和监控一致），itest 加了「别的账号同名 originPath」的用例
@@ -306,4 +306,5 @@ interface DriveWriteOps {
   - 115：用 `files/copy` 复制现有文件伪造 `Dune.Part.Two.2024.WEB-DL`（两个 mkv + 两个 nfo），多版本命名和 nfo 跟随通过，监控把 6 条自有事件（含删目录）全认出来；撤销后删掉伪造目录，监控随之清掉本地。115 改名不能改扩展名（`.nfo` 改 `.srt` 会保留 `.nfo`），所以 115 上造不出假字幕；夸克没有复制 / 上传接口，没在夸克上造假
   - Emby（amilys/embyserver，本地 strm 目录挂进容器，库开互联网元数据）：整理完 OpenStrm 触发的 `/Library/Refresh` 生效；`[tmdbid=…]` 目录标签被 Emby 直接认成 ProviderIds.Tmdb=693134 / 154385；`片名 (年) - 1080p` / `- 2160p` 两个文件在 `/Users/{id}/Items` 里合并成一部电影两个版本（`/Items` 端点不合并是 Emby 自己的展示逻辑；同 tmdbid 的目录也会按元数据合并）；strm 里的 `http://host.docker.internal:5244/d/…` 能被 Emby 探测到流信息
   - 真机暴露并修掉的：识别打分只比本地化标题、不比原名，「Dune Part Two」被同名花絮抢走、「BEEF」认成 Celebrity Beef（搜索结果现在带 `originalTitle` 一起打分；标题和原名都没对上时拿前五名的详情看别名，谁命中选谁；搜索缓存键加了版本号让旧形状的条目过期）
+- [x] 2026-09-11 v2.5.0-rc.1 发出后用户问「剧集 / 电影没放自己的目录、散在 tv/ 或 movie/ 根下会怎样」：写集成测试一跑抓到 bug——范围根下只要有一个文件带集标记，根下所有散文件都被当成同一部剧并成一个单元，文件没标题时还会拿任务目录名（tv）去搜。现在范围根只看文件标题是否一致，不一致就按标题拆，任务根的名字永远不拿去搜（`units.ts`），随 v2.5.0-rc.2 发出
 - [ ] 真机没覆盖到的：追更目录改写后的下一次 tick（库里没有追更订阅可用）、夸克上的多版本 / 字幕（造不出文件）
