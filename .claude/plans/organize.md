@@ -474,7 +474,7 @@ UPDATE organize_items SET error_kind = 'mirror' WHERE status = 'done' AND error 
 代码评审（八个角度 + 核实）在 2d07cd8 上抓到并修掉的：
 - **连环改名被误判成撞名**：集偏移这种 E02→E01、E03→E02 的计划，改名前的检查看到目标名被占就拒了。现在占着名字的是本轮自己的节点就不算撞名（`occupied` 认一组「我们的」id），按依赖排序一个个改（占着我目标名的那项先改；A↔B 互占才拒），有连环时不用批量改名接口。移动那步同理：被本轮别的项占着的先推迟，所有批次跑完再来一遍。
 - **进程崩溃后重跑把已经挪好的文件判成撞名**：目标目录里那个同名文件就是自己的节点 → 直接记账（含镜像），不再挪；改名那步同样。
-- **「放弃」改成显式字段 `givenUp`**（表 `organize_items.given_up`，迁移 0012 重出，仍未发布）：不再靠错误文案前缀。放弃镜像失败的项保留 `errorKind = mirror`（监控见到自有事件仍会把本地补回来），只是不进统计 / 面板 / 重试集合；撤销阶段放弃 done 项也保持 `done`（文件就在那里），`revertWorkItem` 对 givenUp 的 done 不再算有事。
+- **「放弃」改成显式字段 `givenUp`**（表 `organize_items.given_up`，迁移 0012 重出，仍未发布）：不再靠错误文案前缀。放弃镜像失败的项保留 `errorKind = mirror`（监控见到自有事件仍会把本地补回来），只是不进统计 / 面板 / 重试集合；撤销阶段放弃 done 项也保持 `done`（文件就在那里），`revertWorkItem` 对 givenUp 的 done 不再算有事——放弃的只是本地镜像（kind mirror）的除外，见末节「真机复测」。
 - **撤销循环不再碰放弃掉的失败 mkdir**：skipped 的 mkdir 只在有 nodeId（真建过）且不是放弃的才再看一眼，否则会把别人后来建的同名目录删掉。
 - **撤销阶段放弃执行时改了名没挪走的项**：以前直接标 skipped 把位置忘了；现在不管哪个阶段，带 curPath 的 failed / pending 一律先改回原名。
 - **放弃时的原名占用检查**改用 `namesIn`（fresh 列目录）+ `occupied`，和执行 / 撤销同一套；`namesIn` / `dirIdOf` 现在只要 `ListCtx`（provider / signal / 两个缓存）。
@@ -504,3 +504,19 @@ UPDATE organize_items SET error_kind = 'mirror' WHERE status = 'done' AND error 
 2. **放弃过镜像失败的项撤销时不退回**。`revertWorkItem` 对 givenUp 的 done 一律不算事，把「放弃补本地」和「放弃撤销」混成一个了——放弃本地镜像的项网盘那步是做过的，撤销时照样要退，不然 run 标已撤销、文件却留在整理后的位置。现在 done + mirror + givenUp 仍进撤销；撤销侧的结果都是新账（退回 / 网盘失败 / 找不到都把 givenUp 清掉，退回后不再显示「放弃」）；放弃镜像的对话框补一句「之后撤销时照样退回」。用例 + `failures.test` 断言。
 
 顺手：rmdir「目录不是空的」的 115 缓存那句只在 115 上说。没改的观察：撤销时「已找不到」的项，本地 strm 留在整理后的位置（文件本来就不在了），等全量同步 / 体检清掉。
+
+### 第二轮评审（2026-09-14 晚，959cbbb / df96401 提交之后）
+
+`/code-review high` 覆盖 v2 上未发布的三个提交：10 条确认、2 条存疑、几条清理项，全部处理（整理侧的记这里，同步任务侧的记 task-failures.md）：
+
+- **路径里的「405」「cookie」被当成风控**。115 的 `classifyError` 原来对任何错误按文案猜：`StaleError("网盘上找不到 /tv/Room 405/x")`、`PermanentError("File not found … /电影/1405年")` 都会变成 blocked，整轮停下且失败项永远在默认重试集里。现在 115 客户端的业务错误（`ensureOk`）有自己的类 `Cloud115ApiError`（带 errno），115 只对接口层的错误（`Cloud115Error` / `Cloud115ApiError` / `ShareApiError` / axios 响应）按文案猜；两个分类器共用 `drive/errors.ts` 的 `accountIssueOf`（provider → 登录码 → 只对接口错误的文案兜底），`classifyAccountIssue` 挪到那里（notify 转一手）；`classifyFailure` 先认自己的 `StaleError` / `RemoteDirNotFoundError` 再问账号问题；`driveErrorFacts` 多了 `api`，并会看 `PermanentError.cause`（OpenList 取文件信息回 401 那种，客户端现在把原错误挂在 cause 上）。
+- **连环改名里给我腾名字的那项撞了别人**。依赖排序把「owner 不在待改集合里」当成已让路，owner 其实是预检失败、名字还占着，后面那项改过去要么被拒、要么被 115 悄悄改成 (1)。现在 owner 失败的项级联记 rejected（「占着 X 的那一项没改成」），逐个改名前再看一眼本轮的目录缓存。
+- **跨目录移动只让路一轮**。三个串成链（X 要去的名字被 Y 占着，Y 的被 Z 占着）按目标目录批次的顺序一轮解不开，链头被记成撞名。现在有进展就再来一轮，一轮一个都没挪成才按撞名记。
+- **监控把「挪回来了、改回原名失败」的项当已镜像**。done 带 curPath 时本地还没跟上（镜像在改名之后才做），事件要照常处理；`ownOk` 加了这一条。
+- **进程在最后一项做完、run 状态还没写时重启**。标成 failed 后「没有要重试的项」，再也执行不了，收尾（追更目录改写、识别记忆）永远不跑，还挡着前一次整理的撤销。`reconcileInterruptedRuns` 现在先看清单：没事可做的按正常结束收口（`afterApply` / 新拆出的 `afterRevert`，两者都只做 DB 操作、改成同步）。
+- **撤销阶段的 stale 没有分组**。done + stale（网盘按文案说找不到）进了统计却没有按钮；分组加了 stale，前端文案「退回时找不到位置」。
+- **放弃后收口看错条件**。只看默认重试集是不是空的，stale / rejected 的失败项还在也会把 run 标成 done。现在按失败分组判断（本地没跟上的除外，执行本来就不因它算失败）。
+- 清理：`orderRevert` 用查表代替 n² 扫描；`getRunDetail` 只列一次 items / units；撤销时按整理后的目录列一次（本轮缓存）找文件，不再每个文件 resolvePath；`mirrorBack` 复用 `intermediateOf`。
+- 没改的两条存疑：`withRetry` 对 OpenList 按路径的移动在「超时但其实已挪成」后重发，记的原因会从 transient 变成 stale（文件的结局和以前一样，只是记账原因不同）；代理 / WAF 层不带权限字样的 403 现在归 transient 自动重试一次，而不是按登录失效整轮停——更保守，接受。
+
+用例：`drive/errors.test.ts`（facts / accountIssueOf）、`failures.test` 的 stale 先于账号、`run.itest` 五条（owner 失败级联、三链移动、重启收口、放弃后不误收口、撤销阶段 stale 分组）、`monitor.itest` 的半路项。

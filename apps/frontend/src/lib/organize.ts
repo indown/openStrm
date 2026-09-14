@@ -51,6 +51,8 @@ export function failureGroupMeta(key: OrganizeFailureGroupKey, stage: OrganizeRu
         return { label: "临时失败", tone: "warning", hint: "退回时网络或网盘抖动：继续撤销再试一次" };
       case "rejected":
         return { label: "改回原名被拒", tone: "danger", hint: "原来的名字网盘不再接受（多半是原位置又有了同名文件）：继续撤销再试，或放弃让文件留在整理后的位置" };
+      case "stale":
+        return { label: "退回时找不到位置", tone: "danger", hint: "原目录或文件的位置和记录对不上（可能被挪过）：继续撤销再试，或放弃让文件留在整理后的位置" };
       case "lost":
         return { label: "已找不到", tone: "danger", hint: "文件已不在整理后的位置，或位置上是另一个文件：没法退回，只能放弃" };
       case "mirror":

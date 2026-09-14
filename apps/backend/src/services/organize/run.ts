@@ -730,8 +730,8 @@ async function withRetry<T>(ctx: ExecCtx, fn: () => Promise<T>): Promise<T> {
 const WORK_ACTIONS = new Set<OrganizeItem["action"]>(["mkdir", "rename", "move", "rmdir"]);
 
 /** 只有勾选且识别出来的单元的项才动；目录项（unitKey 为空）随时动 */
-function activeItemFilter(runId: string): (it: OrganizeItem) => boolean {
-  const units = new Map(listUnits(runId).map((u) => [u.key, u]));
+function activeItemFilter(runId: string, known: OrganizeUnit[] = listUnits(runId)): (it: OrganizeItem) => boolean {
+  const units = new Map(known.map((u) => [u.key, u]));
   return (it) => it.unitKey === "" || !!(units.get(it.unitKey)?.selected && units.get(it.unitKey)?.match);
 }
 
@@ -907,8 +907,15 @@ async function execute(job: Job, runId: string, only: Set<string> | null): Promi
         break;
       }
       for (const it of round) {
-        batch.push(it);
         left.delete(it.id);
+        // 给我腾名字的那一项没改成（撞了别人的）：名字还被它占着，改过去要么被拒、要么 115 悄悄变成 xxx(1)，不能碰
+        const owner = waitFor.get(it.id);
+        if (owner && failed.has(owner)) {
+          failed.add(it.id);
+          fail(it, new OrganizeFailure("rejected", new Error(`占着 ${baseOf(it.dstPath)} 的那一项没改成，这一项改不了`)));
+          continue;
+        }
+        batch.push(it);
       }
     }
     if (batch.length === 0) continue;
@@ -917,6 +924,10 @@ async function execute(job: Job, runId: string, only: Set<string> | null): Promi
       for (const [i, it] of batch.entries()) {
         if (fatal || signal.aborted) break;
         try {
+          // 前面的项改到一半失败了名字就还占着：动手前再看一眼本轮的目录缓存（改成的都记在里面），占着就是撞名
+          const owner = waitFor.get(it.id);
+          if (owner && failed.has(owner)) throw new OrganizeFailure("rejected", new Error(`占着 ${baseOf(it.dstPath)} 的那一项没改成，这一项改不了`));
+          if (occupied(await namesIn(ctx, dirOf(current.get(it.id)!)), nodes[i].newName, nodes[i].node.id)) throw clashError("源目录里", nodes[i].newName);
           const r = await withRetry(ctx, () => write.rename(nodes[i].node, nodes[i].newName, signal));
           await settle(it, r.id);
         } catch (err) {
@@ -960,7 +971,7 @@ async function execute(job: Job, runId: string, only: Set<string> | null): Promi
   }
   // 目标目录里现在有没有同名的（预览之后别人放进来的）：有就不挪，115 会悄悄改成 xxx(1)。
   // 名字在自己的节点上（上次挪过去没记账）只记账；被本轮别的项占着（它要挪走）就等所有批次跑完再来一遍
-  const deferred = new Map<string, OrganizeItem[]>();
+  let deferred = new Map<string, OrganizeItem[]>();
   const runMoveBatches = async (batches: Map<string, OrganizeItem[]>, allowDefer: boolean) => {
     for (const [to, wholeBatch] of batches) {
       if (fatal || signal.aborted) break;
@@ -1027,8 +1038,24 @@ async function execute(job: Job, runId: string, only: Set<string> | null): Promi
       }
     }
   };
-  await runMoveBatches(moveBatches, true);
-  if (deferred.size > 0 && !fatal && !signal.aborted) await runMoveBatches(deferred, false);
+  // 三个以上串成链（X 要去的名字被 Y 占着，Y 要去的又被 Z 占着）按目标目录的批次顺序一遍未必解得开：有进展就再来一遍，
+  // 一遍下来一个都没挪成就是转圈互占，最后一遍不再等、按撞名记
+  let pendingMoves = moveBatches;
+  const sizeOf = (m: Map<string, OrganizeItem[]>) => [...m.values()].reduce((n, l) => n + l.length, 0);
+  while (pendingMoves.size > 0 && !fatal && !signal.aborted) {
+    const before = sizeOf(pendingMoves);
+    deferred = new Map();
+    await runMoveBatches(pendingMoves, true);
+    const left = sizeOf(deferred);
+    if (left === 0) break;
+    if (left === before) {
+      const stuck = deferred;
+      deferred = new Map();
+      await runMoveBatches(stuck, false);
+      break;
+    }
+    pendingMoves = deferred;
+  }
 
   // 3. 删空目录（从深到浅）。目录已经不在了算 stale（不用再试）；不是空的记成临时（下次重试再看一眼）
   for (const it of pending.filter((i) => i.action === "rmdir")) {
@@ -1067,7 +1094,7 @@ async function execute(job: Job, runId: string, only: Set<string> | null): Promi
   }
   const moved = items.filter((it) => it.status === "done" && (it.action === "rename" || it.action === "move")).length;
   if (moved > 0) {
-    await afterApply(task, provider, listUnits(runId), items);
+    afterApply(task, provider, listUnits(runId), items);
     scheduleEmbyRefresh();
   }
   // 执行过就不能再改单元了，预览留在内存里的单元结构可以放掉
@@ -1078,7 +1105,7 @@ async function execute(job: Job, runId: string, only: Set<string> | null): Promi
 }
 
 /** 收尾：追更 / 云下载回执的目录改写、识别记忆（先把旧记忆挪到新路径，再写这次确认的，新的才不会被旧的盖掉） */
-async function afterApply(task: TaskDefinition, provider: DriveProvider, units: OrganizeUnit[], items: OrganizeItem[]): Promise<void> {
+function afterApply(task: TaskDefinition, provider: DriveProvider, units: OrganizeUnit[], items: OrganizeItem[]): void {
   const removedDirs = new Set(items.filter((it) => it.action === "rmdir" && it.status === "done").map((it) => relOf(task, it.srcPath)));
   const mappings: Array<{ from: string; to: string }> = [];
   for (const u of units) {
@@ -1110,12 +1137,12 @@ async function afterApply(task: TaskDefinition, provider: DriveProvider, units: 
  * 能不能（再）执行。ready 的执行全部；done / failed / cancelled 的重试失败和没做的项（默认只重试临时失败，
  * stale / rejected 要用户点名）；开始撤销的 run 不能再执行。count 是会做的项数
  */
-export function applicability(run: OrganizeRun, ids?: string[]): OrganizeRunDetail["applicable"] {
+export function applicability(run: OrganizeRun, ids?: string[], known?: { items: OrganizeItem[]; units: OrganizeUnit[] }): OrganizeRunDetail["applicable"] {
   if (run.stage === "revert") return { ok: false, reason: "这次整理已经开始撤销，只能继续撤销", count: 0 };
   if (run.status === "ready") return run.stats.planned > 0 ? { ok: true, count: run.stats.planned } : { ok: false, reason: "没有要动的项", count: 0 };
   if (!["done", "failed", "cancelled"].includes(run.status)) return { ok: false, reason: `当前状态（${run.status}）不能执行`, count: 0 };
-  const active = activeItemFilter(run.id);
-  const items = listItems(run.id).filter(active);
+  const active = activeItemFilter(run.id, known?.units);
+  const items = (known?.items ?? listItems(run.id)).filter(active);
   if (ids) {
     const set = new Set(ids);
     const count = items.filter((it) => set.has(it.id) && retryableItem(it, true)).length;
@@ -1260,11 +1287,13 @@ export async function skipItems(runId: string, ids: string[]): Promise<OrganizeS
     }
     refuse(it, "这一项没有需要放弃的失败");
   }
-  // 放弃之后没剩下要做的事：中断的 run 收口成 done / reverted
+  // 放弃之后没剩下要人处理的（本地没跟上的除外，执行本来就不因它算失败）：中断的 run 收口成 done / reverted。
+  // 不能只看默认重试集是不是空的：stale / rejected 的失败项不在默认重试集里，它们还在就不算收口
   const items = listItems(runId);
-  const stats = computeStats(listUnits(runId), items, run.stage);
+  const units = listUnits(runId);
+  const stats = computeStats(units, items, run.stage);
   let status = run.status;
-  if (run.stage === "apply" && (run.status === "failed" || run.status === "cancelled") && !applicability(run).ok) status = "done";
+  if (run.stage === "apply" && (run.status === "failed" || run.status === "cancelled") && failureGroups(run, items, units).every((g) => g.key === "mirror")) status = "done";
   if (run.stage === "revert" && (run.status === "failed" || run.status === "cancelled") && !items.some((it) => revertWorkItem(it))) status = "reverted";
   updateRun(runId, { stats, status, ...(status !== run.status ? { error: "" } : {}) });
   return result;
@@ -1272,10 +1301,10 @@ export async function skipItems(runId: string, ids: string[]): Promise<OrganizeS
 
 /* ------------------------------- 撤销 ------------------------------- */
 
-export function revertability(run: OrganizeRun): { ok: boolean; reason?: string } {
+export function revertability(run: OrganizeRun, items: OrganizeItem[] = listItems(run.id)): { ok: boolean; reason?: string } {
   if (!["done", "failed", "cancelled", "reverted"].includes(run.status)) return { ok: false, reason: "只有执行过的整理能撤销" };
   // 没执行过文件的不用撤；撤销中断过的连没删的自建目录也算还有事
-  if (!listItems(run.id).some((it) => (run.stage === "revert" ? revertWorkItem(it) : revertPendingItem(it)))) return { ok: false, reason: run.stage === "revert" ? "已经全部退回" : "这次整理没有改动任何文件" };
+  if (!items.some((it) => (run.stage === "revert" ? revertWorkItem(it) : revertPendingItem(it)))) return { ok: false, reason: run.stage === "revert" ? "已经全部退回" : "这次整理没有改动任何文件" };
   if (hasLaterAppliedRun(run)) return { ok: false, reason: "同一任务后面还有更晚的整理，只能撤销最近一次" };
   return { ok: true };
 }
@@ -1293,11 +1322,18 @@ function orderRevert(items: OrganizeItem[]): { ordered: OrganizeItem[]; stuck: O
   const home = (it: OrganizeItem) => dirOf(it.srcPath);
   const nowName = (it: OrganizeItem) => baseOf(it.curPath || it.dstPath);
   const inHome = (it: OrganizeItem) => it.curPath !== "" || dirOf(it.dstPath) === home(it);
-  const waits = (a: OrganizeItem, b: OrganizeItem) => home(a) === home(b) && (nowName(b) === baseOf(a.srcPath) || (!inHome(a) && inHome(b) && nowName(b) === nowName(a)));
+  // 原目录 + 现在的名字 → 项：查「谁占着我的原名」不用每项扫一遍全表（一次整理可以有几千项）
+  const holders = new Map<string, OrganizeItem[]>();
+  for (const it of files) {
+    const key = `${home(it)}/${nowName(it)}`;
+    holders.set(key, [...(holders.get(key) ?? []), it]);
+  }
   const left = new Set(files.map((it) => it.id));
+  const heldBy = (dir: string, name: string, a: OrganizeItem, extra?: (b: OrganizeItem) => boolean) => (holders.get(`${dir}/${name}`) ?? []).some((b) => b.id !== a.id && left.has(b.id) && (!extra || extra(b)));
+  const waits = (a: OrganizeItem) => heldBy(home(a), baseOf(a.srcPath), a) || (!inHome(a) && heldBy(home(a), nowName(a), a, inHome));
   const ordered: OrganizeItem[] = [];
   while (left.size > 0) {
-    const round = files.filter((a) => left.has(a.id) && !files.some((b) => b.id !== a.id && left.has(b.id) && waits(a, b)));
+    const round = files.filter((a) => left.has(a.id) && !waits(a));
     if (round.length === 0) break;
     for (const it of round) {
       ordered.push(it);
@@ -1345,7 +1381,7 @@ async function revert(job: Job, runId: string): Promise<void> {
   /** 撤销侧的本地镜像：文件可能还在 `源目录/新名字`（先挪回再改名的窗口里监控动了本地） */
   const mirrorBack = async (it: OrganizeItem, alt?: string): Promise<string> => {
     try {
-      await mirrorRelocate({ oldPath: it.dstPath, newPath: it.srcPath, isDir: false, oldPathAlt: alt ?? `${dirOf(it.srcPath)}/${baseOf(it.dstPath)}` }, { tasks: ctx.tasks, settings });
+      await mirrorRelocate({ oldPath: it.dstPath, newPath: it.srcPath, isDir: false, oldPathAlt: alt ?? intermediateOf(it) }, { tasks: ctx.tasks, settings });
       return "";
     } catch (err) {
       const msg = `本地镜像失败：${describeFileFailure(err, { relPath: relOf(task, it.srcPath), kind: "strm", context: "mirror" })}`;
@@ -1412,7 +1448,13 @@ async function revert(job: Job, runId: string): Promise<void> {
           n++;
           continue;
         }
-        const node = await withRetry(ctx, () => ctx.provider.resolvePath(it.dstPath, signal));
+        // 整理后的目录列一次（本轮缓存、绕过网盘客户端的缓存），比每个文件 resolvePath 一次省；目录本身没了文件当然也没了
+        let node: DirEntryRef | undefined;
+        try {
+          node = (await withRetry(ctx, () => namesIn(ctx, dirOf(it.dstPath)))).get(baseOf(it.dstPath));
+        } catch (err) {
+          if (!(err instanceof OrganizeFailure && err.kind === "stale")) throw err;
+        }
         if (!node) {
           lost(it, "文件已不在整理后的位置");
           continue;
@@ -1463,14 +1505,9 @@ async function revert(job: Job, runId: string): Promise<void> {
   }
 
   const units = listUnits(runId);
-  const removedDirs = new Set(listItems(runId).filter((it) => it.action === "rmdir").map((it) => relOf(task, it.srcPath)));
-  const back = units.filter((u) => u.dstRoot && u.rootPath && removedDirs.has(u.rootPath) && u.rootPath !== u.dstRoot).map((u) => ({ from: u.dstRoot, to: u.rootPath }));
-  if (back.length > 0) {
-    rewriteFollowSubPaths(task.id, back);
-    rewriteOfflineSubPaths(task.id, back);
-    for (const m of back) repathMatches(provider.account.name, absOf(task, m.from), absOf(task, m.to));
-  }
-  const stats = computeStats(units, listItems(runId), "revert");
+  const finalItems = listItems(runId);
+  afterRevert(task, provider, units, finalItems);
+  const stats = computeStats(units, finalItems, "revert");
   updateRun(runId, { status: fatal ? "failed" : signal.aborted ? "cancelled" : "reverted", error: fatal ?? "", stats, log: job.logs, finishedAt: now() });
   jobLog(job, fatal ?? `撤销完成：退回 ${n} 项${stats.notReverted > 0 ? `，${stats.notReverted} 项没退回` : ""}`);
   planStates.delete(runId);
@@ -1478,6 +1515,16 @@ async function revert(job: Job, runId: string): Promise<void> {
   if (!signal.aborted) {
     void deps.notify({ type: "organize-done", task, runId, units: stats.units, done: n, failed: stats.failed, reverted: true, failedByKind: stats.failedByKind, notReverted: stats.notReverted });
   }
+}
+
+/** 撤销的收尾：腾空过的源目录退回来了，追更 / 云下载回执的目录和识别记忆也改回去 */
+function afterRevert(task: TaskDefinition, provider: DriveProvider, units: OrganizeUnit[], items: OrganizeItem[]): void {
+  const removedDirs = new Set(items.filter((it) => it.action === "rmdir").map((it) => relOf(task, it.srcPath)));
+  const back = units.filter((u) => u.dstRoot && u.rootPath && removedDirs.has(u.rootPath) && u.rootPath !== u.dstRoot).map((u) => ({ from: u.dstRoot, to: u.rootPath }));
+  if (back.length === 0) return;
+  rewriteFollowSubPaths(task.id, back);
+  rewriteOfflineSubPaths(task.id, back);
+  for (const m of back) repathMatches(provider.account.name, absOf(task, m.from), absOf(task, m.to));
 }
 
 export async function revertRun(runId: string): Promise<OrganizeRun> {
@@ -1526,7 +1573,7 @@ export function failureGroups(run: OrganizeRun, items: OrganizeItem[], units: Or
     push("pending", live.filter((it) => it.status === "pending" && active(it) && WORK_ACTIONS.has(it.action)), { retry: true, skip: true });
   } else {
     const stuck = live.filter((it) => it.status === "done" && isFile(it) && it.errorKind !== "" && it.errorKind !== "mirror");
-    for (const k of ["blocked", "transient", "rejected"] as const) {
+    for (const k of ["blocked", "transient", "stale", "rejected"] as const) {
       const list = stuck.filter((it) => it.errorKind === k);
       push(k, list, { retry: true, skip: true }, list.filter((it) => it.curPath !== "").length);
     }
@@ -1541,13 +1588,14 @@ export function getRunDetail(runId: string): OrganizeRunDetail {
   if (!run) throw new HttpError(404, "整理记录不存在");
   const units = listUnits(runId);
   const items = listItems(runId);
-  return { run: withProgress(run), units, items, groups: failureGroups(run, items, units), revertable: revertability(run), applicable: applicability(run) };
+  return { run: withProgress(run), units, items, groups: failureGroups(run, items, units), revertable: revertability(run, items), applicable: applicability(run, undefined, { items, units }) };
 }
 
-/** 进程重启：上次没跑完的 run 标失败，用户可以再执行 / 继续撤销（做完的项不会重做） */
+/** 进程重启：上次没跑完的 run 标失败，用户可以再执行 / 继续撤销（做完的项不会重做）；清单上已经没事可做的直接收口 */
 export function reconcileInterruptedRuns(): number {
   const rows = listRunsByStatus(["planning", "applying", "reverting"]);
   for (const r of rows) {
+    if (finalizeIfNothingLeft(r)) continue;
     updateRun(r.id, {
       status: "failed",
       error: r.status === "reverting" ? "进程重启，撤销中断了；可以继续撤销（已退回的项不会重做）" : "进程重启，中断了；可以重新执行（已完成的项不会重做）",
@@ -1555,6 +1603,38 @@ export function reconcileInterruptedRuns(): number {
     });
   }
   return rows.length;
+}
+
+/**
+ * 进程在最后一项做完、还没写 run 状态时重启：标成 failed 的话「没有要重试的项」，再也执行不了，收尾（追更目录改写、识别记忆）
+ * 也永远不跑，还挡着前一次整理的撤销。所以清单上没事可做的按正常结束收口
+ */
+function finalizeIfNothingLeft(run: OrganizeRun): boolean {
+  if (run.status !== "applying" && run.status !== "reverting") return false;
+  const task = getTask(run.taskId);
+  if (!task) return false;
+  const items = listItems(run.id);
+  const units = listUnits(run.id);
+  let provider: DriveProvider;
+  try {
+    provider = providerForTask(task, "write");
+  } catch {
+    return false;
+  }
+  const finishedAt = Math.floor(Date.now() / 1000);
+  if (run.status === "applying") {
+    const active = activeItemFilter(run.id, units);
+    if (items.some((it) => active(it) && retryableItem(it) && !(it.action === "rmdir" && it.status === "skipped"))) return false;
+    if (!items.some((it) => it.status === "done" && WORK_ACTIONS.has(it.action))) return false;
+    updateRun(run.id, { status: "done", error: "", stats: computeStats(units, items, "apply"), finishedAt });
+    afterApply(task, provider, units, items);
+  } else {
+    if (items.some((it) => revertWorkItem(it))) return false;
+    updateRun(run.id, { status: "reverted", error: "", stats: computeStats(units, items, "revert"), finishedAt });
+    afterRevert(task, provider, units, items);
+  }
+  planStates.delete(run.id);
+  return true;
 }
 
 /** 进程退出：把在跑的都掐掉 */

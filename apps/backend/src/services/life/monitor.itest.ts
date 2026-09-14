@@ -13,7 +13,7 @@ import { after, before, beforeEach, test } from "node:test";
 import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
 import { KEY } from "../../db/keys.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
-import { deleteDriveSnapshots, deleteKv, listRecentLifeEvents, readKv } from "../../db/repositories/life.js";
+import { deleteDriveSnapshots, deleteKv, deleteLifeEventsBefore, listRecentLifeEvents, readKv } from "../../db/repositories/life.js";
 import { __test_resetOrganize, insertRun as insertOrganizeRun, replaceItems as replaceOrganizeItems, updateItem as updateOrganizeItem } from "../../db/repositories/organize.js";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
@@ -156,6 +156,39 @@ test("整理自己做的事件按 errorKind 判：本地没跟上（mirror）的
   } finally {
     await stopLifeMonitor();
     __test_resetOrganize();
+  }
+});
+
+test("撤销时挪回来了、改回原名那步失败的项（done 带 curPath）：本地还没跟上，事件照常处理把本地搬过去", async () => {
+  configure({ accounts: ["A"], pullMode: "latest", intervalSeconds: 5 });
+  dA.tree.addDir("/tv/Show");
+  dA.tree.addDir("/tv/Other");
+  dA.tree.addFile("/tv/Show/new3.mkv");
+  fs.mkdirSync(path.join(localRoot, "tv", "Other"), { recursive: true });
+  fs.writeFileSync(path.join(localRoot, "tv", "Other", "new3.strm"), "http://x/tv/Other/new3.mkv");
+  const now = Math.floor(Date.now() / 1000);
+  insertOrganizeRun({ id: "org-half", taskId: "m-a", accountName: "A", scopePath: "", scopePaths: [], mode: "manual", trigger: "manual" });
+  replaceOrganizeItems("org-half", [
+    { id: "own-half", seq: 0, unitKey: "u", kind: "video", action: "move", reason: "", srcPath: "/tv/Show/old3.mkv", dstPath: "/tv/Other/new3.mkv", nodeId: "n-half", status: "done", error: "改不回" },
+  ]);
+  updateOrganizeItem("own-half", { errorKind: "transient", finishedAt: now, curPath: "/tv/Show/new3.mkv" });
+  dA.changes!.queue.push(ev({ id: "o3", kind: "move", path: "/tv/Show/new3.mkv", oldPath: "/tv/Other/new3.mkv", nodeId: "n-half" }));
+  const r = await startLifeMonitor();
+  try {
+    assert.equal(r.ok, true, r.message);
+    await waitFor(() => {
+      const st = statusOf("A")?.stats;
+      return !!st && st.handled + st.skipped + st.failed === 1;
+    }, "处理完");
+    const row = listRecentLifeEvents(10).find((e) => e.id === "o3");
+    assert.equal(row?.status, "done", `没跳过：${row?.detail}`);
+    assert.ok(fs.existsSync(path.join(localRoot, "tv", "Show", "new3.strm")), "本地跟着挪回来了");
+    assert.ok(!fs.existsSync(path.join(localRoot, "tv", "Other", "new3.strm")));
+  } finally {
+    await stopLifeMonitor();
+    __test_resetOrganize();
+    // 事件的时间是造出来的未来值，会一直排在「最近」的最前面，把后面用例里的真事件挤出 listRecentLifeEvents 的窗口
+    deleteLifeEventsBefore(Number.MAX_SAFE_INTEGER);
   }
 });
 

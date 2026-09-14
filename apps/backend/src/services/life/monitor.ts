@@ -366,11 +366,12 @@ class AccountMonitor {
         this.log("debug", `${name} 跳过：${ev.problem}`);
       } else {
         try {
-          // 整理自己做的改名 / 移动 / 建目录 / 删空目录会以事件的形式再回来一遍：本地已经镜像过了，跳过；
-          // 本地镜像失败的那些项不算（errorKind = mirror），让事件照常处理把本地补回来。
-          // 撤销在网盘那步失败的项（done 带别的类别）本地和网盘仍一致，照常跳过
+          // 整理自己做的改名 / 移动 / 建目录 / 删空目录会以事件的形式再回来一遍：本地已经镜像过了，跳过。
+          // 两种本地没跟上的不跳，让事件照常处理把本地补回来：本地镜像失败的（errorKind = mirror，放弃了也算）、
+          // 撤销时挪回来了但改回原名那步失败的（done 带 curPath：镜像要等改完名才做）。
+          // 撤销在网盘那步失败、文件没动过的项（done 带别的类别、没有 curPath）本地和网盘仍一致，照常跳过
           const own = findOwnOperation(ev.nodeId, ev.path, ev.at, ev.kind === "remove" ? "remove" : "other");
-          const ownOk = own !== null && own.errorKind !== "mirror";
+          const ownOk = own !== null && own.errorKind !== "mirror" && !(own.status === "done" && own.curPath !== "");
           if (ownOk) bumpOwnHit(own.id);
           const res: HandleResult = ownOk ? { status: "skipped", detail: "整理已处理，本地已镜像", changed: false } : await dispatch(ctx, ev);
           markLifeEvent(id, res.status, res.detail);
