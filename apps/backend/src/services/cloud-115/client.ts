@@ -288,13 +288,15 @@ export async function fsDirGetId(path: string, { userAgent, accountInfo, signal 
 }
 
 // 获取目录中的文件列表
-export async function fsFiles(cid: number | string, { userAgent, limit = 1000, offset = 0, accountInfo, signal }: {
+export async function fsFiles(cid: number | string, { userAgent, limit = 1000, offset = 0, accountInfo, signal, fresh = false }: {
   userAgent?: string; 
   app?: string; 
   limit?: number; 
   offset?: number; 
   accountInfo?: AccountInfo;
   signal?: AbortSignal;
+  /** 跳过进程内 5 分钟的目录缓存（整理动手前看一眼目标目录用）；结果照常写进缓存 */
+  fresh?: boolean;
 }) {
   if (!accountInfo?.cookie) throw new Error('accountInfo.cookie is required');
   
@@ -302,7 +304,7 @@ export async function fsFiles(cid: number | string, { userAgent, limit = 1000, o
   const cacheKey = `files:${String(cid)}:${limit}:${offset}:${accountInfo.cookie.substring(0, 20)}`;
   
   // 尝试从缓存获取
-  const cached = filesListCache.get(cacheKey);
+  const cached = fresh ? undefined : filesListCache.get(cacheKey);
   if (cached) {
     log.debug(`[CACHE HIT] Files list for cid: ${cid}`);
     return cached;
@@ -341,11 +343,12 @@ export async function listDirEntries(
   cid: number | string,
   ctx: RequestCtx,
   fetchPage: typeof fsFiles = fsFiles,
+  opts: { fresh?: boolean } = {},
 ): Promise<DriveEntry[]> {
   const limit = 1000;
   const all: DriveEntry[] = [];
   for (let offset = 0; ; offset += limit) {
-    const page = await fetchPage(cid, { ...ctx, limit, offset });
+    const page = await fetchPage(cid, { ...ctx, limit, offset, fresh: opts.fresh });
     const items = page.data ?? [];
     all.push(...items);
     const count = typeof page.count === "number" ? page.count : undefined;

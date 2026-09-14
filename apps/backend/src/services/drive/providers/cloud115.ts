@@ -251,8 +251,8 @@ export class Cloud115Provider implements DriveProvider {
     return id && id !== "0" ? id : null;
   }
 
-  async listDir(id: string, signal?: AbortSignal): Promise<DriveEntry[]> {
-    return (await listDirEntries(id || "0", this.ctx(signal))).map(toDriveEntry);
+  async listDir(id: string, signal?: AbortSignal, opts?: { fresh?: boolean }): Promise<DriveEntry[]> {
+    return (await listDirEntries(id || "0", this.ctx(signal), undefined, { fresh: opts?.fresh })).map(toDriveEntry);
   }
 
   /**

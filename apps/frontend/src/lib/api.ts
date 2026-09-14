@@ -13,6 +13,7 @@ import type {
   OrganizeMatchMemory,
   OrganizeRun,
   OrganizeRunDetail,
+  OrganizeSkipResult,
   OrganizeTemplatePreview,
   OrganizeUnit,
   OrganizeUnitPatch,
@@ -511,7 +512,10 @@ export const api = {
     getRun: (id: string) => data(axiosInstance.get<OrganizeRunDetail>(`/api/organize/runs/${encodeURIComponent(id)}`)),
     patchUnit: (id: string, key: string, patch: OrganizeUnitPatch) =>
       data(axiosInstance.put<OrganizeUnit>(`/api/organize/runs/${encodeURIComponent(id)}/unit`, { key, ...patch }, { timeout: 60_000 })),
-    apply: (id: string) => data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/apply`)),
+    /** 不带 ids：ready 的执行全部，其它状态重试失败 / 没做的（默认只重试临时失败）；带 ids 只重试点名的项 */
+    apply: (id: string, ids?: string[]) => data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/apply`, ids ? { ids } : {})),
+    /** 放弃失败项：标成「已放弃」让 run 收口；原地改了名还没挪走的先在网盘上改回原名，所以给长一点的超时 */
+    skip: (id: string, ids: string[]) => data(axiosInstance.post<OrganizeSkipResult>(`/api/organize/runs/${encodeURIComponent(id)}/skip`, { ids }, { timeout: 120_000 })),
     cancel: (id: string) => data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/cancel`)),
     revert: (id: string) => data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/revert`)),
     remove: (id: string) => data(axiosInstance.delete<{ success: true }>(`/api/organize/runs/${encodeURIComponent(id)}`)),

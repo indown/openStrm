@@ -7,7 +7,7 @@ import type { OrganizeTemplatePreview } from "@openstrm/shared";
 import { forgetMatch, listMatches } from "../../db/repositories/organize.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { parse } from "../../lib/validate.js";
-import { applyRun, cancelRun, createRun, deleteRun, getRunDetail, listRuns, patchUnit, revertRun } from "../../services/organize/run.js";
+import { applyRun, cancelRun, createRun, deleteRun, getRunDetail, listRuns, patchUnit, revertRun, skipItems } from "../../services/organize/run.js";
 import { parseRules } from "../../services/organize/rules.js";
 import { DEFAULT_TEMPLATES, resolveOrganizeSettings } from "../../services/organize/settings.js";
 import { idTagFor, renderTemplate, validateTemplate } from "../../services/organize/template.js";
@@ -44,6 +44,10 @@ const previewNameSchema = z.object({
 
 const forgetSchema = z.object({ accountName: z.string().min(1), srcPath: z.string().min(1) });
 
+/** 执行：不带 ids 做全部（ready）或默认重试集；带 ids 只重试点名的项（stale / rejected 的要这样才会重试） */
+const applySchema = z.object({ ids: z.array(z.string().min(1)).max(5000).optional() });
+const skipSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(5000) });
+
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/organize/runs", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const body = parse(createSchema, request.body);
@@ -70,7 +74,15 @@ export default async function (fastify: FastifyInstance) {
 
   fastify.post("/api/organize/runs/:id/apply", { preHandler: [fastify.authenticate] }, async (request) => {
     const { id } = parse(idParamsSchema, request.params, "params");
-    return applyRun(id);
+    const body = parse(applySchema, request.body ?? {});
+    return applyRun(id, body.ids);
+  });
+
+  /** 放弃失败项：标成「已放弃」让 run 收口；原地改了名还没挪走的先在网盘上改回原名 */
+  fastify.post("/api/organize/runs/:id/skip", { preHandler: [fastify.authenticate] }, async (request) => {
+    const { id } = parse(idParamsSchema, request.params, "params");
+    const body = parse(skipSchema, request.body);
+    return skipItems(id, body.ids);
   });
 
   fastify.post("/api/organize/runs/:id/cancel", { preHandler: [fastify.authenticate] }, async (request) => {

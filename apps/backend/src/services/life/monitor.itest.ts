@@ -14,6 +14,7 @@ import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
 import { KEY } from "../../db/keys.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { deleteDriveSnapshots, deleteKv, listRecentLifeEvents, readKv } from "../../db/repositories/life.js";
+import { __test_resetOrganize, insertRun as insertOrganizeRun, replaceItems as replaceOrganizeItems, updateItem as updateOrganizeItem } from "../../db/repositories/organize.js";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { DATA_DIR } from "../../paths.js";
@@ -118,6 +119,43 @@ test("事件按顺序落地：新增写 strm、改名搬文件、删除清理；
     assert.equal(dA.changes!.commits, 1, "四条都处理完才 commit 一次");
   } finally {
     await stopLifeMonitor();
+  }
+});
+
+test("整理自己做的事件按 errorKind 判：本地没跟上（mirror）的照常处理把本地补回来，撤销在网盘那步失败的（transient）仍跳过", async () => {
+  configure({ accounts: ["A"], pullMode: "latest", intervalSeconds: 5 });
+  dA.tree.addDir("/tv/Show");
+  dA.tree.addFile("/tv/Show/new1.mkv");
+  dA.tree.addFile("/tv/Show/new2.mkv");
+  const now = Math.floor(Date.now() / 1000);
+  insertOrganizeRun({ id: "org-own", taskId: "m-a", accountName: "A", scopePath: "", scopePaths: [], mode: "manual", trigger: "manual" });
+  const base = { unitKey: "u", kind: "video" as const, action: "rename" as const, reason: "" };
+  replaceOrganizeItems("org-own", [
+    { id: "own-mirror", seq: 0, ...base, srcPath: "/tv/Show/old1.mkv", dstPath: "/tv/Show/new1.mkv", nodeId: "n-mirror", status: "done", error: "本地镜像失败：EACCES" },
+    { id: "own-ok", seq: 1, ...base, srcPath: "/tv/Show/old2.mkv", dstPath: "/tv/Show/new2.mkv", nodeId: "n-ok", status: "done", error: "改不了" },
+  ]);
+  updateOrganizeItem("own-mirror", { errorKind: "mirror", finishedAt: now });
+  updateOrganizeItem("own-ok", { errorKind: "transient", finishedAt: now });
+  dA.changes!.queue.push(
+    ev({ id: "o1", kind: "rename", path: "/tv/Show/new1.mkv", oldPath: "/tv/Show/old1.mkv", nodeId: "n-mirror" }),
+    ev({ id: "o2", kind: "rename", path: "/tv/Show/new2.mkv", oldPath: "/tv/Show/old2.mkv", nodeId: "n-ok" }),
+  );
+  const r = await startLifeMonitor();
+  try {
+    assert.equal(r.ok, true, r.message);
+    await waitFor(() => {
+      const st = statusOf("A")?.stats;
+      return !!st && st.handled + st.skipped + st.failed === 2;
+    }, "两条都处理完");
+    const rows = listRecentLifeEvents(10).filter((e) => e.accountName === "A");
+    assert.equal(rows.find((e) => e.id === "o1")?.status, "done", "镜像失败的：事件照常处理");
+    assert.ok(fs.existsSync(path.join(localRoot, "tv", "Show", "new1.strm")), "本地由事件补回来");
+    assert.equal(rows.find((e) => e.id === "o2")?.status, "skipped");
+    assert.equal(rows.find((e) => e.id === "o2")?.detail, "整理已处理，本地已镜像");
+    assert.ok(!fs.existsSync(path.join(localRoot, "tv", "Show", "new2.strm")), "跳过的不动本地");
+  } finally {
+    await stopLifeMonitor();
+    __test_resetOrganize();
   }
 });
 

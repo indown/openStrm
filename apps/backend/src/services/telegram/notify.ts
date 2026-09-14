@@ -6,11 +6,12 @@
  * 发送失败只记日志，绝不抛到调用方。
  */
 import type { AccountIssue as DriveAccountIssue } from "../drive/types.js";
-import type { AppSettings, TelegramNotifySettings } from "@openstrm/shared";
+import type { AppSettings, TelegramNotifySettings, OrganizeErrorKind } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { createTelegramBot } from "./bot.js";
 import { esc, fmtDuration, taskLabel, type TaskRef } from "./format.js";
+import { FAILURE_LABEL } from "../organize/failure-kinds.js";
 
 const log = moduleLogger("telegram");
 
@@ -47,7 +48,19 @@ export type NotifyEvent =
   /** Emby 把新条目收进媒体库了；groups 为空表示这批太多、只报总数 */
   | { type: "emby-new"; groups: EmbyNewGroup[]; total: number }
   /** 整理执行完了 */
-  | { type: "organize-done"; task: TaskRef; runId: string; units: number; done: number; failed: number; reverted?: boolean }
+  | {
+      type: "organize-done";
+      task: TaskRef;
+      runId: string;
+      units: number;
+      done: number;
+      failed: number;
+      reverted?: boolean;
+      /** 还等着处理的失败按类别（transient / blocked / stale / rejected / mirror） */
+      failedByKind?: Partial<Record<Exclude<OrganizeErrorKind, "">, number>>;
+      /** 撤销：没退回的项数 */
+      notReverted?: number;
+    }
   /** 自动整理生成了待确认的清单（review 模式，或 auto 模式下有拿不准的） */
   | { type: "organize-review"; task: TaskRef; runId: string; units: number; planned: number; unsure: number; conflicts: number }
   /**
@@ -192,8 +205,25 @@ function render(event: NotifyEvent): string {
       return `📥 <b>Emby 入库</b>\n${lines.join("\n")}`;
     }
     case "organize-done": {
-      const head = event.reverted ? "↩️ <b>整理已撤销</b>" : event.failed > 0 ? "⚠️ <b>整理完成（有失败）</b>" : "🗂 <b>整理完成</b>";
-      return `${head}\n${esc(taskLabel(event.task))}\n${event.units} 部作品，${event.done} 项已${event.reverted ? "退回" : "改名 / 移动"}${event.failed > 0 ? `，失败 ${event.failed}` : ""}`;
+      const kinds = event.failedByKind ?? {};
+      const breakdown = (Object.keys(FAILURE_LABEL) as Array<keyof typeof FAILURE_LABEL>)
+        .filter((k) => k !== "mirror" && (kinds[k] ?? 0) > 0)
+        .map((k) => `${FAILURE_LABEL[k]} ${kinds[k]}`)
+        .join("、");
+      const mirror = kinds.mirror ?? 0;
+      if (event.reverted) {
+        const left = event.notReverted ?? 0;
+        const head = left > 0 ? "⚠️ <b>整理已撤销（有没退回的）</b>" : "↩️ <b>整理已撤销</b>";
+        const tail = left > 0 ? `，${left} 项没退回${breakdown ? `（${breakdown}）` : ""}` : "";
+        const hint = left > 0 || mirror > 0 ? "\n到「整理」页继续撤销或放弃" : "";
+        return `${head}\n${esc(taskLabel(event.task))}\n${event.units} 部作品，${event.done} 项已退回${tail}${mirror > 0 ? `，本地未同步 ${mirror}` : ""}${hint}`;
+      }
+      const head = event.failed > 0 ? "⚠️ <b>整理完成（有失败）</b>" : "🗂 <b>整理完成</b>";
+      const parts = [`${event.units} 部作品，${event.done} 项已改名 / 移动`];
+      if (event.failed > 0) parts.push(`失败 ${event.failed}${breakdown ? `（${breakdown}）` : ""}`);
+      if (mirror > 0) parts.push(`本地未同步 ${mirror}`);
+      const hint = event.failed > 0 || mirror > 0 ? "\n到「整理」页重试或放弃" : "";
+      return `${head}\n${esc(taskLabel(event.task))}\n${parts.join("，")}${hint}`;
     }
     case "organize-review": {
       const extra = [event.unsure > 0 ? `${event.unsure} 部识别把握不大` : "", event.conflicts > 0 ? `${event.conflicts} 项冲突` : ""].filter(Boolean).join("，");

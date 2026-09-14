@@ -31,6 +31,20 @@ export type OrganizeAction = "keep" | "rename" | "move" | "mkdir" | "rmdir" | "s
 
 export type OrganizeItemStatus = "pending" | "done" | "failed" | "skipped" | "reverted";
 
+/**
+ * 失败的类别，决定下一步该做什么：
+ *   transient 网络 / 超时 / 网盘 5xx / 未知 → 执行中自动重试一次，仍失败留给「重试」
+ *   blocked   风控 / 登录失效 → 整轮停，修好账号后「重试」
+ *   stale     预览之后网盘变了（源文件不在了、目录没了、目标位置被占）→ 「重新预览」或「放弃」，默认不重试
+ *   rejected  网盘明确不接受这个名字 / 目标（同名、非法字符、过长）→ 「放弃」，改模板 / 识别词后重新预览
+ *   mirror    网盘那步成功、本地 strm 没跟上 → 「重试」只补本地，不碰网盘
+ * 空串 = 没失败（或旧数据里没分类的失败，按 transient 对待）
+ */
+export type OrganizeErrorKind = "" | "transient" | "blocked" | "stale" | "rejected" | "mirror";
+
+/** run 走到哪个方向：开始撤销之后只能继续撤销，不能再执行 */
+export type OrganizeRunStage = "apply" | "revert";
+
 /** 文件在整理里的类别 */
 export type OrganizeFileKind = "video" | "subtitle" | "nfo" | "image" | "extra" | "dir" | "other";
 
@@ -140,6 +154,13 @@ export interface OrganizeRunStats {
   failed: number;
   /** 置信度分布 */
   confidence: Record<OrganizeConfidence, number>;
+  /**
+   * 还等着处理的失败按类别计数：failed 的项按各自类别；done 但本地镜像失败的算 mirror；
+   * 撤销时在网盘那步失败的 done 项按类别（撤销阶段）
+   */
+  failedByKind: Record<Exclude<OrganizeErrorKind, "">, number>;
+  /** 撤销阶段：还没退回的改名 / 移动项（仍在整理后位置的 done + 已经找不到的 failed） */
+  notReverted: number;
   /** 收尾时改写了几条追更 / 云下载回执的目录 */
   rewrittenPaths?: number;
 }
@@ -162,6 +183,7 @@ export interface OrganizeRun {
   mode: OrganizeRunMode;
   trigger: OrganizeTrigger;
   status: OrganizeRunStatus;
+  stage: OrganizeRunStage;
   stats: OrganizeRunStats;
   error: string;
   /** 最近的日志行 */
@@ -216,8 +238,15 @@ export interface OrganizeItem {
   reason: string;
   status: OrganizeItemStatus;
   error: string;
+  /** error 的类别；和 status 一起看：failed + stale 是「文件已不在预期位置」，done + mirror 是「网盘成功、本地没跟上」 */
+  errorKind: OrganizeErrorKind;
+  /** 这一项被执行 / 撤销了几轮（执行中的自动重试不算一轮）：界面上「已试 N 轮」给用户判断该不该放弃 */
+  attempts: number;
   finishedAt: number | null;
-  /** 移动项已经原地改了名、还没挪走时的当前路径；挪完为空 */
+  /**
+   * 文件当前的中间位置，非空就表示文件在这里：执行时是「原地改了名、还没挪走」的 `源目录/新名字`，
+   * 撤销时是「挪回来了、还没改回原名」的 `源目录/新名字`；做完清空
+   */
   curPath: string;
   /** 网盘监控按「整理自己做的」跳过了几条事件 */
   hits: number;
@@ -230,6 +259,18 @@ export interface OrganizeRunDetail {
   items: OrganizeItem[];
   /** 撤销这次 run 允不允许、为什么不允许 */
   revertable: { ok: boolean; reason?: string };
+  /** 能不能（再）执行：ready 的执行全部；其它状态是重试失败 / 没做的项，count 是默认会重试的项数 */
+  applicable: { ok: boolean; reason?: string; count: number };
+}
+
+/** POST /api/organize/runs/:id/skip 的结果 */
+export interface OrganizeSkipResult {
+  /** 标成「已放弃」的项数 */
+  skipped: number;
+  /** 其中先在网盘上改回原名的项数 */
+  renamedBack: number;
+  /** 没能放弃的项和原因 */
+  refused: Array<{ id: string; reason: string }>;
 }
 
 /** 用户在预览里改一个单元 */

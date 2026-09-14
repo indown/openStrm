@@ -123,7 +123,10 @@ export class OpenlistProvider implements DriveProvider {
   }
 
   classifyError(err: unknown): AccountIssue | null {
-    if (err instanceof OpenlistError && (err.code === 401 || err.code === 403)) return "auth";
+    if (!(err instanceof OpenlistError)) return null;
+    if (err.code === 401) return "auth";
+    // 403 不只是没权限：文件系统层的「目标已存在」也回 403（`file [x] exists`），按文案区分，别把改名撞名当成登录失效
+    if (err.code === 403) return /permission|forbidden|unauthori|token|login|guest|not allowed|没有权限|无权/i.test(err.message) ? "auth" : null;
     return null;
   }
 }

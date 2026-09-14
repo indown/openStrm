@@ -309,3 +309,162 @@ interface DriveWriteOps {
 - [x] 2026-09-11 v2.5.0-rc.1 发出后用户问「剧集 / 电影没放自己的目录、散在 tv/ 或 movie/ 根下会怎样」：写集成测试一跑抓到 bug——范围根下只要有一个文件带集标记，根下所有散文件都被当成同一部剧并成一个单元，文件没标题时还会拿任务目录名（tv）去搜。现在范围根只看文件标题是否一致，不一致就按标题拆，任务根的名字永远不拿去搜（`units.ts`），随 v2.5.0-rc.2 发出
 - [x] 2026-09-11 生产反馈「整理完旧的 strm 还在」：现象是旧剧集目录还在、最深层却是规范后的文件名，另外新目录里也有一份。根因是整理和网盘监控赛跑——整理先原地改名再批量挪，整库整理要跑几分钟，监控在「改了名还没挪走」的窗口里拉到改名事件，而 `findOwnOperation` 只认 done / reverted 的项，pending 的没认出来，监控把本地 strm 原地改了名；等镜像按原名找本地文件找不到，就在新目录另写了一份。修法：`findOwnOperation` 认 pending 且 cur_path 非空的项（改名事件按中间名字、移动事件按目标）；`mirrorRelocate` 加 `oldPathAlt`，原名找不到时按中间名字接着搬。本机小目录几秒跑完、监控插不进来，所以之前真机没暴露。已有的残留用任务全量同步（开「删除多余文件」）或体检清掉
 - [ ] 真机没覆盖到的：追更目录改写后的下一次 tick（库里没有追更订阅可用）、夸克上的多版本 / 字幕（造不出文件）
+- [x] 2026-09-14 失败项处理已实施并在 OpenList / 115 / 夸克三家真机验过（设计见下一节，实施与设计的出入、真机结论都在那一节末尾的「实施记录」）：后端 `failures.ts`（分类 / 重试谓词）+ `errorKind` / `attempts` / `run.stage` + 迁移 0012 + 执行中临时失败自动重试一次 + `apply` 带 ids + `POST /runs/:id/skip` + 撤销侧 curPath / done 带错 / 再撤销 + 监控按 errorKind 跳过 + Telegram 分类文案；前端 `FailurePanel` 分组给按钮、头部按钮互斥、徽标、历史芯片。后端 647 个测试全过（新增 failures 3、run.itest 8、路由 1、监控 1、通知 1、OpenList 1），前端 typecheck / lint / build 干净。OpenList 真机（Docker Local 存储 + 真 TMDB）走完：预览后移走文件 → `object not found` 归 stale → 面板「重新预览」；本地目录只读 → mirror → 「补本地」；容器停掉再撤销 → ECONNREFUSED 归 transient、自动重试一次、run 已撤销但 1 项没退回 → 起容器「继续撤销」；整理后删掉文件再撤销 → failed + stale「已找不到」→ 放弃；预览后目标被占 → OpenList 回 `code 403 file [x] exists`——原来 Provider 把 403 一律当 auth、整轮按风控停下，已改成只有权限 / token 文案的 403 才算 auth，撞名归 rejected，批量移动失败后逐个定位到那一项，「放弃」先把原地改了名的文件改回原名（真机确认）
+
+## 失败项处理（设计，2026-09-14，未实施）
+
+> 用户提问：「整理或者撤销的时候，关于失败项如何优化」。下面先列现状的问题，再给方案。
+
+### 现状的问题
+
+代码位置：`services/organize/run.ts` 的 `execute` / `revert`、`life/monitor.ts` 的 `findOwnOperation` 跳过规则、`app/organize/page.tsx` 的 `RunView`。
+
+1. **失败只有一种颜色**。`status = failed` + 原始错误文本（`网盘上找不到 /x`、`115 接口返回 405 …`、夸克 code），用户不知道该重试、重新预览还是放弃。
+2. **「继续执行」不分青红皂白**。把所有 failed 重来一遍，包括注定失败的（源文件预览后被移走、名字网盘不接受），每次都失败，run 永远挂着「N 项失败」。
+3. **没有「放弃」**。没法把某项标掉让 run 收口。
+4. **本地镜像失败没有出口**。`done` + `本地镜像失败` 的项不在重试范围，只能等监控（可能没开）或全量同步。
+5. **撤销侧的失败是死胡同**：
+   - done 项撤销抛错 → 标 `failed`、`cur_path` 空 → 不算 `touched` → 下一次撤销不包含它；run 若已标 `reverted`，撤销按钮也没了。
+   - 风控中断撤销 → run 标 `failed` → 前端按「failed + 有 failed 项」反而显示**「继续执行」**，点了会把已经在目标位置的文件按源路径去找，再报「找不到」。
+   - 撤销 move 项是先挪回再改名；挪回成功、改名失败时的中间位置没记（apply 侧有 `cur_path`，revert 侧没有），第二次撤销按 `dstPath` 找不到 → 「跳过」，文件卡在 `源目录/新名字`。
+   - 撤销中跳过的 done 项（不在目标位置 / 节点变了 / 目录非空）被改成 `skipped`，run 显示「已撤销」，摘要里没有「N 项没退回」——`computeStats` 只按 `action = skip` 计 skipped，按状态 skipped 的不出现在任何数字里。
+6. **rmdir 被 115 缓存拖成「目录不是空的」** → `skipped`，不在重试范围，空目录永远留着。
+7. **网络抖动直接记 failed**，要人来点；直链那边（`resolveDownload`）早就有 3 次重试的先例。
+8. **摘要 / Telegram 只有一个数字**「失败 N」。
+
+### 目标
+
+- 每个失败项回答三个问题：**文件现在在哪**（状态只描述位置）、**为什么失败**（分类 + 原文）、**下一步是什么**（重试 / 重新预览 / 放弃 / 补本地）。
+- 一次性失败自己消化：网络抖动在 run 内自动重试；风控 / 登录失效仍整轮停。
+- run 一定能收口：所有失败项都有出路，最终 `failed` 归零或被用户明确放弃。
+- 撤销和执行对称：半路状态有记录、能续、能再撤，不会把撤销失败当执行失败。
+
+### 1. 失败分类 `errorKind`
+
+`OrganizeItem` 加 `errorKind` 和 `attempts`（DB `error_kind text default ''`、`attempts integer default 0`），`error` 原文保留。分类函数 `classifyFailure(provider, err)` 放 `services/organize/failures.ts`，和 `drive/errors.ts` 一样按三家错误类 instanceof 判：
+
+| kind | 判定 | 意思 | 下一步 |
+|---|---|---|---|
+| `blocked` | `provider.classifyError` 是 blocked / auth | 风控 / 登录失效 | 整轮停（现状）；修好账号后「重试」 |
+| `stale` | 我们自己抛的 `StaleError`（源找不到、父目录没了、目标位置已被占，替换现在的字符串 `Error`）、`RemoteDirNotFoundError`、网盘的「不存在」（115 / axios 404、OpenList 的 object not found、夸克对应 code） | 预览之后网盘变了 | 「重新预览」或「放弃」；默认不重试 |
+| `rejected` | 网盘明确拒绝这个名字 / 目标：同名已存在、非法字符、名字过长（各家的码 / 文案实施时按客户端里已有的认；认不出的一律归 transient） | 名字网盘不接受 | 「放弃」，提示改模板 / 识别词后重新预览；默认不重试 |
+| `mirror` | 网盘那步成功、`mirrorRelocate` / `mirrorRmdir` 抛错 | 本地 strm 没跟上 | 「重试」只做本地，不碰网盘 |
+| `transient` | 其余：网络 / 超时 / 5xx / 夸克任务超时 / 未知 | 临时 | run 内自动重试一次，仍失败留给「重试」 |
+
+未知错误归 transient 是安全默认：改名 / 移动重试一次最多再失败一次，不会造成新的状态。
+
+### 2. 状态只描述位置
+
+不变量：**`curPath` 非空 ⇒ 文件在 `curPath`；否则由状态决定**——`pending` / `failed` 在 `srcPath`，`done` 在 `dstPath`，`reverted` 在 `srcPath`，`skipped` 不再归我们管。
+
+- 执行失败：`failed` + kind（现状，位置语义不变；改名后挪不动的仍是 `failed` + `curPath`）。
+- **撤销失败：状态保持 `done`**，只写 `error` / `errorKind`。文件确实还在整理后的位置，`touched` 仍成立，下一次撤销自然包含它；`hasLaterAppliedRun` 也照常认它。
+- 撤销中「文件已不在整理后的位置 / 位置上是另一个文件 / 目录非空」：`skipped` + kind `stale`（终态，只列出来）。
+- 撤销 move 项先挪回再改名：挪回成功后立刻 `updateItem({ curPath: 源目录/新名字 })`，改名成功再清空并标 `reverted`；改名失败 → `done` + `curPath` + kind。再撤销时 `done && curPath` 只做改名。撤销侧镜像传 `oldPathAlt: curPath`（和 apply 侧对称，监控抢先动了本地也能找到）。
+- rmdir「目录不是空的」：仍 `skipped`，但 kind `transient`，重试集合里包含它（一次 listDir + 可能的删除，幂等、便宜）。
+
+监控的跳过规则从 `own.error === ""` 改成 **`own.errorKind !== "mirror"`**：撤销在网盘那步失败的项本地和网盘仍一致，自有事件照旧跳过；只有镜像失败才让事件去补本地。`findOwnOperation` 对 done 项认的中间路径 `源目录/新名字` 恰好也是撤销的中间位置（先挪回再改名），不用改。迁移时把已有 `done` 且 error 以「本地镜像失败」开头的项回填 kind `mirror`，规则切换才不漏。
+
+### 3. `run.stage` 与按钮
+
+`OrganizeRun.stage: "apply" | "revert"`（DB `stage text default 'apply'`）。`revertRun` 开始时置 `revert`，之后不再回到 apply——开始撤销的 run 只能继续撤销。
+
+- `applyRun`：`stage === "revert"` 一律 409「这次整理已经开始撤销，只能继续撤销」。前端 `canApply` 同一条件，彻底堵掉问题 5 的第二条。
+- `revertability`：状态在 `done / failed / cancelled / reverted` 之一（多了 `reverted`）+ 仍有 `touched` 项 + 没有更晚的已执行 run。`hasLaterAppliedRun` 的状态列表补上 `reverted`（有剩余 done 项的「已撤销」run 还是占着文件）。
+- 撤销收尾的 run 状态：全部退回 → `reverted`；有剩余但没被风控打断 → 仍 `reverted`，`stats.notReverted > 0`，界面「已撤销 · N 项没退回」+「继续撤销」；风控 / 登录中断 → `failed` + error，`stage = revert`，界面「继续撤销」，绝不出现「继续执行」。
+- 执行收尾不变：有单项失败仍是 `done`，界面「已完成 · N 项失败」+「重试失败项」。
+
+迁移回填：`status in ('reverted','reverting')` 的 run → `stage = 'revert'`。
+
+### 4. run 内自动重试
+
+写操作统一包一层 `attempt(it, fn)`：失败先 `classifyFailure`，`transient` 且 `attempts < 2` 就等 `RETRY_DELAY_MS = 3000` 再来一次；`blocked` 立即抛出让整轮停；其余直接记失败。每次真实尝试 `attempts + 1`。批量改名 / 移动失败后现有的「改为逐个」本身就是一次重试，transient 时在逐个之前也等 3 秒；`blocked` 不逐个。镜像失败不自动重试（本地 FS 错误基本不是抖动），留给「重试」。
+
+### 5. 重试集合
+
+`applyRun` 加可选 `{ ids?: string[] }`。不给 ids 时按 `retryable(it)` 取：
+
+- mkdir / rename / move：`pending`；`failed` 且 kind ∈ {transient, blocked, ''}；`done` 且 kind `mirror`（只重做镜像，不碰网盘）。
+- rmdir：`pending` / `failed` / `skipped` 都重来。
+- kind `stale` / `rejected` 的 **只有 ids 里点名才重试**（面板上用户对着那一组点「重试」）。
+
+执行顺序不变：mkdir → 改名 → 移动 → 镜像补做 → rmdir。镜像补做单独一步放在网盘操作之前，网盘被风控时本地也能先补上。
+
+### 6. 「放弃」
+
+`POST /api/organize/runs/:id/skip { ids }`（≤ 500 个；有 job 在跑就 409）：
+
+- `failed` 且 `curPath` 空：直接 `skipped`，kind 保留，error 前缀「已放弃：」。
+- `failed` 且 `curPath` 非空（原地改了名、没挪走）：先在网盘上把名字改回 `srcPath` 的名字（一步），成功才 `skipped`；改不回去就仍是 `failed` + 新 error。原则：**放弃 = 用一步把文件放回干净位置，没有这一步的只能重试**。
+- `done` + kind `mirror`：`skipped`，error「已放弃：本地未同步，可用全量同步或体检补齐」。
+- `stage = revert` 的 `done` + error 且 `curPath` 空：`skipped`，error「已放弃撤销，文件留在整理后的位置」；`curPath` 非空（挪回了没改名）的**不给放弃**，只能重试（改回原名就是那一步失败的操作本身，没有别的干净位置）。兜底出口是删记录。
+- 放弃 mkdir 项时把 `dstPath` 在它之下的 pending / failed 项一起放弃（不然它们下次重试全变 stale）。
+
+放弃后重算 stats；`failed` 减少，run 能收口成干净的 `done` / `reverted`。
+
+### 7. 「重新预览」
+
+前端行为，不加接口：对 stale 一组点「重新预览」= 先对这组调 skip，再 `POST /api/organize/runs { taskId, subPath: run.scopePath, paths: run.scopePaths }`（**同范围**）并跳到新 run。幂等性保证已整理好的全是 `keep`，新 run 里只剩真正没做的；TMDB 有缓存，二次识别便宜。不按单元目录重新预览：单元源目录常常已被腾空删掉，按它扫只会得到空 run。
+
+### 8. 摘要与通知
+
+- `stats` 加 `failedByKind: Record<kind, number>`、`notReverted`（stage revert 下 done-带错 + skipped-stale 之和）。stats 是 JSON，不用迁移。
+- 历史列表每行带「N 项失败」/「N 项没退回」小徽标。
+- Telegram `organize-done`：`失败 3（临时 2、预览后变了 1），到「整理」页重试或放弃`；撤销变体 `N 项没退回`。payload 加 `failedByKind` / `notReverted`。自动模式（auto）的 run 失败也只到这一步：run 内已经自动重试过临时失败，风控停了就是要人管，不再排定时重试。
+
+### 9. 前端
+
+- `RunView` 头部和单元列表之间加 `FailurePanel`，只在有事可做时出现。分组顺序：网盘拒绝 / 需要重新登录 → 临时失败 → 预览后变了 → 名字不被接受 → 本地没跟上 → （stage revert）没退回。每组：数量、一句话解释、按钮（重试 / 重新预览 / 放弃，按上面的规则出现）、展开看项（路径、错误原文、已试 N 次）。
+- 头部按钮互斥：`ready` →「执行 N 项」；`stage apply` 且有可重试项 →「重试失败项（N）」；`stage revert` 且 `revertable` →「继续撤销」。
+- `ItemStatus` 徽标：`failed` →「失败 · 临时 / 预览后变了 / 名字不被接受 / 网盘拒绝」；`done` + mirror →「完成，本地未同步」（现有）；`stage revert` 的 `done` + error →「未退回」；`done` + `curPath` →「已挪回，待改名」；`skipped` + kind →「已放弃」。
+- 放弃的确认框说明半路项会先改回原名。
+
+### 10. 迁移 0012
+
+```sql
+ALTER TABLE organize_items ADD COLUMN error_kind text DEFAULT '' NOT NULL;
+ALTER TABLE organize_items ADD COLUMN attempts integer DEFAULT 0 NOT NULL;
+ALTER TABLE organize_runs ADD COLUMN stage text DEFAULT 'apply' NOT NULL;
+UPDATE organize_runs SET stage = 'revert' WHERE status IN ('reverted', 'reverting');
+UPDATE organize_items SET error_kind = 'mirror' WHERE status = 'done' AND error LIKE '本地镜像失败%';
+```
+
+### 11. 测试（run.itest 追加）
+
+- transient 自动重试：第一次 rename 抛网络错、第二次成功 → 项 `done`、`attempts = 2`、run 无失败。
+- blocked 不自动重试、整轮停（现有用例加 kind 断言）。
+- stale：预览后删掉源文件 → `failed` + kind `stale`；不带 ids 的重试不碰它；带 ids 重试再失败一次；skip 后 run 收口。
+- 放弃半路项：move 失败留 `curPath` → skip → 网盘上名字改回原名、状态 `skipped`。
+- mirror 补做：镜像抛错 → `done` + kind `mirror`；再 apply 只做本地、网盘调用计数不变。
+- 撤销单项失败：一项 move 回去时抛错 → 状态仍 `done` + kind、run `reverted`、`notReverted = 1`、`revertable.ok`；第二次撤销完成。
+- 撤销半路：挪回成功、改名失败 → `done` + `curPath`；第二次撤销只改名（rename 计数 +1、move 不变）；本地镜像回到原位。
+- 撤销开始后 apply 409；风控中断撤销的 run 前端条件（`stage`）由 `getRunDetail` 的字段钉住。
+- 监控：done + revert 失败（kind transient）的自有事件仍跳过；kind mirror 的不跳（现有用例改按 kind）。
+- 迁移回填：旧数据的 reverted run 有 `stage = revert`、镜像失败项有 kind `mirror`。
+
+### 不做
+
+- 不做逐项改目标名（`rejected` 的路是改模板 / 识别词后重新预览）。
+- 不做跨 run 的定时自动重试；run 内一次 + Telegram 提醒 + 一键重试够用。
+- 不改「run 有单项失败仍算 `done`」的语义。
+
+### 分阶段
+
+1. 后端：`failures.ts` + `errorKind` / `attempts` + run 内自动重试 + stats 分类 + 迁移 0012。
+2. 撤销对称：`stage`、done 带错、撤销侧 `curPath`、再撤销、监控按 kind 跳过。
+3. skip 接口 + 重试集合 + apply `ids`。
+4. 前端面板 / 按钮 / 徽标 + Telegram 文案。
+5. 真机：115 上人为制造 stale（预览后手动挪走一个文件）、撤销时断网一次、镜像目录改成只读各走一遍。
+
+### 实施记录（2026-09-14）
+
+- `attempts` 的含义改成「这一项被执行 / 撤销了几轮」（每轮 apply / revert 对处理到的项 +1，执行中的自动重试不算），界面上「已试 N 轮」；原设计的「每次真实尝试」会把 先改名再移动 的正常两步也算成 2 次，用户看着像失败过。
+- 撤销时「文件已不在整理后的位置 / 位置上是另一个文件」记成 `failed` + `stale`（不是 skipped）：这样 `notReverted` 能只数 done + failed-stale，执行时就没成的 failed（非 stale，文件还在原处）不算没退回；面板里这组叫「已找不到」，只有「放弃」。
+- 撤销循环用 `revertWorkItem(it, true)`：连上一轮「目录不是空的」留下的 skipped 自建目录也再看一眼（文件退回后可能空了）；判断「还有没有事」（revertability、放弃后收口）用不带参数的版本，不然永远退不完。
+- 撤销循环里的分支顺序：先 reverted+mirror 补本地 → 再 `curPath && status !== done`（执行侧半路项改回原名）→ 再按 action 分；一开始写成 `status !== done` 让 skipped 的 mkdir 项走进了改名分支，`resolvePath("")` 拿到根目录、把整棵假网盘改了名（itest 抓到的）。
+- `retryableItem` 对 rmdir：skipped + stale（目录已经不在）不再试；skipped + transient（不是空的）顺带再看一眼，但 `applicable` 判「有没有事」时不算它，免得每个完成的 run 都挂着「重试失败项」。
+- OpenList 的 `classifyError`：`code 403` 只有文案像权限 / token（permission / forbidden / token / login / guest…）才算 auth；`file [x] exists` 这种文件系统层的 403 归 null，由 `classifyFailure` 按文案归 rejected。真机踩到。
+- 「重新预览」按 run 的原范围建新 run：范围是子目录（inbox）时，已经挪出去的作品不在范围里，新 run 只剩没做的（可能是 0 部作品）；范围是整个任务时已整理好的全是「不变」。两种都对，界面文案「已经整理好的会显示为不变」在子目录范围时不完全适用，先不改。
+- **动手前先看一眼目标目录（2026-09-14 真机之后加的）**：115 的 `files/move` 遇到同名不报错，悄悄把挪进去的文件改成 `xxx(1)`，记账里的 dstPath 和真实名字对不上、本地 strm 指向别人的文件（115 真机撞到）。现在改名前看源目录、移动前看目标目录、撤销挪回前看原位置，有同名就记 `rejected` 不碰网盘（`namesIn` + `occupied` + `clashError`）；刚 mkdir 的目录直接当空的不列。列目录走 `provider.listDir(id, signal, { fresh: true })` 绕过 115 进程内 5 分钟的 `filesListCache`（`DriveProvider.listDir` 多了可选的第三个参数，只有 115 实现），不然预览之后别人放进来的看不见。夸克对同名是明确拒绝（`/file/rename` 400 code 23008 `file is doloading[存在同名文件]`，`同名` 命中 REJECTED_RE），OpenList 回 403 `file [x] exists`。
+- **115 / 夸克真机（2026-09-14）**：115 用 `files/copy` 从真文件复制三份到隔离目录 `_orgtest115/BEEF.S01.1080p/`（认成 怒呛人生 154385），夸克把 亿万地堡 的 E01–E03 挪进 `_orgtest/亿万地堡.S01.2025.1080p/` 改成乱名（认成 245648 high），后端用拷到 scratch 的库（监控 / Telegram / Emby / cron 全关，本地 strm 只写 scratch）。走通：预览后挪走文件 → 115 `网盘上找不到` 归 stale（夸克按 id 操作，挪走的文件照样能改名移动，做不出 stale）；预览后目标被占 → 两家都被动手前的检查拦成 rejected、半路项「放弃」改回原名（115 上第一次跑就是这里暴露了悄悄改成 (1) 的问题）；整理后删掉 / 挪走文件再撤销 → `failed + stale`「已找不到」→ 放弃。结束后 115 的伪造目录整个进回收站，夸克目录树和开始时逐字节一致。没覆盖：风控（不能故意触发）、夸克上的 stale（不删真文件做不出来）。另外夸克把目标季目录改名之后整理照样成功——它按缓存里的目录 id 挪，文件进了改名后的目录而记账仍是旧路径，本地 strm 要等监控快照纠正，属于按 id 的网盘固有行为，没改。
+- 真机实验的坑：`pkill -f "tsx src/index.ts"` 杀不到（真实进程是 `node …/tsx/dist/cli.mjs src/index.ts`），端口占着新进程起不来还以为重启了；115 进程内目录缓存 5 分钟，脚本在另一个进程里挪了文件、后端预览还按旧清单算冲突，要么等要么重启后端。

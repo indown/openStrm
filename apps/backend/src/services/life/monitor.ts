@@ -366,9 +366,10 @@ class AccountMonitor {
       } else {
         try {
           // 整理自己做的改名 / 移动 / 建目录 / 删空目录会以事件的形式再回来一遍：本地已经镜像过了，跳过；
-          // 镜像失败的那些项不算（error 非空），让事件照常处理把本地补回来
+          // 本地镜像失败的那些项不算（errorKind = mirror），让事件照常处理把本地补回来。
+          // 撤销在网盘那步失败的项（done 带别的类别）本地和网盘仍一致，照常跳过
           const own = findOwnOperation(ev.nodeId, ev.path, ev.at, ev.kind === "remove" ? "remove" : "other");
-          const ownOk = own !== null && own.error === "";
+          const ownOk = own !== null && own.errorKind !== "mirror";
           if (ownOk) bumpOwnHit(own.id);
           const res: HandleResult = ownOk ? { status: "skipped", detail: "整理已处理，本地已镜像", changed: false } : await dispatch(ctx, ev);
           markLifeEvent(id, res.status, res.detail);

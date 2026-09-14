@@ -73,7 +73,7 @@ before(async () => {
   await writeAuthPassword("organize-itest-pw");
   drive.tree.addFile("/movies/inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv");
   setDriveProviderFactory((a) => (a.name === "acc" ? drive : null));
-  setOrganizeDeps({ tmdb: () => new StubTmdb(), notify: async () => true });
+  setOrganizeDeps({ tmdb: () => new StubTmdb(), notify: async () => true, retryDelayMs: 5 });
 
   app = Fastify();
   registerErrorHandling(app);
@@ -140,6 +140,41 @@ test("建 run → 详情 → 改匹配 → 执行 → 撤销 → 删除", async 
   await json("GET", `/api/organize/runs/${run.id}`, undefined, 404);
   await json("DELETE", "/api/organize/matches", { accountName: "acc", srcPath: "/movies/沙丘 (2021) [tmdbid=438631]" });
   assert.equal((await json<{ matches: unknown[] }>("GET", "/api/organize/matches")).matches.length, 0);
+});
+
+test("失败项：执行带 ids 只重试点名的；放弃接口标掉失败项；详情里有 applicable", async () => {
+  drive.failWriteOn = (op, p) => (op === "move" && p.endsWith("沙丘：第二部 (2024) - 2160p.mkv") ? new Error("改不了") : null);
+  const run = await json<OrganizeRun>("POST", "/api/organize/runs", { taskId: "t1", subPath: "inbox" }, 201);
+  await untilStatus(run.id, ["ready"]);
+  await json("POST", `/api/organize/runs/${run.id}/apply`);
+  const done = await untilStatus(run.id, ["done"]);
+  assert.equal(done.run.stats.failed, 1);
+  assert.equal(done.run.stats.failedByKind.transient, 1);
+  assert.equal(done.applicable.ok, true);
+  assert.equal(done.applicable.count, 1);
+  const bad = done.items.find((i) => i.status === "failed")!;
+  assert.equal(bad.errorKind, "transient");
+  assert.equal(bad.attempts, 1);
+  // 入参校验
+  assert.equal((await app.inject({ method: "POST", url: `/api/organize/runs/${run.id}/skip`, headers: auth, payload: { ids: [] } })).statusCode, 400);
+  assert.equal((await app.inject({ method: "POST", url: `/api/organize/runs/${run.id}/apply`, headers: auth, payload: { ids: "x" } })).statusCode, 400);
+  // 点名重试：这次成功
+  drive.failWriteOn = null;
+  await json("POST", `/api/organize/runs/${run.id}/apply`, { ids: [bad.id] });
+  const again = await untilStatus(run.id, ["done"]);
+  assert.equal(again.run.stats.failed, 0);
+  assert.equal(again.applicable.ok, false);
+  assert.ok(drive.tree.get("/movies/沙丘：第二部 (2024) [tmdbid=693134]/沙丘：第二部 (2024) - 2160p.mkv"));
+  // 放弃：没有失败项时全是 refused
+  const r = await json<{ skipped: number; refused: unknown[] }>("POST", `/api/organize/runs/${run.id}/skip`, { ids: [bad.id] });
+  assert.equal(r.skipped, 0);
+  assert.equal(r.refused.length, 1);
+  await json("POST", `/api/organize/runs/${run.id}/revert`);
+  const reverted = await untilStatus(run.id, ["reverted"]);
+  assert.equal(reverted.run.stage, "revert");
+  assert.equal(reverted.applicable.ok, false);
+  assert.equal((await app.inject({ method: "POST", url: `/api/organize/runs/${run.id}/apply`, headers: auth })).statusCode, 409);
+  await json("DELETE", `/api/organize/runs/${run.id}`);
 });
 
 test("模板试算：默认模板出样例；坏模板报错但不抛", async () => {

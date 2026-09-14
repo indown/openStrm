@@ -6,6 +6,7 @@ import { and, asc, desc, eq, gt, inArray, like, lt, ne, or, sql } from "drizzle-
 import type {
   OrganizeAction,
   OrganizeConfidence,
+  OrganizeErrorKind,
   OrganizeFileKind,
   OrganizeItem,
   OrganizeItemStatus,
@@ -14,6 +15,7 @@ import type {
   OrganizeMediaType,
   OrganizeRun,
   OrganizeRunMode,
+  OrganizeRunStage,
   OrganizeRunStats,
   OrganizeRunStatus,
   OrganizeTrigger,
@@ -47,11 +49,14 @@ export function emptyStats(): OrganizeRunStats {
     done: 0,
     failed: 0,
     confidence: { high: 0, medium: 0, low: 0, none: 0 },
+    failedByKind: { transient: 0, blocked: 0, stale: 0, rejected: 0, mirror: 0 },
+    notReverted: 0,
   };
 }
 
 const RUN_STATUSES: OrganizeRunStatus[] = ["planning", "ready", "applying", "done", "failed", "cancelled", "reverting", "reverted"];
 const ITEM_STATUSES: OrganizeItemStatus[] = ["pending", "done", "failed", "skipped", "reverted"];
+const ERROR_KINDS: OrganizeErrorKind[] = ["", "transient", "blocked", "stale", "rejected", "mirror"];
 
 const coerce = <T extends string>(v: string, list: readonly T[], fallback: T): T => ((list as readonly string[]).includes(v) ? (v as T) : fallback);
 
@@ -65,6 +70,7 @@ function toRun(row: RunRow): OrganizeRun {
     mode: row.mode === "auto" ? "auto" : row.mode === "review" ? "review" : "manual",
     trigger: coerce<OrganizeTrigger>(row.trigger, ["manual", "share", "follow", "offline", "monitor"], "manual"),
     status: coerce(row.status, RUN_STATUSES, "failed"),
+    stage: row.stage === "revert" ? "revert" : "apply",
     stats: { ...emptyStats(), ...parseJson<Partial<OrganizeRunStats>>(row.stats, {}) },
     error: row.error,
     log: parseJson<string[]>(row.log, []),
@@ -109,6 +115,8 @@ function toItem(row: ItemRow): OrganizeItem {
     reason: row.reason,
     status: coerce(row.status, ITEM_STATUSES, "pending"),
     error: row.error,
+    errorKind: coerce(row.errorKind, ERROR_KINDS, ""),
+    attempts: row.attempts,
     finishedAt: row.finishedAt ?? null,
     curPath: row.curPath,
     hits: row.hits,
@@ -167,6 +175,7 @@ export function getRun(id: string): OrganizeRun | null {
 
 export interface RunPatch {
   status?: OrganizeRunStatus;
+  stage?: OrganizeRunStage;
   stats?: OrganizeRunStats;
   error?: string;
   log?: string[];
@@ -177,6 +186,7 @@ export interface RunPatch {
 export function updateRun(id: string, patch: RunPatch): void {
   const set: Partial<typeof organizeRuns.$inferInsert> = {};
   if (patch.status !== undefined) set.status = patch.status;
+  if (patch.stage !== undefined) set.stage = patch.stage;
   if (patch.stats !== undefined) set.stats = JSON.stringify(patch.stats);
   if (patch.error !== undefined) set.error = patch.error;
   if (patch.log !== undefined) set.log = JSON.stringify(patch.log.slice(-300));
@@ -205,7 +215,8 @@ export function listRunsByStatus(statuses: OrganizeRunStatus[]): OrganizeRun[] {
 
 /**
  * 同一任务里比这次更晚、且已经执行过（有 done 的项）的 run：撤销只允许最近一次。
- * 「更晚」按 rowid（插入顺序）比：created_at 只有秒，同一秒里建的两次 run 分不出先后
+ * 「更晚」按 rowid（插入顺序）比：created_at 只有秒，同一秒里建的两次 run 分不出先后。
+ * 撤销过但还有 done 项没退回的 run 也算：它的文件还占着位置
  */
 export function hasLaterAppliedRun(run: OrganizeRun): boolean {
   const row = db
@@ -214,7 +225,7 @@ export function hasLaterAppliedRun(run: OrganizeRun): boolean {
     .where(
       and(
         eq(organizeRuns.taskId, run.taskId),
-        inArray(organizeRuns.status, ["applying", "done", "reverting", "cancelled", "failed"]),
+        inArray(organizeRuns.status, ["applying", "done", "reverting", "cancelled", "failed", "reverted"]),
         sql`${organizeRuns}.rowid > (select rowid from ${organizeRuns} where ${organizeRuns.id} = ${run.id})`,
         // 从没执行过一条的 failed / cancelled 不算
         sql`exists (select 1 from ${organizeItems} where ${organizeItems.runId} = ${organizeRuns.id} and ${organizeItems.status} = 'done')`,
@@ -316,7 +327,7 @@ export function updateUnit(runId: string, key: string, patch: Partial<OrganizeUn
 
 /* ------------------------------- items ------------------------------- */
 
-export type NewItem = Omit<OrganizeItem, "runId" | "status" | "error" | "finishedAt" | "curPath" | "hits"> & {
+export type NewItem = Omit<OrganizeItem, "runId" | "status" | "error" | "errorKind" | "attempts" | "finishedAt" | "curPath" | "hits"> & {
   status?: OrganizeItemStatus;
   error?: string;
 };
@@ -357,10 +368,15 @@ export function listItems(runId: string): OrganizeItem[] {
   return db.select().from(organizeItems).where(eq(organizeItems.runId, runId)).orderBy(asc(organizeItems.seq)).all().map(toItem);
 }
 
-export function updateItem(id: string, patch: Partial<Pick<OrganizeItem, "status" | "error" | "nodeId" | "finishedAt" | "dstPath" | "srcPath" | "curPath" | "hits">>): void {
+export function updateItem(
+  id: string,
+  patch: Partial<Pick<OrganizeItem, "status" | "error" | "errorKind" | "attempts" | "nodeId" | "finishedAt" | "dstPath" | "srcPath" | "curPath" | "hits">>,
+): void {
   const set: Partial<typeof organizeItems.$inferInsert> = {};
   if (patch.status !== undefined) set.status = patch.status;
   if (patch.error !== undefined) set.error = patch.error;
+  if (patch.errorKind !== undefined) set.errorKind = patch.errorKind;
+  if (patch.attempts !== undefined) set.attempts = patch.attempts;
   if (patch.nodeId !== undefined) set.nodeId = patch.nodeId;
   if (patch.finishedAt !== undefined) set.finishedAt = patch.finishedAt;
   if (patch.dstPath !== undefined) set.dstPath = patch.dstPath;
@@ -371,14 +387,22 @@ export function updateItem(id: string, patch: Partial<Pick<OrganizeItem, "status
   db.update(organizeItems).set(set).where(eq(organizeItems.id, id)).run();
 }
 
-export function updateItems(ids: string[], patch: Partial<Pick<OrganizeItem, "status" | "error" | "finishedAt">>): void {
+export function updateItems(ids: string[], patch: Partial<Pick<OrganizeItem, "status" | "error" | "errorKind" | "finishedAt" | "curPath">>): void {
   if (ids.length === 0) return;
   const set: Partial<typeof organizeItems.$inferInsert> = {};
   if (patch.status !== undefined) set.status = patch.status;
   if (patch.error !== undefined) set.error = patch.error;
+  if (patch.errorKind !== undefined) set.errorKind = patch.errorKind;
   if (patch.finishedAt !== undefined) set.finishedAt = patch.finishedAt;
+  if (patch.curPath !== undefined) set.curPath = patch.curPath;
   if (Object.keys(set).length === 0) return;
   db.update(organizeItems).set(set).where(inArray(organizeItems.id, ids)).run();
+}
+
+/** 这些项又跑了一轮：attempts + 1 */
+export function bumpAttempts(ids: string[]): void {
+  if (ids.length === 0) return;
+  db.update(organizeItems).set({ attempts: sql`${organizeItems.attempts} + 1` }).where(inArray(organizeItems.id, ids)).run();
 }
 
 const OWN_WINDOW_S = 24 * 3600;

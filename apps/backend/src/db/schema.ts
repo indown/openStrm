@@ -214,6 +214,8 @@ export const organizeRuns = sqliteTable(
     mode: text("mode").notNull().default("manual"),
     trigger: text("trigger").notNull().default("manual"),
     status: text("status").notNull().default("planning"),
+    /** apply 执行 / revert 撤销：开始撤销之后只能继续撤销 */
+    stage: text("stage").notNull().default("apply"),
     stats: text("stats").notNull().default("{}"),
     error: text("error").notNull().default(""),
     log: text("log").notNull().default("[]"),
@@ -272,8 +274,12 @@ export const organizeItems = sqliteTable(
     reason: text("reason").notNull().default(""),
     status: text("status").notNull().default("pending"),
     error: text("error").notNull().default(""),
+    /** error 的类别（transient / blocked / stale / rejected / mirror），决定重试还是放弃 */
+    errorKind: text("error_kind").notNull().default(""),
+    /** 被执行 / 撤销了几轮（自动重试不算） */
+    attempts: integer("attempts").notNull().default(0),
     finishedAt: integer("finished_at"),
-    /** 移动项先原地改名再挪：改完名还没挪走时文件的当前路径，续跑 / 撤销都靠它；挪完清空 */
+    /** 文件当前的中间位置：执行时是原地改了名还没挪走，撤销时是挪回来了还没改回原名；做完清空 */
     curPath: text("cur_path").notNull().default(""),
     /** 网盘监控已经按「整理自己做的」跳过了几条事件；一条 rename + 一条 move 最多两条，之后的就是别人动的 */
     hits: integer("hits").notNull().default(0),

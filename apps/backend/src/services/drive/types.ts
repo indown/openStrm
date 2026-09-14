@@ -88,7 +88,8 @@ export interface DriveProvider {
   /** 根目录 id：115 / 夸克是 "0"，OpenList 是 "/" */
   readonly rootId: string;
   resolvePath(path: string, signal?: AbortSignal): Promise<DriveNode | null>;
-  listDir(id: string, signal?: AbortSignal): Promise<DriveEntry[]>;
+  /** fresh：绕过网盘客户端自己的目录缓存（115 进程内缓存 5 分钟），整理动手前看目标目录有没有同名文件时用 */
+  listDir(id: string, signal?: AbortSignal, opts?: { fresh?: boolean }): Promise<DriveEntry[]>;
   /**
    * 子树里的文件 + 没有文件的顶层空目录，相对 path（同步任务对照、重生成、转存后建 strm 都用它）。
    * 目录不存在抛 RemoteDirNotFoundError。已知目录 id 时传 id 省一次解析。

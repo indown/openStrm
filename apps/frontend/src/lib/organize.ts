@@ -1,7 +1,7 @@
 /**
  * 整理页的展示映射：run 状态、置信度、动作的文案与配色。
  */
-import type { OrganizeAction, OrganizeConfidence, OrganizeRunStatus, OrganizeTrigger } from "@openstrm/shared";
+import type { OrganizeAction, OrganizeConfidence, OrganizeErrorKind, OrganizeRunStatus, OrganizeTrigger } from "@openstrm/shared";
 import type { StatusTone } from "@/components/status-badge";
 
 export const RUN_STATUS_META: Record<OrganizeRunStatus, { label: string; tone: StatusTone; pulse?: boolean }> = {
@@ -30,6 +30,15 @@ export const ACTION_META: Record<OrganizeAction, { label: string; tone: StatusTo
   rmdir: { label: "删空目录", tone: "neutral" },
   skip: { label: "跳过", tone: "neutral" },
   conflict: { label: "冲突", tone: "danger" },
+};
+
+/** 失败类别：一句话说清楚为什么、下一步做什么（执行阶段的含义；撤销阶段的文案在失败面板里单独写） */
+export const ERROR_KIND_META: Record<Exclude<OrganizeErrorKind, "">, { label: string; tone: StatusTone; hint: string }> = {
+  blocked: { label: "网盘拒绝", tone: "danger", hint: "风控或登录失效，整理已停下：到「账号」页处理好之后再重试" },
+  transient: { label: "临时失败", tone: "warning", hint: "网络、超时或网盘抖动：执行时已自动重试过一次，再试一次多半就好" },
+  stale: { label: "预览后变了", tone: "danger", hint: "文件已不在预览时的位置、目录没了或目标位置被占：重新预览会按现在的网盘重新规划，重试只会再失败" },
+  rejected: { label: "名字不被接受", tone: "danger", hint: "网盘不接受这个名字或目标已存在：改模板 / 识别词后重新预览，或放弃这些项" },
+  mirror: { label: "本地未同步", tone: "warning", hint: "网盘已经改好，本地 strm 没跟上：重试只补本地，不碰网盘" },
 };
 
 export const TRIGGER_LABEL: Record<OrganizeTrigger, string> = {

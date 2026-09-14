@@ -48,6 +48,17 @@ test("失败与取消的文案带数量和原因，原因做 HTML 转义", async
   assert.match(sent[1].text, /⏹ <b>任务已取消<\/b>[\s\S]*完成 2\/5 个文件\n用户取消/);
 });
 
+test("整理完成 / 撤销的文案：失败按类别拆开、本地未同步单列、有事要处理就提示去整理页", async () => {
+  await notify({ type: "organize-done", task, runId: "r1", units: 3, done: 8, failed: 0 });
+  assert.match(sent[0].text, /🗂 <b>整理完成<\/b>[\s\S]*3 部作品，8 项已改名 \/ 移动$/);
+  await notify({ type: "organize-done", task, runId: "r2", units: 3, done: 6, failed: 3, failedByKind: { transient: 2, blocked: 0, stale: 1, rejected: 0, mirror: 2 } });
+  assert.match(sent[1].text, /⚠️ <b>整理完成（有失败）<\/b>[\s\S]*6 项已改名 \/ 移动，失败 3（临时失败 2、预览后变了 1），本地未同步 2\n到「整理」页重试或放弃$/);
+  await notify({ type: "organize-done", task, runId: "r3", units: 3, done: 8, failed: 0, reverted: true, notReverted: 0 });
+  assert.match(sent[2].text, /↩️ <b>整理已撤销<\/b>[\s\S]*8 项已退回$/);
+  await notify({ type: "organize-done", task, runId: "r4", units: 3, done: 7, failed: 1, reverted: true, notReverted: 2, failedByKind: { transient: 1, blocked: 0, stale: 1, rejected: 0, mirror: 0 } });
+  assert.match(sent[3].text, /⚠️ <b>整理已撤销（有没退回的）<\/b>[\s\S]*7 项已退回，2 项没退回（临时失败 1、预览后变了 1）\n到「整理」页继续撤销或放弃$/);
+});
+
 test("账号告警：认得出 cookie 失效和封控，同一账号同一原因一小时只发一次；认不出的不发", async () => {
   assert.equal(classifyAccountIssue("115：登录超时，请重新登录。（errno 990001）"), "cookie");
   assert.equal(classifyAccountIssue("115 接口返回 405: 您的访问被阻断"), "blocked");

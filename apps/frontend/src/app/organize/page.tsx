@@ -6,6 +6,7 @@ import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
+  Ban,
   ChevronDown,
   ChevronRight,
   ExternalLink,
@@ -16,6 +17,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  RotateCw,
   Search,
   SlidersHorizontal,
   Square,
@@ -24,7 +26,7 @@ import {
   Undo2,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { OrganizeItem, OrganizeRun, OrganizeRunDetail, OrganizeUnit } from "@openstrm/shared";
+import type { OrganizeErrorKind, OrganizeItem, OrganizeRun, OrganizeRunDetail, OrganizeRunStage, OrganizeUnit } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -41,14 +43,14 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { PageHeader } from "@/components/page-header";
-import { StatusBadge, TONE_CLASS } from "@/components/status-badge";
+import { StatusBadge, TONE_CLASS, type StatusTone } from "@/components/status-badge";
 import { EmptyState } from "@/components/empty-state";
 import { Spinner, TableSkeleton } from "@/components/loading";
 import { DirectoryTreeDialog } from "@/app/home/components/DirectoryTreeDialog";
 import { api, type TaskRow } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import { fmtTime } from "@/lib/format";
-import { ACTION_META, CONFIDENCE_META, RUN_STATUS_META, TRIGGER_LABEL, baseName, dirName, isBusyStatus } from "@/lib/organize";
+import { ACTION_META, CONFIDENCE_META, ERROR_KIND_META, RUN_STATUS_META, TRIGGER_LABEL, baseName, dirName, isBusyStatus } from "@/lib/organize";
 import { MatchDialog } from "./components/MatchDialog";
 import { AdjustDialog } from "./components/AdjustDialog";
 
@@ -179,7 +181,7 @@ function OrganizeContent() {
       </section>
 
       {runId ? (
-        <RunView key={runId} runId={runId} onClose={() => openRun(null)} />
+        <RunView key={runId} runId={runId} onClose={() => openRun(null)} onOpenRun={openRun} />
       ) : (
         <EmptyState icon={FolderTree} title="还没有预览" description="选好任务和范围，点「预览」；或者从「历史」里打开之前的整理记录。" />
       )}
@@ -203,7 +205,7 @@ function OrganizeContent() {
 
 /* ------------------------------- run ------------------------------- */
 
-function RunView({ runId, onClose }: { runId: string; onClose: () => void }) {
+function RunView({ runId, onClose, onOpenRun }: { runId: string; onClose: () => void; onOpenRun: (id: string) => void }) {
   const [detail, setDetail] = useState<OrganizeRunDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -276,11 +278,14 @@ function RunView({ runId, onClose }: { runId: string; onClose: () => void }) {
   }
   if (!detail) return <TableSkeleton rows={4} />;
 
-  const { run, units, items, revertable } = detail;
+  const { run, units, items, revertable, applicable } = detail;
   const meta = RUN_STATUS_META[run.status];
-  const retryable = items.some((i) => (i.status === "pending" || i.status === "failed") && ["rename", "move", "mkdir", "rmdir"].includes(i.action));
-  const canApply = (run.status === "ready" && run.stats.planned > 0) || ((run.status === "failed" || run.status === "cancelled" || run.status === "done") && retryable);
+  const canApply = applicable.ok;
   const canCancel = isBusyStatus(run.status);
+  const reverting = run.stage === "revert";
+  const selectedUnits = new Set(units.filter((u) => u.selected && u.match).map((u) => u.key));
+  const revertedCount = items.filter((i) => i.status === "reverted" && (i.action === "rename" || i.action === "move")).length;
+  const mirrorLeft = run.stats.failedByKind.mirror;
   const itemsByUnit = new Map<string, OrganizeItem[]>();
   for (const it of items) {
     const list = itemsByUnit.get(it.unitKey) ?? [];
@@ -322,14 +327,14 @@ function RunView({ runId, onClose }: { runId: string; onClose: () => void }) {
             )}
             {canApply && (
               <Button size="sm" onClick={() => setConfirm("apply")} disabled={busy}>
-                <Play className="size-4" />
-                {run.status === "ready" ? `执行 ${run.stats.planned} 项` : "继续执行"}
+                {run.status === "ready" ? <Play className="size-4" /> : <RotateCw className="size-4" />}
+                {run.status === "ready" ? `执行 ${run.stats.planned} 项` : `重试失败项（${applicable.count}）`}
               </Button>
             )}
             {revertable.ok && (
-              <Button variant="outline" size="sm" onClick={() => setConfirm("revert")} disabled={busy}>
+              <Button variant={reverting ? "default" : "outline"} size="sm" onClick={() => setConfirm("revert")} disabled={busy}>
                 <Undo2 className="size-4" />
-                撤销
+                {reverting ? "继续撤销" : "撤销"}
               </Button>
             )}
             {!isBusyStatus(run.status) && (
@@ -365,8 +370,11 @@ function RunView({ runId, onClose }: { runId: string; onClose: () => void }) {
           {run.stats.keep > 0 && <StatusBadge tone="neutral" className="tabular-nums">{run.stats.keep} 项已规范</StatusBadge>}
           {run.stats.conflicts > 0 && <StatusBadge tone="danger" className="tabular-nums">{run.stats.conflicts} 项冲突</StatusBadge>}
           {run.stats.skipped > 0 && <StatusBadge tone="neutral" className="tabular-nums">{run.stats.skipped} 项跳过</StatusBadge>}
-          {run.stats.done > 0 && <StatusBadge tone="success" className="tabular-nums">{run.stats.done} 项完成</StatusBadge>}
-          {run.stats.failed > 0 && <StatusBadge tone="danger" className="tabular-nums">{run.stats.failed} 项失败</StatusBadge>}
+          {!reverting && run.stats.done > 0 && <StatusBadge tone="success" className="tabular-nums">{run.stats.done} 项完成</StatusBadge>}
+          {!reverting && run.stats.failed > 0 && <StatusBadge tone="danger" className="tabular-nums">{run.stats.failed} 项失败</StatusBadge>}
+          {reverting && revertedCount > 0 && <StatusBadge tone="success" className="tabular-nums">{revertedCount} 项已退回</StatusBadge>}
+          {reverting && run.stats.notReverted > 0 && <StatusBadge tone="danger" className="tabular-nums">{run.stats.notReverted} 项没退回</StatusBadge>}
+          {mirrorLeft > 0 && <StatusBadge tone="warning" className="tabular-nums">{mirrorLeft} 项本地未同步</StatusBadge>}
           {unsure > 0 && run.status === "ready" && <StatusBadge tone="warning" className="tabular-nums">{unsure} 部识别把握不大</StatusBadge>}
         </div>
 
@@ -383,6 +391,10 @@ function RunView({ runId, onClose }: { runId: string; onClose: () => void }) {
         )}
       </section>
 
+      {!isBusyStatus(run.status) && run.status !== "ready" && (
+        <FailurePanel run={run} items={items} selectedUnits={selectedUnits} busy={busy} onChanged={load} onRevert={() => setConfirm("revert")} onOpenRun={onOpenRun} />
+      )}
+
       {run.status === "planning" && units.length === 0 ? (
         <Spinner label="正在列目录、识别作品…" />
       ) : units.length === 0 ? (
@@ -394,6 +406,7 @@ function RunView({ runId, onClose }: { runId: string; onClose: () => void }) {
               key={u.key}
               unit={u}
               items={itemsByUnit.get(u.key) ?? []}
+              stage={run.stage}
               editable={run.status === "ready"}
               onToggle={(selected) => void patchUnit(u, { selected })}
               onRemember={(remember) => void patchUnit(u, { remember })}
@@ -401,7 +414,7 @@ function RunView({ runId, onClose }: { runId: string; onClose: () => void }) {
               onAdjust={() => setAdjusting(u)}
             />
           ))}
-          {dirItems.length > 0 && <DirItems items={dirItems} />}
+          {dirItems.length > 0 && <DirItems items={dirItems} stage={run.stage} />}
         </div>
       )}
 
@@ -414,8 +427,10 @@ function RunView({ runId, onClose }: { runId: string; onClose: () => void }) {
             <AlertDialogTitle>{confirm === "apply" ? "在网盘上执行整理" : confirm === "revert" ? "撤销这次整理" : "删除整理记录"}</AlertDialogTitle>
             <AlertDialogDescription>
               {confirm === "apply" &&
-                `会在网盘上改名 / 移动 ${run.stats.planned} 项，本地 strm 跟着挪。Emby 会把改名后的条目当新条目，播放记录可能丢失。${unsure > 0 ? `有 ${unsure} 部识别把握不大，建议先确认。` : ""}`}
-              {confirm === "revert" && "按记录把文件退回原来的位置和名字；已经被别的操作动过的项会跳过。"}
+                (run.status === "ready"
+                  ? `会在网盘上改名 / 移动 ${run.stats.planned} 项，本地 strm 跟着挪。Emby 会把改名后的条目当新条目，播放记录可能丢失。${unsure > 0 ? `有 ${unsure} 部识别把握不大，建议先确认。` : ""}`
+                  : `只重试失败和没做的 ${applicable.count} 项（临时失败、风控中断、本地没跟上的），已完成的不会重做。「预览后变了」「名字不被接受」的项不在里面，在上面的面板里单独处理。`)}
+              {confirm === "revert" && (reverting ? "把还没退回的项接着退回原处；已经退回的不会重做。" : "按记录把文件退回原来的位置和名字；已经被别的操作动过的项会跳过，之后可以放弃。")}
               {confirm === "delete" && "只删这条记录，网盘和本地文件都不动；删掉之后就不能撤销这次整理了。"}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -437,11 +452,223 @@ function RunView({ runId, onClose }: { runId: string; onClose: () => void }) {
   );
 }
 
+/* ------------------------------- failures ------------------------------- */
+
+type FailureGroupKey = Exclude<OrganizeErrorKind, ""> | "lost" | "pending";
+
+interface FailureGroup {
+  key: FailureGroupKey;
+  label: string;
+  tone: StatusTone;
+  hint: string;
+  items: OrganizeItem[];
+  retry: boolean;
+  skip: boolean;
+  repreview: boolean;
+}
+
+const WORK_ACTIONS = new Set(["mkdir", "rename", "move", "rmdir"]);
+
+/** 把还等着处理的项按「下一步该做什么」分组；执行阶段和撤销阶段的含义不一样 */
+function groupFailures(run: OrganizeRun, items: OrganizeItem[], selectedUnits: Set<string>): FailureGroup[] {
+  const active = (it: OrganizeItem) => it.unitKey === "" || selectedUnits.has(it.unitKey);
+  const isFile = (it: OrganizeItem) => it.action === "rename" || it.action === "move";
+  const kindOf = (it: OrganizeItem): Exclude<OrganizeErrorKind, ""> => it.errorKind || "transient";
+  const groups: FailureGroup[] = [];
+  const push = (key: FailureGroupKey, label: string, tone: StatusTone, hint: string, list: OrganizeItem[], actions: Partial<Pick<FailureGroup, "retry" | "skip" | "repreview">>) => {
+    if (list.length > 0) groups.push({ key, label, tone, hint, items: list, retry: false, skip: false, repreview: false, ...actions });
+  };
+  if (run.stage === "apply") {
+    const failed = items.filter((it) => it.status === "failed" && active(it));
+    const byKind = (k: Exclude<OrganizeErrorKind, "">) => failed.filter((it) => kindOf(it) === k);
+    for (const k of ["blocked", "transient", "stale", "rejected"] as const) {
+      push(k, ERROR_KIND_META[k].label, ERROR_KIND_META[k].tone, ERROR_KIND_META[k].hint, byKind(k), { retry: true, skip: true, repreview: k === "stale" });
+    }
+    push("mirror", ERROR_KIND_META.mirror.label, ERROR_KIND_META.mirror.tone, ERROR_KIND_META.mirror.hint, items.filter((it) => it.status === "done" && it.errorKind === "mirror"), { retry: true, skip: true });
+    push("pending", "没做完", "neutral", "整理中途停下了（风控、取消或进程重启），这些项还没轮到", items.filter((it) => it.status === "pending" && active(it) && WORK_ACTIONS.has(it.action)), { retry: true, skip: true });
+  } else {
+    const stuck = items.filter((it) => it.status === "done" && isFile(it) && it.errorKind !== "" && it.errorKind !== "mirror");
+    push("blocked", "网盘拒绝", "danger", "退回时被风控或登录失效拦住：账号处理好之后继续撤销", stuck.filter((it) => it.errorKind === "blocked"), { retry: true, skip: true });
+    push("transient", "临时失败", "warning", "退回时网络或网盘抖动：继续撤销再试一次", stuck.filter((it) => it.errorKind === "transient"), { retry: true, skip: true });
+    push("rejected", "改回原名被拒", "danger", "原来的名字网盘不再接受（多半是原位置又有了同名文件）：继续撤销再试，或放弃让文件留在整理后的位置", stuck.filter((it) => it.errorKind === "rejected"), { retry: true, skip: true });
+    push("stale", "已找不到", "danger", "文件已不在整理后的位置，或位置上是另一个文件：没法退回，只能放弃", items.filter((it) => it.status === "failed" && it.errorKind === "stale" && isFile(it)), { skip: true });
+    push("mirror", "已退回，本地未同步", "warning", "网盘已经退回原处，本地 strm 没跟上：继续撤销只补本地", items.filter((it) => it.status === "reverted" && it.errorKind === "mirror"), { retry: true, skip: true });
+  }
+  return groups;
+}
+
+function FailurePanel({
+  run,
+  items,
+  selectedUnits,
+  busy,
+  onChanged,
+  onRevert,
+  onOpenRun,
+}: {
+  run: OrganizeRun;
+  items: OrganizeItem[];
+  selectedUnits: Set<string>;
+  busy: boolean;
+  onChanged: () => Promise<void>;
+  onRevert: () => void;
+  onOpenRun: (id: string) => void;
+}) {
+  const groups = useMemo(() => groupFailures(run, items, selectedUnits), [run, items, selectedUnits]);
+  const [pending, setPending] = useState<{ type: "skip" | "repreview"; group: FailureGroup } | null>(null);
+  const [working, setWorking] = useState(false);
+  const [open, setOpen] = useState<Partial<Record<FailureGroupKey, boolean>>>({});
+  if (groups.length === 0) return null;
+  const reverting = run.stage === "revert";
+  const disabled = busy || working;
+
+  const retry = async (group: FailureGroup) => {
+    if (reverting) {
+      onRevert();
+      return;
+    }
+    setWorking(true);
+    try {
+      await api.organize.apply(run.id, group.items.map((i) => i.id));
+      toast.success(group.key === "mirror" ? `开始补本地镜像 ${group.items.length} 项` : `开始重试 ${group.items.length} 项`);
+      await onChanged();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "重试失败"));
+    } finally {
+      setWorking(false);
+    }
+  };
+  // 撤销时挪回了还没改回原名的不能放弃（改回原名就是失败的那一步），只能继续撤销
+  const skippable = (group: FailureGroup) => group.items.filter((it) => !(reverting && it.status === "done" && it.curPath));
+  const confirmPending = async () => {
+    if (!pending) return;
+    const { type, group } = pending;
+    const ids = skippable(group).map((i) => i.id);
+    const held = group.items.length - ids.length;
+    setWorking(true);
+    try {
+      if (ids.length > 0) {
+        const r = await api.organize.skip(run.id, ids);
+        const parts = [`已放弃 ${r.skipped} 项`];
+        if (r.renamedBack > 0) parts.push(`${r.renamedBack} 项先改回了原名`);
+        if (r.refused.length > 0) parts.push(`${r.refused.length} 项没能放弃：${r.refused[0].reason}`);
+        if (held > 0) parts.push(`${held} 项已挪回但没改回原名，只能继续撤销`);
+        if (r.refused.length > 0) toast.warning(parts.join("；"));
+        else toast.success(parts.join("；"));
+      } else if (held > 0) toast.warning(`${held} 项已挪回但没改回原名，只能继续撤销`);
+      if (type === "repreview") {
+        const next = await api.organize.createRun({ taskId: run.taskId, subPath: run.scopePath, paths: run.scopePaths.length > 0 ? run.scopePaths : undefined });
+        toast.success("按同一范围重新预览，请稍候");
+        setPending(null);
+        onOpenRun(next.id);
+        return;
+      }
+      await onChanged();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "操作失败"));
+    } finally {
+      setWorking(false);
+      setPending(null);
+    }
+  };
+  const pendingText = () => {
+    if (!pending) return { title: "", body: "" };
+    const n = skippable(pending.group).length;
+    if (pending.type === "repreview") {
+      return { title: "放弃这些项并重新预览？", body: `先把这 ${n} 项标成「已放弃」，再按同一范围（${run.scopePath || "整个任务"}）重新预览；已经整理好的会显示为「不变」，只剩真正没做的。` };
+    }
+    if (pending.group.key === "mirror") return { title: `放弃这 ${n} 项？`, body: "网盘上已经改好，只是本地 strm 没跟上。放弃后不再自动补本地，可以用任务的全量同步或 strm 管理的体检补齐。" };
+    if (reverting) return { title: `放弃退回这 ${n} 项？`, body: "这些文件留在整理后的位置，不再退回；本地 strm 保持现状。放弃之后这次撤销就算收口了。" };
+    return { title: `放弃这 ${n} 项？`, body: "这些项会标成「已放弃」，网盘和本地都不再动；原地改了名还没挪走的会先在网盘上改回原名。" };
+  };
+  const text = pendingText();
+
+  return (
+    <section className="space-y-3 rounded-xl border border-destructive/40 bg-card p-4">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <AlertTriangle className="size-4 text-destructive" />
+        {reverting ? "没退回的项" : "需要处理的项"}
+      </div>
+      {groups.map((g) => (
+        <div key={g.key} className="space-y-2 rounded-lg border p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge tone={g.tone} className="tabular-nums">
+              {g.label} · {g.items.length}
+            </StatusBadge>
+            <span className="text-xs text-muted-foreground">{g.hint}</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {g.repreview && (
+              <Button size="sm" className="h-8" disabled={disabled} onClick={() => setPending({ type: "repreview", group: g })}>
+                <Search className="size-4" />
+                重新预览
+              </Button>
+            )}
+            {g.retry && (
+              <Button size="sm" variant={g.repreview ? "outline" : "default"} className="h-8" disabled={disabled} onClick={() => void retry(g)}>
+                {reverting ? <Undo2 className="size-4" /> : <RotateCw className="size-4" />}
+                {reverting ? "继续撤销" : g.key === "mirror" ? "补本地" : "重试"}
+              </Button>
+            )}
+            {g.skip && (
+              <Button size="sm" variant="outline" className="h-8" disabled={disabled} onClick={() => setPending({ type: "skip", group: g })}>
+                <Ban className="size-4" />
+                放弃
+              </Button>
+            )}
+            <button type="button" className="ml-auto flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => setOpen((o) => ({ ...o, [g.key]: !o[g.key] }))}>
+              {open[g.key] ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+              {open[g.key] ? "收起" : "看文件"}
+            </button>
+          </div>
+          {open[g.key] && (
+            <ul className="space-y-1 text-xs">
+              {g.items.map((it) => {
+                const shown = it.action === "rmdir" ? it.srcPath : it.action === "mkdir" ? it.dstPath : reverting ? it.srcPath : it.dstPath;
+                return (
+                  <li key={it.id} className="flex flex-wrap items-baseline gap-x-2">
+                    <span className="break-all">{baseName(shown)}</span>
+                    <span className="break-all text-muted-foreground">{dirName(shown)}</span>
+                    {it.attempts > 1 && <span className="text-muted-foreground tabular-nums">已试 {it.attempts} 轮</span>}
+                    {it.error && <span className="break-all text-destructive">{it.error}</span>}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      ))}
+
+      <AlertDialog open={pending != null} onOpenChange={(o) => !o && !working && setPending(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{text.title}</AlertDialogTitle>
+            <AlertDialogDescription>{text.body}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={working}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmPending();
+              }}
+              disabled={working}
+            >
+              {working ? <Loader2 className="size-4 animate-spin" /> : pending?.type === "repreview" ? "放弃并重新预览" : "放弃"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </section>
+  );
+}
+
 /* ------------------------------- unit ------------------------------- */
 
 function UnitCard({
   unit,
   items,
+  stage,
   editable,
   onToggle,
   onRemember,
@@ -450,6 +677,7 @@ function UnitCard({
 }: {
   unit: OrganizeUnit;
   items: OrganizeItem[];
+  stage: OrganizeRunStage;
   editable: boolean;
   onToggle: (selected: boolean) => void;
   onRemember: (remember: boolean) => void;
@@ -463,7 +691,7 @@ function UnitCard({
   const conf = CONFIDENCE_META[m?.confidence ?? "none"];
   const changing = items.filter((i) => i.action === "rename" || i.action === "move").length;
   const conflicts = items.filter((i) => i.action === "conflict").length;
-  const failed = items.filter((i) => i.status === "failed").length;
+  const failed = items.filter((i) => i.status === "failed" || ((i.status === "done" || i.status === "reverted") && i.errorKind !== "")).length;
   const tmdbUrl = m ? `https://www.themoviedb.org/${m.mediaType}/${m.tmdbId}` : "";
 
   return (
@@ -510,7 +738,7 @@ function UnitCard({
             <span>{unit.fileCount} 个文件（{unit.videoCount} 个视频）</span>
             {changing > 0 && <span className="text-brand">{changing} 项要动</span>}
             {conflicts > 0 && <span className="text-destructive">{conflicts} 项冲突</span>}
-            {failed > 0 && <span className="text-destructive">{failed} 项失败</span>}
+            {failed > 0 && <span className="text-destructive">{failed} 项{stage === "revert" ? "没退回" : "要处理"}</span>}
             {unit.referencedBy > 0 && <span>被 {unit.referencedBy} 条追更 / 云下载引用，执行后自动改写</span>}
             {unit.seasonOverride != null && <span>季 → {unit.seasonOverride}</span>}
             {unit.episodeOffset !== 0 && <span>集偏移 {unit.episodeOffset > 0 ? `+${unit.episodeOffset}` : unit.episodeOffset}</span>}
@@ -543,22 +771,35 @@ function UnitCard({
           {open ? "收起" : "看文件"}（{items.length}）
         </button>
       </div>
-      {open && <ItemsTable items={items} />}
+      {open && <ItemsTable items={items} stage={stage} />}
     </div>
   );
 }
 
-function ItemStatus({ it }: { it: OrganizeItem }) {
-  if (it.status === "done") return <StatusBadge tone={it.error ? "warning" : "success"} title={it.error || undefined}>{it.error ? "完成，本地未同步" : "完成"}</StatusBadge>;
-  if (it.status === "failed") return <StatusBadge tone="danger" title={it.error}>失败</StatusBadge>;
-  if (it.curPath) return <StatusBadge tone="warning" title={it.curPath}>已改名，待移动</StatusBadge>;
-  if (it.status === "reverted") return <StatusBadge tone="neutral">已退回</StatusBadge>;
-  if (it.status === "skipped") return <StatusBadge tone="neutral" title={it.error}>跳过</StatusBadge>;
+/** 状态只描述文件在哪，类别说为什么：done 带 mirror 是网盘好了本地没跟上，撤销阶段 done 带别的类别是没退回 */
+function ItemStatus({ it, stage }: { it: OrganizeItem; stage: OrganizeRunStage }) {
+  const kind = it.errorKind ? ERROR_KIND_META[it.errorKind] : null;
+  if (it.status === "done") {
+    if (it.errorKind === "mirror") return <StatusBadge tone="warning" title={it.error}>完成，本地未同步</StatusBadge>;
+    if (stage === "revert" && it.curPath) return <StatusBadge tone="warning" title={it.error || it.curPath}>已挪回，待改名</StatusBadge>;
+    if (stage === "revert" && kind) return <StatusBadge tone="danger" title={it.error}>未退回 · {kind.label}</StatusBadge>;
+    return <StatusBadge tone="success" title={it.error || undefined}>完成</StatusBadge>;
+  }
+  if (it.status === "failed") {
+    if (stage === "revert" && it.errorKind === "stale") return <StatusBadge tone="danger" title={it.error}>没退回 · 已找不到</StatusBadge>;
+    return <StatusBadge tone="danger" title={it.error}>失败{kind ? ` · ${kind.label}` : ""}</StatusBadge>;
+  }
+  if (it.curPath) return <StatusBadge tone="warning" title={it.error || it.curPath}>已改名，待移动</StatusBadge>;
+  if (it.status === "reverted") {
+    if (it.errorKind === "mirror") return <StatusBadge tone="warning" title={it.error}>已退回，本地未同步</StatusBadge>;
+    return <StatusBadge tone="neutral" title={it.error || undefined}>已退回</StatusBadge>;
+  }
+  if (it.status === "skipped") return <StatusBadge tone="neutral" title={it.error}>{it.error.startsWith("已放弃") ? "已放弃" : "跳过"}</StatusBadge>;
   const a = ACTION_META[it.action];
   return <StatusBadge tone={a.tone}>{a.label}</StatusBadge>;
 }
 
-function ItemsTable({ items }: { items: OrganizeItem[] }) {
+function ItemsTable({ items, stage }: { items: OrganizeItem[]; stage: OrganizeRunStage }) {
   return (
     <div className="mt-3 overflow-x-auto rounded-md border">
       <table className="w-full min-w-[640px] text-xs">
@@ -575,7 +816,8 @@ function ItemsTable({ items }: { items: OrganizeItem[] }) {
             return (
               <tr key={it.id} className="border-t align-top">
                 <td className="px-2 py-1.5 whitespace-nowrap">
-                  <ItemStatus it={it} />
+                  <ItemStatus it={it} stage={stage} />
+                  {it.attempts > 1 && <div className="mt-0.5 text-muted-foreground tabular-nums">已试 {it.attempts} 轮</div>}
                 </td>
                 <td className="px-2 py-1.5">
                   <div className="break-all">{baseName(it.srcPath)}</div>
@@ -602,7 +844,7 @@ function ItemsTable({ items }: { items: OrganizeItem[] }) {
 }
 
 /** 建目录 / 删空目录：不属于某个作品，单独列 */
-function DirItems({ items }: { items: OrganizeItem[] }) {
+function DirItems({ items, stage }: { items: OrganizeItem[]; stage: OrganizeRunStage }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="rounded-xl border bg-card p-4">
@@ -615,7 +857,7 @@ function DirItems({ items }: { items: OrganizeItem[] }) {
         <ul className="mt-3 space-y-1 text-xs">
           {items.map((it) => (
             <li key={it.id} className="flex items-start gap-2">
-              <ItemStatus it={it} />
+              <ItemStatus it={it} stage={stage} />
               <span className="break-all">{it.action === "rmdir" ? it.srcPath : it.dstPath}</span>
               {it.error && <span className="break-all text-destructive">{it.error}</span>}
             </li>
@@ -663,6 +905,9 @@ function HistoryDialog({ open, onOpenChange, taskId, onPick }: { open: boolean; 
                       <StatusBadge tone={meta.tone} pulse={meta.pulse}>
                         {meta.label}
                       </StatusBadge>
+                      {r.stage === "apply" && r.stats.failed > 0 && <StatusBadge tone="danger" className="tabular-nums">{r.stats.failed} 失败</StatusBadge>}
+                      {r.stage === "revert" && r.stats.notReverted > 0 && <StatusBadge tone="danger" className="tabular-nums">{r.stats.notReverted} 没退回</StatusBadge>}
+                      {r.stats.failedByKind.mirror > 0 && <StatusBadge tone="warning" className="tabular-nums">{r.stats.failedByKind.mirror} 本地未同步</StatusBadge>}
                       <span className="min-w-0 flex-1 break-all">{r.scopePath || "整个任务"}{r.scopePaths.length > 0 ? `（${r.scopePaths.length} 个新增路径）` : ""}</span>
                       <span className="text-xs text-muted-foreground tabular-nums">
                         {r.stats.units} 部 · {r.stats.done > 0 ? `完成 ${r.stats.done}` : `${r.stats.planned} 项`} · {TRIGGER_LABEL[r.trigger]} · {fmtTime(r.createdAt * 1000)}

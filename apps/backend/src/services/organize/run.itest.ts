@@ -23,7 +23,7 @@ import { FakeDrive } from "../../test/fake-drive.js";
 import type { TmdbDetails, TmdbEpisode, TmdbSearchResult } from "../tmdb.js";
 import type { NotifyEvent } from "../telegram/notify.js";
 import type { TmdbApi } from "./identify.js";
-import { applyRun, cancelRun, createRun, getRunDetail, patchUnit, revertRun, setOrganizeDeps, waitForRun } from "./run.js";
+import { applyRun, cancelRun, createRun, getRunDetail, patchUnit, revertRun, setOrganizeDeps, skipItems, waitForRun } from "./run.js";
 
 const account: AccountInfo = { accountType: "quark", name: "acc", cookie: "c" };
 const task: TaskDefinition = { id: "t1", account: "acc", accountType: "quark", originPath: "tv", targetPath: "organize-itest/tv", strmPrefix: "/mnt" };
@@ -98,6 +98,7 @@ before(() => {
       notified.push(ev);
       return true;
     },
+    retryDelayMs: 5,
   });
 });
 
@@ -486,6 +487,11 @@ test("单项失败不影响其余；风控整轮停下，可以再执行接着�
   assert.equal(done.stats.failed, 1);
   const bad = listItems(run.id).find((i) => i.status === "failed")!;
   assert.match(bad.error, /改不了/);
+  assert.equal(bad.errorKind, "transient", "认不出的错误按临时算");
+  assert.equal(bad.attempts, 1, "自动重试不算一轮");
+  assert.ok(done.log.some((l) => l.includes("秒后重试")), "临时失败自动重试过");
+  assert.equal(done.stats.failedByKind.transient, 1);
+  assert.equal(getRunDetail(run.id).applicable.ok, true, "临时失败默认可以重试");
   assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv"), "同批的其它项照常");
 
   seed();
@@ -495,6 +501,8 @@ test("单项失败不影响其余；风控整轮停下，可以再执行接着�
   await applyRun(run2.id);
   const failed = await untilStatus(run2.id, ["failed"]);
   assert.match(failed.error, /网盘拒绝了请求/);
+  assert.ok(listItems(run2.id).some((i) => i.status === "failed" && i.errorKind === "blocked"), "风控的项记成 blocked");
+  assert.ok(!failed.log.some((l) => l.includes("秒后重试")), "风控不自动重试");
   const pendingBefore = listItems(run2.id).filter((i) => i.status === "pending").length;
   assert.ok(pendingBefore > 0, "停下时还有没做的项");
   drive.failWriteOn = null;
@@ -543,7 +551,7 @@ test("115 式：没有 walkSubtree，预览只有路径，执行时按父目录�
   assert.equal(done.stats.failed, 0);
   assert.ok(inner.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv"));
   assert.ok(listItems(run.id).filter((i) => i.status === "done" && i.kind === "video").every((i) => i.nodeId), "执行时解析到的 id 记进流水账");
-  assert.ok(inner.calls.listDir <= 3, `每个父目录只列一次（实际 ${inner.calls.listDir}）`);
+  assert.ok(inner.calls.listDir <= 3, `每个父目录只列一次，刚建的目标目录不列（实际 ${inner.calls.listDir}）`);
 });
 
 test("取消：预览中取消 → cancelled；同一任务同时只有一次整理", async () => {
@@ -553,4 +561,378 @@ test("取消：预览中取消 → cancelled；同一任务同时只有一次整
   cancelRun(run.id);
   const r = await untilStatus(run.id, ["cancelled", "ready"]);
   assert.ok(r.status === "cancelled" || r.status === "ready");
+});
+
+/* ------------------------------- 失败项：分类 / 重试 / 放弃 / 撤销对称 ------------------------------- */
+
+test("临时失败在执行中自动重试一次：第一次改名抛网络错、第二次成功，不算失败", async () => {
+  let calls = 0;
+  drive.failWriteOn = (op, p) => (op === "rename" && p.endsWith("BEEF.S01E02.1080p.WEB-DL.mkv") && ++calls === 1 ? new Error("read ECONNRESET") : null);
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  await applyRun(run.id);
+  const done = await untilStatus(run.id, ["done"]);
+  assert.equal(done.stats.failed, 0, "第二次成功了");
+  const ep2 = listItems(run.id).find((i) => i.srcPath.endsWith("S01E02.1080p.WEB-DL.mkv"))!;
+  assert.equal(ep2.status, "done");
+  assert.equal(ep2.errorKind, "");
+  assert.equal(ep2.attempts, 1, "自动重试不算一轮");
+  assert.ok(done.log.some((l) => l.includes("秒后重试")), "日志里说了在重试");
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E02.mkv"));
+});
+
+test("预览后文件被移走：记成 stale，默认重试不碰它、点名才重试；放弃后 run 收口", async () => {
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  drive.tree.remove("/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv");
+  await applyRun(run.id);
+  const done = await untilStatus(run.id, ["done"]);
+  assert.equal(done.stats.failed, 1);
+  assert.equal(done.stats.failedByKind.stale, 1);
+  const bad = listItems(run.id).find((i) => i.status === "failed")!;
+  assert.equal(bad.errorKind, "stale");
+  assert.equal(bad.attempts, 1);
+  assert.ok(!done.log.some((l) => l.includes("秒后重试")), "stale 不自动重试");
+  assert.equal(getRunDetail(run.id).applicable.ok, false, "默认没有可重试的");
+  assert.equal(notified.filter((e) => e.type === "organize-done" && e.failedByKind?.stale === 1).length, 1, "通知里带着分类");
+  // 点名重试：还是找不到，再失败一次
+  await applyRun(run.id, [bad.id]);
+  const again = await untilStatus(run.id, ["done"]);
+  assert.equal(again.stats.failed, 1);
+  assert.equal(listItems(run.id).find((i) => i.id === bad.id)!.attempts, 2, "点名重试算第二轮");
+  await assert.rejects(applyRun(run.id, ["nope"]), /没有可以重试的/);
+  // 放弃：标成 skipped，run 里没有失败了
+  const r = await skipItems(run.id, [bad.id]);
+  assert.deepEqual(r, { skipped: 1, renamedBack: 0, refused: [] });
+  const after = getRunDetail(run.id);
+  assert.equal(after.run.stats.failed, 0);
+  assert.equal(after.run.stats.failedByKind.stale, 0);
+  const it = after.items.find((i) => i.id === bad.id)!;
+  assert.equal(it.status, "skipped");
+  assert.equal(it.errorKind, "stale", "放弃了类别还留着");
+  assert.match(it.error, /^已放弃：/);
+  assert.equal(after.applicable.ok, false);
+  // 再放弃一次：没有需要放弃的
+  const r2 = await skipItems(run.id, [bad.id]);
+  assert.equal(r2.skipped, 0);
+  assert.equal(r2.refused.length, 1);
+});
+
+test("放弃原地改了名还没挪走的项：先在网盘上改回原名再标放弃", async () => {
+  drive.failWriteOn = (op, p) => (op === "move" && p.endsWith("怒呛人生 - S01E02.mkv") ? new Error("改不了") : null);
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  await applyRun(run.id);
+  const done = await untilStatus(run.id, ["done"]);
+  assert.equal(done.stats.failed, 1);
+  const bad = listItems(run.id).find((i) => i.status === "failed")!;
+  assert.equal(bad.errorKind, "transient");
+  assert.equal(bad.curPath, "/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv");
+  assert.equal(bad.attempts, 1);
+  drive.failWriteOn = null;
+  const r = await skipItems(run.id, [bad.id]);
+  assert.equal(r.renamedBack, 1);
+  assert.equal(r.skipped, 1);
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv"), "名字改回去了");
+  assert.equal(drive.tree.get("/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv"), undefined);
+  const it = listItems(run.id).find((i) => i.id === bad.id)!;
+  assert.equal(it.status, "skipped");
+  assert.equal(it.curPath, "");
+  assert.equal(getRunDetail(run.id).run.stats.failed, 0);
+  assert.ok(localExists("inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.strm"), "本地一直没动");
+  // 改不回去就仍是失败：改名再次被拒
+  seed();
+  drive.failWriteOn = (op, p) => (op === "move" && p.endsWith("怒呛人生 - S01E02.mkv") ? new Error("改不了") : null);
+  const run2 = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run2.id, ["ready"]);
+  await applyRun(run2.id);
+  await untilStatus(run2.id, ["done"]);
+  const bad2 = listItems(run2.id).find((i) => i.status === "failed")!;
+  drive.failWriteOn = (op) => (op === "rename" ? new Error("blocked by 405") : null);
+  const r2 = await skipItems(run2.id, [bad2.id]);
+  assert.equal(r2.skipped, 0);
+  assert.equal(r2.refused.length, 1);
+  const still = listItems(run2.id).find((i) => i.id === bad2.id)!;
+  assert.equal(still.status, "failed");
+  assert.equal(still.errorKind, "blocked");
+  assert.match(still.error, /改回原名失败/);
+  assert.equal(still.curPath, "/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv", "位置没变");
+});
+
+test("放弃建目录项：连带放弃要进这个目录的项；中断的 run 放弃完剩下的就收口成 done", async () => {
+  drive.failWriteOn = (op, p) => (op === "mkdir" && p.endsWith("Season 01") ? new Error("115：文件名不能包含特殊字符") : null);
+  const run = await createRun({ taskId: "t1", subPath: "inbox/BEEF.S01.1080p" });
+  await untilStatus(run.id, ["ready"]);
+  await applyRun(run.id);
+  const done = await untilStatus(run.id, ["done"]);
+  const mk = listItems(run.id).find((i) => i.action === "mkdir" && i.dstPath.endsWith("Season 01"))!;
+  assert.equal(mk.status, "failed");
+  assert.equal(mk.errorKind, "rejected");
+  assert.equal(done.stats.failedByKind.rejected, 1);
+  const eps = listItems(run.id).filter((i) => i.dstPath.includes("/Season 01/"));
+  assert.ok(eps.length >= 2);
+  assert.ok(eps.every((i) => i.status === "failed" && i.errorKind === "stale"), "目录没建成，进目录的项都是「网盘上没有目录」");
+  const r = await skipItems(run.id, [mk.id]);
+  assert.equal(r.skipped, 1 + eps.length, "连带放弃");
+  assert.ok(listItems(run.id).filter((i) => i.dstPath.includes("/Season 01/")).every((i) => i.status === "skipped"));
+  assert.equal(getRunDetail(run.id).run.stats.failed, 0);
+
+  // 风控中断的 run：放弃完剩下的失败项之后没有要做的了 → done
+  seed();
+  drive.failWriteOn = (op) => (op === "rename" ? new Error("blocked by 405") : null);
+  const run2 = await createRun({ taskId: "t1", subPath: "inbox/BEEF.S01.1080p" });
+  await untilStatus(run2.id, ["ready"]);
+  await applyRun(run2.id);
+  const stopped = await untilStatus(run2.id, ["failed"]);
+  assert.equal(stopped.stage, "apply");
+  const rest = listItems(run2.id).filter((i) => i.status === "failed" || i.status === "pending").map((i) => i.id);
+  assert.ok(rest.length > 0);
+  drive.failWriteOn = null;
+  const r2 = await skipItems(run2.id, rest);
+  assert.equal(r2.refused.length, 0);
+  const after = getRunDetail(run2.id);
+  assert.equal(after.run.status, "done", "没剩下要做的，收口");
+  assert.equal(after.run.error, "");
+  assert.equal(after.applicable.ok, false);
+});
+
+test("本地镜像失败：网盘那步算完成、记成 mirror；再执行只补本地不碰网盘；放弃就是不再提醒", async () => {
+  // 本地放一个同名文件挡住作品目录，镜像建不了目录
+  fs.writeFileSync(path.join(LOCAL, "怒呛人生 (2023) [tmdbid=153312]"), "占位");
+  const run = await createRun({ taskId: "t1", subPath: "inbox/BEEF.S01.1080p" });
+  await untilStatus(run.id, ["ready"]);
+  await applyRun(run.id);
+  const done = await untilStatus(run.id, ["done"]);
+  assert.equal(done.stats.failed, 0, "网盘那步都成了");
+  assert.ok(done.stats.failedByKind.mirror >= 2, `本地没跟上的项（${done.stats.failedByKind.mirror}）`);
+  const ep1 = listItems(run.id).find((i) => i.srcPath.endsWith("S01E01.1080p.WEB-DL.mkv"))!;
+  assert.equal(ep1.status, "done");
+  assert.equal(ep1.errorKind, "mirror");
+  assert.match(ep1.error, /本地镜像失败/);
+  assert.ok(drive.tree.get(ep1.dstPath), "网盘上已经挪好");
+  assert.ok(localExists("inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.strm"), "本地还在原处");
+  assert.equal(getRunDetail(run.id).applicable.ok, true, "有本地要补");
+  assert.ok(notified.some((e) => e.type === "organize-done" && (e.failedByKind?.mirror ?? 0) >= 2));
+  // 补做：只动本地
+  fs.rmSync(path.join(LOCAL, "怒呛人生 (2023) [tmdbid=153312]"));
+  const before = { ...drive.calls };
+  await applyRun(run.id);
+  const again = await untilStatus(run.id, ["done"]);
+  assert.equal(again.stats.failedByKind.mirror, 0);
+  assert.deepEqual(
+    { rename: drive.calls.rename, move: drive.calls.move, mkdir: drive.calls.mkdir, rmdir: drive.calls.rmdir },
+    { rename: before.rename, move: before.move, mkdir: before.mkdir, rmdir: before.rmdir },
+    "没碰网盘的写接口",
+  );
+  assert.equal(localRead("怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.strm"), "/mnt/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv");
+  assert.ok(!localExists("inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.strm"));
+  assert.equal(getRunDetail(run.id).applicable.ok, false);
+
+  // 放弃镜像失败：状态还是 done，只是不再当失败项
+  seed();
+  fs.writeFileSync(path.join(LOCAL, "怒呛人生 (2023) [tmdbid=153312]"), "占位");
+  const run2 = await createRun({ taskId: "t1", subPath: "inbox/BEEF.S01.1080p" });
+  await untilStatus(run2.id, ["ready"]);
+  await applyRun(run2.id);
+  await untilStatus(run2.id, ["done"]);
+  const mirrors = listItems(run2.id).filter((i) => i.errorKind === "mirror").map((i) => i.id);
+  const r = await skipItems(run2.id, mirrors);
+  assert.equal(r.skipped, mirrors.length);
+  const items = listItems(run2.id).filter((i) => mirrors.includes(i.id));
+  assert.ok(items.every((i) => i.status === "done" && i.errorKind === "" && i.error.startsWith("已放弃：本地未同步")));
+  assert.equal(getRunDetail(run2.id).run.stats.failedByKind.mirror, 0);
+  assert.equal(getRunDetail(run2.id).revertable.ok, true, "网盘上动过的还能撤");
+  fs.rmSync(path.join(LOCAL, "怒呛人生 (2023) [tmdbid=153312]"), { force: true });
+});
+
+test("撤销时一项在网盘上失败：状态仍是 done、记类别；run 标已撤销但有没退回的，不能再执行，再撤销一次就完成", async () => {
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  drive.failWriteOn = (op, p) => (op === "move" && p.endsWith("怒呛人生 - S01E02.mkv") ? new Error("改不了") : null);
+  await revertRun(run.id);
+  const reverted = await untilStatus(run.id, ["reverted"]);
+  assert.equal(reverted.stage, "revert");
+  assert.equal(reverted.stats.notReverted, 1);
+  assert.equal(reverted.stats.failedByKind.transient, 1);
+  const ep2 = listItems(run.id).find((i) => i.srcPath.endsWith("S01E02.1080p.WEB-DL.mkv"))!;
+  assert.equal(ep2.status, "done", "文件还在整理后的位置，状态照实");
+  assert.equal(ep2.errorKind, "transient");
+  assert.equal(ep2.curPath, "");
+  assert.ok(drive.tree.get(ep2.dstPath));
+  assert.equal(localRead("怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E02.strm"), "/mnt/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E02.mkv", "本地也还在整理后的位置");
+  const detail = getRunDetail(run.id);
+  assert.equal(detail.revertable.ok, true, "还能继续撤销");
+  assert.equal(detail.applicable.ok, false, "开始撤销后不能再执行");
+  assert.match(detail.applicable.reason ?? "", /只能继续撤销/);
+  await assert.rejects(applyRun(run.id), /只能继续撤销/);
+  assert.equal(notified.filter((e) => e.type === "organize-done" && e.reverted && e.notReverted === 1).length, 1);
+  // 监控：撤销失败的项本地和网盘仍一致，自有事件照旧认成自己的（按 errorKind 判，mirror 才不跳）
+  assert.ok(findOwnOperation(ep2.nodeId, ep2.dstPath, Math.floor(Date.now() / 1000)));
+  // 放弃撤销：文件留在整理后的位置
+  const r = await skipItems(run.id, [ep2.id]);
+  assert.equal(r.skipped, 1);
+  assert.equal(listItems(run.id).find((i) => i.id === ep2.id)!.status, "skipped");
+  assert.equal(getRunDetail(run.id).revertable.ok, false, "放弃之后没有要退回的了");
+  assert.equal(getRunDetail(run.id).run.stats.notReverted, 0);
+
+  // 同样的场景不放弃、再撤销一次：这次成功，连上一轮没删掉的自建目录也一起删
+  seed();
+  const run2 = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run2.id, ["ready"]);
+  await applyRun(run2.id);
+  await untilStatus(run2.id, ["done"]);
+  drive.failWriteOn = (op, p) => (op === "move" && p.endsWith("怒呛人生 - S01E02.mkv") ? new Error("改不了") : null);
+  await revertRun(run2.id);
+  await untilStatus(run2.id, ["reverted"]);
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01"), "还有文件的自建目录留着");
+  drive.failWriteOn = null;
+  await revertRun(run2.id);
+  const again = await untilStatus(run2.id, ["reverted"]);
+  assert.equal(again.stats.notReverted, 0);
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv"));
+  assert.equal(localRead("inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.strm"), "/mnt/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv");
+  assert.equal(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]"), undefined, "空了的自建目录第二次撤销时删掉");
+  assert.equal(getRunDetail(run2.id).revertable.ok, false);
+});
+
+test("撤销时挪回来了、改回原名失败：记着中间位置，再撤销只改名，本地镜像回到原位", async () => {
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  drive.failWriteOn = (op, p) => (op === "rename" && p === "/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv" ? new Error("改不了") : null);
+  await revertRun(run.id);
+  const first = await untilStatus(run.id, ["reverted"]);
+  assert.equal(first.stats.notReverted, 1);
+  const ep2 = listItems(run.id).find((i) => i.srcPath.endsWith("S01E02.1080p.WEB-DL.mkv"))!;
+  assert.equal(ep2.status, "done");
+  assert.equal(ep2.curPath, "/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv");
+  assert.ok(drive.tree.get(ep2.curPath), "网盘上在中间位置");
+  assert.ok(localExists("怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E02.strm"), "本地还没动");
+  // 监控在这个窗口里看到的移动事件（路径是中间位置）要认成自己的
+  assert.ok(findOwnOperation(ep2.nodeId, ep2.curPath, Math.floor(Date.now() / 1000)));
+  // 挪回了没改名的不给放弃
+  const r = await skipItems(run.id, [ep2.id]);
+  assert.equal(r.skipped, 0);
+  assert.match(r.refused[0]?.reason ?? "", /只能继续撤销/);
+  drive.failWriteOn = null;
+  const moves = drive.calls.move;
+  await revertRun(run.id);
+  const second = await untilStatus(run.id, ["reverted"]);
+  assert.equal(second.stats.notReverted, 0);
+  assert.equal(drive.calls.move, moves, "第二次没有再挪");
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv"));
+  assert.equal(localRead("inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.strm"), "/mnt/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv");
+  assert.ok(!localExists("怒呛人生 (2023) [tmdbid=153312]"));
+  assert.equal(listItems(run.id).find((i) => i.id === ep2.id)!.curPath, "");
+});
+
+test("撤销时文件已经不在整理后的位置：记成 failed + stale 不再归整理管，其余照常退回；风控中断撤销后能继续撤销", async () => {
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  drive.tree.remove("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E02.mkv");
+  await revertRun(run.id);
+  const reverted = await untilStatus(run.id, ["reverted"]);
+  const ep2 = listItems(run.id).find((i) => i.srcPath.endsWith("S01E02.1080p.WEB-DL.mkv"))!;
+  assert.equal(ep2.status, "failed");
+  assert.equal(ep2.errorKind, "stale");
+  assert.match(ep2.error, /已不在整理后的位置/);
+  assert.equal(reverted.stats.notReverted, 1);
+  assert.equal(reverted.stats.failedByKind.stale, 1);
+  assert.equal(getRunDetail(run.id).revertable.ok, false, "找不到的不算还有事");
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv"), "其余退回了");
+  const r = await skipItems(run.id, [ep2.id]);
+  assert.equal(r.skipped, 1);
+  assert.equal(getRunDetail(run.id).run.stats.notReverted, 0);
+
+  seed();
+  const run2 = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run2.id, ["ready"]);
+  await applyRun(run2.id);
+  await untilStatus(run2.id, ["done"]);
+  drive.failWriteOn = (op) => (op === "move" ? new Error("blocked by 405") : null);
+  await revertRun(run2.id);
+  const stopped = await untilStatus(run2.id, ["failed"]);
+  assert.equal(stopped.stage, "revert");
+  assert.match(stopped.error, /撤销已停下/);
+  assert.equal(getRunDetail(run2.id).applicable.ok, false, "撤销中断的 run 不能执行");
+  assert.equal(getRunDetail(run2.id).revertable.ok, true);
+  drive.failWriteOn = null;
+  await revertRun(run2.id);
+  const done = await untilStatus(run2.id, ["reverted"]);
+  assert.equal(done.stats.notReverted, 0);
+  assert.ok(drive.tree.get("/tv/inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv"));
+});
+
+test("预览之后目标目录里多了同名文件：动手前先看一眼，撞名的记 rejected 不碰网盘（115 会悄悄改成 (1)），放弃时改回原名", async () => {
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  // 别人往目标目录放了一个和 E02 目标同名的文件
+  drive.tree.addDir("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01");
+  drive.tree.addFile("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E02.mkv");
+  await applyRun(run.id);
+  const done = await untilStatus(run.id, ["done"]);
+  assert.equal(done.stats.failedByKind.rejected, 1);
+  const bad = listItems(run.id).find((i) => i.status === "failed")!;
+  assert.equal(bad.errorKind, "rejected");
+  assert.match(bad.error, /目标目录里已经有同名文件/);
+  assert.equal(bad.curPath, "/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv", "原地改了名、没挪");
+  assert.ok(!drive.log.some((l) => l.startsWith("move /tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv")), "没去撞");
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv"), "同批的其它项照常");
+  const r = await skipItems(run.id, [bad.id]);
+  assert.equal(r.renamedBack, 1);
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv"), "改回原名了");
+
+  // 源目录里多了和新名字撞的：改名那步就拦下，文件原样不动
+  seed();
+  const run2 = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run2.id, ["ready"]);
+  drive.tree.addFile("/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv");
+  await applyRun(run2.id);
+  await untilStatus(run2.id, ["done"]);
+  const bad2 = listItems(run2.id).find((i) => i.status === "failed")!;
+  assert.equal(bad2.errorKind, "rejected");
+  assert.match(bad2.error, /源目录里已经有同名文件/);
+  assert.equal(bad2.curPath, "", "还没动就拦下了");
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv"));
+  // 放弃半路项时原名被占：不改回去，留给用户
+  seed();
+  drive.failWriteOn = (op, p) => (op === "move" && p.endsWith("怒呛人生 - S01E02.mkv") ? new Error("改不了") : null);
+  const run3 = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run3.id, ["ready"]);
+  await applyRun(run3.id);
+  await untilStatus(run3.id, ["done"]);
+  drive.failWriteOn = null;
+  const half = listItems(run3.id).find((i) => i.status === "failed")!;
+  drive.tree.addFile("/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv");
+  const r3 = await skipItems(run3.id, [half.id]);
+  assert.equal(r3.skipped, 0);
+  assert.match(r3.refused[0]?.reason ?? "", /原位置已经有同名文件/);
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv"), "没动");
+});
+
+test("撤销时原位置又有了同名文件：记 rejected 不碰网盘，文件留在整理后的位置，可以放弃撤销", async () => {
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  drive.tree.addFile("/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv");
+  await revertRun(run.id);
+  const reverted = await untilStatus(run.id, ["reverted"]);
+  assert.equal(reverted.stats.notReverted, 1);
+  assert.equal(reverted.stats.failedByKind.rejected, 1);
+  const ep2 = listItems(run.id).find((i) => i.srcPath.endsWith("S01E02.1080p.WEB-DL.mkv"))!;
+  assert.equal(ep2.status, "done");
+  assert.equal(ep2.errorKind, "rejected");
+  assert.match(ep2.error, /原位置已经有同名文件/);
+  assert.ok(drive.tree.get(ep2.dstPath), "还在整理后的位置");
+  assert.ok(!drive.log.some((l) => l.startsWith(`move ${ep2.dstPath}`)), "没去撞");
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv"), "其它退回了");
+  const r = await skipItems(run.id, [ep2.id]);
+  assert.equal(r.skipped, 1);
+  assert.equal(getRunDetail(run.id).run.stats.notReverted, 0);
 });
