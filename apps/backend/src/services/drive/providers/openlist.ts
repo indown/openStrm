@@ -68,9 +68,10 @@ export class OpenlistProvider implements DriveProvider {
     return hit ? { id: p, isDir: hit.is_dir } : null;
   }
 
-  async listDir(id: string, signal?: AbortSignal): Promise<DriveEntry[]> {
+  async listDir(id: string, signal?: AbortSignal, opts?: { fresh?: boolean }): Promise<DriveEntry[]> {
     const dir = normalizePath(id);
-    const entries = await openlistListDir(this.account, dir, { signal });
+    // fresh：让 OpenList 绕过它自己的目录缓存（cache_expiration）重新列
+    const entries = await openlistListDir(this.account, dir, { refresh: !!opts?.fresh, signal });
     return entries.map((e) => ({
       id: join(dir, e.name),
       name: e.name,

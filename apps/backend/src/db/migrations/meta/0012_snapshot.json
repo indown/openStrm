@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "311eeaf3-a015-4bb5-afd8-71c09b39d095",
+  "id": "d2140d88-cf39-484b-81a2-c76f4d9a00c7",
   "prevId": "e5816391-4dcf-470f-97e5-71a9b2b1b684",
   "tables": {
     "accounts": {
@@ -557,6 +557,14 @@
           "notNull": true,
           "autoincrement": false,
           "default": 0
+        },
+        "given_up": {
+          "name": "given_up",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
         },
         "finished_at": {
           "name": "finished_at",

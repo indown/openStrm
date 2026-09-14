@@ -33,6 +33,8 @@ export type {
   OrganizeConfidence,
   OrganizeErrorKind,
   OrganizeExtrasMode,
+  OrganizeFailureGroup,
+  OrganizeFailureGroupKey,
   OrganizeFileKind,
   OrganizeIdTagStyle,
   OrganizeItem,

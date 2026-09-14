@@ -278,6 +278,8 @@ export const organizeItems = sqliteTable(
     errorKind: text("error_kind").notNull().default(""),
     /** 被执行 / 撤销了几轮（自动重试不算） */
     attempts: integer("attempts").notNull().default(0),
+    /** 用户点了「放弃」 */
+    givenUp: integer("given_up", { mode: "boolean" }).notNull().default(false),
     finishedAt: integer("finished_at"),
     /** 文件当前的中间位置：执行时是原地改了名还没挪走，撤销时是挪回来了还没改回原名；做完清空 */
     curPath: text("cur_path").notNull().default(""),

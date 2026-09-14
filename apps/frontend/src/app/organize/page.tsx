@@ -26,7 +26,7 @@ import {
   Undo2,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { OrganizeErrorKind, OrganizeItem, OrganizeRun, OrganizeRunDetail, OrganizeRunStage, OrganizeUnit } from "@openstrm/shared";
+import type { OrganizeFailureGroup, OrganizeFailureGroupKey, OrganizeItem, OrganizeRun, OrganizeRunDetail, OrganizeRunStage, OrganizeUnit } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -43,14 +43,14 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { PageHeader } from "@/components/page-header";
-import { StatusBadge, TONE_CLASS, type StatusTone } from "@/components/status-badge";
+import { StatusBadge, TONE_CLASS } from "@/components/status-badge";
 import { EmptyState } from "@/components/empty-state";
 import { Spinner, TableSkeleton } from "@/components/loading";
 import { DirectoryTreeDialog } from "@/app/home/components/DirectoryTreeDialog";
 import { api, type TaskRow } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import { fmtTime } from "@/lib/format";
-import { ACTION_META, CONFIDENCE_META, ERROR_KIND_META, RUN_STATUS_META, TRIGGER_LABEL, baseName, dirName, isBusyStatus } from "@/lib/organize";
+import { ACTION_META, CONFIDENCE_META, ERROR_KIND_META, RUN_STATUS_META, TRIGGER_LABEL, baseName, dirName, failureGroupMeta, isBusyStatus } from "@/lib/organize";
 import { MatchDialog } from "./components/MatchDialog";
 import { AdjustDialog } from "./components/AdjustDialog";
 
@@ -278,12 +278,11 @@ function RunView({ runId, onClose, onOpenRun }: { runId: string; onClose: () => 
   }
   if (!detail) return <TableSkeleton rows={4} />;
 
-  const { run, units, items, revertable, applicable } = detail;
+  const { run, units, items, groups, revertable, applicable } = detail;
   const meta = RUN_STATUS_META[run.status];
   const canApply = applicable.ok;
   const canCancel = isBusyStatus(run.status);
   const reverting = run.stage === "revert";
-  const selectedUnits = new Set(units.filter((u) => u.selected && u.match).map((u) => u.key));
   const revertedCount = items.filter((i) => i.status === "reverted" && (i.action === "rename" || i.action === "move")).length;
   const mirrorLeft = run.stats.failedByKind.mirror;
   const itemsByUnit = new Map<string, OrganizeItem[]>();
@@ -392,7 +391,7 @@ function RunView({ runId, onClose, onOpenRun }: { runId: string; onClose: () => 
       </section>
 
       {!isBusyStatus(run.status) && run.status !== "ready" && (
-        <FailurePanel run={run} items={items} selectedUnits={selectedUnits} busy={busy} onChanged={load} onRevert={() => setConfirm("revert")} onOpenRun={onOpenRun} />
+        <FailurePanel run={run} groups={groups} items={items} busy={busy} onChanged={load} onRevert={() => setConfirm("revert")} onOpenRun={onOpenRun} />
       )}
 
       {run.status === "planning" && units.length === 0 ? (
@@ -454,83 +453,42 @@ function RunView({ runId, onClose, onOpenRun }: { runId: string; onClose: () => 
 
 /* ------------------------------- failures ------------------------------- */
 
-type FailureGroupKey = Exclude<OrganizeErrorKind, ""> | "lost" | "pending";
-
-interface FailureGroup {
-  key: FailureGroupKey;
-  label: string;
-  tone: StatusTone;
-  hint: string;
-  items: OrganizeItem[];
-  retry: boolean;
-  skip: boolean;
-  repreview: boolean;
-}
-
-const WORK_ACTIONS = new Set(["mkdir", "rename", "move", "rmdir"]);
-
-/** 把还等着处理的项按「下一步该做什么」分组；执行阶段和撤销阶段的含义不一样 */
-function groupFailures(run: OrganizeRun, items: OrganizeItem[], selectedUnits: Set<string>): FailureGroup[] {
-  const active = (it: OrganizeItem) => it.unitKey === "" || selectedUnits.has(it.unitKey);
-  const isFile = (it: OrganizeItem) => it.action === "rename" || it.action === "move";
-  const kindOf = (it: OrganizeItem): Exclude<OrganizeErrorKind, ""> => it.errorKind || "transient";
-  const groups: FailureGroup[] = [];
-  const push = (key: FailureGroupKey, label: string, tone: StatusTone, hint: string, list: OrganizeItem[], actions: Partial<Pick<FailureGroup, "retry" | "skip" | "repreview">>) => {
-    if (list.length > 0) groups.push({ key, label, tone, hint, items: list, retry: false, skip: false, repreview: false, ...actions });
-  };
-  if (run.stage === "apply") {
-    const failed = items.filter((it) => it.status === "failed" && active(it));
-    const byKind = (k: Exclude<OrganizeErrorKind, "">) => failed.filter((it) => kindOf(it) === k);
-    for (const k of ["blocked", "transient", "stale", "rejected"] as const) {
-      push(k, ERROR_KIND_META[k].label, ERROR_KIND_META[k].tone, ERROR_KIND_META[k].hint, byKind(k), { retry: true, skip: true, repreview: k === "stale" });
-    }
-    push("mirror", ERROR_KIND_META.mirror.label, ERROR_KIND_META.mirror.tone, ERROR_KIND_META.mirror.hint, items.filter((it) => it.status === "done" && it.errorKind === "mirror"), { retry: true, skip: true });
-    push("pending", "没做完", "neutral", "整理中途停下了（风控、取消或进程重启），这些项还没轮到", items.filter((it) => it.status === "pending" && active(it) && WORK_ACTIONS.has(it.action)), { retry: true, skip: true });
-  } else {
-    const stuck = items.filter((it) => it.status === "done" && isFile(it) && it.errorKind !== "" && it.errorKind !== "mirror");
-    push("blocked", "网盘拒绝", "danger", "退回时被风控或登录失效拦住：账号处理好之后继续撤销", stuck.filter((it) => it.errorKind === "blocked"), { retry: true, skip: true });
-    push("transient", "临时失败", "warning", "退回时网络或网盘抖动：继续撤销再试一次", stuck.filter((it) => it.errorKind === "transient"), { retry: true, skip: true });
-    push("rejected", "改回原名被拒", "danger", "原来的名字网盘不再接受（多半是原位置又有了同名文件）：继续撤销再试，或放弃让文件留在整理后的位置", stuck.filter((it) => it.errorKind === "rejected"), { retry: true, skip: true });
-    push("stale", "已找不到", "danger", "文件已不在整理后的位置，或位置上是另一个文件：没法退回，只能放弃", items.filter((it) => it.status === "failed" && it.errorKind === "stale" && isFile(it)), { skip: true });
-    push("mirror", "已退回，本地未同步", "warning", "网盘已经退回原处，本地 strm 没跟上：继续撤销只补本地", items.filter((it) => it.status === "reverted" && it.errorKind === "mirror"), { retry: true, skip: true });
-  }
-  return groups;
-}
-
+/** 失败面板：分组由后端算（OrganizeRunDetail.groups），这里只管文案和按钮 */
 function FailurePanel({
   run,
+  groups,
   items,
-  selectedUnits,
   busy,
   onChanged,
   onRevert,
   onOpenRun,
 }: {
   run: OrganizeRun;
+  groups: OrganizeFailureGroup[];
   items: OrganizeItem[];
-  selectedUnits: Set<string>;
   busy: boolean;
   onChanged: () => Promise<void>;
   onRevert: () => void;
   onOpenRun: (id: string) => void;
 }) {
-  const groups = useMemo(() => groupFailures(run, items, selectedUnits), [run, items, selectedUnits]);
-  const [pending, setPending] = useState<{ type: "skip" | "repreview"; group: FailureGroup } | null>(null);
+  const [pending, setPending] = useState<{ type: "skip" | "repreview"; group: OrganizeFailureGroup } | null>(null);
   const [working, setWorking] = useState(false);
-  const [open, setOpen] = useState<Partial<Record<FailureGroupKey, boolean>>>({});
+  const [open, setOpen] = useState<Partial<Record<OrganizeFailureGroupKey, boolean>>>({});
+  const byId = useMemo(() => new Map(items.map((it) => [it.id, it])), [items]);
   if (groups.length === 0) return null;
   const reverting = run.stage === "revert";
   const disabled = busy || working;
+  const itemsOf = (g: OrganizeFailureGroup) => g.itemIds.map((id) => byId.get(id)).filter((it): it is OrganizeItem => !!it);
 
-  const retry = async (group: FailureGroup) => {
+  const retry = async (group: OrganizeFailureGroup) => {
     if (reverting) {
       onRevert();
       return;
     }
     setWorking(true);
     try {
-      await api.organize.apply(run.id, group.items.map((i) => i.id));
-      toast.success(group.key === "mirror" ? `开始补本地镜像 ${group.items.length} 项` : `开始重试 ${group.items.length} 项`);
+      await api.organize.apply(run.id, group.itemIds);
+      toast.success(group.key === "mirror" ? `开始补本地镜像 ${group.itemIds.length} 项` : `开始重试 ${group.itemIds.length} 项`);
       await onChanged();
     } catch (err) {
       toast.error(apiErrorMessage(err, "重试失败"));
@@ -538,24 +496,17 @@ function FailurePanel({
       setWorking(false);
     }
   };
-  // 撤销时挪回了还没改回原名的不能放弃（改回原名就是失败的那一步），只能继续撤销
-  const skippable = (group: FailureGroup) => group.items.filter((it) => !(reverting && it.status === "done" && it.curPath));
   const confirmPending = async () => {
     if (!pending) return;
     const { type, group } = pending;
-    const ids = skippable(group).map((i) => i.id);
-    const held = group.items.length - ids.length;
     setWorking(true);
     try {
-      if (ids.length > 0) {
-        const r = await api.organize.skip(run.id, ids);
-        const parts = [`已放弃 ${r.skipped} 项`];
-        if (r.renamedBack > 0) parts.push(`${r.renamedBack} 项先改回了原名`);
-        if (r.refused.length > 0) parts.push(`${r.refused.length} 项没能放弃：${r.refused[0].reason}`);
-        if (held > 0) parts.push(`${held} 项已挪回但没改回原名，只能继续撤销`);
-        if (r.refused.length > 0) toast.warning(parts.join("；"));
-        else toast.success(parts.join("；"));
-      } else if (held > 0) toast.warning(`${held} 项已挪回但没改回原名，只能继续撤销`);
+      const r = await api.organize.skip(run.id, group.itemIds);
+      const parts = [`已放弃 ${r.skipped} 项`];
+      if (r.renamedBack > 0) parts.push(`${r.renamedBack} 项先改回了原名`);
+      if (r.refused.length > 0) parts.push(`${r.refused.length} 项没能放弃：${r.refused[0].reason}`);
+      if (r.refused.length > 0) toast.warning(parts.join("；"));
+      else toast.success(parts.join("；"));
       if (type === "repreview") {
         const next = await api.organize.createRun({ taskId: run.taskId, subPath: run.scopePath, paths: run.scopePaths.length > 0 ? run.scopePaths : undefined });
         toast.success("按同一范围重新预览，请稍候");
@@ -573,12 +524,13 @@ function FailurePanel({
   };
   const pendingText = () => {
     if (!pending) return { title: "", body: "" };
-    const n = skippable(pending.group).length;
+    const n = pending.group.itemIds.length - pending.group.held;
+    const heldNote = pending.group.held > 0 ? `另有 ${pending.group.held} 项已挪回但没改回原名，不能放弃，只能继续撤销。` : "";
     if (pending.type === "repreview") {
       return { title: "放弃这些项并重新预览？", body: `先把这 ${n} 项标成「已放弃」，再按同一范围（${run.scopePath || "整个任务"}）重新预览；已经整理好的会显示为「不变」，只剩真正没做的。` };
     }
-    if (pending.group.key === "mirror") return { title: `放弃这 ${n} 项？`, body: "网盘上已经改好，只是本地 strm 没跟上。放弃后不再自动补本地，可以用任务的全量同步或 strm 管理的体检补齐。" };
-    if (reverting) return { title: `放弃退回这 ${n} 项？`, body: "这些文件留在整理后的位置，不再退回；本地 strm 保持现状。放弃之后这次撤销就算收口了。" };
+    if (pending.group.key === "mirror") return { title: `放弃这 ${n} 项？`, body: "网盘上已经改好，只是本地 strm 没跟上。放弃后不再当失败项提醒；网盘监控看到这些文件的事件时仍会顺手把本地补上，也可以用全量同步或体检补齐。之后撤销这次整理时，这些文件照样退回原处。" };
+    if (reverting) return { title: `放弃退回这 ${n} 项？`, body: `这些文件留在整理后的位置，不再退回；本地 strm 保持现状。放弃之后这次撤销就算收口了。${heldNote}` };
     return { title: `放弃这 ${n} 项？`, body: "这些项会标成「已放弃」，网盘和本地都不再动；原地改了名还没挪走的会先在网盘上改回原名。" };
   };
   const text = pendingText();
@@ -589,55 +541,60 @@ function FailurePanel({
         <AlertTriangle className="size-4 text-destructive" />
         {reverting ? "没退回的项" : "需要处理的项"}
       </div>
-      {groups.map((g) => (
-        <div key={g.key} className="space-y-2 rounded-lg border p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge tone={g.tone} className="tabular-nums">
-              {g.label} · {g.items.length}
-            </StatusBadge>
-            <span className="text-xs text-muted-foreground">{g.hint}</span>
+      {groups.map((g) => {
+        const meta = failureGroupMeta(g.key, run.stage);
+        const list = itemsOf(g);
+        return (
+          <div key={g.key} className="space-y-2 rounded-lg border p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusBadge tone={meta.tone} className="tabular-nums">
+                {meta.label} · {g.itemIds.length}
+              </StatusBadge>
+              <span className="text-xs text-muted-foreground">{meta.hint}</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {g.repreview && (
+                <Button size="sm" className="h-8" disabled={disabled} onClick={() => setPending({ type: "repreview", group: g })}>
+                  <Search className="size-4" />
+                  重新预览
+                </Button>
+              )}
+              {g.retry && (
+                <Button size="sm" variant={g.repreview ? "outline" : "default"} className="h-8" disabled={disabled} onClick={() => void retry(g)}>
+                  {reverting ? <Undo2 className="size-4" /> : <RotateCw className="size-4" />}
+                  {reverting ? "继续撤销" : g.key === "mirror" ? "补本地" : "重试"}
+                </Button>
+              )}
+              {g.skip && g.itemIds.length > g.held && (
+                <Button size="sm" variant="outline" className="h-8" disabled={disabled} onClick={() => setPending({ type: "skip", group: g })}>
+                  <Ban className="size-4" />
+                  放弃
+                </Button>
+              )}
+              {g.held > 0 && <span className="text-xs text-muted-foreground">{g.held} 项已挪回没改回原名，只能继续撤销</span>}
+              <button type="button" className="ml-auto flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => setOpen((o) => ({ ...o, [g.key]: !o[g.key] }))}>
+                {open[g.key] ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+                {open[g.key] ? "收起" : "看文件"}
+              </button>
+            </div>
+            {open[g.key] && (
+              <ul className="space-y-1 text-xs">
+                {list.map((it) => {
+                  const shown = it.action === "rmdir" ? it.srcPath : it.action === "mkdir" ? it.dstPath : reverting ? it.srcPath : it.dstPath;
+                  return (
+                    <li key={it.id} className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="break-all">{baseName(shown)}</span>
+                      <span className="break-all text-muted-foreground">{dirName(shown)}</span>
+                      {it.attempts > 1 && <span className="text-muted-foreground tabular-nums">已试 {it.attempts} 轮</span>}
+                      {it.error && <span className="break-all text-destructive">{it.error}</span>}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {g.repreview && (
-              <Button size="sm" className="h-8" disabled={disabled} onClick={() => setPending({ type: "repreview", group: g })}>
-                <Search className="size-4" />
-                重新预览
-              </Button>
-            )}
-            {g.retry && (
-              <Button size="sm" variant={g.repreview ? "outline" : "default"} className="h-8" disabled={disabled} onClick={() => void retry(g)}>
-                {reverting ? <Undo2 className="size-4" /> : <RotateCw className="size-4" />}
-                {reverting ? "继续撤销" : g.key === "mirror" ? "补本地" : "重试"}
-              </Button>
-            )}
-            {g.skip && (
-              <Button size="sm" variant="outline" className="h-8" disabled={disabled} onClick={() => setPending({ type: "skip", group: g })}>
-                <Ban className="size-4" />
-                放弃
-              </Button>
-            )}
-            <button type="button" className="ml-auto flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => setOpen((o) => ({ ...o, [g.key]: !o[g.key] }))}>
-              {open[g.key] ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-              {open[g.key] ? "收起" : "看文件"}
-            </button>
-          </div>
-          {open[g.key] && (
-            <ul className="space-y-1 text-xs">
-              {g.items.map((it) => {
-                const shown = it.action === "rmdir" ? it.srcPath : it.action === "mkdir" ? it.dstPath : reverting ? it.srcPath : it.dstPath;
-                return (
-                  <li key={it.id} className="flex flex-wrap items-baseline gap-x-2">
-                    <span className="break-all">{baseName(shown)}</span>
-                    <span className="break-all text-muted-foreground">{dirName(shown)}</span>
-                    {it.attempts > 1 && <span className="text-muted-foreground tabular-nums">已试 {it.attempts} 轮</span>}
-                    {it.error && <span className="break-all text-destructive">{it.error}</span>}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-      ))}
+        );
+      })}
 
       <AlertDialog open={pending != null} onOpenChange={(o) => !o && !working && setPending(null)}>
         <AlertDialogContent>
@@ -691,7 +648,7 @@ function UnitCard({
   const conf = CONFIDENCE_META[m?.confidence ?? "none"];
   const changing = items.filter((i) => i.action === "rename" || i.action === "move").length;
   const conflicts = items.filter((i) => i.action === "conflict").length;
-  const failed = items.filter((i) => i.status === "failed" || ((i.status === "done" || i.status === "reverted") && i.errorKind !== "")).length;
+  const failed = items.filter((i) => !i.givenUp && (i.status === "failed" || ((i.status === "done" || i.status === "reverted") && i.errorKind !== ""))).length;
   const tmdbUrl = m ? `https://www.themoviedb.org/${m.mediaType}/${m.tmdbId}` : "";
 
   return (
@@ -779,6 +736,7 @@ function UnitCard({
 /** 状态只描述文件在哪，类别说为什么：done 带 mirror 是网盘好了本地没跟上，撤销阶段 done 带别的类别是没退回 */
 function ItemStatus({ it, stage }: { it: OrganizeItem; stage: OrganizeRunStage }) {
   const kind = it.errorKind ? ERROR_KIND_META[it.errorKind] : null;
+  if (it.givenUp) return <StatusBadge tone="neutral" title={it.error}>{it.status === "done" ? (it.errorKind === "mirror" ? "完成，放弃补本地" : "已放弃撤销") : "已放弃"}</StatusBadge>;
   if (it.status === "done") {
     if (it.errorKind === "mirror") return <StatusBadge tone="warning" title={it.error}>完成，本地未同步</StatusBadge>;
     if (stage === "revert" && it.curPath) return <StatusBadge tone="warning" title={it.error || it.curPath}>已挪回，待改名</StatusBadge>;
@@ -794,7 +752,7 @@ function ItemStatus({ it, stage }: { it: OrganizeItem; stage: OrganizeRunStage }
     if (it.errorKind === "mirror") return <StatusBadge tone="warning" title={it.error}>已退回，本地未同步</StatusBadge>;
     return <StatusBadge tone="neutral" title={it.error || undefined}>已退回</StatusBadge>;
   }
-  if (it.status === "skipped") return <StatusBadge tone="neutral" title={it.error}>{it.error.startsWith("已放弃") ? "已放弃" : "跳过"}</StatusBadge>;
+  if (it.status === "skipped") return <StatusBadge tone="neutral" title={it.error}>跳过</StatusBadge>;
   const a = ACTION_META[it.action];
   return <StatusBadge tone={a.tone}>{a.label}</StatusBadge>;
 }

@@ -117,6 +117,7 @@ function toItem(row: ItemRow): OrganizeItem {
     error: row.error,
     errorKind: coerce(row.errorKind, ERROR_KINDS, ""),
     attempts: row.attempts,
+    givenUp: row.givenUp,
     finishedAt: row.finishedAt ?? null,
     curPath: row.curPath,
     hits: row.hits,
@@ -327,7 +328,7 @@ export function updateUnit(runId: string, key: string, patch: Partial<OrganizeUn
 
 /* ------------------------------- items ------------------------------- */
 
-export type NewItem = Omit<OrganizeItem, "runId" | "status" | "error" | "errorKind" | "attempts" | "finishedAt" | "curPath" | "hits"> & {
+export type NewItem = Omit<OrganizeItem, "runId" | "status" | "error" | "errorKind" | "attempts" | "givenUp" | "finishedAt" | "curPath" | "hits"> & {
   status?: OrganizeItemStatus;
   error?: string;
 };
@@ -370,13 +371,14 @@ export function listItems(runId: string): OrganizeItem[] {
 
 export function updateItem(
   id: string,
-  patch: Partial<Pick<OrganizeItem, "status" | "error" | "errorKind" | "attempts" | "nodeId" | "finishedAt" | "dstPath" | "srcPath" | "curPath" | "hits">>,
+  patch: Partial<Pick<OrganizeItem, "status" | "error" | "errorKind" | "attempts" | "givenUp" | "nodeId" | "finishedAt" | "dstPath" | "srcPath" | "curPath" | "hits">>,
 ): void {
   const set: Partial<typeof organizeItems.$inferInsert> = {};
   if (patch.status !== undefined) set.status = patch.status;
   if (patch.error !== undefined) set.error = patch.error;
   if (patch.errorKind !== undefined) set.errorKind = patch.errorKind;
   if (patch.attempts !== undefined) set.attempts = patch.attempts;
+  if (patch.givenUp !== undefined) set.givenUp = patch.givenUp;
   if (patch.nodeId !== undefined) set.nodeId = patch.nodeId;
   if (patch.finishedAt !== undefined) set.finishedAt = patch.finishedAt;
   if (patch.dstPath !== undefined) set.dstPath = patch.dstPath;
@@ -387,12 +389,13 @@ export function updateItem(
   db.update(organizeItems).set(set).where(eq(organizeItems.id, id)).run();
 }
 
-export function updateItems(ids: string[], patch: Partial<Pick<OrganizeItem, "status" | "error" | "errorKind" | "finishedAt" | "curPath">>): void {
+export function updateItems(ids: string[], patch: Partial<Pick<OrganizeItem, "status" | "error" | "errorKind" | "givenUp" | "finishedAt" | "curPath">>): void {
   if (ids.length === 0) return;
   const set: Partial<typeof organizeItems.$inferInsert> = {};
   if (patch.status !== undefined) set.status = patch.status;
   if (patch.error !== undefined) set.error = patch.error;
   if (patch.errorKind !== undefined) set.errorKind = patch.errorKind;
+  if (patch.givenUp !== undefined) set.givenUp = patch.givenUp;
   if (patch.finishedAt !== undefined) set.finishedAt = patch.finishedAt;
   if (patch.curPath !== undefined) set.curPath = patch.curPath;
   if (Object.keys(set).length === 0) return;

@@ -26,6 +26,7 @@ test("classifyFailure：账号问题优先，其次我们自己的 stale，再�
   assert.equal(classifyFailure(provider(), new OpenlistError("object already exists", 500)), "rejected");
   assert.equal(classifyFailure(provider(), new OpenlistError("OpenList /api/fs/move 失败：file [x.mkv] exists", 403)), "rejected", "OpenList 目标已存在回的是 403");
   assert.equal(classifyFailure(provider(), new OpenlistError("storage not init", 500)), "transient");
+  assert.equal(classifyFailure(provider(), new OpenlistError("invalid request", 500)), "transient", "泛泛的 invalid 不算名字问题");
   // 115：404 是没了，5xx 是临时，state=false 的中文按文案
   assert.equal(classifyFailure(provider(), new Cloud115Error(404, "")), "stale");
   assert.equal(classifyFailure(provider(), new Cloud115Error(502, "bad gateway")), "transient");
@@ -48,7 +49,7 @@ test("classifyFailure：账号问题优先，其次我们自己的 stale，再�
 
 const item = (over: Partial<OrganizeItem>): OrganizeItem => ({
   id: "i", runId: "r", unitKey: "u", seq: 0, kind: "video", action: "move", srcPath: "/a", dstPath: "/b", nodeId: "n", reason: "",
-  status: "pending", error: "", errorKind: "", attempts: 0, finishedAt: null, curPath: "", hits: 0, ...over,
+  status: "pending", error: "", errorKind: "", attempts: 0, givenUp: false, finishedAt: null, curPath: "", hits: 0, ...over,
 });
 
 test("retryableItem：没做的做；失败的只重试临时 / 风控 / 没分类的，stale 和 rejected 要点名；done 只补镜像；rmdir 顺带再看", () => {
@@ -67,6 +68,8 @@ test("retryableItem：没做的做；失败的只重试临时 / 风控 / 没分�
   assert.equal(retryableItem(item({ action: "rmdir", status: "skipped", errorKind: "stale" })), false, "目录已经不在了");
   assert.equal(retryableItem(item({ action: "keep", status: "pending" })), false);
   assert.equal(retryableItem(item({ action: "conflict", status: "failed" })), false);
+  assert.equal(retryableItem(item({ status: "failed", errorKind: "transient", givenUp: true })), false, "放弃了的不再重试");
+  assert.equal(retryableItem(item({ status: "done", errorKind: "mirror", givenUp: true })), false);
 });
 
 test("revertPendingItem：done 的文件项要退回；带 curPath 的半路项要改回；已退回但镜像失败的只补本地", () => {
@@ -85,4 +88,10 @@ test("revertPendingItem：done 的文件项要退回；带 curPath 的半路项�
   assert.equal(revertWorkItem(item({ status: "failed", errorKind: "stale" })), false);
   assert.equal(revertWorkItem(item({ status: "skipped", action: "mkdir" })), false, "上一轮没删掉的自建目录不算还有事");
   assert.equal(revertWorkItem(item({ status: "skipped", action: "mkdir" }), true), true, "撤销循环里再看一眼");
+  assert.equal(revertWorkItem(item({ status: "skipped", action: "mkdir", nodeId: "" }), true), false, "从没建过的（放弃掉的失败 mkdir）不碰");
+  assert.equal(revertWorkItem(item({ status: "skipped", action: "mkdir", givenUp: true }), true), false);
+  assert.equal(revertPendingItem(item({ status: "done", errorKind: "transient", givenUp: true })), false, "放弃撤销的不算还有事");
+  assert.equal(revertPendingItem(item({ status: "done", errorKind: "mirror", givenUp: true })), true, "放弃的只是补本地：网盘上挪过的照样要退");
+  assert.equal(revertWorkItem(item({ status: "done", errorKind: "mirror", givenUp: true })), true);
+  assert.equal(revertPendingItem(item({ status: "reverted", errorKind: "mirror", givenUp: true })), false, "退回了、放弃补本地的没事了");
 });

@@ -242,6 +242,8 @@ export interface OrganizeItem {
   errorKind: OrganizeErrorKind;
   /** 这一项被执行 / 撤销了几轮（执行中的自动重试不算一轮）：界面上「已试 N 轮」给用户判断该不该放弃 */
   attempts: number;
+  /** 用户点了「放弃」：不再算失败、不再重试；errorKind 保留（镜像失败的项监控仍会顺手补本地） */
+  givenUp: boolean;
   finishedAt: number | null;
   /**
    * 文件当前的中间位置，非空就表示文件在这里：执行时是「原地改了名、还没挪走」的 `源目录/新名字`，
@@ -252,11 +254,29 @@ export interface OrganizeItem {
   hits: number;
 }
 
+/**
+ * 失败面板的一组：按「下一步该做什么」分。执行阶段是 errorKind 各一组加「没做完」（pending）；
+ * 撤销阶段是网盘那步失败的 done 项按 errorKind 分组、已找不到（lost）、已退回但镜像失败（mirror）。
+ * held 是这组里不能放弃的项数（撤销时挪回来了还没改回原名的）
+ */
+export type OrganizeFailureGroupKey = Exclude<OrganizeErrorKind, ""> | "lost" | "pending";
+
+export interface OrganizeFailureGroup {
+  key: OrganizeFailureGroupKey;
+  itemIds: string[];
+  retry: boolean;
+  skip: boolean;
+  repreview: boolean;
+  held: number;
+}
+
 /** GET /api/organize/runs/:id 的形状 */
 export interface OrganizeRunDetail {
   run: OrganizeRun;
   units: OrganizeUnit[];
   items: OrganizeItem[];
+  /** 还等着处理的失败按下一步分组；后端算，前端只管文案和按钮 */
+  groups: OrganizeFailureGroup[];
   /** 撤销这次 run 允不允许、为什么不允许 */
   revertable: { ok: boolean; reason?: string };
   /** 能不能（再）执行：ready 的执行全部；其它状态是重试失败 / 没做的项，count 是默认会重试的项数 */

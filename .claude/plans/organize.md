@@ -468,3 +468,39 @@ UPDATE organize_items SET error_kind = 'mirror' WHERE status = 'done' AND error 
 - **动手前先看一眼目标目录（2026-09-14 真机之后加的）**：115 的 `files/move` 遇到同名不报错，悄悄把挪进去的文件改成 `xxx(1)`，记账里的 dstPath 和真实名字对不上、本地 strm 指向别人的文件（115 真机撞到）。现在改名前看源目录、移动前看目标目录、撤销挪回前看原位置，有同名就记 `rejected` 不碰网盘（`namesIn` + `occupied` + `clashError`）；刚 mkdir 的目录直接当空的不列。列目录走 `provider.listDir(id, signal, { fresh: true })` 绕过 115 进程内 5 分钟的 `filesListCache`（`DriveProvider.listDir` 多了可选的第三个参数，只有 115 实现），不然预览之后别人放进来的看不见。夸克对同名是明确拒绝（`/file/rename` 400 code 23008 `file is doloading[存在同名文件]`，`同名` 命中 REJECTED_RE），OpenList 回 403 `file [x] exists`。
 - **115 / 夸克真机（2026-09-14）**：115 用 `files/copy` 从真文件复制三份到隔离目录 `_orgtest115/BEEF.S01.1080p/`（认成 怒呛人生 154385），夸克把 亿万地堡 的 E01–E03 挪进 `_orgtest/亿万地堡.S01.2025.1080p/` 改成乱名（认成 245648 high），后端用拷到 scratch 的库（监控 / Telegram / Emby / cron 全关，本地 strm 只写 scratch）。走通：预览后挪走文件 → 115 `网盘上找不到` 归 stale（夸克按 id 操作，挪走的文件照样能改名移动，做不出 stale）；预览后目标被占 → 两家都被动手前的检查拦成 rejected、半路项「放弃」改回原名（115 上第一次跑就是这里暴露了悄悄改成 (1) 的问题）；整理后删掉 / 挪走文件再撤销 → `failed + stale`「已找不到」→ 放弃。结束后 115 的伪造目录整个进回收站，夸克目录树和开始时逐字节一致。没覆盖：风控（不能故意触发）、夸克上的 stale（不删真文件做不出来）。另外夸克把目标季目录改名之后整理照样成功——它按缓存里的目录 id 挪，文件进了改名后的目录而记账仍是旧路径，本地 strm 要等监控快照纠正，属于按 id 的网盘固有行为，没改。
 - 真机实验的坑：`pkill -f "tsx src/index.ts"` 杀不到（真实进程是 `node …/tsx/dist/cli.mjs src/index.ts`），端口占着新进程起不来还以为重启了；115 进程内目录缓存 5 分钟，脚本在另一个进程里挪了文件、后端预览还按旧清单算冲突，要么等要么重启后端。
+
+### 评审后的修补（2026-09-14 晚，未提交部分随同步失败分类一起在工作区）
+
+代码评审（八个角度 + 核实）在 2d07cd8 上抓到并修掉的：
+- **连环改名被误判成撞名**：集偏移这种 E02→E01、E03→E02 的计划，改名前的检查看到目标名被占就拒了。现在占着名字的是本轮自己的节点就不算撞名（`occupied` 认一组「我们的」id），按依赖排序一个个改（占着我目标名的那项先改；A↔B 互占才拒），有连环时不用批量改名接口。移动那步同理：被本轮别的项占着的先推迟，所有批次跑完再来一遍。
+- **进程崩溃后重跑把已经挪好的文件判成撞名**：目标目录里那个同名文件就是自己的节点 → 直接记账（含镜像），不再挪；改名那步同样。
+- **「放弃」改成显式字段 `givenUp`**（表 `organize_items.given_up`，迁移 0012 重出，仍未发布）：不再靠错误文案前缀。放弃镜像失败的项保留 `errorKind = mirror`（监控见到自有事件仍会把本地补回来），只是不进统计 / 面板 / 重试集合；撤销阶段放弃 done 项也保持 `done`（文件就在那里），`revertWorkItem` 对 givenUp 的 done 不再算有事。
+- **撤销循环不再碰放弃掉的失败 mkdir**：skipped 的 mkdir 只在有 nodeId（真建过）且不是放弃的才再看一眼，否则会把别人后来建的同名目录删掉。
+- **撤销阶段放弃执行时改了名没挪走的项**：以前直接标 skipped 把位置忘了；现在不管哪个阶段，带 curPath 的 failed / pending 一律先改回原名。
+- **放弃时的原名占用检查**改用 `namesIn`（fresh 列目录）+ `occupied`，和执行 / 撤销同一套；`namesIn` / `dirIdOf` 现在只要 `ListCtx`（provider / signal / 两个缓存）。
+- **目录缓存原地更新**：改名 / 挪动之后 `noteRenamed` / `noteMoved` 改本轮缓存，不再整个丢掉再 fresh 列一遍（扁平目录几百部电影就是几百次列目录）。刚 mkdir 的目录直接当空的。
+- **迁移回填补全**：`stage = revert` 也覆盖被风控 / 取消打断、状态是 failed / cancelled 但已有 reverted 项的 run；`error_kind = mirror` 也覆盖 reverted 状态的旧镜像失败项。
+- **OpenList `listDir` 把 `fresh` 传成 `refresh`**：之前忽略了，撞名检查在 OpenList 上读的是它自己的缓存。
+- **`notReverted` 只数撤销时找不到的**（撤销给 lost 项记了 finishedAt），执行时就没成的 stale 失败（文件在原处）不算。
+- **失败面板分组挪到后端**（`failureGroups` → `OrganizeRunDetail.groups`，含每组的 retry / skip / repreview / held），前端只管文案（`failureGroupMeta`）；`applicability.count` 不再把「目录不是空的」的 rmdir 算进按钮上的数字。
+- 清理：`messageOf` 收进 `lib/errors.ts`，`errMsg` / `causeOf` 删掉；两个分类器不再 import 三家客户端的错误类，改用 `drive/errors.ts` 的 `driveErrorFacts`（状态码 / 传输层 / 异步任务 / 登录码）；`REJECTED_RE` 去掉 `invalid`、`missing` 这种泛词；执行前的失败项归零用一条 `updateItems`。
+- 没改的（评审提过但不值得）：`curPath` 在执行 / 撤销两个阶段各有含义（靠 status 区分，路径本身相同）；前端 `groups` 之外仍保留 `applicable` / `revertable` 两个后端算的开关。
+- 新增用例：连环改名按依赖顺序、上次挪到一半没记账、撤销阶段放弃半路项 + 放弃掉的 mkdir 不碰同名目录；放弃镜像 / 放弃撤销的断言改成看 `givenUp`。
+### 真机复测（2026-09-14 晚，评审修补之后）
+
+环境同上一轮：Docker OpenList（Local 存储 + 假媒体）、115 / 夸克真账号、后端跑 scratch 拷贝的库（迁移 0012 在拷贝上跑过，监控 / Telegram / Emby / cron 全关）、真 TMDB。走通：
+
+- A 预览后目标被占 → rejected（动手前的检查拦住，网盘没动）→「放弃」先改回原名 → run 收口成 done → 撤销：放弃项原地不动、其余退回、本地 strm 跟着回。
+- B1 已规范命名的目录（在 `done/` 子目录里）带集偏移 +1 → 执行时同目录连环改名按依赖顺序（E03→E04 先）→ 撤销全部退回、目录树和 strm 与开始时一致。
+- B2 目录已在库里只改集号（纯 rename 项）→ 撤销。
+- C 整理后在网盘外删掉一个文件再撤销 → `failed + stale`「已找不到」→ 放弃 → `notReverted` 归零、run 收口。
+- D 本地作品目录只读 → 三项 done + mirror（文案「没有写入 data 目录的权限；检查属主 / PUID / PGID」）→ 放弃一项 → 目录改回可写「重试」只补其余两项 → 撤销连放弃过的那项一起退回。
+- 夸克真机：亿万地堡 E06–E08 用 `paths` 圈出来、集偏移 +1 原地连环改名（E08→E09 先）→ 撤销按依赖倒序改回，季目录清单（名字 / id / 大小）逐字节一致。
+- 浏览器：整理页 `?run=` 打开 A 的 run，头部徽标、「需要处理的项」面板（名字不被接受 · 1，重试 / 放弃 / 看文件）、放弃对话框、撤销都走了一遍。
+
+复测暴露并修掉的两个 bug（都是撤销侧）：
+
+1. **撤销顺序**。撤销按流水账逆序退，连环改名的项倒回来会撞自己人：E03→E04 先退成 E03，轮到 E02→E03 挪回时中间名 E03 已经被占 → rejected（OpenList 真机就是这样挂的）。新增 `orderRevert`：A 的原名现在被本轮还没退回的 B 占着（同一原目录里 B 现在的名字 == A 的原名）就等 B 先退；跨目录挪回的 A 顶着现在的名字进原目录，撞上还在原目录里的 B 也等 B；转圈互占的单列记 rejected；目录项位置不动。用例两条（跨目录 / 同目录），把排序拿掉都会挂。
+2. **放弃过镜像失败的项撤销时不退回**。`revertWorkItem` 对 givenUp 的 done 一律不算事，把「放弃补本地」和「放弃撤销」混成一个了——放弃本地镜像的项网盘那步是做过的，撤销时照样要退，不然 run 标已撤销、文件却留在整理后的位置。现在 done + mirror + givenUp 仍进撤销；撤销侧的结果都是新账（退回 / 网盘失败 / 找不到都把 givenUp 清掉，退回后不再显示「放弃」）；放弃镜像的对话框补一句「之后撤销时照样退回」。用例 + `failures.test` 断言。
+
+顺手：rmdir「目录不是空的」的 115 缓存那句只在 115 上说。没改的观察：撤销时「已找不到」的项，本地 strm 留在整理后的位置（文件本来就不在了），等全量同步 / 体检清掉。
