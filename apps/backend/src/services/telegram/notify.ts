@@ -5,6 +5,7 @@
  *   - 套中文模板、HTML 转义、发到配置的 chatId
  * 发送失败只记日志，绝不抛到调用方。
  */
+import { classifyAccountIssue } from "../drive/errors.js";
 import type { AccountIssue as DriveAccountIssue } from "../drive/types.js";
 import type { AppSettings, TelegramNotifySettings, OrganizeErrorKind } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -106,12 +107,8 @@ export function issueFromDrive(issue: DriveAccountIssue | null | undefined): Acc
   return null;
 }
 
-/** 从错误文案里认出"该换 cookie 了"和"被封控了"这两种需要人来处理的情况 */
-export function classifyAccountIssue(message: string): AccountIssue | null {
-  if (/登录超时|请重新登录|990001|cookie|not login|未登录/i.test(message)) return "cookie";
-  if (/封控|阻断|405|Method Not Allowed|doctypehtml/i.test(message)) return "blocked";
-  return null;
-}
+/** 从错误文案里认出"该换 cookie 了"和"被封控了"：规则在 drive/errors.ts（分类器也用它），这里只是转一手 */
+export { classifyAccountIssue };
 
 const TRIGGER_LABEL: Record<TaskTrigger, string> = {
   manual: "手动",

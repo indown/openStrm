@@ -5,8 +5,9 @@ import axios from "axios";
  * 重试策略（取直链、下载）见到它就直接放弃，别再拿同一个请求白等几轮。
  */
 export class PermanentError extends Error {
-  constructor(message: string) {
-    super(message);
+  /** cause：包着的网盘错误（比如 OpenList 取文件信息回的 401），分类器要看它的状态码 */
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = "PermanentError";
   }
 }

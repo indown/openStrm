@@ -10,7 +10,7 @@
  */
 import type { OrganizeItem } from "@openstrm/shared";
 import { messageOf, PermanentError } from "../../lib/errors.js";
-import { driveErrorFacts } from "../drive/errors.js";
+import { accountIssueOf, driveErrorFacts } from "../drive/errors.js";
 import { RemoteDirNotFoundError, type DriveProvider } from "../drive/types.js";
 
 import { FAILURE_LABEL, type FailureKind } from "./failure-kinds.js";
@@ -43,9 +43,10 @@ const REJECTED_RE = /已存在|同名|重名|重复|\bexists\b|非法|不合法|
 
 export function classifyFailure(provider: Pick<DriveProvider, "classifyError">, err: unknown): FailureKind {
   if (err instanceof OrganizeFailure) return err.kind;
-  const issue = provider.classifyError(err);
-  if (issue === "blocked" || issue === "auth") return "blocked";
+  // 我们自己抛的「预览之后变了」先于账号判断：它的文案里带路径，115 按文案猜风控会被路径里的「405」带偏
   if (err instanceof StaleError || err instanceof RemoteDirNotFoundError) return "stale";
+  const issue = accountIssueOf(provider, err);
+  if (issue === "blocked" || issue === "auth") return "blocked";
   const facts = driveErrorFacts(err);
   if (facts.transport || facts.taskFailed) return "transient";
   if (facts.status === 404) return "stale";

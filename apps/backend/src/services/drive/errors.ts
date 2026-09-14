@@ -3,14 +3,14 @@
  * 上游状态码放 extra（见 lib/http-error.ts 关于不回 502 的说明）。
  */
 import axios from "axios";
-import { isAbortError, PermanentError } from "../../lib/errors.js";
+import { isAbortError, messageOf, PermanentError } from "../../lib/errors.js";
 import { HttpError, upstreamError } from "../../lib/http-error.js";
-import { Cloud115Error } from "../cloud-115/client.js";
+import { Cloud115ApiError, Cloud115Error } from "../cloud-115/client.js";
 import { ShareApiError } from "../cloud-115/share.js";
 import { OpenlistError } from "../openlist/client.js";
 import { QuarkError } from "../quark/client.js";
 import { QuarkTaskError } from "../quark/share.js";
-import { RemoteDirNotFoundError, ShareGoneError } from "./types.js";
+import { RemoteDirNotFoundError, ShareGoneError, type AccountIssue, type DriveProvider } from "./types.js";
 
 /**
  * 三家错误里能拿到的事实，给失败分类器用：功能代码不再 instanceof 具体网盘的错误类。
@@ -24,15 +24,51 @@ export interface DriveErrorFacts {
   transport: boolean;
   taskFailed: boolean;
   authCode: boolean;
+  /** 是网盘接口回来的错误（三家的错误类、axios 的响应）：它的文案可以拿来猜账号问题；我们自己拼的 Error / PermanentError 不算 */
+  api: boolean;
 }
 
 export function driveErrorFacts(err: unknown): DriveErrorFacts {
-  if (err instanceof OpenlistError) return { status: err.code, transport: err.transport, taskFailed: false, authCode: err.code === 401 };
-  if (err instanceof Cloud115Error) return { status: err.status, transport: false, taskFailed: false, authCode: false };
-  if (err instanceof QuarkTaskError) return { transport: false, taskFailed: true, authCode: false };
-  if (err instanceof QuarkError) return { status: err.status, transport: false, taskFailed: false, authCode: err.code === 31001 || err.code === 31004 || err.status === 401 };
-  if (axios.isAxiosError(err)) return { status: err.response?.status, transport: !err.response, taskFailed: false, authCode: false };
-  return { transport: false, taskFailed: false, authCode: false };
+  // 包着网盘错误的 PermanentError（OpenList 取文件信息回 401 那种）看里面那个
+  if (err instanceof PermanentError && err.cause !== undefined) return driveErrorFacts(err.cause);
+  if (err instanceof OpenlistError) return { status: err.code, transport: err.transport, taskFailed: false, authCode: err.code === 401, api: true };
+  if (err instanceof Cloud115Error) return { status: err.status, transport: false, taskFailed: false, authCode: false, api: true };
+  if (err instanceof Cloud115ApiError) return { transport: false, taskFailed: false, authCode: err.errno === 990001, api: true };
+  if (err instanceof QuarkTaskError) return { transport: false, taskFailed: true, authCode: false, api: true };
+  if (err instanceof QuarkError) return { status: err.status, transport: false, taskFailed: false, authCode: err.code === 31001 || err.code === 31004 || err.status === 401, api: true };
+  if (axios.isAxiosError(err)) return { status: err.response?.status, transport: !err.response, taskFailed: false, authCode: false, api: !!err.response };
+  return { transport: false, taskFailed: false, authCode: false, api: false };
+}
+
+/** 从文案猜账号问题：115 的登录超时 / 封控页那些固定说法。只给网盘接口回来的错误用，带路径的文案别拿来猜 */
+export function classifyAccountIssue(message: string): "cookie" | "blocked" | null {
+  if (/登录超时|请重新登录|990001|cookie|not login|未登录/i.test(message)) return "cookie";
+  if (/封控|阻断|405|Method Not Allowed|doctypehtml/i.test(message)) return "blocked";
+  return null;
+}
+
+/**
+ * 账号问题（登录失效 / 风控 / 分享没了）的统一判断，两个失败分类器都走这里：
+ *   1. provider.classifyError：各家按自己的码 / 文案认（115 只看接口回来的错误）
+ *   2. 结构化的事实：登录码（夸克 31001 / 31004、OpenList 401、115 errno 990001）
+ *   3. 都没认出来就按文案兜底——只对网盘接口回来的错误（facts.api）做
+ * 文案兜底只看网盘接口回来的错误：我们自己抛的 PermanentError / 普通 Error 里带着用户的路径，目录名里的「405」「cookie」
+ * 会把整轮同步按风控停掉（115 的 classifyError 也只看接口错误）；包着网盘错误的 PermanentError 看 cause
+ */
+export function accountIssueOf(provider: Pick<DriveProvider, "classifyError"> | undefined, err: unknown): AccountIssue | null {
+  const inner = err instanceof PermanentError && err.cause !== undefined ? err.cause : err;
+  if (inner instanceof RemoteDirNotFoundError) return null;
+  const facts = driveErrorFacts(inner);
+  const issue = provider?.classifyError(inner) ?? null;
+  if (issue === "auth" || facts.authCode) return "auth";
+  if (issue) return issue;
+  // provider 没认出来（或者没给 provider）就按文案兜底，只看网盘接口回来的错误
+  if (facts.api) {
+    const text = classifyAccountIssue(messageOf(inner));
+    if (text === "cookie") return "auth";
+    if (text === "blocked") return "blocked";
+  }
+  return null;
 }
 
 export function driveErrorToHttp(err: unknown, fallback: string): HttpError {

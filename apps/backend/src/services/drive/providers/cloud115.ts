@@ -2,21 +2,11 @@
  * 115 的 Provider：只是现有 cloud-115/{client,share}.ts 的适配层，那两个文件原样保留。
  * 分享能力已经接上；变更监控（生活事件）在 services/life/sources/cloud115.ts。
  */
+import axios from "axios";
 import type { Account115 } from "@openstrm/shared";
 import { readAppSettings } from "../../../db/repositories/settings.js";
 import { PermanentError } from "../../../lib/errors.js";
-import {
-  exportDirParse,
-  fsBatchRename,
-  fsDeleteMany,
-  fsDirGetId,
-  fsMkdir,
-  fsMove,
-  getDownloadUrlWeb,
-  getIdToPath,
-  listDirEntries,
-  type DriveEntry as RawEntry,
-} from "../../cloud-115/client.js";
+import { Cloud115ApiError, Cloud115Error, exportDirParse, fsBatchRename, fsDeleteMany, fsDirGetId, fsMkdir, fsMove, getDownloadUrlWeb, getIdToPath, listDirEntries, type DriveEntry as RawEntry } from "../../cloud-115/client.js";
 import { dropSubtree, repathSubtree } from "../../../db/repositories/life.js";
 import {
   getShareData,
@@ -30,7 +20,7 @@ import {
 import { forgetPathsUnder, rememberPath, rememberPaths } from "../../cloud-115/path-resolver.js";
 import { Cloud115ChangeSource } from "../../life/sources/cloud115.js";
 import { buildTree, collectFilesAndTopEmptyDirs, findExportedDir } from "../../task/tree.js";
-import { classifyAccountIssue } from "../../telegram/notify.js";
+import { classifyAccountIssue } from "../errors.js";
 import { resolveSharePath } from "../share-walk.js";
 import {
   RemoteDirNotFoundError,
@@ -292,10 +282,13 @@ export class Cloud115Provider implements DriveProvider {
 
   classifyError(err: unknown): AccountIssue | null {
     if (err instanceof ShareGoneError) return "gone";
-    const msg = err instanceof Error ? err.message : String(err);
-    const issue = classifyAccountIssue(msg);
-    if (issue === "cookie") return "auth";
-    if (issue === "blocked") return "blocked";
+    // 只按接口回来的文案猜（HTTP 非 2xx、业务错误、分享接口、直链的响应）：我们自己拼的错误（找不到路径、下载没数据）
+    // message 里带用户的目录名，目录名里的「405」「cookie」会把整轮当成风控
+    if (err instanceof Cloud115Error || err instanceof Cloud115ApiError || err instanceof ShareApiError || (axios.isAxiosError(err) && err.response)) {
+      const issue = classifyAccountIssue(err.message);
+      if (issue === "cookie") return "auth";
+      if (issue === "blocked") return "blocked";
+    }
     if (err instanceof ShareApiError) return "gone";
     return null;
   }

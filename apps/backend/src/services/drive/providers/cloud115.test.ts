@@ -4,6 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+import { Cloud115ApiError } from "../../cloud-115/client.js";
 import { RemoteDirNotFoundError } from "../types.js";
 import { Cloud115Provider, setCloud115ProviderDeps } from "./cloud115.js";
 
@@ -25,10 +26,11 @@ test("getid 回真 id → 目录", async () => {
 test("getid 抛错（请重新登录 / 超时）→ 原样抛出，不是「目录不存在」", async () => {
   setCloud115ProviderDeps({
     fsDirGetId: async () => {
-      throw new Error("115：请重新登录（errno 990001）");
+      throw new Cloud115ApiError("115：请重新登录（errno 990001）", 990001);
     },
   });
   await assert.rejects(provider.resolvePath("tv/Show"), (e: unknown) => e instanceof Error && /请重新登录/.test(e.message) && !(e instanceof RemoteDirNotFoundError));
   await assert.rejects(provider.listSubtree("tv/Show"), (e: unknown) => e instanceof Error && /请重新登录/.test(e.message) && !(e instanceof RemoteDirNotFoundError));
-  assert.equal(provider.classifyError(new Error("115：请重新登录（errno 990001）")), "auth");
+  assert.equal(provider.classifyError(new Cloud115ApiError("115：请重新登录（errno 990001）", 990001)), "auth");
+  assert.equal(provider.classifyError(new Error("115：请重新登录（errno 990001）")), null, "只认接口层的错误类，普通 Error 的文案不猜（里面可能是路径）");
 });

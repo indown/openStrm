@@ -38,6 +38,21 @@ export class Cloud115Error extends Error {
   }
 }
 
+/**
+ * 115 接口回了 2xx 但业务上说「不行」（state false / errno）：登录超时、参数错、同名之类。
+ * 单独一个类是为了让分类器认得出「这是接口回来的文案」——按文案猜登录失效 / 风控只对它和 Cloud115Error 做，
+ * 我们自己拼的错误（找不到路径、下载没数据）message 里带用户的目录名，目录名里的「405」「cookie」会把整轮同步按风控停掉
+ */
+export class Cloud115ApiError extends Error {
+  constructor(
+    message: string,
+    readonly errno: number | undefined,
+  ) {
+    super(message);
+    this.name = "Cloud115ApiError";
+  }
+}
+
 function pathOf(url: string | undefined): string {
   if (!url) return "";
   try {
@@ -797,8 +812,9 @@ export function ensureOk<T>(resp: T, url?: string): NonNullable<T> {
     const reason = typeof r?.error === "string" ? r.error.trim() : "";
     const where = url ? pathOf(url).trim() : typeof r?.request === "string" ? `(${r.request})` : "";
     const meta = [r?.errno ? `errno ${r.errno}` : "", where.replace(/^\(|\)$/g, "")].filter(Boolean).join("，");
-    if (reason) throw new Error(`115：${reason}${meta ? `（${meta}）` : ""}`);
-    throw new Error(`115 接口出错${where ? ` ${where}` : ""}: ${summarizeBody(resp)}`);
+    const errno = typeof r?.errno === "number" ? r.errno : undefined;
+    if (reason) throw new Cloud115ApiError(`115：${reason}${meta ? `（${meta}）` : ""}`, errno);
+    throw new Cloud115ApiError(`115 接口出错${where ? ` ${where}` : ""}: ${summarizeBody(resp)}`, errno);
   }
   return resp as NonNullable<T>;
 }

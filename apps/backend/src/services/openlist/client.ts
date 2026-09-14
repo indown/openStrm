@@ -150,7 +150,7 @@ export async function openlistRawUrl(account: AccountOpenlist, path: string, sig
     data = await request<{ raw_url?: string } | null>(account, "POST", "/api/fs/get", { path }, signal);
   } catch (err) {
     // OpenList 已经明确答复了（多半是 object not found），两秒后再问答案也一样；连不上的照常重试
-    if (err instanceof OpenlistError && !err.transport) throw new PermanentError(`Failed to get file info: ${err.message}`);
+    if (err instanceof OpenlistError && !err.transport) throw new PermanentError(`Failed to get file info: ${err.message}`, { cause: err });
     throw err;
   }
   if (!data?.raw_url) throw new PermanentError(`No raw_url found for file: ${path}`);

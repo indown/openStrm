@@ -5,14 +5,13 @@
  *
  * 和 organize/failures.ts 的分工：那边管网盘上的改名 / 移动（写操作的结果），这边管本地落盘和取直链 / 下载。
  * 网盘错误里的事实（状态码、连不上、登录码）由 drive/errors.ts 给，这里不认具体网盘的错误类；
- * 账号问题优先问 provider.classifyError，没有 provider 时退到 telegram/notify 的 classifyAccountIssue（同一份文案规则）。
+ * 账号问题（登录失效 / 风控）的判断也在那边（accountIssueOf），和整理那边同一份。
  */
 import axios from "axios";
 import type { FileFailureAction, FileFailureKind } from "@openstrm/shared";
 import { isAbortError, messageOf, PermanentError } from "../../lib/errors.js";
-import { driveErrorFacts } from "../drive/errors.js";
+import { accountIssueOf, driveErrorFacts } from "../drive/errors.js";
 import type { DriveProvider } from "../drive/types.js";
-import { classifyAccountIssue } from "../telegram/notify.js";
 
 export interface FileFailure {
   kind: FileFailureKind;
@@ -154,12 +153,11 @@ export function classifyFileFailure(err: unknown, ctx: FileFailureContext): File
     }
   }
 
-  // 网盘自己认出的账号问题：cookie 失效 / 风控都是整轮的事
+  // 网盘自己认出的账号问题：cookie 失效 / 风控都是整轮的事（只看接口回来的错误，路径里的「405」「cookie」不算，见 accountIssueOf）
   const facts = driveErrorFacts(err);
-  const issue = ctx.provider?.classifyError(err) ?? null;
-  const textIssue = issue ? null : classifyAccountIssue(detail);
-  if (issue === "auth" || textIssue === "cookie" || facts.authCode) return make("auth", "task", false, AUTH.message, AUTH.advice, account);
-  if (issue === "blocked" || textIssue === "blocked" || facts.status === 405) return make("blocked", "task", false, BLOCKED.message, BLOCKED.advice, account);
+  const issue = accountIssueOf(ctx.provider, err);
+  if (issue === "auth") return make("auth", "task", false, AUTH.message, AUTH.advice, account);
+  if (issue === "blocked") return make("blocked", "task", false, BLOCKED.message, BLOCKED.advice, account);
   // 「文件没了」只在取直链 / 下载时成立；strm 那边（转存、列目录）的 404 和分享失效原样给
   if (ctx.kind === "download" && (issue === "gone" || err instanceof PermanentError || facts.status === 404 || facts.status === 410)) {
     return make("gone", "file", false, GONE.message, GONE.advice);
@@ -171,11 +169,15 @@ export function classifyFileFailure(err: unknown, ctx: FileFailureContext): File
   return make("unknown", "file", true, detail, "");
 }
 
-/** 监控 / 追更 / 云下载 / 整理镜像里的一句话：认得出就「原因；建议」，认不出就原文 */
+/**
+ * 监控 / 追更 / 云下载 / 整理镜像里的一句话：认得出就「原因；建议（原文）」，认不出就原文。
+ * 原文一定带上：这些地方只存这一句，分类错了也得留下真正的错误可查
+ */
 export function describeFileFailure(err: unknown, ctx: FileFailureContext): string {
   const f = classifyFileFailure(err, ctx);
   if (f.kind === "unknown" || !f.advice) return f.message;
-  return `${f.message}；${f.advice}`;
+  const raw = f.detail.length > 200 ? `${f.detail.slice(0, 200)}…` : f.detail;
+  return `${f.message}；${f.advice}${raw && raw !== f.message ? `（${raw}）` : ""}`;
 }
 
 /** 执行历史 / 通知里的摘要：「5 个文件失败：文件名过长 3、磁盘满 2」；全认不出时列几个文件名 */

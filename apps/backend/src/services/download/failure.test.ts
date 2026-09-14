@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AxiosError } from "axios";
 import { PermanentError } from "../../lib/errors.js";
-import { Cloud115Error } from "../cloud-115/client.js";
+import { Cloud115ApiError, Cloud115Error } from "../cloud-115/client.js";
 import type { AccountIssue } from "../drive/types.js";
 import { OpenlistError } from "../openlist/client.js";
 import { QuarkError } from "../quark/client.js";
@@ -61,8 +61,9 @@ test("网盘那边：账号问题由 provider 认，404 / PermanentError 是文�
   assert.equal(net.kind, "network");
   assert.equal(net.retryable, true);
   assert.equal(classifyFileFailure(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET", syscall: "read" }), ctx("a", "download")).kind, "network", "流式下载里 node 自己抛的网络错也是网络");
-  // 没有 provider 时按文案兜底
-  assert.equal(classifyFileFailure(new Error("115：登录超时，请重新登录。（errno 990001）"), ctx("a", "download")).kind, "auth");
+  // provider 没认出来时按文案兜底，只看接口回来的错误（115 接口层的错误类）
+  assert.equal(classifyFileFailure(new Cloud115ApiError("115：登录超时，请重新登录。（errno 990001）", 990001), ctx("a", "download")).kind, "auth");
+  assert.equal(classifyFileFailure(new Error("115：登录超时，请重新登录。"), ctx("a", "download")).kind, "unknown", "普通 Error 的文案不拿来猜（里面可能是路径）");
   assert.equal(classifyFileFailure(new Cloud115Error(405, "<!doctypehtml>"), ctx("a", "download")).kind, "blocked");
   const unknown = classifyFileFailure(new Error("莫名其妙"), ctx("a", "download"));
   assert.equal(unknown.kind, "unknown");
@@ -87,8 +88,8 @@ test("「文件没了」只在取直链 / 下载时成立；转存、列目录�
   assert.equal(classifyFileFailure(new PermanentError("夸克转存缺少条目 X 的 share_fid_token"), ctx("a", "strm")).kind, "unknown");
   assert.equal(describeFileFailure(new PermanentError("夸克转存缺少条目 X 的 share_fid_token"), ctx("a", "strm")), "夸克转存缺少条目 X 的 share_fid_token");
   assert.equal(classifyFileFailure(new Error("x"), ctx("a", "strm", "gone")).kind, "unknown");
-  // 没有 provider 时账号问题按 notify 那份规则认（和 115 的 classifyError 同一份）
-  assert.equal(classifyFileFailure(new Error("115：cookie 已失效"), ctx("a", "download")).kind, "auth");
+  // 账号问题的文案规则和 115 的 classifyError 同一份（drive/errors.ts），只看接口回来的错误
+  assert.equal(classifyFileFailure(new Cloud115ApiError("115：cookie 已失效", undefined), ctx("a", "download")).kind, "auth");
   assert.equal(classifyFileFailure(new QuarkError("夸克 /file/download 失败：require login", 401, 31001), ctx("a", "download")).kind, "auth", "夸克的登录码不靠文案");
   // 整理镜像的撞名是本地的事
   const mirror = classifyFileFailure(Object.assign(new Error("ENOTEMPTY: directory not empty, rename"), { code: "ENOTEMPTY", syscall: "rename" }), { ...ctx("Show/Season 01"), context: "mirror" });

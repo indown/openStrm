@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { OrganizeItem } from "@openstrm/shared";
 import { PermanentError } from "../../lib/errors.js";
-import { Cloud115Error } from "../cloud-115/client.js";
+import { Cloud115ApiError, Cloud115Error } from "../cloud-115/client.js";
+import { Cloud115Provider } from "../drive/providers/cloud115.js";
 import { RemoteDirNotFoundError, type AccountIssue } from "../drive/types.js";
 import { OpenlistError } from "../openlist/client.js";
 import { QuarkError } from "../quark/client.js";
@@ -94,4 +95,13 @@ test("revertPendingItem：done 的文件项要退回；带 curPath 的半路项�
   assert.equal(revertPendingItem(item({ status: "done", errorKind: "mirror", givenUp: true })), true, "放弃的只是补本地：网盘上挪过的照样要退");
   assert.equal(revertWorkItem(item({ status: "done", errorKind: "mirror", givenUp: true })), true);
   assert.equal(revertPendingItem(item({ status: "reverted", errorKind: "mirror", givenUp: true })), false, "退回了、放弃补本地的没事了");
+});
+
+test("classifyFailure：我们自己的 stale 先于账号判断，路径里的 405 不会把整轮按风控停；115 接口回的登录超时才算", () => {
+  assert.equal(classifyFailure(provider("blocked"), new StaleError("网盘上找不到 /tv/Room 405/x.mkv")), "stale", "provider 按文案猜也拦不住 stale");
+  const p115 = new Cloud115Provider({ accountType: "115", name: "a", cookie: "c" });
+  assert.equal(classifyFailure(p115, new PermanentError("File not found: x in directory: /电影/1405年")), "stale");
+  assert.equal(classifyFailure(p115, new Error("fake move: no such path /tv/cookie/405.mkv")), "stale");
+  assert.equal(classifyFailure(p115, new Cloud115ApiError("115：登录超时，请重新登录。（errno 990001）", 990001)), "blocked");
+  assert.equal(classifyFailure(p115, new Cloud115Error(405, "<!doctypehtml>")), "blocked");
 });
