@@ -4,10 +4,22 @@
  * （没有 kind / status / start 事件）也认得，老记录照样能看。
  */
 
+import type { FileFailureAction, FileFailureKind, TaskStopInfo } from "@openstrm/shared";
+
 export type FileKind = "strm" | "download" | "unknown";
 export type RunStatus = "running" | "completed" | "failed" | "cancelled";
 
-export interface FileRow {
+/** 失败事件里分类相关的字段（新记录才有；老记录只有 error 原文） */
+export interface FailureInfo {
+  reason?: FileFailureKind;
+  message?: string;
+  advice?: string;
+  action?: FileFailureAction;
+  /** false = 写文件前就判定写不进去，没去碰文件系统 */
+  attempted?: boolean;
+}
+
+export interface FileRow extends FailureInfo {
   path: string;
   kind: FileKind;
   /** 0-100 */
@@ -20,7 +32,7 @@ export type LogEvent =
   | { type: "starting"; at: number | null }
   | { type: "start"; total: number; strmTotal: number; downloadTotal: number; at: number | null }
   | { type: "progress"; path: string; kind: FileKind; percent: number; overall: number | null }
-  | { type: "file-error"; path: string; kind: FileKind; error: string }
+  | ({ type: "file-error"; path: string; kind: FileKind; error: string } & FailureInfo)
   | { type: "fatal"; error: string }
   | {
       type: "done";
@@ -30,6 +42,8 @@ export type LogEvent =
       total: number | null;
       overall: number | null;
       message: string | null;
+      /** 整轮停的原因（磁盘满 / 没权限 / 登录失效 / 风控） */
+      stopped: TaskStopInfo | null;
       at: number | null;
     };
 
@@ -48,8 +62,10 @@ export interface LogState {
   endedAt: number | null;
   /** 任务级错误（不是某个文件） */
   fatalError: string | null;
-  /** 结束事件里的说明，比如"3 个文件失败：a、b、c" */
+  /** 结束事件里的说明，比如"3 个文件失败：文件名过长 3" */
   finalMessage: string | null;
+  /** 整轮停的原因 */
+  stopped: TaskStopInfo | null;
 }
 
 export function createLogState(): LogState {
@@ -65,6 +81,7 @@ export function createLogState(): LogState {
     endedAt: null,
     fatalError: null,
     finalMessage: null,
+    stopped: null,
   };
 }
 
@@ -75,6 +92,24 @@ const num = (v: unknown): number | null => {
 };
 
 const kindOf = (v: unknown): FileKind => (v === "strm" || v === "download" ? v : "unknown");
+const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
+const KNOWN_KINDS = new Set<FileFailureKind>(["name-too-long", "invalid-name", "name-conflict", "no-space", "permission", "read-only", "fs-transient", "io-error", "gone", "auth", "blocked", "network", "unknown"]);
+/** 不认识的类别（更新的后端）归到 unknown，别让面板出现没标签的组 */
+const reasonOf = (v: unknown): FileFailureKind | undefined => (typeof v === "string" && v ? (KNOWN_KINDS.has(v as FileFailureKind) ? (v as FileFailureKind) : "unknown") : undefined);
+const actionOf = (v: unknown): FileFailureAction | undefined => {
+  if (!v || typeof v !== "object") return undefined;
+  const a = v as { type?: unknown; subPath?: unknown };
+  if (a.type === "organize") return { type: "organize", subPath: typeof a.subPath === "string" ? a.subPath : "" };
+  if (a.type === "account" || a.type === "settings") return { type: a.type };
+  return undefined;
+};
+const stopOf = (v: unknown): TaskStopInfo | null => {
+  if (!v || typeof v !== "object") return null;
+  const s = v as { reason?: unknown; message?: unknown; advice?: unknown; remaining?: unknown };
+  const reason = reasonOf(s.reason);
+  if (!reason) return null;
+  return { reason, message: str(s.message) ?? "", advice: str(s.advice) ?? "", remaining: num(s.remaining) ?? 0 };
+};
 
 /** 一行 JSON（字符串或已解析的对象）→ 事件；认不出的行返回 null */
 export function normalizeEvent(raw: unknown): LogEvent | null {
@@ -116,12 +151,25 @@ export function normalizeEvent(raw: unknown): LogEvent | null {
       total: num(obj.total),
       overall: num(obj.overallPercent),
       message: typeof obj.message === "string" && obj.message ? obj.message : null,
+      stopped: stopOf(obj.stopped),
       at: num(obj.at),
     };
   }
   const path = typeof obj.filePath === "string" ? obj.filePath : "";
   if (typeof obj.error === "string") {
-    if (path) return { type: "file-error", path, kind: kindOf(obj.kind), error: obj.error };
+    if (path) {
+      return {
+        type: "file-error",
+        path,
+        kind: kindOf(obj.kind),
+        error: obj.error,
+        reason: reasonOf(obj.reason),
+        message: str(obj.message),
+        advice: str(obj.advice),
+        action: actionOf(obj.action),
+        attempted: obj.attempted === false ? false : undefined,
+      };
+    }
     return { type: "fatal", error: obj.error };
   }
   if (path) {
@@ -171,6 +219,11 @@ export function applyEvents(state: LogState, events: LogEvent[]): LogState {
           kind: ev.kind !== "unknown" ? ev.kind : (prev?.kind ?? "unknown"),
           percent: prev?.percent ?? 0,
           error: ev.error,
+          reason: ev.reason,
+          message: ev.message,
+          advice: ev.advice,
+          action: ev.action,
+          attempted: ev.attempted,
         });
         break;
       }
@@ -181,6 +234,7 @@ export function applyEvents(state: LogState, events: LogEvent[]): LogState {
         next.starting = false;
         next.status = ev.status;
         next.finalMessage = ev.message;
+        next.stopped = ev.stopped;
         if (ev.total != null) next.total = ev.total;
         if (ev.overall != null) next.overall = ev.overall;
         if (ev.at != null) next.endedAt = ev.at;
@@ -219,4 +273,29 @@ export function countFiles(state: LogState): LogCounts {
         ? Math.min(100, ((done + failed) / state.total) * 100)
         : 0;
   return { total: state.total, done, failed, active, pending, percent };
+}
+
+export interface FailureGroup {
+  reason: FileFailureKind;
+  /** 这一类的人话说明和建议（取第一条） */
+  message: string;
+  advice: string;
+  action?: FileFailureAction;
+  files: FileRow[];
+}
+
+/** 失败的文件按类别分组，数量多的在前；老记录没有分类的归 unknown */
+export function groupFailures(state: LogState): FailureGroup[] {
+  const groups = new Map<FileFailureKind, FailureGroup>();
+  for (const f of state.files.values()) {
+    if (!f.error) continue;
+    const reason = f.reason ?? "unknown";
+    const g = groups.get(reason) ?? { reason, message: f.message ?? "", advice: f.advice ?? "", action: f.action, files: [] };
+    g.files.push(f);
+    if (!g.message && f.message) g.message = f.message;
+    if (!g.advice && f.advice) g.advice = f.advice;
+    if (!g.action && f.action) g.action = f.action;
+    groups.set(reason, g);
+  }
+  return [...groups.values()].sort((a, b) => b.files.length - a.files.length);
 }

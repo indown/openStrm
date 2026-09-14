@@ -17,7 +17,7 @@ import {
 import { toast } from "sonner";
 import type { TaskExecutionHistory } from "@openstrm/shared";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge, TONE_CLASS } from "@/components/status-badge";
 import { EmptyState } from "@/components/empty-state";
@@ -25,6 +25,7 @@ import { Spinner } from "@/components/loading";
 import { api } from "@/lib/api";
 import { apiErrorMessage, getToken } from "@/lib/axios";
 import { RUN_STATUS } from "@/lib/status";
+import { FILE_FAILURE_LABEL, failureActionLink } from "@/lib/task-failures";
 import {
   applyEvents,
   countFiles,
@@ -33,6 +34,8 @@ import {
   type FileRow,
   type LogEvent,
   type LogState,
+  groupFailures,
+  type FailureGroup,
 } from "./events";
 
 /** 列表最多渲染最近这么多行：任务动辄几千个文件，全部渲染会把页面拖死 */
@@ -164,6 +167,7 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
           total: ex.summary.totalFiles,
           overall: null,
           message: ex.summary.errorMessage ?? null,
+          stopped: ex.summary.stopped ?? null,
           at: ex.endTime ?? null,
         });
         dispatch({ type: "reset" });
@@ -290,6 +294,8 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
   };
 
   const counts = useMemo(() => countFiles(state), [state]);
+  // 只在结束后展示，跑着的时候不用每次刷新都分一遍组
+  const failureGroups = useMemo(() => (running ? [] : groupFailures(state)), [state, running]);
   const startedAt = state.startedAt ?? execution?.startTime ?? null;
   const endedAt = state.endedAt ?? execution?.endTime ?? null;
   const duration = startedAt ? (endedAt ?? now) - startedAt : null;
@@ -395,7 +401,14 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
               任务出错：{state.fatalError}
             </Banner>
           )}
-          {!state.fatalError && state.status === "failed" && state.finalMessage && (
+          {!state.fatalError && state.status === "failed" && state.stopped && (
+            <Banner tone="bad" icon={<XCircle className="size-4" />}>
+              同步中止：{state.stopped.message}
+              {state.stopped.remaining > 0 && `，还有 ${state.stopped.remaining} 个文件没轮到`}
+              {state.stopped.advice && <div className="mt-1 font-normal">{state.stopped.advice}</div>}
+            </Banner>
+          )}
+          {!state.fatalError && state.status === "failed" && !state.stopped && state.finalMessage && (
             <Banner tone="bad" icon={<AlertTriangle className="size-4" />}>
               {state.finalMessage}
               {counts.failed > 0 && (
@@ -405,6 +418,7 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
               )}
             </Banner>
           )}
+          {failureGroups.length > 0 && !running && <FailureGroups groups={failureGroups} taskId={taskId} onFilter={() => setFilter("failed")} />}
           {state.status === "cancelled" && (
             <Banner tone="warn" icon={<Square className="size-4" />}>
               {state.finalMessage ?? "任务已取消"}
@@ -500,6 +514,42 @@ function FilterTab({ active, onClick, children }: { active: boolean; onClick: ()
   );
 }
 
+/** 失败的文件按原因分组：一句说明、一句建议、一个按钮（去整理 / 看账号 / 开设置） */
+function FailureGroups({ groups, taskId, onFilter }: { groups: FailureGroup[]; taskId: string; onFilter: () => void }) {
+  return (
+    <section className="space-y-3 rounded-xl border border-destructive/40 bg-card p-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <AlertTriangle className="size-4 text-destructive" />
+          失败原因
+        </div>
+        <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={onFilter}>
+          只看失败的
+        </button>
+      </div>
+      {groups.map((g) => {
+        const link = g.action ? failureActionLink(g.action, taskId) : null;
+        return (
+          <div key={g.reason} className="flex flex-wrap items-start gap-2 text-sm">
+            <StatusBadge tone={g.reason === "gone" ? "neutral" : "danger"} className="tabular-nums">
+              {FILE_FAILURE_LABEL[g.reason] ?? g.reason} · {g.files.length}
+            </StatusBadge>
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <div className="break-all">{g.message || g.files[0]?.error}</div>
+              {g.advice && <div className="text-xs text-muted-foreground break-all">{g.advice}</div>}
+            </div>
+            {link && (
+              <Link href={link.href} className={buttonVariants({ variant: "outline", size: "sm" })}>
+                {link.label}
+              </Link>
+            )}
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
 function FileLine({ file, running }: { file: FileRow; running: boolean }) {
   const failed = Boolean(file.error);
   const done = !failed && file.percent >= 100;
@@ -522,7 +572,13 @@ function FileLine({ file, running }: { file: FileRow; running: boolean }) {
       <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-sm break-all">{file.path}</div>
-          {file.error && <div className="text-xs text-destructive break-all">{file.error}</div>}
+          {file.error && (
+            <div className="text-xs break-all" title={file.error}>
+              <span className="text-destructive">{file.message ?? file.error}</span>
+              {file.attempted === false && <span className="ml-1 text-muted-foreground">（没去碰文件系统）</span>}
+              {file.advice && <span className="ml-1 text-muted-foreground">{file.advice}</span>}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2 text-xs sm:shrink-0">
           {file.kind !== "unknown" && (

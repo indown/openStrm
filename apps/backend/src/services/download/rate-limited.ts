@@ -5,15 +5,15 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { defer, lastValueFrom, Observable, retry, Subscription, throwError, timer } from "rxjs";
-import { Cloud115Error } from "../cloud-115/client.js";
-import { QuarkError } from "../quark/client.js";
 import type { AccountInfo } from "@openstrm/shared";
 import { providerFor } from "../drive/registry.js";
-import { isAbortError, PermanentError } from "../../lib/errors.js";
+import type { DriveProvider } from "../drive/types.js";
+import { isAbortError } from "../../lib/errors.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { strmContent, toStrmPath } from "../strm/naming.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { DEFAULT_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, guardIdleStream } from "../../lib/http.js";
+import { classifyFileFailure, nameTooLongError, overlongSegment } from "./failure.js";
 
 const log = moduleLogger("download");
 
@@ -163,7 +163,7 @@ export async function resolveDownload(
     try {
       return await fetchLink();
     } catch (err) {
-      if (attempt >= maxRetries || isPermanentFailure(err)) throw err;
+      if (attempt >= maxRetries || isPermanentFailure(err, provider)) throw err;
       log.warn(`获取下载链接失败，正在重试 ${attempt + 1}/${maxRetries}`);
       await sleep(retryDelay, undefined, { signal });
     }
@@ -189,6 +189,8 @@ export interface DownloadOptions {
   idleTimeoutMs?: number;
   /** 取文件时额外带的头（夸克直链要 Cookie / Referer / 取链时的 UA）；里面的 User-Agent 盖过设置里的 */
   headers?: Record<string, string>;
+  /** 有的话重试判断会先问它账号问题（cookie 失效 / 风控不重试） */
+  provider?: Pick<DriveProvider, "classifyError">;
 }
 
 export function downloadOrCreateStrm(url: string, savePath: string, opts?: DownloadOptions): Observable<Progress> {
@@ -200,6 +202,12 @@ export function downloadOrCreateStrm(url: string, savePath: string, opts?: Downl
   const dir = path.dirname(savePath);
 
   return new Observable<Progress>((observer) => {
+    // 本地路径里有超过 255 字节的一段就写不进去：先看一眼，不去建半截目录（strm 按 .strm 名算，下载按 .part 名算）
+    const overlong = overlongSegment(asStrm ? toStrmPath(savePath) : `${savePath}.part`);
+    if (overlong) {
+      queueMicrotask(() => observer.error(nameTooLongError(overlong)));
+      return;
+    }
     if (asStrm) {
       // 异步写：全量任务一次会订阅几万个，同步 writeFileSync 就是几万次阻塞写挤在一个 tick 里
       (async () => {
@@ -325,7 +333,7 @@ export function downloadOrCreateStrmLimited(
       count: maxRetries,
       delay: (error, retryCount) => {
         // 404 / 410 换多少次都一样：链接指向的文件已经没了，别再拿同一个链接重试 10 次白等 20 秒
-        if (isPermanentFailure(error)) return throwError(() => error);
+        if (isPermanentFailure(error, opts?.provider)) return throwError(() => error);
         log.warn(`下载失败，正在重试 ${retryCount}/${maxRetries}`);
         return timer(retryDelay);
       },
@@ -334,17 +342,10 @@ export function downloadOrCreateStrmLimited(
 }
 
 /**
- * 换多少次都一样的失败：标了 PermanentError 的、被 signal 中止的、HTTP 404 / 410（链接指向的文件已经没了）。
- * 其余——网络断、超时、5xx、115 限流——都值得再试。
+ * 换多少次都一样的失败，交给 download/failure.ts 的分类器判：本地写不进去、cookie 失效、风控、文件没了都不重试，
+ * 网络断、超时、5xx、限流才重试。和写 strm 那条流用的是同一套规则
  */
-function isPermanentFailure(err: unknown): boolean {
-  if (err instanceof PermanentError || isAbortError(err)) return true;
-  // 夸克登录态没了：每个文件再重试三次只是白等
-  if (err instanceof QuarkError && (err.code === 31001 || err.code === 31004 || err.status === 401)) return true;
-  const status = axios.isAxiosError(err)
-    ? err.response?.status
-    : err instanceof Cloud115Error
-      ? err.status
-      : undefined;
-  return status === 404 || status === 410;
+function isPermanentFailure(err: unknown, provider?: Pick<DriveProvider, "classifyError">): boolean {
+  if (isAbortError(err)) return true;
+  return !classifyFileFailure(err, { relPath: "", kind: "download", provider }).retryable;
 }

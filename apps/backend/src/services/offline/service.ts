@@ -50,6 +50,7 @@ import { normalizeSubPath } from "../strm/naming.js";
 import { generateStrmForSelected, type GenerateResult, type SelectedItem } from "../strm/share-strm.js";
 import { providerFor } from "../drive/registry.js";
 import { notify, type NotifyEvent } from "../telegram/notify.js";
+import { describeFileFailure } from "../download/failure.js";
 
 const log = moduleLogger("offline");
 
@@ -656,7 +657,7 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
       .notify({ type: "offline-done", name: t.name, detail: f.detail, target: `${task.originPath}${f.subPath ? `/${f.subPath}` : ""}` })
       .catch(() => {});
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = describeFileFailure(err, { relPath: f.subPath ? `${f.subPath}/${f.name}` : f.name, kind: "strm" });
     if (f.attempts >= MAX_ATTEMPTS) finish(f, "failed", `生成 strm 失败：${msg}`);
     else f.detail = `生成 strm 失败，稍后重试（${f.attempts}/${MAX_ATTEMPTS}）：${msg}`;
     log.warn({ err }, `云下载 ${t.name} 生成 strm 失败（第 ${f.attempts} 次）`);

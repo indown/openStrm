@@ -11,6 +11,9 @@ export class PermanentError extends Error {
   }
 }
 
+/** 错误的文本：Error 取 message，其它转成字符串 */
+export const messageOf = (err: unknown): string => (err instanceof Error && err.message ? err.message : String(err));
+
 /**
  * 是不是被 AbortSignal 中止的。取消任务后它会以三种样子落到调用方手里：
  * 排在限流器里的请求是 `signal.throwIfAborted()` 抛的 DOMException，timers/promises 的 sleep

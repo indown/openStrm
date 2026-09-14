@@ -276,6 +276,12 @@ function TaskHistoryContent() {
                         <span className="ml-2">{execution.summary.errorMessage}</span>
                       </div>
                     )}
+                    {execution.summary.advice && !execution.summary.stopped && (
+                      <div className="break-all text-sm text-muted-foreground">
+                        <span className="font-medium">建议</span>
+                        <span className="ml-2">{execution.summary.advice}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

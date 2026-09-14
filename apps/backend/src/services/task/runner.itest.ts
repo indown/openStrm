@@ -23,6 +23,13 @@ const TASK = "runner-itest";
 const ORIGIN = "/media/Show";
 /** 单文件失败的用例用另一棵树：一个 nfo 的直链 404 */
 const ORIGIN_PARTIAL = "/media/Partial";
+/** 文件名过长：一段 252 字节的名字加 .strm 就超过 255 */
+const ORIGIN_LONG = "/media/Long";
+const LONG_NAME = `${"字".repeat(84)}.mkv`;
+/** 没权限：目标目录只读 */
+const ORIGIN_PERM = "/media/Perm";
+/** 没权限但只有一个文件：流比整轮停先结束，结论仍按整轮停记 */
+const ORIGIN_PERM1 = "/media/Perm1";
 let listDelayMs = 0;
 let listCalls = 0;
 let holdRaw = false;
@@ -42,6 +49,16 @@ const tree: Record<string, Array<{ name: string; is_dir: boolean }>> = {
     { name: "ep1.nfo", is_dir: false },
     { name: "missing.nfo", is_dir: false },
   ],
+  [ORIGIN_LONG]: [
+    { name: "ep1.mkv", is_dir: false },
+    { name: LONG_NAME, is_dir: false },
+  ],
+  [ORIGIN_PERM]: [
+    { name: "ep1.mkv", is_dir: false },
+    { name: "ep2.mkv", is_dir: false },
+    { name: "ep3.mkv", is_dir: false },
+  ],
+  [ORIGIN_PERM1]: [{ name: "ep1.mkv", is_dir: false }],
 };
 const server = http.createServer((req, res) => {
   const json = (body: unknown) => {
@@ -318,6 +335,7 @@ test("单个文件下载失败不拖死任务：其余照常完成，历史记 f
   const id = `${TASK}-partial`;
   insertTask({ id, account: "ol", accountType: "openlist", originPath: ORIGIN_PARTIAL, targetPath: `${TASK}/partial`, strmPrefix: "http://strm.local" });
   const dir = path.join(process.env.DATA_DIR!, TASK, "partial");
+  const rawBefore = rawRequests;
   try {
     const res = await startTask(id);
     assert.equal(res.status, 200, JSON.stringify(res.body));
@@ -333,17 +351,110 @@ test("单个文件下载失败不拖死任务：其余照常完成，历史记 f
     assert.equal(h.summary.totalFiles, 3);
     assert.equal(h.summary.downloadedFiles, 2, "完成数记真实值，不再是 0");
     assert.equal(h.summary.failedFiles, 1);
-    assert.match(h.summary.errorMessage ?? "", /1 个文件失败：missing\.nfo/);
+    assert.equal(h.summary.errorMessage, "1 个文件失败：网盘上已没有 1", "摘要按类别");
+    assert.deepEqual(h.summary.failures, { gone: 1 });
+    assert.match(h.summary.advice ?? "", /不用处理/);
+    assert.equal(h.summary.stopped, undefined, "单个文件没了不停整轮");
 
     // 历史里的事件行：开始事件、带文件名的失败事件、带结论的结束事件
     const lines = getTaskExecution(h.id)!.logs.map((l) => JSON.parse(l));
     assert.ok(lines.some((l) => l.start === true && l.total === 3 && l.strmTotal === 1 && l.downloadTotal === 2), "第一行是开始事件");
-    assert.ok(lines.some((l) => l.filePath === "missing.nfo" && l.kind === "download" && typeof l.error === "string"), "失败事件带文件名");
+    const failLine = lines.find((l) => l.filePath === "missing.nfo" && typeof l.error === "string");
+    assert.ok(failLine && failLine.kind === "download", "失败事件带文件名");
+    assert.equal(failLine.reason, "gone");
+    assert.equal(failLine.message, "网盘上已经没有这个文件");
+    assert.match(failLine.advice, /不用处理/);
+    assert.equal(rawRequests, rawBefore + 2, "404 不重试：ep1.nfo 一次、missing.nfo 一次");
     const done = lines.find((l) => l.done === true);
     assert.equal(done?.status, "failed");
     assert.equal(done?.finished, 2);
     assert.equal(done?.failed, 1);
   } finally {
+    for (const h of getTaskHistory(id)) deleteTaskExecution(h.id);
+    deleteTask(id);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("文件名过长：事前预判，不碰文件系统，历史和事件里带分类、说明和「去整理」", async () => {
+  const id = `${TASK}-long`;
+  insertTask({ id, account: "ol", accountType: "openlist", originPath: ORIGIN_LONG, targetPath: `${TASK}/long`, strmPrefix: "http://strm.local" });
+  const dir = path.join(process.env.DATA_DIR!, TASK, "long");
+  try {
+    const res = await startTask(id);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.message, "2 files to download");
+    await waitFor(() => !isTaskRunning(id), "任务结束");
+    assert.ok(fs.existsSync(path.join(dir, "ep1.strm")), "正常的照常生成");
+    assert.deepEqual(fs.readdirSync(dir), ["ep1.strm"], "过长的没去碰文件系统");
+    await waitFor(() => getTaskHistory(id)[0]?.status !== "running", "历史收尾");
+    const [h] = getTaskHistory(id);
+    assert.equal(h.status, "failed");
+    assert.equal(h.summary.downloadedFiles, 1);
+    assert.equal(h.summary.failedFiles, 1);
+    assert.equal(h.summary.errorMessage, "1 个文件失败：文件名过长 1");
+    assert.deepEqual(h.summary.failures, { "name-too-long": 1 });
+    assert.match(h.summary.advice ?? "", /整理/);
+    const lines = getTaskExecution(h.id)!.logs.map((l) => JSON.parse(l));
+    const fail = lines.find((l) => l.filePath === LONG_NAME && typeof l.error === "string");
+    assert.equal(fail?.reason, "name-too-long");
+    assert.equal(fail?.attempted, false, "标明没尝试");
+    assert.deepEqual(fail?.action, { type: "organize", subPath: "" });
+    assert.match(fail?.message ?? "", /255 字节/);
+  } finally {
+    for (const h of getTaskHistory(id)) deleteTaskExecution(h.id);
+    deleteTask(id);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("目标目录只读：第一个文件没权限就整轮停，剩下的算未尝试，历史写明原因和建议", { skip: process.getuid?.() === 0 ? "root 不受权限限制" : false }, async () => {
+  const id = `${TASK}-perm`;
+  insertTask({ id, account: "ol", accountType: "openlist", originPath: ORIGIN_PERM, targetPath: `${TASK}/perm`, strmPrefix: "http://strm.local" });
+  const dir = path.join(process.env.DATA_DIR!, TASK, "perm");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.chmodSync(dir, 0o555);
+  try {
+    const res = await startTask(id);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    await waitFor(() => !isTaskRunning(id), "任务结束");
+    await waitFor(() => getTaskHistory(id)[0]?.status !== "running", "历史收尾");
+    const [h] = getTaskHistory(id);
+    assert.equal(h.status, "failed");
+    assert.equal(h.summary.stopped?.reason, "permission");
+    assert.match(h.summary.stopped?.advice ?? "", /PUID/);
+    assert.equal((h.summary.failedFiles ?? 0) + (h.summary.stopped?.remaining ?? 0), 3, "失败的加没轮到的就是全部");
+    assert.match(h.summary.errorMessage ?? "", /^没有写入 data 目录的权限；/);
+    assert.ok((h.summary.failures?.permission ?? 0) >= 1);
+    const done = getTaskExecution(h.id)!.logs.map((l) => JSON.parse(l)).find((l) => l.done === true);
+    assert.equal(done?.stopped?.reason, "permission");
+  } finally {
+    fs.chmodSync(dir, 0o755);
+    for (const h of getTaskHistory(id)) deleteTaskExecution(h.id);
+    deleteTask(id);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("只读目录里只有一个文件：流先结束也按整轮停记，摘要是原因加建议", { skip: process.getuid?.() === 0 ? "root 不受权限限制" : false }, async () => {
+  const id = `${TASK}-perm1`;
+  insertTask({ id, account: "ol", accountType: "openlist", originPath: ORIGIN_PERM1, targetPath: `${TASK}/perm1`, strmPrefix: "http://strm.local" });
+  const dir = path.join(process.env.DATA_DIR!, TASK, "perm1");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.chmodSync(dir, 0o555);
+  try {
+    const res = await startTask(id);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    await waitFor(() => !isTaskRunning(id), "任务结束");
+    await waitFor(() => getTaskHistory(id)[0]?.status !== "running", "历史收尾");
+    const [h] = getTaskHistory(id);
+    assert.equal(h.status, "failed");
+    assert.equal(h.summary.stopped?.reason, "permission");
+    assert.equal(h.summary.stopped?.remaining, 0);
+    assert.match(h.summary.errorMessage ?? "", /^没有写入 data 目录的权限；/, "不是「1 个文件失败：没有写入权限 1」");
+    assert.match(h.summary.advice ?? "", /PUID/);
+  } finally {
+    fs.chmodSync(dir, 0o755);
     for (const h of getTaskHistory(id)) deleteTaskExecution(h.id);
     deleteTask(id);
     fs.rmSync(dir, { recursive: true, force: true });

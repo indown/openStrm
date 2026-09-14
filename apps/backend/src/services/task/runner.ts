@@ -8,8 +8,8 @@
 import type { Dirent } from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { catchError, defer, EMPTY, finalize, from, merge, mergeMap, Subject, Subscription, tap } from "rxjs";
-import type { TaskDefinition } from "@openstrm/shared";
+import { catchError, defer, EMPTY, finalize, from, merge, mergeMap, retry, Subject, Subscription, takeUntil, tap, throwError, timer } from "rxjs";
+import type { FileFailureKind, TaskDefinition, TaskStopInfo } from "@openstrm/shared";
 import { listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -30,6 +30,7 @@ import {
   createTaskExecution,
   updateTaskExecution,
 } from "../task-history.js";
+import { classifyFileFailure, summarizeFailures, type FileFailure } from "../download/failure.js";
 import { refreshEmbyNow } from "../media-server.js";
 import { extOf, extSet } from "../strm/naming.js";
 import { notify, type TaskTrigger, issueFromDrive } from "../telegram/notify.js";
@@ -268,30 +269,67 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
    * 那时 .part 还没改名；改名失败会再走 failOne，按 percent 算的话同一个文件既算完成又算失败
    */
   const finishOne = (filePath: string) => finished.add(filePath);
+  /** 失败按类别计数，以及每一类的建议（摘要里给数量最多那一类的） */
+  const failures: Partial<Record<FileFailureKind, number>> = {};
+  const adviceByKind: Partial<Record<FileFailureKind, string>> = {};
+  /** 整轮停：第一个整轮级的失败记在这里，stop$ 让 merge 走正常的 complete 收尾（进行中的下载随之中止） */
+  let stopping: FileFailure | null = null;
+  const stop$ = new Subject<void>();
+  let finishedRun = false;
   /**
-   * 单个文件失败：记一行、计数，任务继续。
+   * 单个文件失败：分类、记一行（带人话说明和建议）、计数，任务继续。
    * 以前下载那条流没有接住，一个文件 404 会把整条 merge 炸掉：剩下的下载全部中止，
    * 历史里 downloadedFiles 记 0，错误信息里连是哪个文件都没有。
+   * 磁盘满 / 没权限 / 只读 / 登录失效 / 风控是整轮的事，第一次出现就停，不再逐个文件失败
    */
   const failOne = (filePath: string, kind: "strm" | "download", err: unknown) => {
+    const f = classifyFileFailure(err, { relPath: filePath, kind, provider });
+    // 写文件前就判定写不进去的（文件名过长）带 attempted=false：日志页标「没去碰文件系统」
+    const attempted = (err as { attempted?: boolean } | null)?.attempted !== false;
     failedFiles.push(filePath);
-    pushLog({ filePath, kind, error: err instanceof Error ? err.message : String(err) });
+    failures[f.kind] = (failures[f.kind] ?? 0) + 1;
+    adviceByKind[f.kind] ??= f.advice;
+    pushLog({ filePath, kind, error: f.detail, reason: f.kind, message: f.message, advice: f.advice, ...(f.action ? { action: f.action } : {}), ...(attempted ? {} : { attempted: false }) });
+    if (f.scope === "task" && !stopping) {
+      stopping = f;
+      log.warn({ taskId: id, reason: f.kind }, `同步中止：${f.message}`);
+      stop$.next();
+    }
     return EMPTY;
   };
+  const topAdvice = (): string | undefined => {
+    const top = (Object.entries(failures) as Array<[FileFailureKind, number]>).filter(([k]) => adviceByKind[k]).sort((a, b) => b[1] - a[1])[0];
+    return top ? adviceByKind[top[0]] : undefined;
+  };
   const finish = (status: "completed" | "failed", fatal?: string) => {
-    const message = fatal ?? (failedFiles.length > 0 ? describeFailures(failedFiles) : undefined);
+    if (finishedRun) return;
+    finishedRun = true;
+    // 整轮停：没轮到的文件不算失败，结论是原因 + 建议 + 未尝试数
+    const stopped: TaskStopInfo | undefined = stopping && status === "failed"
+      ? { reason: stopping.kind, message: stopping.message, advice: stopping.advice, remaining: Math.max(0, total - finished.size - failedFiles.length) }
+      : undefined;
+    const summary = failedFiles.length > 0 ? summarizeFailures(failures, failedFiles) : undefined;
+    const message = stopped ? `${stopped.message}；${stopped.advice}${stopped.remaining > 0 ? `（未尝试 ${stopped.remaining} 个）` : ""}` : (fatal ?? summary);
+    // 流本身炸了（fatal）时别把之前个别文件的建议挂上去，那和死因无关
+    const advice = stopped ? stopped.advice : fatal ? undefined : topAdvice();
     void notify({
       type: "task-done", task, status, total, finished: finished.size, failed: failedFiles.length,
-      durationMs: Date.now() - execution.startTime, message,
+      durationMs: Date.now() - execution.startTime, message, advice: stopped ? undefined : advice,
     });
     pushLog({
       done: true, status, total, finished: finished.size, failed: failedFiles.length,
-      overallPercent: overall(), message, at: Date.now(),
+      overallPercent: overall(), message, ...(stopped ? { stopped } : {}), at: Date.now(),
     });
-    history.flush();
+    // 落库的日志写不进去（磁盘满、库锁着）不能把收尾掐断，不然任务永远挂在 running
+    try {
+      history.flush();
+    } catch (err) {
+      log.warn({ err, taskId: id }, "执行日志落库失败");
+    }
     subject.complete();
     completeTaskExecution(execution.id, status, {
       totalFiles: total, downloadedFiles: finished.size, failedFiles: failedFiles.length, errorMessage: message,
+      ...(failedFiles.length > 0 ? { failures } : {}), ...(advice ? { advice } : {}), ...(stopped ? { stopped } : {}),
     });
     unregisterRunningTask(id);
   };
@@ -317,6 +355,8 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
           strmPrefix,
           enablePathEncoding: task.enablePathEncoding,
         }).pipe(
+          // 本地临时错误（打开文件数超限、NFS 抖一下）隔一秒再写一次；其余不重试
+          retry({ count: 1, delay: (err: unknown) => (classifyFileFailure(err, { relPath: filePath, kind: "strm", provider }).retryable ? timer(1000) : throwError(() => err)) }),
           tap({ next: (p) => report(p, "strm"), complete: () => finishOne(filePath) }),
           catchError((err: unknown) => failOne(filePath, "strm", err)),
         ),
@@ -341,6 +381,7 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
               asStrm: false,
               displayPath: filePath,
               headers,
+              provider,
             }),
           ),
           tap({ next: (p) => report(p, "download"), complete: () => finishOne(filePath) }),
@@ -350,12 +391,13 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
     ),
   );
 
-  // 两条一起跑完才算完成：以前 strm 那条不在订阅里，纯 strm 的任务会在文件还没写完时就报"完成"
-  running.subscription = merge(strm$, download$).subscribe({
+  // 两条一起跑完才算完成：以前 strm 那条不在订阅里，纯 strm 的任务会在文件还没写完时就报"完成"。
+  // 整轮停（stop$）让 merge 直接 complete：进行中的下载随之退订，收尾和正常结束走同一处
+  running.subscription = merge(strm$, download$).pipe(takeUntil(stop$)).subscribe({
     complete: () => {
       finish(failedFiles.length > 0 ? "failed" : "completed");
-      // 失败的只是个别文件，写好的那些一样要让媒体库看到
-      refreshEmbyNow("全量任务完成");
+      // 失败的只是个别文件（或者整轮停在半路），写好的那些一样要让媒体库看到
+      if (finished.size > 0 || failedFiles.length === 0) refreshEmbyNow(stopping ? "同步中止" : "全量任务完成");
     },
     error: (err: Error) => {
       // 单个文件的失败都在上面接住了，走到这里是流本身出了意外
@@ -378,8 +420,3 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
   };
 }
 
-/** 失败文件的一句话说明：前几个名字 + 总数 */
-function describeFailures(files: string[]): string {
-  const shown = files.slice(0, 3).map((f) => path.basename(f)).join("、");
-  return `${files.length} 个文件失败：${shown}${files.length > 3 ? " 等" : ""}`;
-}

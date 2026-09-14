@@ -28,6 +28,8 @@ export type NotifyEvent =
       failed: number;
       durationMs: number;
       message?: string;
+      /** 数量最多那一类失败的处理建议（整轮停时已经在 message 里） */
+      advice?: string;
     }
   /** issue：网盘自己认出的账号问题（见 issueFromDrive）；没给就从 reason 文案里猜 */
   | { type: "task-start-failed"; task: TaskRef; reason: string; trigger?: TaskTrigger; issue?: AccountIssue | null }
@@ -175,7 +177,7 @@ function render(event: NotifyEvent): string {
       const counts = `${event.finished}/${event.total} 个文件`;
       if (event.status === "completed") return `✅ <b>同步完成</b>\n${label}\n${counts}，用时 ${fmtDuration(event.durationMs)}`;
       if (event.status === "cancelled") return `⏹ <b>任务已取消</b>\n${label}\n完成 ${counts}${event.message ? `\n${esc(event.message)}` : ""}`;
-      return `❌ <b>同步失败</b>\n${label}\n完成 ${counts}，失败 ${event.failed}，用时 ${fmtDuration(event.durationMs)}${event.message ? `\n${esc(event.message)}` : ""}`;
+      return `❌ <b>同步失败</b>\n${label}\n完成 ${counts}，失败 ${event.failed}，用时 ${fmtDuration(event.durationMs)}${event.message ? `\n${esc(event.message)}` : ""}${event.advice ? `\n👉 ${esc(event.advice)}` : ""}`;
     }
     case "task-start-failed":
       return `❌ <b>任务启动失败</b>${event.trigger ? `（${TRIGGER_LABEL[event.trigger]}触发）` : ""}\n${esc(taskLabel(event.task))}\n${esc(event.reason)}`;

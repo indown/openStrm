@@ -45,6 +45,7 @@ import {
   type HandleResult,
   type LifeContext,
 } from "./handlers.js";
+import { describeFileFailure } from "../download/failure.js";
 
 const DEFAULT_INTERVAL_SEC = 15;
 const ERROR_BACKOFF_MS = 30_000;
@@ -391,7 +392,8 @@ class AccountMonitor {
           if (signal.aborted || isAbortError(err)) return warning;
           this.stats.failed++;
           failedIds.push(id);
-          const msg = err instanceof Error ? err.message : String(err);
+          // 本地写不进去 / 网盘取不到：给人话和建议（认不出的还是原文）
+          const msg = describeFileFailure(err, { relPath: ev.path, kind: "strm", provider });
           markLifeEvent(id, "failed", msg);
           this.log("error", `${name} ${ev.path} 处理失败：${msg}`);
         }

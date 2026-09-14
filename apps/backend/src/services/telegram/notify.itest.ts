@@ -43,9 +43,11 @@ test("默认开关：任务开始不发，完成 / 失败 / 云下载 / 账号�
 
 test("失败与取消的文案带数量和原因，原因做 HTML 转义", async () => {
   await notify({ type: "task-done", task, status: "failed", total: 5, finished: 4, failed: 1, durationMs: 1000, message: "1 个文件失败：<x>.nfo" });
-  assert.match(sent[0].text, /❌ <b>同步失败<\/b>[\s\S]*完成 4\/5 个文件，失败 1[\s\S]*1 个文件失败：&lt;x&gt;\.nfo/);
+  assert.match(sent[0].text, /❌ <b>同步失败<\/b>[\s\S]*完成 4\/5 个文件，失败 1[\s\S]*1 个文件失败：&lt;x&gt;\.nfo$/);
+  await notify({ type: "task-done", task, status: "failed", total: 5, finished: 2, failed: 3, durationMs: 1000, message: "3 个文件失败：文件名过长 3", advice: "用「整理」改成标准命名" });
+  assert.match(sent[1].text, /3 个文件失败：文件名过长 3\n👉 用「整理」改成标准命名$/);
   await notify({ type: "task-done", task, status: "cancelled", total: 5, finished: 2, failed: 0, durationMs: 1000, message: "用户取消" });
-  assert.match(sent[1].text, /⏹ <b>任务已取消<\/b>[\s\S]*完成 2\/5 个文件\n用户取消/);
+  assert.match(sent[2].text, /⏹ <b>任务已取消<\/b>[\s\S]*完成 2\/5 个文件\n用户取消/);
 });
 
 test("整理完成 / 撤销的文案：失败按类别拆开、本地未同步单列、有事要处理就提示去整理页", async () => {

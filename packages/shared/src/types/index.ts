@@ -8,9 +8,12 @@ export type {
 } from "./settings.js";
 export type { AccountInfo, Account115, AccountOpenlist, AccountQuark } from "./account.js";
 export type {
+  FileFailureAction,
+  FileFailureKind,
   TaskDefinition,
   TaskExecutionHistory,
   TaskExecutionSummary,
+  TaskStopInfo,
 } from "./task.js";
 export type { MediaLibraryEntry, ScrapeStatus, MediaType } from "./media-library.js";
 export type {

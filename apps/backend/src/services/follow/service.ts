@@ -40,6 +40,7 @@ import { normalizeSubPath } from "../strm/naming.js";
 import { notify, type NotifyEvent } from "../telegram/notify.js";
 import { baseName, diffShareListing, groupByParent, mergeKnown, scopeIsWhole, type ListedEntry } from "./diff.js";
 import { issueFromDrive } from "../telegram/notify.js";
+import { describeFileFailure } from "../download/failure.js";
 
 const log = moduleLogger("follow");
 
@@ -531,7 +532,8 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
       landed.push(...group.items.map((i) => normalizeSubPath(`${subPath}/${baseName(i.path)}`)));
     } catch (err) {
       failed.push(...group.items.map((i) => i.path));
-      errors.push(`${group.parent || "."}：${errMsg(err)}`);
+      // 转存本身的错误是网盘那边的原文；落盘（写 strm / 下载附件）的错误给人话和建议
+      errors.push(`${group.parent || "."}：${describeFileFailure(err, { relPath: group.parent || "", kind: "strm", provider })}`);
     }
   }
 

@@ -5,15 +5,16 @@
  * 落库的执行历史由 services/task-history.ts 负责。
  */
 import type { Subject, Subscription } from "rxjs";
+import type { FileFailureAction, FileFailureKind, TaskStopInfo } from "@openstrm/shared";
 
 /**
  * 任务进度事件。SSE 原样推给页面，历史里也按行存同一种 JSON，页面用一套解析。
  *
  *   开始      { start, total, strmTotal, downloadTotal, at }
  *   文件进度  { filePath, kind, percent, overallPercent }      percent 到 100 即完成
- *   文件失败  { filePath, kind, error }
+ *   文件失败  { filePath, kind, error, reason, message, advice, action?, attempted? }   reason 起的字段是分类（老记录没有）
  *   任务错误  { error }                                          不带 filePath
- *   结束      { done, status, total, finished, failed, overallPercent, message?, at }
+ *   结束      { done, status, total, finished, failed, overallPercent, message?, stopped?, at }
  *   取消      { done, cancelled, status: "cancelled", message, at }
  */
 export interface DownloadProgress {
@@ -26,6 +27,14 @@ export interface DownloadProgress {
   percent?: number;
   overallPercent?: string;
   error?: string;
+  /** 文件失败的分类和建议（services/download/failure.ts）；人话说明放在 message 里。老记录没有这几个字段 */
+  reason?: FileFailureKind;
+  advice?: string;
+  action?: FileFailureAction;
+  /** false = 事前预判就知道写不进去（文件名过长），没去碰文件系统 */
+  attempted?: boolean;
+  /** 结束事件：整轮停的原因（磁盘满 / 没权限 / 登录失效 / 风控） */
+  stopped?: TaskStopInfo;
   done?: boolean;
   status?: "completed" | "failed" | "cancelled";
   finished?: number;
