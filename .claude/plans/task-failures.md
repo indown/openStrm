@@ -154,3 +154,10 @@ function classifyFileFailure(err: unknown, ctx: { localPath: string; remotePath:
 - 全量同步：正常那份生成 strm，长名那份在写入口预判处拦下（`name-too-long`，没碰文件系统），历史里 `failures = {name-too-long: 1}`、`advice`「用整理改成标准命名，或在网盘上把名字改短」。
 - 本地目标目录改成只读再跑：第一份撞 EACCES → `permission`（任务级）→ `stop$` 整轮停，历史里 `stopped = {reason: permission, remaining: 0}`、`errorMessage` 就是停下的原因 + 建议；目录改回可写后再跑恢复。
 - 浏览器：任务日志页顶部「同步中止：没有写入 data 目录的权限 + 建议」横幅，「失败原因」面板两组（文件名过长 · 1 带「去整理这个目录」链接、没有写入权限 · 1），文件行各自带原因 + 建议，长名那行标「没去碰文件系统」；历史页两条记录分别显示「错误信息」和「建议」行。
+
+### 第二轮评审（2026-09-14 晚，959cbbb 提交之后）
+
+- **路径里的「405」「cookie」被当成风控**：`classifyFileFailure` 把原始文案（含路径）喂给 115 的文案规则，`/电影/1405年/` 下一个找不到的文件、`/tv/Cookie Monster/` 下的下载超时都会变成账号问题 → 整轮停。现在账号问题统一由 `drive/errors.ts` 的 `accountIssueOf` 判：provider（115 只看接口层的错误类，见 organize.md 同节）→ 登录码 → 只对接口回来的错误（`facts.api`）按文案兜底；`status 405` 不再在这边单独当风控。测试里模拟 115 的登录超时要用 `Cloud115ApiError`，普通 `Error` 的文案不再猜。
+- **`describeFileFailure` 丢掉原文**：监控 / 追更 / 云下载只存这一句，分类错了没法查。现在「原因；建议（原文，最多 200 字）」。
+- **清理过本地多余文件没通知媒体库**：整轮停在第一个文件、或者根本没有要下载的，`removeExtraFiles` 删过东西也要刷新 Emby。
+- 前端 `KNOWN_KINDS` 从 `FILE_FAILURE_LABEL` 推出来，不再抄一份。

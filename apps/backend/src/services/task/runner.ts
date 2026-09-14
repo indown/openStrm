@@ -210,6 +210,7 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
   const { missing: missingLocally, extra: extraLocally } = planSync(remoteEntries, localEntries, strmExts, dlExts);
 
   let warning: string | undefined;
+  let deleted = 0;
   if (task.removeExtraFiles && extraLocally.length > 0) {
     if (remoteEntries.length === 0) {
       // 远端一个文件都没有而本地有一堆，十有八九是导出出了问题（空导出、解析没对上），
@@ -218,16 +219,21 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
       log.warn({ taskId: id, local: localEntries.length }, warning);
     } else {
       await removeExtraFiles(extraLocally, saveDir);
+      deleted = extraLocally.length;
     }
   }
-  if (missingLocally.length === 0) return { status: 200, body: { message: "no files to download", warning } };
+  if (missingLocally.length === 0) {
+    // 只清了本地多余的文件也要让媒体库知道
+    if (deleted > 0) refreshEmbyNow("清理了本地多余文件");
+    return { status: 200, body: { message: "no files to download", warning } };
+  }
 
   const total = missingLocally.length;
   const subject = new Subject<DownloadProgress>();
   const perFile = new Map<string, number>(missingLocally.map((fp) => [fp, 0]));
   const execution = createTaskExecution(id, { account, originPath, targetPath, removeExtraFiles: task.removeExtraFiles });
   updateTaskExecution(execution.id, {
-    summary: { totalFiles: total, downloadedFiles: 0, deletedFiles: task.removeExtraFiles ? extraLocally.length : 0 },
+    summary: { totalFiles: total, downloadedFiles: 0, deletedFiles: deleted },
   });
 
   const running: RunningTask = { subject, subscription: new Subscription(), logs: [] };
@@ -396,8 +402,8 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
   running.subscription = merge(strm$, download$).pipe(takeUntil(stop$)).subscribe({
     complete: () => {
       finish(failedFiles.length > 0 ? "failed" : "completed");
-      // 失败的只是个别文件（或者整轮停在半路），写好的那些一样要让媒体库看到
-      if (finished.size > 0 || failedFiles.length === 0) refreshEmbyNow(stopping ? "同步中止" : "全量任务完成");
+      // 失败的只是个别文件（或者整轮停在半路），写好的那些一样要让媒体库看到；开头清掉的本地多余文件也是
+      if (finished.size > 0 || deleted > 0 || failedFiles.length === 0) refreshEmbyNow(stopping ? "同步中止" : "全量任务完成");
     },
     error: (err: Error) => {
       // 单个文件的失败都在上面接住了，走到这里是流本身出了意外

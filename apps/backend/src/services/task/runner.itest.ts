@@ -153,6 +153,16 @@ const quarkServer = http.createServer((req, res) => {
 await new Promise<void>((r) => quarkServer.listen(0, "127.0.0.1", r));
 const quarkBase = `http://127.0.0.1:${(quarkServer.address() as { port: number }).port}`;
 
+// ---- 假 Emby：只记刷新请求 ----
+const embyRefreshes: string[] = [];
+const embyServer = http.createServer((req, res) => {
+  embyRefreshes.push(`${req.method} ${req.url}`);
+  res.writeHead(204);
+  res.end();
+});
+await new Promise<void>((r) => embyServer.listen(0, "127.0.0.1", r));
+const embyBase = `http://127.0.0.1:${(embyServer.address() as { port: number }).port}`;
+
 const baseline = { settings: readAppSettings(), accounts: listAccounts() };
 const outDir = path.join(process.env.DATA_DIR!, TASK);
 
@@ -194,6 +204,8 @@ after(async () => {
   clearQuarkCaches();
   quarkServer.closeAllConnections();
   await new Promise<void>((r) => quarkServer.close(() => r()));
+  embyServer.closeAllConnections();
+  await new Promise<void>((r) => embyServer.close(() => r()));
 });
 
 test("整条跑通：strm 落盘、附件下载、历史记完成", async () => {
@@ -251,6 +263,45 @@ test("removeExtraFiles：本地多出来的文件和空目录被删掉，远端�
     assert.ok(fs.existsSync(path.join(outDir, "out/S1/ep1.nfo")));
   } finally {
     updateTask(TASK, { removeExtraFiles: false });
+  }
+});
+
+test("只清理了本地多余文件、没有要下载的：也通知媒体库刷新；整轮停在第一个文件时清理过的也要刷新", async () => {
+  updateTask(TASK, { removeExtraFiles: true });
+  replaceAppSettings({ ...readAppSettings(), emby: { ...readAppSettings().emby, url: embyBase, apiKey: "k" } });
+  fs.writeFileSync(path.join(outDir, "out/S1/stray.strm"), "x");
+  embyRefreshes.length = 0;
+  try {
+    const res = await startTask(TASK);
+    assert.equal(res.body.message, "no files to download");
+    await waitFor(() => embyRefreshes.length > 0, "刷新请求到了", 5000);
+    assert.match(embyRefreshes[0], /Library\/Refresh/);
+  } finally {
+    updateTask(TASK, { removeExtraFiles: false });
+  }
+  // 长名那份写不进去、正常那份也没有（已经在），只有清理：完成数 0、有失败，仍要刷新
+  const id = `${TASK}-long-refresh`;
+  insertTask({ id, account: "ol", accountType: "openlist", originPath: ORIGIN_LONG, targetPath: `${TASK}/longr`, strmPrefix: "http://strm.local", removeExtraFiles: true });
+  const dir = path.join(process.env.DATA_DIR!, TASK, "longr");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "ep1.strm"), "http://strm.local/media/Long/ep1.mkv");
+  fs.writeFileSync(path.join(dir, "stray.strm"), "x");
+  embyRefreshes.length = 0;
+  try {
+    const res = await startTask(id);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    await waitFor(() => !isTaskRunning(id), "任务结束");
+    await waitFor(() => getTaskHistory(id)[0]?.status !== "running", "历史收尾");
+    const [h] = getTaskHistory(id);
+    assert.equal(h.summary.downloadedFiles, 0);
+    assert.equal(h.summary.deletedFiles, 1);
+    assert.equal(h.summary.failedFiles, 1);
+    await waitFor(() => embyRefreshes.length > 0, "清理过就要刷新", 5000);
+  } finally {
+    replaceAppSettings({ ...baseline.settings, strmExtensions: [".mkv"], downloadExtensions: [".nfo"] });
+    for (const x of getTaskHistory(id)) deleteTaskExecution(x.id);
+    deleteTask(id);
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

@@ -5,6 +5,7 @@
  */
 
 import type { FileFailureAction, FileFailureKind, TaskStopInfo } from "@openstrm/shared";
+import { FILE_FAILURE_LABEL } from "@/lib/task-failures";
 
 export type FileKind = "strm" | "download" | "unknown";
 export type RunStatus = "running" | "completed" | "failed" | "cancelled";
@@ -93,7 +94,7 @@ const num = (v: unknown): number | null => {
 
 const kindOf = (v: unknown): FileKind => (v === "strm" || v === "download" ? v : "unknown");
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
-const KNOWN_KINDS = new Set<FileFailureKind>(["name-too-long", "invalid-name", "name-conflict", "no-space", "permission", "read-only", "fs-transient", "io-error", "gone", "auth", "blocked", "network", "unknown"]);
+const KNOWN_KINDS = new Set<FileFailureKind>(Object.keys(FILE_FAILURE_LABEL) as FileFailureKind[]);
 /** 不认识的类别（更新的后端）归到 unknown，别让面板出现没标签的组 */
 const reasonOf = (v: unknown): FileFailureKind | undefined => (typeof v === "string" && v ? (KNOWN_KINDS.has(v as FileFailureKind) ? (v as FileFailureKind) : "unknown") : undefined);
 const actionOf = (v: unknown): FileFailureAction | undefined => {
