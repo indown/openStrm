@@ -50,6 +50,12 @@ export async function mirrorRelocate(op: { oldPath: string; newPath: string; isD
     await fsp.mkdir(path.dirname(to), { recursive: true });
     await fsp.rename(from, to);
     if (oldMatch) await removeEmptyParents(path.dirname(from), oldMatch.saveDir);
+    // 从主路径挪的：撤销先挪回再改名的窗口里，监控可能按事件在中间位置另生成了一份（同一个文件，撤销前查过原位置没有同名的），清掉别留两份
+    if (op.oldPathAlt && !op.isDir) {
+      const altMatch = matchTask(ctx, op.oldPathAlt);
+      const alt = altMatch ? localOf(altMatch) : null;
+      if (alt && alt !== from && alt !== to && (await pathExists(alt))) await fsp.rm(alt, { force: true });
+    }
     if (!op.isDir && to.endsWith(".strm")) {
       await writeStrm(strmUrlFor(newMatch.task, newMatch.relPath), path.join(newMatch.saveDir, newMatch.relPath), {
         displayPath: newMatch.relPath,

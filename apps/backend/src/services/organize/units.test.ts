@@ -174,3 +174,21 @@ test("艺术图目录（extrafanart / extrathumbs / .actors）归上一级；own
   assert.equal(buildUnits(files(["BEEF.S01E01.mkv"]), opts)[0].ownsDir, false, "任务根");
   assert.ok(buildUnits(files(["dump/Avatar.2009.1080p.mkv", "dump/Inception.2010.1080p.mkv"]), opts).every((u) => !u.ownsDir), "从大目录里拆出来的");
 });
+
+test("多个范围：每个范围照单一范围的规则来——两个季目录范围并回同一部剧，收件箱范围里的散文件按标题拆", () => {
+  const units = buildUnits(
+    files([
+      "我和僵尸有个约会/season1/我和僵尸有个约会01.mp4",
+      "我和僵尸有个约会/season1/我和僵尸有个约会02.mp4",
+      "我和僵尸有个约会/season2/我和僵尸有个约会2.EP01.mp4",
+      "inbox/Avatar.2009.1080p.mkv",
+      "inbox/Inception.2010.1080p.mkv",
+    ]),
+    { ...opts, scopes: ["我和僵尸有个约会/season1", "我和僵尸有个约会/season2", "inbox"] },
+  );
+  const show = units.filter((u) => u.rootPath === "我和僵尸有个约会");
+  assert.equal(show.length, 1, "两个季目录范围的单元根都越到剧目录，并成一部剧");
+  assert.deepEqual(show[0].files.map((f) => f.seasonFromDir).sort(), [1, 1, 2]);
+  const inbox = units.filter((u) => u.rootPath === "inbox");
+  assert.deepEqual(inbox.map((u) => u.parsed.title).sort(), ["Avatar", "Inception"], "范围根的名字（inbox）不当标题，按文件标题拆");
+});

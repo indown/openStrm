@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { OrganizeMatch } from "@openstrm/shared";
-import { finalizeItems, planUnit, resolveEpisode } from "./plan.js";
+import { EXCLUDED_REASON, finalizeItems, planUnit, resolveEpisode, type ScopeRoot } from "./plan.js";
 import { resolveOrganizeSettings } from "./settings.js";
 import { buildUnits, type ScopeEntry } from "./units.js";
 
@@ -252,4 +252,42 @@ test("名字认不出的图片 / nfo：作品自己的目录里原名跟进作�
   assert.equal(dst("390561_front.jpg"), "沙丘：第二部 (2024) [tmdbid=693134]/390561_front.jpg", "原来是「沙丘：第二部 (2024)0561_front.jpg」");
   assert.equal(dst("RARBG.nfo"), "沙丘：第二部 (2024) [tmdbid=693134]/RARBG.nfo");
   assert.deepEqual(items.filter((i) => i.action === "rmdir").map((i) => i.srcPath), ["某片"]);
+});
+
+test("删空目录不越过范围的根：根里面的腾空了删，根本身只在 removable 时删；没有根就一个都不删", () => {
+  const es = entries(["inbox/BEEF.S01.1080p/S01/BEEF.S01E01.1080p.WEB-DL.mkv", "inbox/BEEF.S01.1080p/S01/BEEF.S01E02.1080p.WEB-DL.mkv"]);
+  const [unit] = buildUnits(es, { scopePath: "inbox/BEEF.S01.1080p", taskRootName: "root", videoExts, rules: [] });
+  const p = planUnit({ unit, match: beef, seasonOverride: null, episodeOffset: 0, selected: true }, { settings });
+  const rmdirs = (roots: ScopeRoot[]) => finalizeItems([p], { entries: es, scopeRoots: roots, items: [], cleanupEmptyDirs: true }).filter((i) => i.action === "rmdir").map((i) => i.srcPath);
+  assert.deepEqual(rmdirs([{ path: "inbox/BEEF.S01.1080p", removable: false }]), ["inbox/BEEF.S01.1080p/S01"], "根不 removable：只删里面的");
+  assert.deepEqual(rmdirs([{ path: "inbox/BEEF.S01.1080p", removable: true }]), ["inbox/BEEF.S01.1080p/S01", "inbox/BEEF.S01.1080p"], "根 removable：连根一起删，上级 inbox 不碰");
+  assert.deepEqual(rmdirs([]), [], "没有根（新增路径是文件）：一个目录都不删");
+});
+
+test("字幕找主人：主人没排上（看不出集数）就跟着留下，不配给单元里唯一排上的那个视频；单元本来就一个视频时照旧跟它", () => {
+  const { items } = plan(["怒呛人生/BEEF.S01E01.mkv", "怒呛人生/BEEF.Pilot.Unaired.mkv", "怒呛人生/BEEF.Pilot.Unaired.chs.srt"], beef);
+  const sub = items.find((i) => i.srcPath.endsWith(".chs.srt"))!;
+  assert.deepEqual([sub.action, sub.reason], ["skip", "对应的视频没挪，跟着留在原处"]);
+  assert.equal(items.find((i) => i.srcPath.endsWith("S01E01.mkv"))!.action, "move");
+  const single = plan(["某片/Dune.Part.Two.2024.2160p.mkv", "某片/chs.srt"], dune).items;
+  assert.equal(single.find((i) => i.srcPath.endsWith("chs.srt"))!.action, "move", "名字对不上，但单元只有这一个视频");
+});
+
+test("单独取消勾选的文件：跳过，跟着它的字幕留下；同一集两个版本撞名时勾掉先排上的那份，另一份就能走", () => {
+  const es = entries(["inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv", "inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.chs.srt", "inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv"]);
+  const [unit] = buildUnits(es, { scopePath: "", taskRootName: "root", videoExts, rules: [] });
+  const p = planUnit({ unit, match: beef, seasonOverride: null, episodeOffset: 0, selected: true, excluded: new Set(["inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv"]) }, { settings });
+  const items = finalizeItems([p], { entries: es, scopePath: "", items: [], cleanupEmptyDirs: true });
+  const by = (n: string) => items.find((i) => i.srcPath.endsWith(n))!;
+  assert.deepEqual([by("S01E01.1080p.WEB-DL.mkv").action, by("S01E01.1080p.WEB-DL.mkv").reason], ["skip", EXCLUDED_REASON]);
+  assert.equal(by("chs.srt").action, "skip", "字幕跟着它的视频留下");
+  assert.equal(by("S01E02.1080p.WEB-DL.mkv").action, "move");
+  assert.ok(!items.some((i) => i.action === "rmdir" && i.srcPath === "inbox/BEEF.S01.1080p"), "源目录还有东西，不删");
+
+  const two = entries(["x/BEEF.S01E01.1080p.WEB-DL.mkv", "x/BEEF.S01E01.720p.HDTV.mkv"]);
+  const [u2] = buildUnits(two, { scopePath: "", taskRootName: "root", videoExts, rules: [] });
+  const clash = planUnit({ unit: u2, match: beef, seasonOverride: null, episodeOffset: 0, selected: true }, { settings }).items;
+  assert.deepEqual(clash.map((i) => [i.srcPath, i.action]), [["x/BEEF.S01E01.1080p.WEB-DL.mkv", "move"], ["x/BEEF.S01E01.720p.HDTV.mkv", "conflict"]]);
+  const resolved = planUnit({ unit: u2, match: beef, seasonOverride: null, episodeOffset: 0, selected: true, excluded: new Set(["x/BEEF.S01E01.1080p.WEB-DL.mkv"]) }, { settings }).items;
+  assert.equal(resolved.find((i) => i.srcPath.endsWith("720p.HDTV.mkv"))!.action, "move");
 });

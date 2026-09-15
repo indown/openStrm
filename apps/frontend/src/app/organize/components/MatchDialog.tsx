@@ -4,14 +4,32 @@ import { useEffect, useState } from "react";
 import Image from "next/image";
 import { Film, Loader2, Search, Tv } from "lucide-react";
 import { toast } from "sonner";
-import type { OrganizeCandidate, OrganizeUnit } from "@openstrm/shared";
+import type { OrganizeCandidate, OrganizeMediaType, OrganizeUnit } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { api, type TmdbSearchResult } from "@/lib/api";
+import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 
-type Pick = { mediaType: "movie" | "tv"; tmdbId: number; title: string; year: string; posterUrl: string };
+type Choice = Pick<OrganizeCandidate, "mediaType" | "tmdbId" | "title" | "year" | "posterUrl">;
+type Kind = "" | OrganizeMediaType;
+
+const KINDS: Array<{ key: Kind; label: string }> = [
+  { key: "", label: "全部" },
+  { key: "movie", label: "电影" },
+  { key: "tv", label: "剧集" },
+];
+
+/** 关键词是 TMDB 编号、TMDB 链接或 id 标签（tmdbid=123、tmdb-123、{tmdb-123}）时按编号查；链接自带类型 */
+function parseTmdbRef(text: string): { id: number; type?: OrganizeMediaType } | null {
+  const q = text.trim();
+  const url = /themoviedb\.org\/(movie|tv)\/(\d+)/i.exec(q);
+  if (url) return { id: Number(url[2]), type: url[1].toLowerCase() === "tv" ? "tv" : "movie" };
+  const tag = /^[[{]?\s*tmdb(?:id)?\s*[=:-]\s*(\d+)\s*[\]}]?$/i.exec(q);
+  if (tag) return { id: Number(tag[1]) };
+  if (/^\d{1,9}$/.test(q)) return { id: Number(q) };
+  return null;
+}
 
 function Poster({ url }: { url: string }) {
   const [broken, setBroken] = useState(false);
@@ -28,7 +46,7 @@ function Poster({ url }: { url: string }) {
   );
 }
 
-function PickButton({ item, current, onPick }: { item: Pick; current: boolean; onPick: (p: Pick) => void }) {
+function PickButton({ item, current, onPick }: { item: Choice; current: boolean; onPick: (p: Choice) => void }) {
   return (
     <button
       type="button"
@@ -49,7 +67,7 @@ function PickButton({ item, current, onPick }: { item: Pick; current: boolean; o
   );
 }
 
-/** 换匹配：先列识别时的备选，再可以按关键词搜 TMDB，点一个就换 */
+/** 换匹配：先列识别时的备选；可以按关键词搜（限定类型、年份），也可以直接填 TMDB 编号或贴 TMDB 链接 */
 export function MatchDialog({
   unit,
   onOpenChange,
@@ -57,18 +75,25 @@ export function MatchDialog({
 }: {
   unit: OrganizeUnit | null;
   onOpenChange: (open: boolean) => void;
-  onPick: (pick: { mediaType: "movie" | "tv"; tmdbId: number }) => Promise<void>;
+  /** 成功返回 true 才关弹框；失败的提示由调用方给 */
+  onPick: (pick: { mediaType: OrganizeMediaType; tmdbId: number }) => Promise<boolean>;
 }) {
   const open = unit != null;
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<TmdbSearchResult[]>([]);
+  const [kind, setKind] = useState<Kind>("");
+  const [year, setYear] = useState("");
+  const [results, setResults] = useState<Choice[]>([]);
+  const [byId, setById] = useState(false);
   const [searching, setSearching] = useState(false);
   const [picking, setPicking] = useState(false);
 
   useEffect(() => {
     if (!unit) return;
     setQuery(unit.parsedTitle || unit.rawName);
+    setKind(unit.match?.mediaType ?? "");
+    setYear(unit.parsedYear);
     setResults([]);
+    setById(false);
   }, [unit]);
 
   const search = async () => {
@@ -76,9 +101,22 @@ export function MatchDialog({
     if (!q) return;
     setSearching(true);
     try {
-      const list = await api.tmdb.search(q);
-      setResults(list.filter((r) => r.mediaType === "movie" || r.mediaType === "tv"));
-      if (list.length === 0) toast.info("没有找到相关结果");
+      const ref = parseTmdbRef(q);
+      if (ref) {
+        // 编号不带类型：电影、剧集都查一遍（同一个编号两边可能都有）
+        const types: OrganizeMediaType[] = ref.type ? [ref.type] : kind ? [kind] : ["movie", "tv"];
+        const settled = await Promise.allSettled(types.map((t) => api.organize.tmdbLookup(t, ref.id)));
+        const found = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+        setResults(found);
+        setById(true);
+        if (found.length === 0) toast.info(`TMDB 上没有编号 ${ref.id}${types.length === 1 ? `的${types[0] === "movie" ? "电影" : "剧集"}` : ""}`);
+      } else {
+        const y = year.trim();
+        const r = await api.organize.tmdbSearch({ query: q, type: kind || undefined, year: /^\d{4}$/.test(y) ? y : undefined });
+        setResults(r.results);
+        setById(false);
+        if (r.results.length === 0) toast.info("没有找到相关结果：换个关键词，或者去掉年份 / 类型再试");
+      }
     } catch (err) {
       toast.error(apiErrorMessage(err, "TMDB 搜索失败"));
     } finally {
@@ -86,24 +124,16 @@ export function MatchDialog({
     }
   };
 
-  const pick = async (p: Pick) => {
+  const pick = async (p: Choice) => {
     setPicking(true);
     try {
-      await onPick({ mediaType: p.mediaType, tmdbId: p.tmdbId });
-      onOpenChange(false);
+      if (await onPick({ mediaType: p.mediaType, tmdbId: p.tmdbId })) onOpenChange(false);
     } finally {
       setPicking(false);
     }
   };
 
-  const candidates: Pick[] = (unit?.match?.candidates ?? []).map((c: OrganizeCandidate) => ({
-    mediaType: c.mediaType,
-    tmdbId: c.tmdbId,
-    title: c.title,
-    year: c.year,
-    posterUrl: c.posterUrl,
-  }));
-  const searched: Pick[] = results.map((r) => ({ mediaType: r.mediaType === "tv" ? "tv" : "movie", tmdbId: r.id, title: r.title, year: r.year, posterUrl: r.posterUrl }));
+  const candidates: Choice[] = unit?.match?.candidates ?? [];
   const currentId = unit?.match ? `${unit.match.mediaType}:${unit.match.tmdbId}` : "";
 
   return (
@@ -112,28 +142,46 @@ export function MatchDialog({
         <DialogHeader>
           <DialogTitle>换匹配</DialogTitle>
           <DialogDescription className="break-all">
-            「{unit?.rawName}」现在识别为 {unit?.match ? `${unit.match.title} (${unit.match.year})` : "（没识别出来）"}
+            「{unit?.rawName}」现在识别为 {unit?.match ? `${unit.match.title}${unit.match.year ? ` (${unit.match.year})` : ""}` : "（没识别出来）"}
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
-          <div className="flex items-center gap-2">
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && void search()}
-              placeholder="片名，中文或英文"
-            />
-            <Button onClick={() => void search()} disabled={searching}>
-              {searching ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
-              搜索
-            </Button>
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex rounded-md border p-0.5 text-xs">
+                {KINDS.map((k) => (
+                  <button
+                    key={k.key || "all"}
+                    type="button"
+                    onClick={() => setKind(k.key)}
+                    className={`rounded px-2 py-1 ${kind === k.key ? "bg-muted font-medium" : "text-muted-foreground hover:text-foreground"}`}
+                  >
+                    {k.label}
+                  </button>
+                ))}
+              </div>
+              <Input className="h-8 w-24 text-xs" value={year} onChange={(e) => setYear(e.target.value)} placeholder="年份" inputMode="numeric" maxLength={4} />
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && void search()}
+                placeholder="片名（中文或原名），或 TMDB 编号 / 链接"
+              />
+              <Button onClick={() => void search()} disabled={searching}>
+                {searching ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
+                搜索
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">直接填编号（如 693134）或贴 TMDB 链接就按编号查；片名搜不到时限定类型、年份更准。</p>
           </div>
           {picking && <div className="text-xs text-muted-foreground">正在按新的匹配重新规划…</div>}
-          {searched.length > 0 && (
+          {results.length > 0 && (
             <section className="space-y-2">
-              <h3 className="text-xs font-medium text-muted-foreground">搜索结果</h3>
+              <h3 className="text-xs font-medium text-muted-foreground">{byId ? "按编号查到" : "搜索结果"}</h3>
               <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
-                {searched.map((p) => (
+                {results.map((p) => (
                   <PickButton key={`s-${p.mediaType}-${p.tmdbId}`} item={p} current={currentId === `${p.mediaType}:${p.tmdbId}`} onPick={(x) => void pick(x)} />
                 ))}
               </div>
@@ -149,7 +197,7 @@ export function MatchDialog({
               </div>
             </section>
           )}
-          {searched.length === 0 && candidates.length === 0 && <p className="text-sm text-muted-foreground">输入片名搜一下，点海报就换。</p>}
+          {results.length === 0 && candidates.length === 0 && <p className="text-sm text-muted-foreground">搜一下，点海报就换。</p>}
         </div>
       </DialogContent>
     </Dialog>

@@ -30,7 +30,7 @@ import {
   upsertLifeEvents,
   writeKv,
 } from "../../db/repositories/life.js";
-import { bumpOwnHit, findOwnOperation } from "../../db/repositories/organize.js";
+import { bumpOwnHit, findOwnOperation, getRun as getOrganizeRun } from "../../db/repositories/organize.js";
 import { maybeAutoOrganize } from "../organize/auto.js";
 import { providerFor } from "../drive/registry.js";
 import type { AccountIssue, ChangeCursor, ChangeEvent, ChangeKind, ChangeLog, ChangeSource, DriveProvider, ProbeResult } from "../drive/types.js";
@@ -371,7 +371,10 @@ class AccountMonitor {
           // 撤销时挪回来了但改回原名那步失败的（done 带 curPath：镜像要等改完名才做）。
           // 撤销在网盘那步失败、文件没动过的项（done 带别的类别、没有 curPath）本地和网盘仍一致，照常跳过
           const own = findOwnOperation(ev.nodeId, ev.path, ev.at, ev.kind === "remove" ? "remove" : "other");
-          const ownOk = own !== null && own.errorKind !== "mirror" && !(own.status === "done" && own.curPath !== "");
+          // 挪回来了、还没改回原名（done 带 cur_path）：撤销还在跑就是正常的中间状态（改完名撤销自己镜像本地），跳过；
+          // 撤销已经结束还是这样，才是改名那步失败了、本地没跟上，照常处理
+          const halfBack = own !== null && own.status === "done" && own.curPath !== "" && getOrganizeRun(own.runId)?.status !== "reverting";
+          const ownOk = own !== null && own.errorKind !== "mirror" && !halfBack;
           if (ownOk) bumpOwnHit(own.id);
           const res: HandleResult = ownOk ? { status: "skipped", detail: "整理已处理，本地已镜像", changed: false } : await dispatch(ctx, ev);
           markLifeEvent(id, res.status, res.detail);
@@ -380,7 +383,8 @@ class AccountMonitor {
             // 防抖攒着：事件一条一条来，逐条触发全库扫描会把 Emby 打瘫
             if (res.changed) scheduleEmbyRefresh();
             this.log("info", `${name} ${res.detail}`);
-            if (ev.kind === "create" && res.changed) {
+            // 新落进任务的才交给自动整理：新增，或者从任务外挪进来（从云下载、最近接收挪进剧集目录是常见的来路）；任务里挪来挪去的不算
+            if (res.arrived && res.changed) {
               const m = matchTask(ctx, ev.path);
               if (m?.relPath) maybeAutoOrganize({ task: m.task, paths: [m.relPath], trigger: "monitor", debounce: true });
             }

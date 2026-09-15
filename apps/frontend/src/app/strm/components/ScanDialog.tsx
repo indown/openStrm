@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, FileCog, FolderOpen, Loader2, RefreshCw, Trash2 } from "lucide-react";
+import Link from "next/link";
+import { AlertCircle, CheckCircle2, FileCog, FolderOpen, FolderTree, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { StrmIssue, StrmIssueType, StrmScanResult } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
@@ -140,7 +141,24 @@ export function ScanDialog({ open, onOpenChange, taskId, path, onOpenPath, onDel
       }
     });
 
+  /** 去整理页、范围预填成这个目录（相对任务目录；本地和网盘的相对路径一样） */
+  const organizeHref = (dir: string) => {
+    const params = new URLSearchParams({ task: taskId });
+    if (dir) params.set("path", dir);
+    return `/organize?${params}`;
+  };
+
   const batchButton = () => {
+    if (tab === "nonstandard-name") {
+      return (
+        <Button variant="outline" size="sm" className="h-7" asChild>
+          <Link href={organizeHref(path)}>
+            <FolderTree className="size-3.5" />
+            整理这个范围
+          </Link>
+        </Button>
+      );
+    }
     if (!activeMeta?.batch || tab === "all") return null;
     const paths = shown.map((i) => i.path);
     if (activeMeta.batch === "rewrite") {
@@ -254,6 +272,13 @@ export function ScanDialog({ open, onOpenChange, taskId, path, onOpenPath, onDel
                             <Button variant="ghost" size="icon" className="size-8" title="打开所在目录" onClick={() => onOpenPath(parentOf(issue.path))}>
                               <FolderOpen className="size-4" />
                             </Button>
+                            {issue.type === "nonstandard-name" && (
+                              <Button variant="ghost" size="icon" className="size-8" title="去整理这个目录" asChild>
+                                <Link href={organizeHref(parentOf(issue.path))}>
+                                  <FolderTree className="size-4" />
+                                </Link>
+                              </Button>
+                            )}
                             {issue.type === "stale-content" && (
                               <Button variant="ghost" size="icon" className="size-8" title="重写为应有内容" onClick={() => void rewriteOne(issue)} disabled={busy}>
                                 {busy ? <Loader2 className="size-4 animate-spin" /> : <FileCog className="size-4" />}

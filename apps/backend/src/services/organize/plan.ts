@@ -49,7 +49,12 @@ export interface UnitPlanInput {
   /** `season:episode` → 集标题（开了集标题才有） */
   episodeTitles?: Map<string, string>;
   selected: boolean;
+  /** 用户单独取消勾选的文件（相对任务 originPath）：跳过，跟着它们的字幕 / nfo 一起留下 */
+  excluded?: ReadonlySet<string>;
 }
+
+/** 单独取消勾选的文件跳过时的原因 */
+export const EXCLUDED_REASON = "没勾选这个文件";
 
 export interface PlanContext {
   settings: ResolvedOrganizeSettings;
@@ -219,8 +224,13 @@ export function planUnit(input: UnitPlanInput, ctx: PlanContext): UnitPlan {
   })();
   const dstRoot = rootTemplate ? renderTemplate(rootTemplate, common, { colon: s.colon }).path : "";
 
+  const excluded = input.excluded ?? new Set<string>();
   for (const f of unit.files) {
     if (f.kind !== "video" || f.inExtrasDir || f.parsed.isExtra) continue;
+    if (excluded.has(f.path)) {
+      push(f, null, EXCLUDED_REASON);
+      continue;
+    }
     let vars: TemplateVars = { ...common, ...fileVars(f) };
     if (match.mediaType === "tv") {
       const se = resolveEpisode(f, unit, match, input.seasonOverride, input.episodeOffset);
@@ -264,7 +274,8 @@ export function planUnit(input: UnitPlanInput, ctx: PlanContext): UnitPlan {
   }
 
   const videos = [...videoDst.keys()];
-  const singleVideo = videos.length === 1 ? videos[0] : null;
+  // 单元里所有的正片（排没排上都算）：字幕在它们里面找主人
+  const unitVideos = unit.files.filter((v) => v.kind === "video" && !v.inExtrasDir && !v.parsed.isExtra);
   const allVideos = videos.map((v) => v.path);
   // 季目录 → 里面的视频要去的新季目录（取最多的那个）：季目录里的 poster.jpg / season.nfo 跟过去
   const bySeasonDir = new Map<string, UnitFile[]>();
@@ -299,6 +310,10 @@ export function planUnit(input: UnitPlanInput, ctx: PlanContext): UnitPlan {
   for (const f of unit.files) {
     if (f.kind === "video" && videoDst.has(f)) continue;
     if (f.kind === "video" && items.some((i) => i.srcPath === f.path)) continue; // 已经 skip / conflict 了
+    if (excluded.has(f.path)) {
+      push(f, null, EXCLUDED_REASON);
+      continue;
+    }
 
     // 花絮：按设置挪进 extras/ 或不动
     if (f.inExtrasDir || f.parsed.isExtra) {
@@ -307,17 +322,25 @@ export function planUnit(input: UnitPlanInput, ctx: PlanContext): UnitPlan {
       continue;
     }
     if (f.kind === "subtitle") {
-      let video: UnitFile | undefined;
+      // 主人在单元的全部视频里找（按集数、按同名前缀；单元本来就只有一个视频时就是它）。主人没排上（看不出集数、撞名、没勾）
+      // 就跟着留下——不能退到「唯一排上的那个视频」，那会把别的视频的字幕配给它
+      let owner: UnitFile | undefined;
       if (match.mediaType === "tv") {
         const se = resolveEpisode(f, unit, match, input.seasonOverride, input.episodeOffset);
-        if (se) video = videos.find((v) => videoKey.get(v) === `${se.season}:${se.episode}`);
+        if (se) owner = videos.find((v) => videoKey.get(v) === `${se.season}:${se.episode}`);
       }
-      if (!video) video = videos.find((v) => f.stem.startsWith(v.stem)) ?? singleVideo ?? undefined;
-      if (!video) {
+      owner ??= unitVideos.filter((v) => f.stem.startsWith(v.stem)).sort((a, b) => b.stem.length - a.stem.length)[0];
+      if (!owner && unitVideos.length === 1) owner = unitVideos[0];
+      if (!owner) {
         push(f, null, "找不到对应的视频");
         continue;
       }
-      push(f, subtitleName(videoDst.get(video)!, f), "", undefined, { follows: [video.path], soft: true });
+      const ownerDst = videoDst.get(owner);
+      if (!ownerDst) {
+        push(f, null, "对应的视频没挪，跟着留在原处");
+        continue;
+      }
+      push(f, subtitleName(ownerDst, f), "", undefined, { follows: [owner.path], soft: true });
       continue;
     }
     if (f.kind === "nfo" || f.kind === "image") {
@@ -344,11 +367,23 @@ export function planUnit(input: UnitPlanInput, ctx: PlanContext): UnitPlan {
   return { unitKey: unit.key, dstRoot, items, notes };
 }
 
+/** 删空目录的边界：只删根里面腾空的目录，根本身 removable 才删 */
+export interface ScopeRoot {
+  /** 相对任务 originPath；"" 是任务根（永远不删） */
+  path: string;
+  removable: boolean;
+}
+
 export interface DirOpsInput {
   /** 范围里所有条目（相对任务 originPath）：文件和目录 */
   entries: Array<{ path: string; isDir: boolean; id?: string }>;
+  /**
+   * 范围的根：只删根里面腾空的目录；根本身 removable 时才删（范围就是某个发布目录 / 季目录、自动整理新落进来的目录），
+   * `inbox` 这种收件箱和任务根不删。没给就用 scopePath + scopeRemovable（一个根）
+   */
+  scopeRoots?: ScopeRoot[];
   /** 范围目录本身：默认不删（`inbox` 这种收件箱），scopeRemovable 时（范围就是某个发布目录）腾空了也删 */
-  scopePath: string;
+  scopePath?: string;
   scopeRemovable?: boolean;
   items: PlannedItem[];
   cleanupEmptyDirs: boolean;
@@ -449,15 +484,19 @@ export function finalizeItems(plans: UnitPlan[], input: DirOpsInput): PlannedIte
     for (const p of existing) if (!movedSrc.has(p)) remaining.add(p);
     for (const it of moved) remaining.add(it.dstPath);
     for (const d of needDirs) remaining.add(`${d}/`);
+    const roots = input.scopeRoots ?? [{ path: input.scopePath ?? "", removable: !!input.scopeRemovable }];
+    // 在某个根里面（不含根本身）：任务根（""）里面是除它以外的一切。往上找腾空的目录不越过根
+    const inside = (d: string) => roots.some((r) => (r.path === "" ? d !== "" : d.startsWith(`${r.path}/`)));
+    const removableRoot = (d: string) => roots.some((r) => r.removable && r.path !== "" && r.path === d);
     const candidates = new Set<string>();
     for (const it of moved) {
       if (it.action !== "move") continue;
       let d = dirOf(it.srcPath);
-      while (d && d !== input.scopePath && d.length > input.scopePath.length) {
+      while (d && inside(d)) {
         candidates.add(d);
         d = dirOf(d);
       }
-      if (input.scopeRemovable && input.scopePath && d === input.scopePath) candidates.add(d);
+      if (d && removableRoot(d)) candidates.add(d);
     }
     const empty = (dir: string): boolean => {
       const prefix = `${dir}/`;

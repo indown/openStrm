@@ -13,11 +13,13 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
+  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { useOrganizeAttentionCount } from "@/hooks/use-organize-attention";
 import { NAV_GROUPS, isNavActive } from "@/lib/nav";
 
 // 构建时由 next.config.ts 注入（APP_VERSION 或 package.json 的版本）
@@ -27,6 +29,8 @@ const REPO_URL = "https://github.com/indown/OpenStrm";
 export function AppSidebar() {
   const pathname = usePathname();
   const { isMobile, setOpenMobile } = useSidebar();
+  // 「整理」的角标：要人管的整理（待执行、有失败…）有几个
+  const organizeAttention = useOrganizeAttentionCount();
   // 手机上侧栏是抽屉，点了导航得自己收起来，shadcn 不会代劳；桌面上什么都不做
   const closeOnMobile = () => {
     if (isMobile) setOpenMobile(false);
@@ -68,6 +72,9 @@ export function AppSidebar() {
                         <span>{item.title}</span>
                       </Link>
                     </SidebarMenuButton>
+                    {item.url === "/organize" && organizeAttention > 0 && (
+                      <SidebarMenuBadge className="bg-brand/15 text-brand">{organizeAttention > 99 ? "99+" : organizeAttention}</SidebarMenuBadge>
+                    )}
                   </SidebarMenuItem>
                 ))}
               </SidebarMenu>

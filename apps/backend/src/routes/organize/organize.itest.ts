@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import Fastify, { type FastifyInstance } from "fastify";
-import type { AccountInfo, AppSettings, OrganizeRun, OrganizeRunDetail, OrganizeTemplatePreview, OrganizeUnit, TaskDefinition } from "@openstrm/shared";
+import type { AccountInfo, AppSettings, OrganizeItem, OrganizeRun, OrganizeRunDetail, OrganizeRunSummary, OrganizeTemplatePreview, OrganizeUnit, TaskDefinition } from "@openstrm/shared";
 import { registerErrorHandling } from "../../plugins/error-handler.js";
 import { authPlugin } from "../../plugins/auth.js";
 import organizeRoute from "./index.js";
@@ -111,6 +111,7 @@ test("建 run → 详情 → 改匹配 → 执行 → 撤销 → 删除", async 
   assert.equal(ready.units.length, 1);
   assert.equal(ready.units[0].match?.tmdbId, 693134);
   assert.equal(ready.revertable.ok, false);
+  assert.equal(ready.editable, true);
 
   const list = await json<{ runs: OrganizeRun[] }>("GET", "/api/organize/runs?taskId=t1");
   assert.equal(list.runs.length, 1);
@@ -152,7 +153,8 @@ test("失败项：执行带 ids 只重试点名的；放弃接口标掉失败项
   assert.equal(done.run.stats.failedByKind.transient, 1);
   assert.equal(done.applicable.ok, true);
   assert.equal(done.applicable.count, 1);
-  const bad = done.items.find((i) => i.status === "failed")!;
+  const bad = (await json<{ items: OrganizeItem[] }>("GET", `/api/organize/runs/${run.id}/items?group=transient`)).items[0];
+  assert.equal(bad.status, "failed");
   assert.equal(bad.errorKind, "transient");
   assert.equal(bad.attempts, 1);
   // 入参校验
@@ -174,6 +176,68 @@ test("失败项：执行带 ids 只重试点名的；放弃接口标掉失败项
   assert.equal(reverted.run.stage, "revert");
   assert.equal(reverted.applicable.ok, false);
   assert.equal((await app.inject({ method: "POST", url: `/api/organize/runs/${run.id}/apply`, headers: auth })).statusCode, 409);
+  await json("DELETE", `/api/organize/runs/${run.id}`);
+});
+
+test("重新预览：按原范围建一个新的手动预览（201）；没有的 run 404", async () => {
+  const run = await json<OrganizeRun>("POST", "/api/organize/runs", { taskId: "t1", subPath: "inbox" }, 201);
+  await untilStatus(run.id, ["ready"]);
+  const again = await json<OrganizeRun>("POST", `/api/organize/runs/${run.id}/repreview`, undefined, 201);
+  assert.notEqual(again.id, run.id);
+  assert.deepEqual([again.scopePath, again.mode, again.trigger], ["inbox", "manual", "manual"]);
+  await untilStatus(again.id, ["ready"]);
+  await json("POST", "/api/organize/runs/nope/repreview", undefined, 404);
+  await json("DELETE", `/api/organize/runs/${run.id}`);
+  await json("DELETE", `/api/organize/runs/${again.id}`);
+});
+
+test("待处理接口：要鉴权，返回 runs 数组，每条带原因、不带日志", async () => {
+  assert.equal((await app.inject({ method: "GET", url: "/api/organize/attention" })).statusCode, 401);
+  const run = await json<OrganizeRun>("POST", "/api/organize/runs", { taskId: "t1", subPath: "inbox" }, 201);
+  await untilStatus(run.id, ["ready"]);
+  const r = await json<{ runs: Array<{ run: OrganizeRun; reason: string }> }>("GET", "/api/organize/attention");
+  const mine = r.runs.find((a) => a.run.id === run.id);
+  assert.equal(mine?.reason, "ready");
+  assert.deepEqual(mine?.run.log, []);
+  await json("DELETE", `/api/organize/runs/${run.id}`);
+});
+
+test("详情不带项、带按单元的计数；summary 只有 run 和开关；items 按单元 / 分组按需拉，参数都没给 400", async () => {
+  const run = await json<OrganizeRun>("POST", "/api/organize/runs", { taskId: "t1", subPath: "inbox" }, 201);
+  const d = await untilStatus(run.id, ["ready"]);
+  assert.equal((d as unknown as { items?: unknown }).items, undefined, "详情不再带全部项");
+  const key = d.units[0].key;
+  assert.equal(d.counts[key].changing, 1);
+  assert.ok(d.dirCount >= 1, "建作品目录那一项");
+  const s = await json<OrganizeRunSummary>("GET", `/api/organize/runs/${run.id}/summary`);
+  assert.equal(s.run.id, run.id);
+  assert.equal((s as unknown as { units?: unknown }).units, undefined);
+  const mine = await json<{ items: OrganizeItem[] }>("GET", `/api/organize/runs/${run.id}/items?unit=${encodeURIComponent(key)}`);
+  assert.ok(mine.items.length > 0 && mine.items.every((i) => i.unitKey === key));
+  const dirs = await json<{ items: OrganizeItem[] }>("GET", `/api/organize/runs/${run.id}/items?unit=`);
+  assert.equal(dirs.items.length, d.dirCount);
+  assert.equal((await app.inject({ method: "GET", url: `/api/organize/runs/${run.id}/items`, headers: auth })).statusCode, 400);
+  await json("GET", `/api/organize/runs/nope/items?unit=`, undefined, 404);
+  await json("DELETE", `/api/organize/runs/${run.id}`);
+});
+
+test("批量勾选单元、按文件勾选、TMDB 搜索 / 按编号查；参数不对 400", async () => {
+  const run = await json<OrganizeRun>("POST", "/api/organize/runs", { taskId: "t1", subPath: "inbox" }, 201);
+  const d = await untilStatus(run.id, ["ready"]);
+  const key = d.units[0].key;
+  assert.equal((await json<{ changed: number }>("PUT", `/api/organize/runs/${run.id}/units`, { keys: [key], selected: false })).changed, 1);
+  assert.equal((await app.inject({ method: "PUT", url: `/api/organize/runs/${run.id}/units`, headers: auth, payload: { keys: [key] } })).statusCode, 400);
+  await json("PUT", `/api/organize/runs/${run.id}/units`, { keys: [key], selected: true });
+  const items = (await json<{ items: OrganizeItem[] }>("GET", `/api/organize/runs/${run.id}/items?unit=${encodeURIComponent(key)}`)).items;
+  const video = items.find((i) => i.kind === "video")!;
+  assert.equal((await json<{ changed: number }>("PUT", `/api/organize/runs/${run.id}/items`, { ids: [video.id], selected: false })).changed, 1);
+  assert.equal((await json<OrganizeRunDetail>("GET", `/api/organize/runs/${run.id}`)).counts[key].excluded, 1);
+  assert.equal((await app.inject({ method: "PUT", url: `/api/organize/runs/${run.id}/items`, headers: auth, payload: { ids: [], selected: true } })).statusCode, 400);
+  const s = await json<{ results: Array<{ tmdbId: number }> }>("POST", "/api/organize/tmdb/search", { query: "dune part two", type: "movie", year: "2024" });
+  assert.equal(s.results[0].tmdbId, 693134);
+  assert.equal((await app.inject({ method: "POST", url: "/api/organize/tmdb/search", headers: auth, payload: { query: "x", year: "24" } })).statusCode, 400);
+  assert.equal((await json<{ title: string }>("GET", "/api/organize/tmdb/movie/438631")).title, "沙丘");
+  await json("GET", "/api/organize/tmdb/tv/1", undefined, 404);
   await json("DELETE", `/api/organize/runs/${run.id}`);
 });
 

@@ -16,7 +16,8 @@ export function AdjustDialog({
 }: {
   unit: OrganizeUnit | null;
   onOpenChange: (open: boolean) => void;
-  onSave: (patch: { seasonOverride: number | null; episodeOffset: number }) => Promise<void>;
+  /** 成功返回 true 才关弹框；失败的提示由调用方给 */
+  onSave: (patch: { seasonOverride: number | null; episodeOffset: number }) => Promise<boolean>;
 }) {
   const open = unit != null;
   const [season, setSeason] = useState("");
@@ -32,8 +33,7 @@ export function AdjustDialog({
   const save = async () => {
     setSaving(true);
     try {
-      await onSave({ seasonOverride: season.trim() === "" ? null : Number(season), episodeOffset: Number(offset) || 0 });
-      onOpenChange(false);
+      if (await onSave({ seasonOverride: season.trim() === "" ? null : Number(season), episodeOffset: Number(offset) || 0 })) onOpenChange(false);
     } finally {
       setSaving(false);
     }

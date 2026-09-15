@@ -32,6 +32,8 @@ export interface HandleResult {
   detail: string;
   /** 是否真的改动了本地文件——只有改动了才值得去打扰媒体服务器 */
   changed: boolean;
+  /** 任务里新落进来东西：新增，或者从任务外挪进来（旧路径不知道的也算）。自动整理看它，不看事件类型 */
+  arrived?: boolean;
 }
 
 const skipped = (detail: string): HandleResult => ({ status: "skipped", detail, changed: false });
@@ -258,12 +260,12 @@ export async function handleCreate(ctx: LifeContext, ev: ChangeEvent): Promise<H
 
   if (ev.isDir) {
     const c = await materializeFolder(ctx, match, ev.nodeId, panPath);
-    return done(`目录 ${panPath} → strm ${c.strm} / 下载 ${c.download}`, c.strm + c.download > 0);
+    return { ...done(`目录 ${panPath} → strm ${c.strm} / 下载 ${c.download}`, c.strm + c.download > 0), arrived: true };
   }
 
   const kind = await materializeFile(ctx, match, match.relPath, panPath, ev.token);
   if (kind === "skip") return skipped(`${panPath} 扩展名不在 strm/下载白名单`);
-  return done(`${kind}: ${panPath}`);
+  return { ...done(`${kind}: ${panPath}`), arrived: true };
 }
 
 /** 新建目录：不生成任何本地文件（路径缓存由变更源自己维护） */
@@ -346,8 +348,8 @@ async function relocate(ctx: LifeContext, ev: ChangeEvent, label: string): Promi
 
   if (!from || !to) return skipped(`${newPan} 扩展名不在白名单`);
 
-  // 本地本来就没有，退化成新增
-  if (!(await pathExists(from))) return handleCreate(asCreate(ctx), ev);
+  // 本地本来就没有，退化成新增（文件本来就在任务里，不算新落进来的，不交给自动整理）
+  if (!(await pathExists(from))) return { ...(await handleCreate(asCreate(ctx), ev)), arrived: false };
 
   await fsp.mkdir(path.dirname(to), { recursive: true });
   await fsp.rename(from, to);

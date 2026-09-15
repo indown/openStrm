@@ -17,6 +17,9 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import type {
   AppSettings,
+  OrganizeAttention,
+  OrganizeAttentionReason,
+  OrganizeCandidate,
   OrganizeConfidence,
   OrganizeItem,
   OrganizeMatch,
@@ -24,7 +27,10 @@ import type {
   OrganizeProgress,
   OrganizeRun,
   OrganizeFailureGroup,
+  OrganizeFailureGroupKey,
   OrganizeRunDetail,
+  OrganizeRunSummary,
+  OrganizeUnitCounts,
   OrganizeRunMode,
   OrganizeRunStage,
   OrganizeRunStats,
@@ -37,13 +43,15 @@ import type {
 import { getAll as listLibraryEntries } from "../../db/repositories/media-library.js";
 import {
   bumpAttempts,
+  changedSince,
   deleteRun as deleteRunRow,
   emptyStats,
   getRun,
   getUnit,
-  hasLaterAppliedRun,
   insertRun,
+  laterRunTouching,
   listItems,
+  listLeftoverDirs,
   listRuns as listRunRows,
   listRunsByStatus,
   listUnits,
@@ -61,14 +69,16 @@ import {
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { getTask, listTasks } from "../../db/repositories/tasks.js";
 import { isAbortError } from "../../lib/errors.js";
-import { HttpError } from "../../lib/http-error.js";
+import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { resolveInDataDir } from "../../paths.js";
+import { driveErrorToHttp } from "../drive/errors.js";
 import { providerForTask } from "../drive/registry.js";
-import { normalizePath, splitPath, type DriveProvider, type WriteNode } from "../drive/types.js";
+import { normalizePath, splitPath, type DriveNode, type DriveProvider, type WriteNode } from "../drive/types.js";
 import { rewriteFollowSubPaths } from "../follow/service.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { rewriteOfflineSubPaths } from "../offline/service.js";
+import type { TmdbDetails, TmdbSearchResult } from "../tmdb.js";
 import { extSet } from "../strm/naming.js";
 import { notify } from "../telegram/notify.js";
 import { describeFileFailure } from "../download/failure.js";
@@ -76,7 +86,7 @@ import { classifyFailure, FAILURE_LABEL, messageOf, OrganizeFailure, retryableIt
 import { idTagFromName, identifyUnit, TmdbClient, type IdEvidence, type KnownId, type TmdbApi } from "./identify.js";
 import { mirrorRelocate, mirrorRmdir } from "./mirror.js";
 import { nfoEvidence } from "./nfo.js";
-import { finalizeItems, planUnit, type PlannedItem, type UnitPlan } from "./plan.js";
+import { finalizeItems, planUnit, type PlannedItem, type ScopeRoot, type UnitPlan } from "./plan.js";
 import { parseRules } from "./rules.js";
 import { resolveOrganizeSettings, type ResolvedOrganizeSettings } from "./settings.js";
 import { looksLikeReleaseDir } from "./parse-name.js";
@@ -126,6 +136,28 @@ interface Job {
 }
 
 const jobs = new Map<string, Job>();
+
+/**
+ * 不是后台 job 的写操作（预览里改单元、放弃失败项）进行中的个数。它们中间要等 TMDB / 列目录 / 改回原名，
+ * 这段时间里执行 / 撤销 / 删除要等它们落完库：不然执行拿着旧清单跑，改单元回来把清单整个换掉，执行的记账全落空
+ */
+const runOps = new Map<string, number>();
+
+function beginOp(runId: string): () => void {
+  runOps.set(runId, (runOps.get(runId) ?? 0) + 1);
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    const left = (runOps.get(runId) ?? 1) - 1;
+    if (left > 0) runOps.set(runId, left);
+    else runOps.delete(runId);
+  };
+}
+
+function assertNoOps(runId: string): void {
+  if (runOps.has(runId)) throw new HttpError(409, "这次整理还有修改在保存，稍等再试");
+}
 
 function jobLog(job: Job, msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}`;
@@ -184,10 +216,17 @@ function computeStats(units: OrganizeUnit[], items: OrganizeItem[], stage: Organ
     if (it.action === "conflict") stats.conflicts++;
     else if (it.action === "skip") stats.skipped++;
     else if (it.action === "keep") stats.keep++;
-    else if (active) stats.planned++;
+    else if (active) {
+      stats.planned++;
+      if (it.action === "mkdir") stats.plannedMkdir++;
+      else if (it.action === "rmdir") stats.plannedRmdir++;
+    }
     if (it.status === "done") stats.done++;
     if (it.status === "failed") stats.failed++;
+    if (it.status === "reverted") stats.reverted++;
     if (it.givenUp) continue;
+    // 还没做的：勾选了、会动网盘的 pending 项（中途停下的 run 里就是「没做完」的）
+    if (it.status === "pending" && active && WORK_ACTIONS.has(it.action)) stats.pending++;
     // 还等着处理的失败：failed 按各自类别（旧数据没分类的算临时）；done / reverted 带类别的是镜像没跟上或撤销在网盘那步失败
     if (it.status === "failed") stats.failedByKind[it.errorKind || "transient"]++;
     else if ((it.status === "done" || it.status === "reverted") && it.errorKind) stats.failedByKind[it.errorKind]++;
@@ -219,10 +258,28 @@ export async function createRun(input: CreateRunInput): Promise<OrganizeRun> {
   const rules = parseRules(resolveOrganizeSettings(settings).rules);
   if (rules.errors.length > 0) throw new HttpError(400, `识别词有语法错误：${rules.errors.join("；")}`);
   const scopePath = splitPath(input.subPath ?? "").join("/");
-  const scopePaths = (input.paths ?? []).map((p) => splitPath(p).join("/")).filter(Boolean);
+  let scopePaths = [...new Set((input.paths ?? []).map((p) => splitPath(p).join("/")).filter(Boolean))];
   // 范围只能是任务目录之内：`..` 会让本地镜像跑出数据目录
   for (const p of [scopePath, ...scopePaths]) {
     if (splitPath(p).some((seg) => seg === "." || seg === "..")) throw new HttpError(400, `范围路径不合法：${p}`);
+  }
+  const trigger = input.trigger ?? "manual";
+  if (trigger === "manual") {
+    // 手动选的多个范围：套在别的范围里面的去掉（已经整个包含了）
+    scopePaths = scopePaths.filter((p) => !scopePaths.some((o) => o !== p && p.startsWith(`${o}/`)));
+    // 手动的范围要是网盘上真有的目录，不然要等预览失败才知道（自动整理的新增路径不在就跳过，照旧）。
+    // 在查重和建 run 之前做：那两步之间不能有 await
+    for (const p of scopePaths.length > 0 ? scopePaths : scopePath ? [scopePath] : []) {
+      const abs = absOf(task, p);
+      let node: DriveNode | null;
+      try {
+        node = await provider.resolvePath(abs);
+      } catch (err) {
+        throw driveErrorToHttp(err, "检查范围目录失败");
+      }
+      if (!node) throw new HttpError(400, `网盘上找不到 ${abs}`);
+      if (!node.isDir) throw new HttpError(400, `${abs} 不是目录，范围要选目录`);
+    }
   }
   // 同一任务同时只跑一个进行中的 run：两个 run 同时改同一批文件会互相踩
   const busy = listRunsByStatus(["planning", "applying", "reverting"]).find((r) => r.taskId === task.id);
@@ -235,24 +292,38 @@ export async function createRun(input: CreateRunInput): Promise<OrganizeRun> {
     scopePath,
     scopePaths,
     mode: input.mode ?? "manual",
-    trigger: input.trigger ?? "manual",
+    trigger,
   });
   startJob(run.id, (job) => preview(job, run.id));
   return getRun(run.id)!;
 }
 
-function startJob(runId: string, work: (job: Job) => Promise<void>): Job {
+/**
+ * onAbort：执行 / 撤销被取消时的收尾。取消多半发生在网盘请求中途、异常从 work 里抛出来，
+ * 做完的项照样要进统计、收尾照常；预览没有收尾，取消了直接标 cancelled
+ */
+function startJob(runId: string, work: (job: Job) => Promise<void>, onAbort?: (job: Job) => void): Job {
   const job: Job = {
     runId,
     abort: new AbortController(),
     progress: { phase: "idle", done: 0, total: 0, message: "" },
-    logs: [],
+    // 接着这次 run 已有的日志往下写：预览 → 执行 → 重试 → 撤销是一本账，后一次别把前一次的冲掉（落库时只留最近 300 行）
+    logs: [...(getRun(runId)?.log ?? [])].slice(-ORGANIZE_LIMITS.LOG_LINES),
     done: Promise.resolve(),
   };
   jobs.set(runId, job);
   job.done = work(job)
     .catch((err) => {
-      const msg = isAbortError(err) || job.abort.signal.aborted ? "已取消" : messageOf(err);
+      const aborted = isAbortError(err) || job.abort.signal.aborted;
+      if (aborted && onAbort) {
+        try {
+          onAbort(job);
+          return;
+        } catch (e) {
+          log.warn({ err: e, runId }, "取消后的收尾失败，按取消记");
+        }
+      }
+      const msg = aborted ? "已取消" : messageOf(err);
       jobLog(job, `失败：${msg}`);
       const run = getRun(runId);
       if (run && (run.status === "planning" || run.status === "applying" || run.status === "reverting")) {
@@ -284,6 +355,47 @@ interface Walked {
  * 里面的东西全挪走后这个空壳没用了，一起删；`inbox`、`电影` 这种收件箱式的范围留着。任务根目录（范围为空）永远不删
  */
 const scopeRemovable = (run: OrganizeRun): boolean => run.scopePaths.length === 0 && run.scopePath !== "" && looksLikeReleaseDir(baseOf(run.scopePath));
+
+/** run 的范围写成一组路径（相对任务 originPath）；"" 是整个任务 */
+const scopeListOf = (run: OrganizeRun): string[] => (run.scopePaths.length > 0 ? run.scopePaths : [run.scopePath]);
+
+/** inner 的每一条路径都在 outer 的某一条路径之下（整个任务覆盖一切） */
+const covers = (outer: string[], inner: string[]): boolean => inner.every((p) => outer.some((o) => o === "" || p === o || p.startsWith(`${o}/`)));
+
+/**
+ * 预览完成时，把同任务里范围被它覆盖的旧「待执行」预览作废（标已取消，写明原因）：网盘已经按这次预览的样子来了，
+ * 旧的留着只会被误执行；范围不被覆盖的（别的目录）照旧留着
+ */
+function supersedeCovered(run: OrganizeRun): number {
+  const scope = scopeListOf(run);
+  let n = 0;
+  for (const old of listRunsByStatus(["ready"])) {
+    if (old.id === run.id || old.taskId !== run.taskId || !covers(scope, scopeListOf(old))) continue;
+    updateRun(old.id, { status: "cancelled", error: "已被新的预览取代", finishedAt: Math.floor(Date.now() / 1000) });
+    planStates.delete(old.id);
+    n++;
+  }
+  return n;
+}
+
+/**
+ * 分单元时的范围：单一范围照旧；手动选的多个范围各按单一范围的规则来（见 buildUnits 的 scopes）；
+ * 自动触发的新增路径按任务根分单元（新落进来的发布目录名字可靠，按目录名认）
+ */
+const unitScopesOf = (run: OrganizeRun): string[] => (run.scopePaths.length === 0 ? [run.scopePath] : run.trigger === "manual" ? run.scopePaths : [""]);
+
+/**
+ * 删空目录的边界：只删范围里面腾空的目录。范围本身：单一范围 / 手动选的多个范围按「像发布目录 / 季目录」判断；
+ * 自动触发的新增路径是目录的，它本来就是新落进来的，腾空了可删，但它的上级（转存落点 inbox 这种）不碰；是文件的不删任何目录
+ */
+function scopeRootsOf(run: OrganizeRun, walkedDirs: string[]): ScopeRoot[] {
+  if (run.scopePaths.length === 0) return [{ path: run.scopePath, removable: scopeRemovable(run) }];
+  if (run.trigger === "manual") return walkedDirs.map((p) => ({ path: p, removable: p !== "" && looksLikeReleaseDir(baseOf(p)) }));
+  return walkedDirs.map((p) => ({ path: p, removable: p !== "" }));
+}
+
+/** 单元里单独取消勾选的文件（网盘绝对路径）换成规划用的相对路径 */
+const excludedRel = (task: TaskDefinition, unit: OrganizeUnit): Set<string> => new Set(unit.excluded.map((p) => relOf(task, p)));
 
 /** 本地镜像只看同一账号的任务：不同网盘上同名的目录（都叫 tv）各有各的本地目录，按路径匹配会串到别的账号的任务上 */
 const accountTasks = (accountName: string): TaskDefinition[] => listTasks().filter((t) => t.account === accountName);
@@ -342,6 +454,8 @@ async function listOutsideDstDirs(
   plans: UnitPlan[],
   entries: ScopeEntry[],
   signal: AbortSignal,
+  /** 已经去网盘看过的目录（在的列过了、不在的也记着）：同一次预览里重规划时不再重复列；会被这次调用补上 */
+  listed: Set<string> = new Set(),
 ): Promise<ScopeEntry[]> {
   const inScope = (rel: string) => roots.some((r) => r === "" || rel === r || rel.startsWith(`${r}/`));
   const dirs = new Set<string>();
@@ -349,14 +463,12 @@ async function listOutsideDstDirs(
   // 只列最深的那些目录：它存在就顺便说明祖先都存在；不存在就往上找到第一个存在的祖先列出来
   const known = new Set(entries.map((e) => e.path));
   const out: ScopeEntry[] = [];
-  const listed = new Set<string>();
   for (const dir of [...dirs].sort()) {
     let cur = dir;
     while (cur && !inScope(cur) && !listed.has(cur)) {
       signal.throwIfAborted();
       const node = await provider.resolvePath(absOf(task, cur), signal);
       if (node?.isDir) {
-        listed.add(cur);
         if (!known.has(cur)) out.push({ path: cur, isDir: true, id: node.id });
         for (const e of await provider.listDir(node.id, signal)) {
           const p = joinRel(cur, e.name);
@@ -365,8 +477,11 @@ async function listOutsideDstDirs(
             out.push({ path: p, isDir: e.isDir, id: e.id, size: e.size });
           }
         }
+        listed.add(cur);
         break;
       }
+      // 不在的也记着：它下面的目录更不会在，下次到这里就停
+      listed.add(cur);
       cur = dirOf(cur);
     }
   }
@@ -381,6 +496,22 @@ interface PlanState {
   roots: string[];
   units: Map<string, Unit>;
   episodeTitles: Map<string, Map<string, string>>;
+  /** 识别阶段留给单元的提示（nfo 证据没采用之类）：重新规划时和规划的提示拼在一起；手动换了匹配就清掉 */
+  identifyNotes: Map<string, string[]>;
+  /** 删空目录的边界（见 finalizeItems 的 scopeRoots） */
+  scopeRoots: ScopeRoot[];
+  /** 这次预览已经去网盘看过的范围外目录（在的列过了、不在的也记着）：重规划时不再重复列 */
+  listed: Set<string>;
+}
+
+const planContext = (state: PlanState) => ({ settings: state.org, libraryType: state.task.organize?.libraryType });
+
+/** 把新列到的条目并进本轮已知的条目（按路径去重） */
+function mergeEntries(state: PlanState, extra: ScopeEntry[]): void {
+  if (extra.length === 0) return;
+  const known = new Set(state.entries.map((e) => e.path));
+  const fresh = extra.filter((e) => !known.has(e.path));
+  if (fresh.length > 0) state.entries = [...state.entries, ...fresh];
 }
 
 /** 内存里的 run 状态：单元结构（Unit）不落库，改匹配重新规划时要用；进程重启后 run 只能看和执行，不能再改 */
@@ -404,6 +535,7 @@ function toUnitRow(runId: string, unit: Unit, match: OrganizeMatch | null, plan:
     videoCount: unit.files.filter((f) => f.kind === "video").length,
     referencedBy,
     notes: plan?.notes ?? [],
+    excluded: [],
   };
 }
 
@@ -440,16 +572,38 @@ async function preview(job: Job, runId: string): Promise<void> {
   updateRun(runId, { startedAt: Math.floor(Date.now() / 1000) });
 
   setProgress(job, "walk", 0, 0, "正在列网盘目录");
-  jobLog(job, `开始预览：${task.originPath}${run.scopePath ? `/${run.scopePath}` : ""}${run.scopePaths.length ? `（${run.scopePaths.length} 个新增路径）` : ""}`);
+  // 手动选的多个目录列出来（和页面「N 个目录」一个说法）；自动触发的新增路径可能几十条，只报个数
+  const scopeNote = run.scopePaths.length === 0 ? "" : run.trigger === "manual" ? `（${run.scopePaths.length} 个目录：${run.scopePaths.slice(0, 5).join("、")}${run.scopePaths.length > 5 ? " 等" : ""}）` : `（${run.scopePaths.length} 个新增路径）`;
+  jobLog(job, `开始预览：${task.originPath}${run.scopePath ? `/${run.scopePath}` : ""}${scopeNote}`);
   const walked = await walkScope(provider, task, run, signal);
   jobLog(job, `列到 ${walked.files} 个文件`);
   signal.throwIfAborted();
 
   const rules = parseRules(org.rules).rules;
-  const units = buildUnits(walked.entries, { scopePath: run.scopePath, taskRootName: baseOf(normalizePath(task.originPath)), videoExts: videoExtsOf(settings), rules, libraryType: task.organize?.libraryType });
+  const scopes = unitScopesOf(run);
+  const units = buildUnits(walked.entries, {
+    scopePath: run.scopePath,
+    scopes,
+    taskRootName: baseOf(normalizePath(task.originPath)),
+    videoExts: videoExtsOf(settings),
+    rules,
+    libraryType: task.organize?.libraryType,
+  });
   jobLog(job, `分成 ${units.length} 个作品单元`);
 
-  const state: PlanState = { task, settings, org, entries: walked.entries, roots: walked.roots, units: new Map(units.map((u) => [u.key, u])), episodeTitles: new Map() };
+  const state: PlanState = {
+    task,
+    settings,
+    org,
+    entries: walked.entries,
+    roots: walked.roots,
+    units: new Map(units.map((u) => [u.key, u])),
+    episodeTitles: new Map(),
+    identifyNotes: new Map(),
+    scopeRoots: scopeRootsOf(run, walked.roots),
+    listed: new Set(),
+  };
+  const under = (p: string, s: string) => s === "" || p === s || p.startsWith(`${s}/`);
   const refPaths = [...rewriteFollowSubPaths(task.id, [], true), ...rewriteOfflineSubPaths(task.id, [], true)];
   const library = listLibraryEntries();
   const rows: OrganizeUnit[] = [];
@@ -478,10 +632,14 @@ async function preview(job: Job, runId: string): Promise<void> {
       jobLog(job, `识别「${unit.rawName}」失败：${messageOf(err)}`);
     }
     state.episodeTitles.set(unit.key, episodeTitles);
+    state.identifyNotes.set(unit.key, identifyNotes);
     const memory = evidence.memory;
     // 单元根越到了范围外（范围直接选在季目录上，单元根是上一级的剧目录）：只有范围里的会挪走，只数范围里的引用
-    const rootInScope = !run.scopePath || unit.rootPath === run.scopePath || unit.rootPath.startsWith(`${run.scopePath}/`);
-    const row = toUnitRow(runId, unit, match, null, referencesTo(refPaths, rootInScope ? unit.rootPath : run.scopePath));
+    const rootInScope = scopes.some((s) => under(unit.rootPath, s));
+    const refs = rootInScope
+      ? referencesTo(refPaths, unit.rootPath)
+      : scopes.filter((s) => unit.files.some((f) => under(f.path, s))).reduce((n, s) => n + referencesTo(refPaths, s), 0);
+    const row = toUnitRow(runId, unit, match, null, refs);
     if (memory) {
       row.seasonOverride = memory.season;
       row.episodeOffset = memory.episodeOffset;
@@ -499,15 +657,18 @@ async function preview(job: Job, runId: string): Promise<void> {
 
   setProgress(job, "plan", 0, 0, "规划目标路径");
   // 目标目录在范围之外（整理到任务根下的作品目录）时，冲突检测得知道那边已经有什么：每个目标目录列一次
-  const extra = await listOutsideDstDirs(provider, task, walked.roots, plans, walked.entries, signal);
+  const extra = await listOutsideDstDirs(provider, task, walked.roots, plans, walked.entries, signal, state.listed);
   state.entries = [...walked.entries, ...extra];
-  const items = finalizeItems(plans, { entries: state.entries, scopePath: run.scopePath, scopeRemovable: scopeRemovable(run), items: [], cleanupEmptyDirs: org.cleanupEmptyDirs });
+  const items = finalizeItems(plans, { entries: state.entries, scopeRoots: state.scopeRoots, items: [], cleanupEmptyDirs: org.cleanupEmptyDirs });
   planStates.set(runId, state);
   replaceUnits(runId, rows);
   replaceItems(runId, toItemRows(task, items));
   const stats = computeStats(rows, listItems(runId), "apply");
-  updateRun(runId, { status: "ready", stats, log: job.logs, error: "" });
+  const superseded = supersedeCovered(run);
+  if (superseded > 0) jobLog(job, `作废了 ${superseded} 个范围被这次覆盖的旧预览`);
+  // 收尾这句先进日志再落库，不然页面上的日志里没有它
   jobLog(job, `预览完成：${stats.units} 个单元，${stats.planned} 项要动，${stats.conflicts} 项冲突`);
+  updateRun(runId, { status: "ready", stats, log: job.logs, error: "" });
 
   if (run.mode !== "manual") await afterAutoPreview(runId, task, run.mode, rows, stats);
 }
@@ -532,79 +693,269 @@ async function afterAutoPreview(runId: string, task: TaskDefinition, mode: Organ
 
 /* ------------------------------- 预览里改单元 ------------------------------- */
 
-export async function patchUnit(runId: string, key: string, patch: OrganizeUnitPatch): Promise<OrganizeUnit> {
-  const run = getRun(runId);
-  if (!run) throw new HttpError(404, "整理记录不存在");
-  if (run.status !== "ready") throw new HttpError(409, `只有待执行的整理能改（当前 ${run.status}）`);
-  const state = planStates.get(runId);
-  if (!state) throw new HttpError(409, "这次预览是上次进程里做的，改不了；重新预览一次");
-  const unit = state.units.get(key);
-  const row = getUnit(runId, key);
-  if (!unit || !row) throw new HttpError(404, "单元不存在");
-  const task = state.task;
+const NOT_EDITABLE = "这次预览是上次启动时做的，单元结构没保存下来，改不了；可以直接执行，或者重新预览";
 
-  let match = row.match;
-  let episodeTitles = state.episodeTitles.get(key) ?? new Map<string, string>();
-  if (patch.match && (!match || match.tmdbId !== patch.match.tmdbId || match.mediaType !== patch.match.mediaType)) {
-    const tmdb = deps.tmdb(state.settings);
-    if (!tmdb) throw new HttpError(400, "TMDB 未配置 apiKey");
-    const r = await identifyUnit(
-      { unit, evidence: { known: { tmdbId: patch.match.tmdbId, mediaType: patch.match.mediaType, source: "手动指定" } }, episodeTitles: state.org.episodeTitle },
-      tmdb,
-    );
-    if (!r.match) throw new HttpError(404, `TMDB 上没有 ${patch.match.mediaType} ${patch.match.tmdbId}`);
-    match = { ...r.match, candidates: row.match?.candidates ?? [] };
-    episodeTitles = r.episodeTitles;
-    state.episodeTitles.set(key, episodeTitles);
-  }
-  const next: OrganizeUnit = {
+/** 把 patch 套在一个单元行上（换匹配时带上新的识别结果）；dstRoot / notes 由重新规划填 */
+function applyUnitPatch(row: OrganizeUnit, patch: OrganizeUnitPatch, picked?: OrganizeMatch): OrganizeUnit {
+  return {
     ...row,
-    match,
+    match: picked ?? row.match,
     seasonOverride: patch.seasonOverride === undefined ? row.seasonOverride : patch.seasonOverride,
     episodeOffset: patch.episodeOffset ?? row.episodeOffset,
     selected: patch.selected ?? (patch.match ? true : row.selected),
     remember: patch.remember ?? row.remember,
   };
-  const plan = planUnit(
-    { unit, match, seasonOverride: next.seasonOverride, episodeOffset: next.episodeOffset, episodeTitles, selected: next.selected },
-    { settings: state.org, libraryType: task.organize?.libraryType },
-  );
-  next.dstRoot = plan.dstRoot;
-  next.notes = plan.notes;
-  updateUnit(runId, key, next);
+}
 
-  // 换了匹配之后目标目录可能是没列过的：先列一遍，冲突检测和 mkdir 判断才准
-  try {
-    const provider = providerForTask(task, "write");
-    const extra = await listOutsideDstDirs(provider, task, state.roots, [plan], state.entries, new AbortController().signal);
-    if (extra.length > 0) state.entries = [...state.entries, ...extra];
-  } catch (err) {
-    log.warn({ err, runId, key }, "列目标目录失败，冲突检测按已知的条目算");
-  }
-
-  // 冲突检测要看全部单元：别的单元按内存里的单元结构和库里的匹配 / 季 / 偏移 / 勾选重新规划一遍（顺序和预览一样）。
-  // 附属文件跟着哪个视频、撞名算不算冲突这些规划期标记不落库，从库里的项反推会丢，谁先占到目标也会跟着变
-  const rows = new Map(listUnits(runId).map((r) => [r.key, r]));
+/**
+ * 预览里改了单元之后整体重新规划：别的单元按内存里的单元结构和库里的匹配 / 季 / 偏移 / 勾选重新规划一遍（顺序和预览一样），
+ * 冲突检测、建目录 / 删空目录整体重算。附属文件跟着哪个视频、撞名算不算冲突这些规划期标记不落库，从库里的项反推会丢，
+ * 谁先占到目标也会跟着变，所以不能只重做改了的单元。全是同步的：调用方在它之前做完检查，中间不能有 await
+ */
+function replanRun(run: OrganizeRun, state: PlanState, changed: Map<string, OrganizeUnit>): void {
+  const rows = new Map(listUnits(run.id).map((r) => [r.key, r]));
   const plans: UnitPlan[] = [];
   for (const u of state.units.values()) {
-    if (u.key === key) {
-      plans.push(plan);
-      continue;
-    }
-    const r = rows.get(u.key);
+    const r = changed.get(u.key) ?? rows.get(u.key);
     if (!r) continue;
-    plans.push(
-      planUnit(
-        { unit: u, match: r.match, seasonOverride: r.seasonOverride, episodeOffset: r.episodeOffset, episodeTitles: state.episodeTitles.get(u.key), selected: r.selected },
-        { settings: state.org, libraryType: task.organize?.libraryType },
-      ),
+    const plan = planUnit(
+      {
+        unit: u,
+        match: r.match,
+        seasonOverride: r.seasonOverride,
+        episodeOffset: r.episodeOffset,
+        episodeTitles: state.episodeTitles.get(u.key),
+        selected: r.selected,
+        excluded: excludedRel(state.task, r),
+      },
+      planContext(state),
     );
+    if (changed.has(u.key)) updateUnit(run.id, u.key, { ...r, dstRoot: plan.dstRoot, notes: [...(state.identifyNotes.get(u.key) ?? []), ...plan.notes] });
+    plans.push(plan);
   }
-  const all = finalizeItems(plans, { entries: state.entries, scopePath: run.scopePath, scopeRemovable: scopeRemovable(run), items: [], cleanupEmptyDirs: state.org.cleanupEmptyDirs });
-  replaceItems(runId, toItemRows(task, all));
-  const units = listUnits(runId);
-  updateRun(runId, { stats: computeStats(units, listItems(runId), "apply") });
-  return getUnit(runId, key)!;
+  const all = finalizeItems(plans, { entries: state.entries, scopeRoots: state.scopeRoots, items: [], cleanupEmptyDirs: state.org.cleanupEmptyDirs });
+  replaceItems(run.id, toItemRows(state.task, all));
+  updateRun(run.id, { stats: computeStats(listUnits(run.id), listItems(run.id), "apply") });
+}
+
+/** 能改的待执行预览：run 在、是 ready、单元结构还在内存里 */
+function editableRun(runId: string): { run: OrganizeRun; state: PlanState } {
+  const run = getRun(runId);
+  if (!run) throw new HttpError(404, "整理记录不存在");
+  if (run.status !== "ready") throw new HttpError(409, `只有待执行的整理能改（当前 ${run.status}）`);
+  const state = planStates.get(runId);
+  if (!state) throw new HttpError(409, NOT_EDITABLE);
+  return { run, state };
+}
+
+/**
+ * 落库前再确认一次：等 TMDB / 列目录的时候可能已经开始执行、被取消、被取代或删掉了——那就什么都不写。
+ * 从这里到落库不能有 await
+ */
+function assertStillEditable(runId: string, state: PlanState): OrganizeRun {
+  const current = getRun(runId);
+  if (!current || current.status !== "ready" || planStates.get(runId) !== state) throw new HttpError(409, "这次预览已经不能改了：已经开始执行、被取消或删掉了");
+  return current;
+}
+
+/** 改了单元之后目标目录可能是没列过的：把这些单元按改完的样子规划一遍，列一遍目标目录（列不到就按已知的条目算） */
+async function listDraftTargets(runId: string, state: PlanState, drafts: UnitPlan[]): Promise<ScopeEntry[]> {
+  if (drafts.length === 0) return [];
+  try {
+    return await listOutsideDstDirs(providerForTask(state.task, "write"), state.task, state.roots, drafts, state.entries, new AbortController().signal, state.listed);
+  } catch (err) {
+    log.warn({ err, runId }, "列目标目录失败，冲突检测按已知的条目算");
+    return [];
+  }
+}
+
+export async function patchUnit(runId: string, key: string, patch: OrganizeUnitPatch): Promise<OrganizeUnit> {
+  const { state } = editableRun(runId);
+  const unit = state.units.get(key);
+  const row = getUnit(runId, key);
+  if (!unit || !row) throw new HttpError(404, "单元不存在");
+  const end = beginOp(runId);
+  try {
+    let picked: { match: OrganizeMatch; episodeTitles: Map<string, string> } | undefined;
+    if (patch.match && (!row.match || row.match.tmdbId !== patch.match.tmdbId || row.match.mediaType !== patch.match.mediaType)) {
+      const tmdb = deps.tmdb(state.settings);
+      if (!tmdb) throw new HttpError(400, "TMDB 未配置 apiKey");
+      const r = await identifyUnit(
+        { unit, evidence: { known: { tmdbId: patch.match.tmdbId, mediaType: patch.match.mediaType, source: "手动指定" } }, episodeTitles: state.org.episodeTitle },
+        tmdb,
+      );
+      if (!r.match) throw new HttpError(404, `TMDB 上没有 ${patch.match.mediaType} ${patch.match.tmdbId}`);
+      picked = { match: { ...r.match, candidates: row.match?.candidates ?? [] }, episodeTitles: r.episodeTitles };
+    }
+    // 换了匹配 / 季之后目标目录可能是没列过的：按改完的样子规划这个单元，先把目标目录列一遍，冲突检测和 mkdir 判断才准
+    const draft = applyUnitPatch(row, patch, picked?.match);
+    const draftPlan = planUnit(
+      {
+        unit,
+        match: draft.match,
+        seasonOverride: draft.seasonOverride,
+        episodeOffset: draft.episodeOffset,
+        episodeTitles: picked?.episodeTitles ?? state.episodeTitles.get(key),
+        selected: draft.selected,
+        excluded: excludedRel(state.task, draft),
+      },
+      planContext(state),
+    );
+    const extra = await listDraftTargets(runId, state, [draftPlan]);
+    // 从这里到落库没有 await：先确认这次预览还能改，再从库里重读这个单元套 patch——两个 patch 交错时，后一个不能把前一个的改动盖回去
+    const current = assertStillEditable(runId, state);
+    const fresh = getUnit(runId, key);
+    if (!fresh) throw new HttpError(404, "单元不存在");
+    mergeEntries(state, extra);
+    if (picked) {
+      state.episodeTitles.set(key, picked.episodeTitles);
+      state.identifyNotes.set(key, []);
+    }
+    replanRun(current, state, new Map([[key, applyUnitPatch(fresh, patch, picked?.match)]]));
+    return getUnit(runId, key)!;
+  } finally {
+    end();
+  }
+}
+
+/** 批量勾选 / 取消勾选单元（全选、全不选、只选把握大的）：一次重规划，不是一个单元一次。没识别出来的单元不能勾 */
+export async function patchUnits(runId: string, keys: string[], patch: { selected?: boolean; remember?: boolean }): Promise<{ changed: number }> {
+  const { state } = editableRun(runId);
+  const wanted = new Set(keys);
+  const end = beginOp(runId);
+  try {
+    // 新勾上的单元：预览时没勾的不列目标目录，先列
+    const drafts: UnitPlan[] = [];
+    for (const row of listUnits(runId)) {
+      const unit = state.units.get(row.key);
+      if (!wanted.has(row.key) || !unit || !row.match || !patch.selected || row.selected) continue;
+      drafts.push(
+        planUnit(
+          { unit, match: row.match, seasonOverride: row.seasonOverride, episodeOffset: row.episodeOffset, episodeTitles: state.episodeTitles.get(row.key), selected: true, excluded: excludedRel(state.task, row) },
+          planContext(state),
+        ),
+      );
+    }
+    const extra = await listDraftTargets(runId, state, drafts);
+    const current = assertStillEditable(runId, state);
+    mergeEntries(state, extra);
+    const changed = new Map<string, OrganizeUnit>();
+    for (const fresh of listUnits(runId)) {
+      if (!wanted.has(fresh.key) || !fresh.match || !state.units.has(fresh.key)) continue;
+      const next = { ...fresh, selected: patch.selected ?? fresh.selected, remember: patch.remember ?? fresh.remember };
+      if (next.selected !== fresh.selected || next.remember !== fresh.remember) changed.set(fresh.key, next);
+    }
+    if (changed.size > 0) replanRun(current, state, changed);
+    return { changed: changed.size };
+  } finally {
+    end();
+  }
+}
+
+/**
+ * 按文件勾选：取消勾选的文件记在单元的 excluded 里（网盘绝对路径，重规划不丢），规划时跳过，跟着它的字幕 / nfo 一起留下；
+ * 冲突的两份勾掉一份，另一份就能走。ids 是当前清单里的项（重规划之后 id 会换，页面拿最新的清单）
+ */
+export async function patchItems(runId: string, ids: string[], selected: boolean): Promise<{ changed: number }> {
+  const { state } = editableRun(runId);
+  const wanted = new Set(ids);
+  const end = beginOp(runId);
+  try {
+    const byUnit = new Map<string, string[]>();
+    for (const it of listItems(runId)) {
+      if (!wanted.has(it.id) || it.unitKey === "" || it.kind === "dir") continue;
+      byUnit.set(it.unitKey, [...(byUnit.get(it.unitKey) ?? []), it.srcPath]);
+    }
+    const toggled = (row: OrganizeUnit): string[] => {
+      const next = new Set(row.excluded);
+      for (const p of byUnit.get(row.key) ?? []) {
+        if (selected) next.delete(p);
+        else next.add(p);
+      }
+      return [...next].sort();
+    };
+    // 重新勾上的文件：目标目录可能没列过
+    const drafts: UnitPlan[] = [];
+    if (selected) {
+      for (const row of listUnits(runId)) {
+        const unit = state.units.get(row.key);
+        if (!byUnit.has(row.key) || !unit || !row.match || !row.selected) continue;
+        drafts.push(
+          planUnit(
+            { unit, match: row.match, seasonOverride: row.seasonOverride, episodeOffset: row.episodeOffset, episodeTitles: state.episodeTitles.get(row.key), selected: true, excluded: excludedRel(state.task, { ...row, excluded: toggled(row) }) },
+            planContext(state),
+          ),
+        );
+      }
+    }
+    const extra = await listDraftTargets(runId, state, drafts);
+    const current = assertStillEditable(runId, state);
+    mergeEntries(state, extra);
+    const changed = new Map<string, OrganizeUnit>();
+    for (const fresh of listUnits(runId)) {
+      if (!byUnit.has(fresh.key) || !state.units.has(fresh.key)) continue;
+      const excluded = toggled(fresh);
+      if (excluded.join("\n") !== [...fresh.excluded].sort().join("\n")) changed.set(fresh.key, { ...fresh, excluded });
+    }
+    if (changed.size > 0) replanRun(current, state, changed);
+    return { changed: changed.size };
+  } finally {
+    end();
+  }
+}
+
+/* ------------------------------- 换匹配弹框的 TMDB 搜索 ------------------------------- */
+
+function tmdbOrThrow(): TmdbApi {
+  const tmdb = deps.tmdb(readAppSettings());
+  if (!tmdb) throw new HttpError(400, "TMDB 未配置 apiKey，请先在设置中填入");
+  return tmdb;
+}
+
+const toPick = (r: Pick<TmdbSearchResult, "id" | "title" | "year" | "posterUrl">, mediaType: OrganizeCandidate["mediaType"]): OrganizeCandidate => ({
+  tmdbId: r.id,
+  mediaType,
+  title: r.title,
+  year: r.year,
+  posterUrl: r.posterUrl,
+  score: 0,
+});
+
+/** 换匹配弹框的搜索：可以限定类型和年份；不限类型但给了年份时电影、剧集各搜一次（TMDB 的 multi 搜索不认年份） */
+export async function searchCandidates(q: { query: string; type?: OrganizeCandidate["mediaType"]; year?: string }): Promise<OrganizeCandidate[]> {
+  const tmdb = tmdbOrThrow();
+  const year = q.year && /^(19|20)\d{2}$/.test(q.year) ? q.year : undefined;
+  let results: TmdbSearchResult[];
+  try {
+    if (q.type) results = await tmdb.search(q.query, q.type, year);
+    else if (year) results = [...(await tmdb.search(q.query, "movie", year)), ...(await tmdb.search(q.query, "tv", year))];
+    else results = await tmdb.search(q.query, "multi");
+  } catch (err) {
+    throw upstreamError(`TMDB 搜索失败：${messageOf(err)}`);
+  }
+  const seen = new Set<string>();
+  const out: OrganizeCandidate[] = [];
+  for (const r of results) {
+    if (r.mediaType !== "movie" && r.mediaType !== "tv") continue;
+    const key = `${r.mediaType}:${r.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(toPick(r, r.mediaType));
+  }
+  return out;
+}
+
+/** 按 TMDB 编号查一部：换匹配弹框里直接填编号 / 贴链接 */
+export async function lookupCandidate(mediaType: OrganizeCandidate["mediaType"], tmdbId: number): Promise<OrganizeCandidate> {
+  const tmdb = tmdbOrThrow();
+  let d: TmdbDetails | null;
+  try {
+    d = await tmdb.details(mediaType, tmdbId);
+  } catch (err) {
+    throw upstreamError(`TMDB 查询失败：${messageOf(err)}`);
+  }
+  if (!d) throw new HttpError(404, `TMDB 上没有${mediaType === "movie" ? "电影" : "剧集"} ${tmdbId}`);
+  return toPick({ id: d.id, title: d.title || d.originalTitle, year: d.year, posterUrl: d.posterUrl }, mediaType);
 }
 
 /* ------------------------------- 执行 ------------------------------- */
@@ -1067,25 +1418,41 @@ async function execute(job: Job, runId: string, only: Set<string> | null): Promi
   }
 
   // 4. 收尾
+  finishApply(job, runId, { fatal, aborted: signal.aborted });
+}
+
+/**
+ * 执行的收尾：统计、日志和状态、追更 / 云下载目录改写 + 识别记忆 + Emby 刷新、通知。
+ * 取消也走这里（取消多半发生在网盘请求中途，异常从 execute 里抛出来，由 startJob 接住后调它）：
+ * 做完的项照样记进统计、收尾照常，只是不发通知
+ */
+function finishApply(job: Job, runId: string, outcome: { fatal: string | null; aborted: boolean }): void {
+  const run = getRun(runId);
+  const task = run ? getTask(run.taskId) : null;
+  if (!run || !task) return;
+  const units = listUnits(runId);
   const items = listItems(runId);
-  const stats = computeStats(listUnits(runId), items, "apply");
-  const finishedAt = now();
+  const stats = computeStats(units, items, "apply");
+  const finishedAt = Math.floor(Date.now() / 1000);
   // 收尾这句先进日志再落库，不然页面上的日志里没有它
-  if (fatal) {
-    jobLog(job, fatal);
-    updateRun(runId, { status: "failed", error: fatal, stats, log: job.logs, finishedAt });
+  if (outcome.fatal) {
+    jobLog(job, outcome.fatal);
+    updateRun(runId, { status: "failed", error: outcome.fatal, stats, log: job.logs, finishedAt });
+  } else if (outcome.aborted) {
+    jobLog(job, `已取消：${stats.done} 项完成${stats.pending > 0 ? `，${stats.pending} 项还没做` : ""}${stats.failed > 0 ? `，${stats.failed} 项失败` : ""}`);
+    updateRun(runId, { status: "cancelled", error: "已取消", stats, log: job.logs, finishedAt });
   } else {
     jobLog(job, `执行完成：${stats.done} 项完成，${stats.failed} 项失败${stats.failedByKind.mirror > 0 ? `，${stats.failedByKind.mirror} 项本地未同步` : ""}`);
-    updateRun(runId, { status: signal.aborted ? "cancelled" : "done", stats, log: job.logs, finishedAt });
+    updateRun(runId, { status: "done", stats, log: job.logs, finishedAt });
   }
   const moved = items.filter((it) => it.status === "done" && (it.action === "rename" || it.action === "move")).length;
   if (moved > 0) {
-    afterApply(task, provider, listUnits(runId), items);
+    afterApply(task, providerForTask(task, "write"), units, items);
     scheduleEmbyRefresh();
   }
   // 执行过就不能再改单元了，预览留在内存里的单元结构可以放掉
-  if (moved > 0 || !fatal) planStates.delete(runId);
-  if (!signal.aborted) {
+  if (moved > 0 || !outcome.fatal) planStates.delete(runId);
+  if (!outcome.aborted) {
     void deps.notify({ type: "organize-done", task, runId, units: stats.units, done: stats.done, failed: stats.failed, failedByKind: stats.failedByKind, notReverted: 0 });
   }
 }
@@ -1095,6 +1462,8 @@ interface DirMapping {
   to: string;
   /** 单元根 → 作品目录（识别记忆跟着挪的只有这种） */
   root: boolean;
+  /** 这条映射下挪过的文件项：撤销时一个都没退回（源目录还不在）就不把落点改回去 */
+  items: OrganizeItem[];
 }
 
 /**
@@ -1106,20 +1475,24 @@ interface DirMapping {
  */
 function dirMappings(task: TaskDefinition, units: OrganizeUnit[], items: OrganizeItem[], removed: Set<string>): DirMapping[] {
   const out: DirMapping[] = [];
+  const isFile = (it: OrganizeItem) => it.action === "rename" || it.action === "move";
   for (const u of units) {
-    if (u.match && u.dstRoot && u.rootPath && removed.has(u.rootPath) && u.rootPath !== u.dstRoot) out.push({ from: u.rootPath, to: u.dstRoot, root: true });
+    if (u.match && u.dstRoot && u.rootPath && removed.has(u.rootPath) && u.rootPath !== u.dstRoot) {
+      out.push({ from: u.rootPath, to: u.dstRoot, root: true, items: items.filter((it) => it.unitKey === u.key && isFile(it)) });
+    }
   }
   const roots = new Set(out.map((m) => m.from));
-  const targets = new Map<string, Set<string>>();
+  const targets = new Map<string, { to: Set<string>; items: OrganizeItem[] }>();
   for (const it of items) {
     if (it.action !== "move") continue;
     const from = dirOf(relOf(task, it.srcPath));
     if (!removed.has(from) || roots.has(from)) continue;
-    const to = targets.get(from) ?? new Set<string>();
-    to.add(dirOf(relOf(task, it.dstPath)));
-    targets.set(from, to);
+    const t = targets.get(from) ?? { to: new Set<string>(), items: [] };
+    t.to.add(dirOf(relOf(task, it.dstPath)));
+    t.items.push(it);
+    targets.set(from, t);
   }
-  for (const [from, to] of targets) if (to.size === 1) out.push({ from, to: [...to][0], root: false });
+  for (const [from, t] of targets) if (t.to.size === 1) out.push({ from, to: [...t.to][0], root: false, items: t.items });
   return out.sort((a, b) => b.from.length - a.from.length);
 }
 
@@ -1154,8 +1527,11 @@ export function applicability(run: OrganizeRun, ids?: string[], known?: { items:
   if (run.stage === "revert") return { ok: false, reason: "这次整理已经开始撤销，只能继续撤销", count: 0 };
   if (run.status === "ready") return run.stats.planned > 0 ? { ok: true, count: run.stats.planned } : { ok: false, reason: "没有要动的项", count: 0 };
   if (!["done", "failed", "cancelled"].includes(run.status)) return { ok: false, reason: `当前状态（${run.status}）不能执行`, count: 0 };
+  const all = known?.items ?? listItems(run.id);
+  // 从没执行过的（待执行的预览被取消 / 被新的预览取代）：所有项都是 pending，那不是「没做完」，要执行就重新预览
+  if (!all.some((it) => it.attempts > 0)) return { ok: false, reason: "这次预览没有执行过；要执行请重新预览", count: 0 };
   const active = activeItemFilter(run.id, known?.units);
-  const items = (known?.items ?? listItems(run.id)).filter(active);
+  const items = all.filter(active);
   if (ids) {
     const set = new Set(ids);
     const count = items.filter((it) => set.has(it.id) && retryableItem(it, true)).length;
@@ -1171,12 +1547,17 @@ export async function applyRun(runId: string, ids?: string[]): Promise<OrganizeR
   const run = getRun(runId);
   if (!run) throw new HttpError(404, "整理记录不存在");
   if (jobs.has(runId)) throw new HttpError(409, "这次整理正在进行中");
+  assertNoOps(runId);
   const can = applicability(run, ids);
   if (!can.ok) throw new HttpError(409, can.reason ?? "不能执行");
   const busy = listRunsByStatus(["applying", "reverting", "planning"]).find((r) => r.taskId === run.taskId);
-  if (busy) throw new HttpError(409, `任务已有一次整理在进行中（${busy.id}）`);
+  if (busy) throw new HttpError(409, `任务已有一次整理在进行中（${busy.id}）`, { runId: busy.id });
   updateRun(runId, { status: "applying", error: "", startedAt: run.startedAt ?? Math.floor(Date.now() / 1000), finishedAt: null });
-  startJob(runId, (job) => execute(job, runId, ids ? new Set(ids) : null));
+  startJob(
+    runId,
+    (job) => execute(job, runId, ids ? new Set(ids) : null),
+    (job) => finishApply(job, runId, { fatal: null, aborted: true }),
+  );
   return getRun(runId)!;
 }
 
@@ -1195,8 +1576,19 @@ export function cancelRun(runId: string): OrganizeRun {
   return getRun(runId)!;
 }
 
+/**
+ * 按原范围、原触发来源重新预览：建一个新的手动预览（不自动执行、不发待确认通知）。新增路径的 run 保留新增路径的语义，
+ * 触发来源也照旧（界面上还是「转存 / 监控 …的 N 个新增路径」）
+ */
+export async function repreviewRun(runId: string): Promise<OrganizeRun> {
+  const run = getRun(runId);
+  if (!run) throw new HttpError(404, "整理记录不存在");
+  return createRun({ taskId: run.taskId, subPath: run.scopePath, paths: run.scopePaths.length > 0 ? run.scopePaths : undefined, mode: "manual", trigger: run.trigger });
+}
+
 export function deleteRun(runId: string): void {
   if (jobs.has(runId)) throw new HttpError(409, "这次整理正在进行中，先取消");
+  assertNoOps(runId);
   planStates.delete(runId);
   if (!deleteRunRow(runId)) throw new HttpError(404, "整理记录不存在");
 }
@@ -1213,6 +1605,17 @@ export function deleteRun(runId: string): void {
  *   - 放弃建目录项时，连带放弃要进这个目录的项（不然它们下次重试全变 stale）
  */
 export async function skipItems(runId: string, ids: string[]): Promise<OrganizeSkipResult> {
+  // 放弃要在网盘上改回原名（有 await）：这期间不许执行 / 撤销 / 删除，也不许再来一次放弃
+  assertNoOps(runId);
+  const end = beginOp(runId);
+  try {
+    return await giveUpItems(runId, ids);
+  } finally {
+    end();
+  }
+}
+
+async function giveUpItems(runId: string, ids: string[]): Promise<OrganizeSkipResult> {
   const run = getRun(runId);
   if (!run) throw new HttpError(404, "整理记录不存在");
   if (jobs.has(runId)) throw new HttpError(409, "这次整理正在进行中");
@@ -1314,11 +1717,13 @@ export async function skipItems(runId: string, ids: string[]): Promise<OrganizeS
 
 /* ------------------------------- 撤销 ------------------------------- */
 
-export function revertability(run: OrganizeRun, items: OrganizeItem[] = listItems(run.id)): { ok: boolean; reason?: string } {
+export function revertability(run: OrganizeRun, items: OrganizeItem[] = listItems(run.id)): OrganizeRunDetail["revertable"] {
   if (!["done", "failed", "cancelled", "reverted"].includes(run.status)) return { ok: false, reason: "只有执行过的整理能撤销" };
   // 没执行过文件的不用撤；撤销中断过的连没删的自建目录也算还有事
   if (!items.some((it) => (run.stage === "revert" ? revertWorkItem(it) : revertPendingItem(it)))) return { ok: false, reason: run.stage === "revert" ? "已经全部退回" : "这次整理没有改动任何文件" };
-  if (hasLaterAppliedRun(run)) return { ok: false, reason: "同一任务后面还有更晚的整理，只能撤销最近一次" };
+  // 后面的整理动过这次挪好的文件：文件已经被它挪走了，得先撤它。不相干的后续整理（别的目录、自动整理的新一集）不挡
+  const blocker = laterRunTouching(run);
+  if (blocker) return { ok: false, reason: "后面的一次整理又动过这次整理挪好的文件，先撤销那一次", blockedBy: blocker };
   return { ok: true };
 }
 
@@ -1517,18 +1922,64 @@ async function revert(job: Job, runId: string): Promise<void> {
     }
   }
 
+  if (!fatal && !signal.aborted) await sweepLeftoverDirs(job, ctx, run, runId);
+
+  // n 是这一轮做成的，只用来决定刷不刷 Emby
+  finishRevert(job, runId, { fatal, aborted: signal.aborted, refresh: n > 0 });
+}
+
+/**
+ * 撤销放宽之后可以先撤前面的整理：它建的目录当时装着后面这次放进去的文件，只能留着（skipped「目录不是空的，留着」），
+ * 前面那次也就撤完了、没有再撤的机会。后面这次撤销把文件挪走以后，这些目录空了就顺手删掉，前面那次的记账跟着改成已退回；
+ * 还有别的东西（用户自己放的）就接着留着
+ */
+async function sweepLeftoverDirs(job: Job, ctx: ExecCtx, run: OrganizeRun, runId: string): Promise<void> {
+  const dirs = new Set<string>();
+  for (const it of listItems(runId)) {
+    if (it.status !== "reverted" || (it.action !== "rename" && it.action !== "move")) continue;
+    for (let d = dirOf(it.dstPath); splitPath(d).length > 0; d = dirOf(d)) dirs.add(d);
+  }
+  const left = listLeftoverDirs(run.taskId, runId, [...dirs]).sort((a, b) => b.dstPath.length - a.dstPath.length);
+  if (left.length === 0) return;
+  const write = ctx.provider.write!;
+  const signal = job.abort.signal;
+  const touched = new Set<string>();
+  for (const it of left) {
+    try {
+      const node = await withRetry(ctx, () => ctx.provider.resolvePath(it.dstPath, signal));
+      if (!node?.isDir || !(await withRetry(ctx, () => write.rmdirIfEmpty({ id: node.id, path: it.dstPath, isDir: true }, signal)))) continue;
+      await mirrorRmdir(it.dstPath, { tasks: ctx.tasks, settings: ctx.settings });
+      updateItem(it.id, { status: "reverted", finishedAt: Math.floor(Date.now() / 1000), error: "", errorKind: "" });
+      touched.add(it.runId);
+      jobLog(job, `前面整理留下的空目录一起删了：${it.dstPath}`);
+    } catch (err) {
+      if (isAbortError(err) || signal.aborted) throw err;
+      jobLog(job, `前面整理留下的目录没删掉 ${it.dstPath}：${messageOf(err)}`);
+    }
+  }
+  for (const id of touched) updateRun(id, { stats: computeStats(listUnits(id), listItems(id), "revert") });
+}
+
+/**
+ * 撤销的收尾：追更 / 云下载目录和识别记忆改回去、统计、日志和状态、Emby 刷新、通知。取消也走这里（见 finishApply）。
+ * 「退回了几项」和执行时的「项完成」同一个口径：累计、建目录 / 删目录也算
+ */
+function finishRevert(job: Job, runId: string, outcome: { fatal: string | null; aborted: boolean; refresh: boolean }): void {
+  const run = getRun(runId);
+  const task = run ? getTask(run.taskId) : null;
+  if (!run || !task) return;
   const units = listUnits(runId);
-  const finalItems = listItems(runId);
-  afterRevert(task, provider, units, finalItems);
-  const stats = computeStats(units, finalItems, "revert");
-  // 「退回了几项」和执行时的「项完成」同一个口径：累计、建目录 / 删目录也算；n 是这一轮做成的，只用来决定刷不刷 Emby
-  const reverted = finalItems.filter((it) => it.status === "reverted").length;
-  jobLog(job, fatal ?? `撤销完成：退回 ${reverted} 项${stats.notReverted > 0 ? `，${stats.notReverted} 项没退回` : ""}`);
-  updateRun(runId, { status: fatal ? "failed" : signal.aborted ? "cancelled" : "reverted", error: fatal ?? "", stats, log: job.logs, finishedAt: now() });
+  const items = listItems(runId);
+  afterRevert(task, providerForTask(task, "write"), units, items);
+  const stats = computeStats(units, items, "revert");
+  const left = stats.notReverted > 0 ? `，${stats.notReverted} 项没退回` : "";
+  const status = outcome.fatal ? "failed" : outcome.aborted ? "cancelled" : "reverted";
+  jobLog(job, outcome.fatal ?? (outcome.aborted ? `已取消：退回 ${stats.reverted} 项${left}` : `撤销完成：退回 ${stats.reverted} 项${left}`));
+  updateRun(runId, { status, error: outcome.fatal ?? (outcome.aborted ? "已取消" : ""), stats, log: job.logs, finishedAt: Math.floor(Date.now() / 1000) });
   planStates.delete(runId);
-  if (n > 0) scheduleEmbyRefresh();
-  if (!signal.aborted) {
-    void deps.notify({ type: "organize-done", task, runId, units: stats.units, done: reverted, failed: stats.failed, reverted: true, failedByKind: stats.failedByKind, notReverted: stats.notReverted });
+  if (outcome.refresh) scheduleEmbyRefresh();
+  if (!outcome.aborted) {
+    void deps.notify({ type: "organize-done", task, runId, units: stats.units, done: stats.reverted, failed: stats.failed, reverted: true, failedByKind: stats.failedByKind, notReverted: stats.notReverted });
   }
 }
 
@@ -1539,6 +1990,8 @@ function afterRevert(task: TaskDefinition, provider: DriveProvider, units: Organ
   const created = new Set(items.filter((it) => it.action === "mkdir").map((it) => relOf(task, it.dstPath)));
   const back = dirMappings(task, units, items, removedDirs)
     .filter((m) => m.root || created.has(m.to))
+    // 这条映射下一个文件都没退回（撤销被取消、在网盘上失败、已经找不到）：源目录还不在，追更 / 云下载继续指着作品目录
+    .filter((m) => m.items.some((it) => it.status === "reverted"))
     .map((m) => ({ from: m.to, to: m.from, root: m.root }))
     .sort((a, b) => b.from.length - a.from.length);
   if (back.length === 0) return;
@@ -1551,12 +2004,17 @@ export async function revertRun(runId: string): Promise<OrganizeRun> {
   const run = getRun(runId);
   if (!run) throw new HttpError(404, "整理记录不存在");
   if (jobs.has(runId)) throw new HttpError(409, "这次整理正在进行中");
+  assertNoOps(runId);
   const ok = revertability(run);
   if (!ok.ok) throw new HttpError(409, ok.reason ?? "不能撤销");
   const busy = listRunsByStatus(["applying", "reverting", "planning"]).find((r) => r.taskId === run.taskId);
-  if (busy) throw new HttpError(409, `任务已有一次整理在进行中（${busy.id}）`);
+  if (busy) throw new HttpError(409, `任务已有一次整理在进行中（${busy.id}）`, { runId: busy.id });
   updateRun(runId, { status: "reverting", stage: "revert", error: "", finishedAt: null });
-  startJob(runId, (job) => revert(job, runId));
+  startJob(
+    runId,
+    (job) => revert(job, runId),
+    (job) => finishRevert(job, runId, { fatal: null, aborted: true, refresh: true }),
+  );
   return getRun(runId)!;
 }
 
@@ -1590,7 +2048,8 @@ export function failureGroups(run: OrganizeRun, items: OrganizeItem[], units: Or
     const failed = live.filter((it) => it.status === "failed" && active(it));
     for (const k of ["blocked", "transient", "stale", "rejected"] as const) push(k, failed.filter((it) => (it.errorKind || "transient") === k), { retry: true, skip: true, repreview: k === "stale" });
     push("mirror", live.filter((it) => it.status === "done" && it.errorKind === "mirror"), { retry: true, skip: true });
-    push("pending", live.filter((it) => it.status === "pending" && active(it) && WORK_ACTIONS.has(it.action)), { retry: true, skip: true });
+    // 没做完的只对执行过的 run 说：待执行的预览被取消 / 取代时所有项都是 pending，那不是「没做完」
+    if (items.some((it) => it.attempts > 0)) push("pending", live.filter((it) => it.status === "pending" && active(it) && WORK_ACTIONS.has(it.action)), { retry: true, skip: true });
   } else {
     const stuck = live.filter((it) => it.status === "done" && isFile(it) && it.errorKind !== "" && it.errorKind !== "mirror");
     for (const k of ["blocked", "transient", "stale", "rejected"] as const) {
@@ -1603,12 +2062,116 @@ export function failureGroups(run: OrganizeRun, items: OrganizeItem[], units: Or
   return groups;
 }
 
+function summaryOf(run: OrganizeRun, units: OrganizeUnit[], items: OrganizeItem[]): OrganizeRunSummary {
+  return {
+    run: withProgress(run),
+    groups: failureGroups(run, items, units),
+    revertable: revertability(run, items),
+    applicable: applicability(run, undefined, { items, units }),
+    editable: run.status === "ready" && planStates.has(run.id),
+    executed: items.some((it) => it.attempts > 0),
+    outdated: outdatedOf(run),
+  };
+}
+
+/** 执行 / 撤销进行中页面轮询它：run（含进度 / 日志）+ 分组 + 按钮开关，不带单元和项 */
+export function getRunSummary(runId: string): OrganizeRunSummary {
+  const run = getRun(runId);
+  if (!run) throw new HttpError(404, "整理记录不存在");
+  return summaryOf(run, listUnits(runId), listItems(runId));
+}
+
+/**
+ * 单元卡上的数字：详情不带全部项（一次整理最多两万个文件），按单元数好。和单元卡、失败面板同一个口径：
+ * 要处理 = 没放弃的 failed，或者 done / reverted 但带着类别（本地没跟上 / 撤销在网盘那步失败）；跳过里用户自己的选择（单元没勾选）不算
+ */
+function unitCounts(units: OrganizeUnit[], items: OrganizeItem[]): Record<string, OrganizeUnitCounts> {
+  const selected = new Map(units.map((u) => [u.key, u.selected && !!u.match]));
+  const excluded = new Map(units.map((u) => [u.key, new Set(u.excluded)]));
+  const out: Record<string, OrganizeUnitCounts> = {};
+  for (const u of units) out[u.key] = { total: 0, changing: 0, conflicts: 0, skipped: 0, keep: 0, failed: 0, done: 0, reverted: 0, excluded: 0 };
+  for (const it of items) {
+    const c = out[it.unitKey];
+    if (!c) continue; // 建目录 / 删空目录另算
+    c.total++;
+    if (excluded.get(it.unitKey)?.has(it.srcPath)) c.excluded++;
+    else if (it.action === "rename" || it.action === "move") c.changing++;
+    else if (it.action === "conflict") c.conflicts++;
+    else if (it.action === "keep") c.keep++;
+    else if (it.action === "skip" && selected.get(it.unitKey)) c.skipped++;
+    if (it.status === "done") c.done++;
+    if (it.status === "reverted") c.reverted++;
+    if (!it.givenUp && (it.status === "failed" || ((it.status === "done" || it.status === "reverted") && it.errorKind !== ""))) c.failed++;
+  }
+  return out;
+}
+
+/** 详情里的单元不带候选的简介：页面用不上，几十部作品 × 八个候选的简介能占满一半的体积 */
+const lightUnit = (u: OrganizeUnit): OrganizeUnit =>
+  u.match?.candidates?.length ? { ...u, match: { ...u.match, candidates: u.match.candidates.map(({ overview: _overview, ...c }) => c) } } : u;
+
 export function getRunDetail(runId: string): OrganizeRunDetail {
   const run = getRun(runId);
   if (!run) throw new HttpError(404, "整理记录不存在");
   const units = listUnits(runId);
   const items = listItems(runId);
-  return { run: withProgress(run), units, items, groups: failureGroups(run, items, units), revertable: revertability(run, items), applicable: applicability(run, undefined, { items, units }) };
+  return { ...summaryOf(run, units, items), units: units.map(lightUnit), counts: unitCounts(units, items), dirCount: items.filter((it) => it.unitKey === "").length };
+}
+
+/** 按需拉项：一个单元的（unitKey 为空是建目录 / 删空目录），或者失败面板的一组 */
+export function listRunItems(runId: string, q: { unit?: string; group?: OrganizeFailureGroupKey }): OrganizeItem[] {
+  const run = getRun(runId);
+  if (!run) throw new HttpError(404, "整理记录不存在");
+  if (q.group === undefined) return listItems(runId, q.unit ?? "");
+  const items = listItems(runId);
+  const group = failureGroups(run, items, listUnits(runId)).find((g) => g.key === q.group);
+  if (!group) return [];
+  const ids = new Set(group.itemIds);
+  return items.filter((it) => ids.has(it.id));
+}
+
+const OLD_PREVIEW_S = 24 * 3600;
+
+/** 待执行的预览是不是旧了：预览之后同任务又有整理 / 撤销落了盘，或者预览超过一天。执行不拦（执行前本来就逐项核对），页面提示重新预览 */
+function outdatedOf(run: OrganizeRun): OrganizeRunDetail["outdated"] {
+  if (run.status !== "ready") return undefined;
+  const changed = changedSince(run.taskId, run.createdAt, run.id);
+  if (changed) return { kind: "changed", at: changed.finishedAt, runId: changed.id };
+  if (Math.floor(Date.now() / 1000) - run.createdAt > OLD_PREVIEW_S) return { kind: "old", at: run.createdAt };
+  return undefined;
+}
+
+/** 待处理列表只看最近这么久建的 run（进行中 / 待执行的不限） */
+const ATTENTION_WINDOW_S = 30 * 24 * 3600;
+
+/** 一个 run 要不要人管、为什么 */
+function attentionOf(run: OrganizeRun): OrganizeAttentionReason | null {
+  if (run.status === "ready") return "ready";
+  if (run.status === "planning" || run.status === "applying" || run.status === "reverting") return "busy";
+  const k = run.stats.failedByKind;
+  if (run.stage === "revert") return run.stats.notReverted > 0 || k.mirror > 0 ? "revert" : null;
+  const failures = k.transient + k.blocked + k.stale + k.rejected + k.mirror;
+  // 做了一半：做过一些（用户中途取消的另算，没做过就取消是他自己不要了）、或者中途停下的（风控 / 重启）
+  if (failures > 0 || (run.stats.pending > 0 && (run.stats.done > 0 || run.status === "failed"))) return "failures";
+  // 自动触发的预览失败了用户看不到；手动的当场就看到了
+  if (run.status === "failed" && run.stats.items === 0 && run.trigger !== "manual") return "preview-failed";
+  return null;
+}
+
+/** 跨任务列出要人管的 run（整理页的待处理列表、侧栏角标），新的在前；不带日志 */
+export function listAttention(limit = 50): OrganizeAttention[] {
+  const since = Math.floor(Date.now() / 1000) - ATTENTION_WINDOW_S;
+  const seen = new Set<string>();
+  const out: OrganizeAttention[] = [];
+  const consider = (run: OrganizeRun) => {
+    if (seen.has(run.id)) return;
+    seen.add(run.id);
+    const reason = attentionOf(run);
+    if (reason) out.push({ run: { ...withProgress(run), log: [] }, reason });
+  };
+  for (const r of listRunsByStatus(["planning", "applying", "reverting", "ready"])) consider(r);
+  for (const r of listRunRows({ limit: 200 })) if (r.createdAt >= since) consider(r);
+  return out.sort((a, b) => b.run.createdAt - a.run.createdAt).slice(0, limit);
 }
 
 /** 进程重启：上次没跑完的 run 标失败，用户可以再执行 / 继续撤销（做完的项不会重做）；清单上已经没事可做的直接收口 */
@@ -1619,6 +2182,8 @@ export function reconcileInterruptedRuns(): number {
     updateRun(r.id, {
       status: "failed",
       error: r.status === "reverting" ? "进程重启，撤销中断了；可以继续撤销（已退回的项不会重做）" : "进程重启，中断了；可以重新执行（已完成的项不会重做）",
+      // 统计按清单重算：中断前做完的项要算进去，不然页面和待处理列表还是上一次落库时的数
+      stats: computeStats(listUnits(r.id), listItems(r.id), r.stage),
       finishedAt: Math.floor(Date.now() / 1000),
     });
   }
@@ -1660,6 +2225,11 @@ function finalizeIfNothingLeft(run: OrganizeRun): boolean {
 /** 进程退出：把在跑的都掐掉 */
 export function cancelAllRuns(): void {
   for (const job of jobs.values()) job.abort.abort();
+}
+
+/** 仅供测试：丢掉内存里的单元结构，模拟进程重启过 */
+export function __test_dropPlanState(runId: string): void {
+  planStates.delete(runId);
 }
 
 export type { OrganizeConfidence };

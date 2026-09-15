@@ -5,12 +5,27 @@
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/services/organize/run.itest.ts
  */
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import type { AccountInfo, AppSettings, OrganizeRun, TaskDefinition } from "@openstrm/shared";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
-import { __test_resetOrganize, bumpOwnHit, findOwnOperation, listItems, listUnits, recallMatch, rememberMatch, replaceItems, updateItem, updateRun } from "../../db/repositories/organize.js";
+import {
+  __test_resetOrganize,
+  bumpOwnHit,
+  deleteFinishedRunsBefore,
+  findOwnOperation,
+  insertRun,
+  listItems,
+  listRuns as listRunRows,
+  listUnits,
+  recallMatch,
+  rememberMatch,
+  replaceItems,
+  updateItem,
+  updateRun,
+} from "../../db/repositories/organize.js";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { getShareFollow, insertShareFollow, replaceShareFollows } from "../../db/repositories/share-follows.js";
 import { readKv, writeKv } from "../../db/repositories/life.js";
@@ -23,7 +38,26 @@ import { FakeDrive } from "../../test/fake-drive.js";
 import type { TmdbDetails, TmdbEpisode, TmdbSearchResult } from "../tmdb.js";
 import type { NotifyEvent } from "../telegram/notify.js";
 import type { TmdbApi } from "./identify.js";
-import { applyRun, cancelRun, createRun, getRunDetail, patchUnit, reconcileInterruptedRuns, revertRun, setOrganizeDeps, skipItems, waitForRun } from "./run.js";
+import {
+  __test_dropPlanState,
+  applyRun,
+  cancelRun,
+  createRun,
+  deleteRun,
+  getRunDetail,
+  listAttention,
+  lookupCandidate,
+  patchItems,
+  patchUnit,
+  patchUnits,
+  reconcileInterruptedRuns,
+  repreviewRun,
+  revertRun,
+  searchCandidates,
+  setOrganizeDeps,
+  skipItems,
+  waitForRun,
+} from "./run.js";
 
 const account: AccountInfo = { accountType: "quark", name: "acc", cookie: "c" };
 const task: TaskDefinition = { id: "t1", account: "acc", accountType: "quark", originPath: "tv", targetPath: "organize-itest/tv", strmPrefix: "/mnt" };
@@ -131,7 +165,7 @@ test("预览：分单元、识别、规划出改名 / 移动 / 建目录 / 删�
   const run = await createRun({ taskId: "t1", subPath: "inbox" });
   assert.equal(run.status, "planning");
   const ready = await untilStatus(run.id, ["ready"]);
-  const detail = getRunDetail(run.id);
+  const detail = { ...getRunDetail(run.id), items: listItems(run.id) };
   assert.equal(detail.units.length, 2);
   const beef = detail.units.find((u) => u.rootPath === "inbox/BEEF.S01.1080p")!;
   assert.equal(beef.match?.tmdbId, 153312);
@@ -184,7 +218,7 @@ test("执行：网盘改名移动、本地 strm 跟着挪并重写内容、字�
   assert.ok(localExists("怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.zh-CN.srt"), "本地有的字幕跟着挪");
   assert.ok(localExists("沙丘：第二部 (2024) [tmdbid=693134]/沙丘：第二部 (2024) - 2160p.strm"), "本地没有的 strm 直接按新路径写");
   assert.ok(!localExists("inbox/BEEF.S01.1080p"), "本地空目录也清掉");
-  // 记账与自有操作：115 会把「先改名再挪」报成两条事件，中间路径和最终路径都要认；认过两条之后再动就是用户动的
+  // 记账与自有操作：115 会把「先改名再挪」报成两条事件，中间路径和最终路径都要认；执行、撤销各认两条，认满之后再动就是用户动的
   const items = listItems(run.id);
   const ep1 = items.find((i) => i.srcPath.endsWith("S01E01.1080p.WEB-DL.mkv"))!;
   assert.equal(ep1.status, "done");
@@ -194,9 +228,8 @@ test("执行：网盘改名移动、本地 strm 跟着挪并重写内容、字�
   assert.ok(findOwnOperation(ep1.nodeId, "/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E01.mkv", at), "原地改名后的中间路径");
   assert.equal(findOwnOperation(ep1.nodeId, "/tv/other", at), null);
   assert.equal(findOwnOperation(ep1.nodeId, ep1.dstPath, at - 3600), null, "事件比操作早一小时：不是它");
-  bumpOwnHit(ep1.id);
-  bumpOwnHit(ep1.id);
-  assert.equal(findOwnOperation(ep1.nodeId, ep1.dstPath, at), null, "已经认过两条事件，之后同一路径再来就是用户动的");
+  for (let i = 0; i < 4; i++) bumpOwnHit(ep1.id);
+  assert.equal(findOwnOperation(ep1.nodeId, ep1.dstPath, at), null, "已经认满四条事件（执行、撤销各两条），之后同一路径再来就是用户动的");
   const mk = items.find((i) => i.action === "mkdir" && i.dstPath.endsWith("Season 01"))!;
   assert.ok(findOwnOperation(mk.nodeId, mk.dstPath, at), "建出来的目录：夸克快照会报成 create，也要认");
   // 追更落点改写 + 记忆；云下载回执只改还没兑现的
@@ -211,7 +244,7 @@ test("执行：网盘改名移动、本地 strm 跟着挪并重写内容、字�
   const again = await createRun({ taskId: "t1" });
   const ready = await untilStatus(again.id, ["ready"]);
   assert.equal(ready.stats.planned, 0);
-  assert.ok(getRunDetail(again.id).items.filter((i) => i.kind !== "dir").every((i) => i.action === "keep"));
+  assert.ok(listItems(again.id).filter((i) => i.kind !== "dir").every((i) => i.action === "keep"));
   const memoryUnit = getRunDetail(again.id).units.find((u) => u.rootPath === "怒呛人生 (2023) [tmdbid=153312]")!;
   assert.equal(memoryUnit.match?.reason, "上次确认过的识别结果");
   const tagUnit = getRunDetail(again.id).units.find((u) => u.rootPath === "沙丘：第二部 (2024) [tmdbid=693134]")!;
@@ -230,6 +263,9 @@ test("撤销：按流水账逆序退回，网盘和本地都恢复，追更落�
   await applyRun(run.id);
   const applied = await untilStatus(run.id, ["done"]);
   assert.ok(applied.log.some((l) => l.includes(`执行完成：${applied.stats.done} 项完成，0 项失败`)), "收尾那句也落进了 run 的日志");
+  // 同一次 run 的日志是一本账：执行接着预览往下写，不把预览那段冲掉
+  const previewEnd = applied.log.findIndex((l) => l.includes("预览完成"));
+  assert.ok(previewEnd >= 0 && previewEnd < applied.log.findIndex((l) => l.includes("执行完成")), "预览的日志还在，执行的接在后面");
   assert.equal(getRunDetail(run.id).revertable.ok, true);
   await revertRun(run.id);
   const reverted = await untilStatus(run.id, ["reverted"]);
@@ -239,6 +275,7 @@ test("撤销：按流水账逆序退回，网盘和本地都恢复，追更落�
   assert.equal(back.length, applied.stats.done);
   assert.ok(back.some((i) => i.action === "mkdir") && back.some((i) => i.action === "rmdir"));
   assert.ok(reverted.log.some((l) => l.includes(`撤销完成：退回 ${back.length} 项`)), "撤销的收尾那句也落进日志");
+  assert.ok(reverted.log.some((l) => l.includes("执行完成")), "执行那段也还在");
   const ev = notified.find((e) => e.type === "organize-done" && e.reverted === true);
   assert.ok(ev?.type === "organize-done");
   assert.equal(ev.done, back.length);
@@ -250,17 +287,18 @@ test("撤销：按流水账逆序退回，网盘和本地都恢复，追更落�
   assert.ok(!localExists("怒呛人生 (2023) [tmdbid=153312]"));
   assert.equal(getShareFollow("f2")!.subPath, "inbox/BEEF.S01.1080p");
   assert.equal(getRunDetail(run.id).revertable.ok, false);
-  // 撤销产生的反向事件也要认成自己的：新路径是原路径，或反向的中间路径
+  // 撤销产生的事件也要认成自己的：新路径是原路径，或先挪回、还没改回原名的中间路径 `源目录/新名字`；`目标目录/旧名字` 撤销走不到，不认
   const ep2 = listItems(run.id).find((i) => i.srcPath.endsWith("S01E02.1080p.WEB-DL.mkv"))!;
   assert.equal(ep2.status, "reverted");
   assert.ok(findOwnOperation(ep2.nodeId, ep2.srcPath, ep2.finishedAt!));
-  assert.ok(findOwnOperation(ep2.nodeId, "/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/BEEF.S01E02.1080p.WEB-DL.mkv", ep2.finishedAt!));
+  assert.ok(findOwnOperation(ep2.nodeId, "/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv", ep2.finishedAt!));
+  assert.equal(findOwnOperation(ep2.nodeId, "/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/BEEF.S01E02.1080p.WEB-DL.mkv", ep2.finishedAt!), null);
 });
 
 test("范围就是发布目录：腾空后连范围目录一起删，撤销时按需重建", async () => {
   const run = await createRun({ taskId: "t1", subPath: "inbox/BEEF.S01.1080p" });
   await untilStatus(run.id, ["ready"]);
-  const planned = getRunDetail(run.id).items;
+  const planned = listItems(run.id);
   assert.deepEqual(planned.filter((i) => i.action === "rmdir").map((i) => i.srcPath), ["/tv/inbox/BEEF.S01.1080p"], "范围目录像发布目录，腾空了就删");
   await applyRun(run.id);
   await untilStatus(run.id, ["done"]);
@@ -314,7 +352,7 @@ test("散在任务根目录的文件：按标题各自成单元挪进作品目�
   writeLocalStrm("BEEF.S01E03.1080p.WEB-DL.strm", "tv/BEEF.S01E03.1080p.WEB-DL.mkv");
   const run = await createRun({ taskId: "t1", subPath: "" });
   await untilStatus(run.id, ["ready"]);
-  const detail = getRunDetail(run.id);
+  const detail = { ...getRunDetail(run.id), items: listItems(run.id) };
   const rootUnits = detail.units.filter((u) => u.rootPath === "");
   assert.deepEqual(rootUnits.map((u) => u.dstRoot).sort(), ["怒呛人生 (2023) [tmdbid=153312]", "沙丘：第二部 (2024) [tmdbid=693134]"], "根目录按标题拆成两个单元");
   const byDst = (suffix: string) => detail.items.find((i) => i.dstPath.endsWith(suffix))!;
@@ -421,7 +459,7 @@ test("自动触发的 run（按路径）也会列范围外的目标目录：已�
   drive.tree.addDir("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01");
   const run = await createRun({ taskId: "t1", paths: ["inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv", "inbox/BEEF.S01.1080p"], mode: "review", trigger: "share" });
   const ready = await untilStatus(run.id, ["ready"]);
-  const items = getRunDetail(run.id).items;
+  const items = listItems(run.id);
   assert.equal(items.filter((i) => i.action === "mkdir").length, 0, "目标目录都已存在");
   assert.equal(ready.stats.conflicts, 1);
   assert.equal(ready.status, "ready", "review 模式不自动执行");
@@ -435,27 +473,86 @@ test("源目录里已有和新名字一样的文件：中间改名会撞上，�
   drive.tree.addFile("/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E01.mkv");
   const run = await createRun({ taskId: "t1", subPath: "inbox" });
   const ready = await untilStatus(run.id, ["ready"]);
-  const c = getRunDetail(run.id).items.find((i) => i.action === "conflict" && i.srcPath.endsWith("S01E01.1080p.WEB-DL.mkv"));
+  const c = listItems(run.id).find((i) => i.action === "conflict" && i.srcPath.endsWith("S01E01.1080p.WEB-DL.mkv"));
   assert.ok(c, "原始那份和已规范的那份算出同一个名字");
   assert.ok(ready.stats.conflicts >= 1);
 });
 
-test("撤销只允许最近一次：前一次执行过的 run 在后一次执行之后不能再撤", async () => {
-  const first = await createRun({ taskId: "t1", paths: ["inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv"] });
+test("撤销：不相干的后续整理不挡；后面的整理动过这批文件就挡住并指向那一次，先撤后面那次就能撤", async () => {
+  const first = await createRun({ taskId: "t1", paths: ["inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv"], trigger: "share" });
   await untilStatus(first.id, ["ready"]);
   await applyRun(first.id);
   await untilStatus(first.id, ["done"]);
   assert.equal(getRunDetail(first.id).revertable.ok, true);
+  // 后面整理了别的（BEEF）：不相干，前一次照样能撤
   const second = await createRun({ taskId: "t1", subPath: "inbox" });
   await untilStatus(second.id, ["ready"]);
   await applyRun(second.id);
   await untilStatus(second.id, ["done"]);
+  assert.equal(getRunDetail(first.id).revertable.ok, true, "第二次只动了 BEEF，没碰第一次挪好的电影");
+  assert.equal(getRunDetail(second.id).revertable.ok, true);
+  // 改了电影模板再整理整个任务：第三次把第一次挪好的电影又改了名
+  replaceAppSettings({ ...readAppSettings(), organize: { templates: { movie: "{title} ({year}) {idTag}/{title}.{year}.{ext}" } } });
+  const third = await createRun({ taskId: "t1" });
+  await untilStatus(third.id, ["ready"]);
+  await applyRun(third.id);
+  await untilStatus(third.id, ["done"]);
+  assert.ok(drive.tree.get("/tv/沙丘：第二部 (2024) [tmdbid=693134]/沙丘：第二部.2024.mkv"));
   const r = getRunDetail(first.id).revertable;
   assert.equal(r.ok, false);
-  assert.match(r.reason ?? "", /最近一次/);
-  await assert.rejects(revertRun(first.id), /最近一次/);
-  assert.equal(getRunDetail(second.id).revertable.ok, true);
+  assert.equal(r.blockedBy?.id, third.id);
+  await assert.rejects(revertRun(first.id), /先撤销那一次/);
+  assert.equal(getRunDetail(second.id).revertable.ok, true, "第三次没动 BEEF（已经是规范名字）");
+  await revertRun(third.id);
+  await untilStatus(third.id, ["reverted"]);
+  assert.equal(getRunDetail(first.id).revertable.ok, true, "后面那次撤掉了就能撤");
+  await revertRun(first.id);
+  await untilStatus(first.id, ["reverted"]);
+  assert.ok(drive.tree.get("/tv/inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv"));
   await assert.rejects(createRun({ taskId: "t1", subPath: "../x" }), /不合法/);
+});
+
+test("先撤前面的整理：它建的目录装着后面放进去的文件就留着；后面那次撤销挪走文件后一起删掉，前面那次记成已退回", async () => {
+  const first = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(first.id, ["ready"]);
+  await applyRun(first.id);
+  await untilStatus(first.id, ["done"]);
+  const show = "/tv/怒呛人生 (2023) [tmdbid=153312]";
+  // 又落进来新的一集，自动整理进了第一次建的 Season 01（不用建目录）
+  drive.tree.addFile("/tv/inbox/BEEF.S01E03.1080p.WEB-DL.mkv");
+  const second = await createRun({ taskId: "t1", paths: ["inbox/BEEF.S01E03.1080p.WEB-DL.mkv"], trigger: "share" });
+  await untilStatus(second.id, ["ready"]);
+  assert.equal(listItems(second.id).filter((i) => i.action === "mkdir").length, 0);
+  await applyRun(second.id);
+  await untilStatus(second.id, ["done"]);
+  assert.ok(drive.tree.get(`${show}/Season 01/怒呛人生 - S01E03.mkv`));
+  // 先撤第一次：第二次没动它挪好的文件，能撤；它建的剧目录 / Season 01 里还有第二次的 E03，留着
+  assert.equal(getRunDetail(first.id).revertable.ok, true);
+  // 监控在「先挪回再改名」的窗口里按事件在中间位置另生成过一份：撤销镜像完要把它清掉，别留两份
+  fs.mkdirSync(path.join(LOCAL, "inbox", "BEEF.S01.1080p"), { recursive: true });
+  fs.writeFileSync(path.join(LOCAL, "inbox", "BEEF.S01.1080p", "怒呛人生 - S01E01.strm"), "stale");
+  await revertRun(first.id);
+  await untilStatus(first.id, ["reverted"]);
+  assert.ok(localExists("inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.strm"));
+  assert.ok(!localExists("inbox/BEEF.S01.1080p/怒呛人生 - S01E01.strm"), "中间位置那份清掉了");
+  const dirsOf = (id: string) => listItems(id).filter((i) => i.action === "mkdir" && i.dstPath.startsWith(show));
+  assert.deepEqual(dirsOf(first.id).map((i) => i.status), ["skipped", "skipped"]);
+  assert.ok(drive.tree.get(`${show}/Season 01/怒呛人生 - S01E03.mkv`));
+  // 撤销是先挪回再改回原名，115 会把挪回单独报一条（路径是 `源目录/新名字`），监控拉到它时这项多半已经是 reverted
+  const e1 = listItems(first.id).find((i) => i.srcPath.endsWith("S01E01.1080p.WEB-DL.mkv"))!;
+  assert.equal(e1.status, "reverted");
+  assert.ok(findOwnOperation(e1.nodeId, "/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E01.mkv", e1.finishedAt!), "撤销挪回后的中间路径也认");
+  assert.ok(findOwnOperation(e1.nodeId, e1.srcPath, e1.finishedAt!), "退回的最终路径");
+  const revertedBefore = getRunDetail(first.id).run.stats.reverted;
+  // 再撤第二次：E03 挪回去，第一次留下的两个目录空了，一起删掉，第一次的记账跟着改
+  await revertRun(second.id);
+  const back = await untilStatus(second.id, ["reverted"]);
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01E03.1080p.WEB-DL.mkv"));
+  assert.equal(drive.tree.get(show), undefined, "前面整理留下的空目录删掉了");
+  assert.ok(back.log.some((l) => l.includes("前面整理留下的空目录一起删了")));
+  assert.deepEqual(dirsOf(first.id).map((i) => i.status), ["reverted", "reverted"]);
+  assert.equal(getRunDetail(first.id).run.stats.reverted, revertedBefore + 2);
+  assert.ok(!localExists("怒呛人生 (2023) [tmdbid=153312]"), "本地也没留下空目录");
 });
 
 test("预览里改匹配 / 改季 / 取消勾选：重新规划这个单元，其它不动", async () => {
@@ -482,7 +579,7 @@ test("冲突：目标已存在的项不动，其余照常执行", async () => {
   const run = await createRun({ taskId: "t1", subPath: "inbox" });
   const ready = await untilStatus(run.id, ["ready"]);
   assert.equal(ready.stats.conflicts, 1);
-  const c = getRunDetail(run.id).items.find((i) => i.action === "conflict")!;
+  const c = listItems(run.id).find((i) => i.action === "conflict")!;
   assert.equal(c.reason, "目标已存在");
   await applyRun(run.id);
   const done = await untilStatus(run.id, ["done"]);
@@ -559,7 +656,7 @@ test("115 式：没有 walkSubtree，预览只有路径，执行时按父目录�
   setDriveProviderFactory((a) => (a.name === "acc" ? noWalk : null));
   const run = await createRun({ taskId: "t1", subPath: "inbox" });
   await untilStatus(run.id, ["ready"]);
-  assert.ok(getRunDetail(run.id).items.filter((i) => i.kind !== "dir").every((i) => !i.nodeId), "预览阶段没有 id");
+  assert.ok(listItems(run.id).filter((i) => i.kind !== "dir").every((i) => !i.nodeId), "预览阶段没有 id");
   await applyRun(run.id);
   const done = await untilStatus(run.id, ["done"]);
   assert.equal(done.stats.failed, 0);
@@ -618,7 +715,7 @@ test("预览后文件被移走：记成 stale，默认重试不碰它、点名�
   // 放弃：标成 skipped，run 里没有失败了
   const r = await skipItems(run.id, [bad.id]);
   assert.deepEqual(r, { skipped: 1, renamedBack: 0, refused: [] });
-  const after = getRunDetail(run.id);
+  const after = { ...getRunDetail(run.id), items: listItems(run.id) };
   assert.equal(after.run.stats.failed, 0);
   assert.equal(after.run.stats.failedByKind.stale, 0);
   const it = after.items.find((i) => i.id === bad.id)!;
@@ -704,7 +801,7 @@ test("放弃建目录项：连带放弃要进这个目录的项；中断的 run 
   drive.failWriteOn = null;
   const r2 = await skipItems(run2.id, rest);
   assert.equal(r2.refused.length, 0);
-  const after = getRunDetail(run2.id);
+  const after = { ...getRunDetail(run2.id), items: listItems(run2.id) };
   assert.equal(after.run.status, "done", "没剩下要做的，收口");
   assert.equal(after.run.error, "");
   assert.equal(after.applicable.ok, false);
@@ -779,7 +876,7 @@ test("撤销时一项在网盘上失败：状态仍是 done、记类别；run �
   assert.equal(ep2.curPath, "");
   assert.ok(drive.tree.get(ep2.dstPath));
   assert.equal(localRead("怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E02.strm"), "/mnt/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E02.mkv", "本地也还在整理后的位置");
-  const detail = getRunDetail(run.id);
+  const detail = { ...getRunDetail(run.id), items: listItems(run.id) };
   assert.equal(detail.revertable.ok, true, "还能继续撤销");
   assert.equal(detail.applicable.ok, false, "开始撤销后不能再执行");
   assert.match(detail.applicable.reason ?? "", /只能继续撤销/);
@@ -964,11 +1061,11 @@ test("连环改名（集偏移）：目标名被本轮别的项占着不算撞�
   const u = getRunDetail(run.id).units[0];
   // E01 → E02、E02 → E03：E01 的目标名正被 E02 占着
   await patchUnit(run.id, u.key, { episodeOffset: 1 });
-  const plan = getRunDetail(run.id).items.filter((i) => i.action === "move" && i.kind === "video").map((i) => [baseOf(i.srcPath), baseOf(i.dstPath)]);
+  const plan = listItems(run.id).filter((i) => i.action === "move" && i.kind === "video").map((i) => [baseOf(i.srcPath), baseOf(i.dstPath)]);
   assert.deepEqual(plan, [["BEEF.S01E01.1080p.WEB-DL.mkv", "怒呛人生 - S01E02.mkv"], ["BEEF.S01E02.1080p.WEB-DL.mkv", "怒呛人生 - S01E03.mkv"]]);
   // 先把源目录里造一个「本轮别的项会占着」的局面：E02 已经原地改成了 E01 的目标名（模拟上一轮改到一半）
   drive.tree.move("/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv", "/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv");
-  const e2 = getRunDetail(run.id).items.find((i) => i.srcPath.endsWith("S01E02.1080p.WEB-DL.mkv"))!;
+  const e2 = listItems(run.id).find((i) => i.srcPath.endsWith("S01E02.1080p.WEB-DL.mkv"))!;
   updateItem(e2.id, { curPath: "/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv" });
   await applyRun(run.id);
   const done = await untilStatus(run.id, ["done"]);
@@ -982,7 +1079,7 @@ test("连环改名（集偏移）：目标名被本轮别的项占着不算撞�
 test("上次挪到一半没记账：文件已经在目标目录里就只记账，不再挪也不算撞名", async () => {
   const run = await createRun({ taskId: "t1", subPath: "inbox" });
   await untilStatus(run.id, ["ready"]);
-  const ep1 = getRunDetail(run.id).items.find((i) => i.srcPath.endsWith("S01E01.1080p.WEB-DL.mkv"))!;
+  const ep1 = listItems(run.id).find((i) => i.srcPath.endsWith("S01E01.1080p.WEB-DL.mkv"))!;
   // 模拟进程在 write.move 之后、记账之前崩了：文件已经在目标位置，账上还是 pending + curPath
   drive.tree.addDir("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01");
   drive.tree.move(ep1.srcPath, ep1.dstPath);
@@ -1066,7 +1163,7 @@ test("目录已在库里只改集号（原地改名的连环）：撤销时按�
   await untilStatus(run.id, ["ready"]);
   const u = getRunDetail(run.id).units.find((x) => x.match?.tmdbId === 153312)!;
   await patchUnit(run.id, u.key, { episodeOffset: 1 });
-  const plan = getRunDetail(run.id).items.filter((i) => i.kind === "video");
+  const plan = listItems(run.id).filter((i) => i.kind === "video");
   assert.deepEqual(plan.map((i) => i.action), ["rename", "rename", "rename"]);
   await applyRun(run.id);
   const done = await untilStatus(run.id, ["done"]);
@@ -1116,7 +1213,7 @@ test("连环改名里给我腾名字的那一项撞了别人：等它的那项�
   // E02 已经原地改成了 E01 的目标名（上一轮改到一半），而它自己的目标名被别人占了
   drive.tree.move("/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv", "/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv");
   drive.tree.addFile("/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E03.mkv");
-  const e2 = getRunDetail(run.id).items.find((i) => i.srcPath.endsWith("S01E02.1080p.WEB-DL.mkv"))!;
+  const e2 = listItems(run.id).find((i) => i.srcPath.endsWith("S01E02.1080p.WEB-DL.mkv"))!;
   updateItem(e2.id, { curPath: "/tv/inbox/BEEF.S01.1080p/怒呛人生 - S01E02.mkv" });
   await applyRun(run.id);
   const done = await untilStatus(run.id, ["done"]);
@@ -1170,7 +1267,7 @@ test("进程重启时 run 停在 applying 但清单上已经没事：收口成 d
   replaceShareFollows([{ ...getShareFollow("f5")!, subPath: "inbox/BEEF.S01.1080p" }]);
   updateRun(run.id, { status: "applying" });
   assert.equal(reconcileInterruptedRuns(), 1);
-  const detail = getRunDetail(run.id);
+  const detail = { ...getRunDetail(run.id), items: listItems(run.id) };
   assert.equal(detail.run.status, "done");
   assert.equal(detail.run.error, "");
   assert.equal(getShareFollow("f5")!.subPath, "怒呛人生 (2023) [tmdbid=153312]", "收尾做了");
@@ -1239,7 +1336,7 @@ test("文件名夹着零宽空格、集数直接跟在标题后面：预览认�
   writeLocalStrm("我和僵尸有个约会/season1/我和僵尸有个约会10.strm", "tv/我和僵尸有个约会/season1/我和僵尸有个约会10.mkv");
   const run = await createRun({ taskId: "t1", subPath: "" });
   await untilStatus(run.id, ["ready"]);
-  const detail = getRunDetail(run.id);
+  const detail = { ...getRunDetail(run.id), items: listItems(run.id) };
   assert.deepEqual(detail.units.map((u) => u.dstRoot).sort(), ["回家的诱惑 (2011) [tmdbid=84656]", "我和僵尸有个约会 (1998) [tmdbid=19389]"]);
   assert.deepEqual(detail.units.flatMap((u) => u.notes), [], "不再说「按同一部电影的多个版本处理」");
   const home = "/tv/回家的诱惑 (2011) [tmdbid=84656]/Season 01";
@@ -1275,7 +1372,7 @@ test("范围直接选在季目录上：季号按目录认、标题按剧目录�
   follow("f4", "abf", "我和僵尸有个约会");
   const run = await createRun({ taskId: "t1", subPath: "我和僵尸有个约会/season2" });
   await untilStatus(run.id, ["ready"]);
-  const detail = getRunDetail(run.id);
+  const detail = { ...getRunDetail(run.id), items: listItems(run.id) };
   assert.equal(detail.units.length, 1);
   const unit = detail.units[0];
   assert.equal(unit.rootPath, "我和僵尸有个约会", "单元根是剧目录");
@@ -1347,7 +1444,7 @@ test("并进已有作品目录：作品级图片撞名留在原处、不算冲�
   const run = await createRun({ taskId: "t1", subPath: "inbox" });
   const ready = await untilStatus(run.id, ["ready"]);
   assert.equal(ready.stats.conflicts, 0);
-  const detail = getRunDetail(run.id);
+  const detail = { ...getRunDetail(run.id), items: listItems(run.id) };
   const poster = detail.items.find((i) => i.srcPath === "/tv/inbox/BEEF.S01.1080p/poster.jpg")!;
   assert.deepEqual([poster.action, poster.reason], ["skip", "目标位置已经有同名的，留在原处"]);
   assert.ok(!detail.items.some((i) => i.action === "rmdir" && i.srcPath === "/tv/inbox/BEEF.S01.1080p"), "源目录还剩那张图，不删");
@@ -1366,11 +1463,342 @@ test("patchUnit 之后别的单元照旧：谁先占到目标不变，附属文�
   const run = await createRun({ taskId: "t1", subPath: "inbox" });
   await untilStatus(run.id, ["ready"]);
   const actions = () => {
-    const items = getRunDetail(run.id).items;
+    const items = listItems(run.id);
     return ["/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv", "/tv/inbox/怒呛人生.S01.720p/怒呛人生.S01E01.720p.mkv", "/tv/inbox/怒呛人生.S01.720p/poster.jpg"].map((p) => items.find((i) => i.srcPath === p)?.action);
   };
   assert.deepEqual(actions(), ["move", "conflict", "skip"]);
   await patchUnit(run.id, "inbox/BEEF.S01.1080p", { remember: true });
   assert.deepEqual(actions(), ["move", "conflict", "skip"], "改了别的单元，这边的结果不变（原来从库里的项反推，720p 那集会反过来抢到目标）");
   assert.equal(getRunDetail(run.id).run.stats.conflicts, 1);
+});
+
+/* ------------------------------- 整理页评审（2026-09-15）：并发、取消、重启、重新预览 ------------------------------- */
+
+test("改单元还没落库时执行 / 删除回 409；改完再执行，记账落在新清单上", async () => {
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  const p = patchUnit(run.id, "inbox/BEEF.S01.1080p", { selected: false });
+  assert.throws(() => deleteRun(run.id), /还有修改在保存/);
+  await assert.rejects(applyRun(run.id), /还有修改在保存/);
+  await p;
+  await applyRun(run.id);
+  const done = await untilStatus(run.id, ["done"]);
+  assert.equal(done.stats.failed, 0);
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv"), "取消勾选的单元没动");
+  assert.ok(drive.tree.get("/tv/沙丘：第二部 (2024) [tmdbid=693134]/沙丘：第二部 (2024) - 2160p.mkv"));
+  assert.ok(done.stats.done > 0);
+  assert.equal(done.stats.done, listItems(run.id).filter((i) => i.status === "done").length);
+});
+
+test("改单元时预览被取消：patch 回来什么都不写；换匹配等 TMDB 的时候另一个改动先落库，换匹配回来在它的基础上改", async () => {
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  const before = listItems(run.id).map((i) => i.id).sort();
+  const p = patchUnit(run.id, "inbox/BEEF.S01.1080p", { selected: false });
+  cancelRun(run.id);
+  await assert.rejects(p, /不能改了/);
+  assert.deepEqual(listItems(run.id).map((i) => i.id).sort(), before, "清单没被换掉");
+  assert.equal(getRunDetail(run.id).units.find((u) => u.key === "inbox/BEEF.S01.1080p")?.selected, true);
+
+  seed();
+  const run2 = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run2.id, ["ready"]);
+  await Promise.all([
+    patchUnit(run2.id, "inbox/BEEF.S01.1080p", { match: { mediaType: "tv", tmdbId: 999 } }),
+    patchUnit(run2.id, "inbox/BEEF.S01.1080p", { remember: true }),
+  ]);
+  const u = getRunDetail(run2.id).units.find((x) => x.key === "inbox/BEEF.S01.1080p")!;
+  assert.equal(u.match?.tmdbId, 999);
+  assert.equal(u.dstRoot, "另一部剧 (2020) [tmdbid=999]");
+  assert.equal(u.remember, true, "「记住」没被换匹配的那次盖回去");
+});
+
+test("执行中途取消：做完的项进统计、日志有收尾那句、识别记忆照常写、不发通知；剩下的能接着执行", async () => {
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  await patchUnit(run.id, "inbox/BEEF.S01.1080p", { remember: true });
+  // 真网盘的请求被取消时抛 AbortError：假网盘在挪 tvshow.nfo 那一刻取消并抛出（它排在最后一批）
+  drive.failWriteOn = (op, p) => {
+    if (op !== "move" || !p.endsWith("tvshow.nfo")) return null;
+    cancelRun(run.id);
+    return Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+  };
+  await applyRun(run.id);
+  const stopped = await untilStatus(run.id, ["cancelled"]);
+  const items = listItems(run.id);
+  assert.ok(stopped.stats.done > 0);
+  assert.equal(stopped.stats.done, items.filter((i) => i.status === "done").length, "统计按清单算，不是预览时的数");
+  assert.ok(stopped.stats.pending > 0, "没做的还在");
+  assert.ok(stopped.log.some((l) => l.includes("已取消：")), "收尾那句进了日志");
+  assert.equal(recallMatch("acc", "/tv/怒呛人生 (2023) [tmdbid=153312]")?.tmdbId, 153312, "识别记忆照常写");
+  assert.equal(notified.filter((e) => e.type === "organize-done").length, 0, "取消不发通知");
+  assert.equal(getRunDetail(run.id).applicable.ok, true, "剩下的能接着执行");
+  drive.failWriteOn = null;
+  await applyRun(run.id);
+  const done = await untilStatus(run.id, ["done"]);
+  assert.equal(done.stats.failed, 0);
+  assert.equal(done.stats.pending, 0);
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/tvshow.nfo"));
+});
+
+test("撤销中途取消：退回的进统计；追更只在有文件真退回了的目录才改回去，一个都没退回的继续指着作品目录", async () => {
+  insertShareFollow({
+    id: "f9", name: "BEEF", libraryId: null, shareUrl: "", shareCode: "abz", receiveCode: "", watchCid: "0", watchPath: "", scope: [""],
+    taskId: "t1", subPath: "inbox/BEEF.S01.1080p", enabled: true, intervalMinutes: 60, status: "idle", lastError: "", errorStreak: 0,
+    lastCheckedAt: null, lastChangeAt: null, nextCheckAt: 0, known: [], recent: [], createdAt: 1, updatedAt: 1,
+  });
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.equal(getShareFollow("f9")!.subPath, "怒呛人生 (2023) [tmdbid=153312]");
+  // 撤销按流水账倒着退，BEEF 的文件排在前面：第一次挪回就被取消
+  drive.failWriteOn = (op) => {
+    if (op !== "move") return null;
+    cancelRun(run.id);
+    return Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+  };
+  await revertRun(run.id);
+  const stopped = await untilStatus(run.id, ["cancelled"]);
+  assert.equal(stopped.stage, "revert");
+  assert.ok(stopped.stats.notReverted > 0, "没退回的有数");
+  assert.ok(stopped.log.some((l) => l.includes("已取消：退回")));
+  assert.equal(getShareFollow("f9")!.subPath, "怒呛人生 (2023) [tmdbid=153312]", "BEEF 一个文件都没退回：追更继续指着作品目录");
+  assert.equal(getRunDetail(run.id).revertable.ok, true);
+  drive.failWriteOn = null;
+  await revertRun(run.id);
+  await untilStatus(run.id, ["reverted"]);
+  assert.equal(getShareFollow("f9")!.subPath, "inbox/BEEF.S01.1080p", "退完了才改回去");
+});
+
+test("单元结构不在内存里（进程重启过）：editable=false、改单元 409，但能直接执行；重新预览按原范围和触发来源建新的手动预览", async () => {
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  assert.equal(getRunDetail(run.id).editable, true);
+  __test_dropPlanState(run.id);
+  assert.equal(getRunDetail(run.id).editable, false);
+  await assert.rejects(patchUnit(run.id, "inbox/BEEF.S01.1080p", { selected: false }), /重新预览/);
+  await applyRun(run.id);
+  const done = await untilStatus(run.id, ["done"]);
+  assert.equal(done.stats.failed, 0);
+  assert.equal(getRunDetail(run.id).editable, false, "执行过的不能改");
+
+  seed();
+  const auto = await createRun({ taskId: "t1", paths: ["inbox/BEEF.S01.1080p"], mode: "review", trigger: "share" });
+  await untilStatus(auto.id, ["ready"]);
+  assert.equal(notified.filter((e) => e.type === "organize-review").length, 1);
+  const again = await repreviewRun(auto.id);
+  assert.deepEqual([again.trigger, again.mode, again.scopePaths, again.scopePath], ["share", "manual", ["inbox/BEEF.S01.1080p"], ""]);
+  await untilStatus(again.id, ["ready"]);
+  assert.equal(notified.filter((e) => e.type === "organize-review").length, 1, "重新预览是手动的，不再发待确认通知");
+  assert.equal(getRunDetail(again.id).units.length, 1);
+});
+
+test("预览完成时作废范围被它覆盖的旧待执行预览（不覆盖的留着，整个任务覆盖一切）；作废 / 取消的预览不能当失败项执行", async () => {
+  const beef = await createRun({ taskId: "t1", subPath: "inbox/BEEF.S01.1080p" });
+  await untilStatus(beef.id, ["ready"]);
+  const dune = await createRun({ taskId: "t1", paths: ["inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv"], mode: "review", trigger: "share" });
+  await untilStatus(dune.id, ["ready"]);
+  const inbox = await createRun({ taskId: "t1", subPath: "inbox" });
+  const ready = await untilStatus(inbox.id, ["ready"]);
+  for (const id of [beef.id, dune.id]) {
+    const r = getRunDetail(id).run;
+    assert.deepEqual([r.status, r.error], ["cancelled", "已被新的预览取代"]);
+  }
+  assert.ok(ready.log.some((l) => l.includes("作废了 2 个")));
+  assert.ok(ready.log.some((l) => l.includes("预览完成")), "预览的收尾那句也落进了日志");
+  const old = getRunDetail(beef.id);
+  assert.deepEqual([old.executed, old.applicable.ok, old.groups.length], [false, false, 0], "作废的预览没有「没做完」的项、不能执行");
+  await assert.rejects(applyRun(beef.id), /没有执行过/);
+
+  const narrower = await createRun({ taskId: "t1", subPath: "inbox/BEEF.S01.1080p" });
+  await untilStatus(narrower.id, ["ready"]);
+  assert.equal(getRunDetail(inbox.id).run.status, "ready", "范围小的不作废范围大的");
+  const whole = await createRun({ taskId: "t1" });
+  await untilStatus(whole.id, ["ready"]);
+  assert.equal(getRunDetail(inbox.id).run.status, "cancelled");
+  assert.equal(getRunDetail(narrower.id).run.status, "cancelled");
+  // 手动取消的待执行预览也一样
+  cancelRun(whole.id);
+  assert.equal(getRunDetail(whole.id).applicable.ok, false);
+});
+
+test("待执行的预览旧了：之后同任务又执行过整理 → changed（指向那一次）；超过一天 → old；执行不拦", async () => {
+  const realNow = Date.now;
+  try {
+    const beef = await createRun({ taskId: "t1", subPath: "inbox/BEEF.S01.1080p" });
+    await untilStatus(beef.id, ["ready"]);
+    assert.equal(getRunDetail(beef.id).outdated, undefined);
+    // 预览是按秒记的：把钟往后拨几秒，另一次整理结束得确实比预览晚
+    Date.now = () => realNow() + 5000;
+    const dune = await createRun({ taskId: "t1", paths: ["inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv"], trigger: "share" });
+    await untilStatus(dune.id, ["ready"]);
+    assert.equal(getRunDetail(beef.id).run.status, "ready", "范围不相交，不作废");
+    await applyRun(dune.id);
+    await untilStatus(dune.id, ["done"]);
+    const o = getRunDetail(beef.id).outdated;
+    assert.deepEqual([o?.kind, o?.runId], ["changed", dune.id]);
+    Date.now = realNow;
+    // 清掉上面那几次（dune 的结束时间在拨过的钟上，会让新的预览也显示 changed）
+    __test_resetOrganize();
+    seed();
+    const fresh = await createRun({ taskId: "t1", subPath: "inbox/BEEF.S01.1080p" });
+    await untilStatus(fresh.id, ["ready"]);
+    Date.now = () => realNow() + 25 * 3600 * 1000;
+    assert.equal(getRunDetail(fresh.id).outdated?.kind, "old");
+    Date.now = realNow;
+    await applyRun(fresh.id);
+    const done = await untilStatus(fresh.id, ["done"]);
+    assert.equal(done.stats.failed, 0);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("留存：放着没执行的预览过期也删；每个任务只按真正执行过的留最近几次", async () => {
+  const mk = (status: OrganizeRun["status"], applied: boolean): string => {
+    const run = insertRun({ id: randomUUID(), taskId: "t1", accountName: "acc", scopePath: "", scopePaths: [], mode: "manual", trigger: "manual" });
+    replaceItems(run.id, [{ id: randomUUID(), unitKey: "", seq: 0, kind: "video", action: "move", srcPath: "/tv/a.mkv", dstPath: "/tv/b.mkv", nodeId: "", reason: "", status: applied ? "done" : "pending" }]);
+    updateRun(run.id, { status });
+    return run.id;
+  };
+  const applied = Array.from({ length: 7 }, () => mk("done", true));
+  const previews = [mk("ready", false), mk("cancelled", false), mk("failed", false)];
+  const n = deleteFinishedRunsBefore(Math.floor(Date.now() / 1000) + 60, 5);
+  assert.equal(n, 2 + previews.length);
+  const left = new Set(listRunRows({ taskId: "t1", limit: 200 }).map((r) => r.id));
+  assert.deepEqual(applied.filter((id) => left.has(id)), applied.slice(-5), "留最近 5 次执行过的");
+  assert.ok(previews.every((id) => !left.has(id)), "没执行过的预览不占名额，过期就删");
+});
+
+test("待处理：跨任务列出待执行、有失败的、自动触发的预览失败；干净完成的和手动取消的预览不列，不带日志", async () => {
+  const clean = await createRun({ taskId: "t1", paths: ["inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv"], trigger: "share" });
+  await untilStatus(clean.id, ["ready"]);
+  await applyRun(clean.id);
+  await untilStatus(clean.id, ["done"]);
+  drive.failWriteOn = (op, p) => (op === "move" && p.endsWith("怒呛人生 - S01E02.mkv") ? new Error("改不了") : null);
+  const failing = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(failing.id, ["ready"]);
+  await applyRun(failing.id);
+  await untilStatus(failing.id, ["done"]);
+  drive.failWriteOn = null;
+  const cancelled = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(cancelled.id, ["ready"]);
+  cancelRun(cancelled.id);
+  drive.failWith = new Error("boom");
+  const autoFailed = await createRun({ taskId: "t1", paths: ["inbox/BEEF.S01.1080p"], mode: "review", trigger: "monitor" });
+  await untilStatus(autoFailed.id, ["failed"]);
+  drive.failWith = null;
+  const waiting = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(waiting.id, ["ready"]);
+  const list = listAttention();
+  const reasonOf = (id: string) => list.find((a) => a.run.id === id)?.reason;
+  assert.equal(reasonOf(clean.id), undefined);
+  assert.equal(reasonOf(failing.id), "failures");
+  assert.equal(reasonOf(cancelled.id), undefined);
+  assert.equal(reasonOf(autoFailed.id), "preview-failed");
+  assert.equal(reasonOf(waiting.id), "ready");
+  assert.ok(list.every((a) => a.run.log.length === 0), "不带日志");
+});
+
+/* ------------------------------- 整理页评审（2026-09-15）：多个范围、按文件勾选、批量勾选、换匹配搜索 ------------------------------- */
+
+test("手动范围要是网盘上的目录：不存在 / 是文件直接 400；套在别的范围里的去掉", async () => {
+  await assert.rejects(createRun({ taskId: "t1", subPath: "nope" }), /网盘上找不到 \/tv\/nope/);
+  await assert.rejects(createRun({ taskId: "t1", paths: ["inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv"] }), /不是目录/);
+  const run = await createRun({ taskId: "t1", paths: ["inbox", "inbox/BEEF.S01.1080p"] });
+  assert.deepEqual(run.scopePaths, ["inbox"]);
+  await untilStatus(run.id, ["ready"]);
+});
+
+test("手动选多个范围：每个范围照单一范围的规则来，一次预览；腾空的目录不越过范围，收件箱式的范围不删", async () => {
+  drive.tree.addFile("/tv/other/Dune.Part.Two.2024.1080p.WEB-DL.mkv");
+  const run = await createRun({ taskId: "t1", paths: ["inbox/BEEF.S01.1080p", "other"] });
+  const ready = await untilStatus(run.id, ["ready"]);
+  assert.ok(ready.log.some((l) => l.includes("（2 个目录：inbox/BEEF.S01.1080p、other）")), "日志里手动的多个范围说「N 个目录」，不说新增路径");
+  const detail = getRunDetail(run.id);
+  assert.deepEqual(detail.units.map((u) => u.rootPath).sort(), ["inbox/BEEF.S01.1080p", "other"]);
+  assert.deepEqual(
+    listItems(run.id).filter((i) => i.action === "rmdir").map((i) => i.srcPath),
+    ["/tv/inbox/BEEF.S01.1080p"],
+    "发布目录范围腾空了删；other 是收件箱式的范围、inbox 在范围外，都不碰",
+  );
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.ok(drive.tree.get("/tv/沙丘：第二部 (2024) [tmdbid=693134]/沙丘：第二部 (2024) - 1080p.mkv"));
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv"));
+  assert.equal(drive.tree.get("/tv/inbox/BEEF.S01.1080p"), undefined);
+  assert.ok(drive.tree.get("/tv/other"), "other 空了也留着");
+  assert.ok(drive.tree.get("/tv/inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv"), "范围外的不动");
+});
+
+test("自动整理的新增路径：它本身腾空了删，上级（转存落点）不列进删目录", async () => {
+  drive.tree.addFile("/tv/转存/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv");
+  const run = await createRun({ taskId: "t1", paths: ["转存/BEEF.S01.1080p"], trigger: "share" });
+  await untilStatus(run.id, ["ready"]);
+  assert.deepEqual(listItems(run.id).filter((i) => i.action === "rmdir").map((i) => i.srcPath), ["/tv/转存/BEEF.S01.1080p"]);
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.equal(drive.tree.get("/tv/转存/BEEF.S01.1080p"), undefined);
+  assert.ok(drive.tree.get("/tv/转存"), "转存落点空了也不删（原来会被当成空目录删掉）");
+});
+
+test("按文件勾选：勾掉的文件和它的字幕留下、源目录不删；勾回来照常；执行时勾掉的留在原处", async () => {
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  const ep1 = listItems(run.id).find((i) => i.srcPath.endsWith("S01E01.1080p.WEB-DL.mkv"))!;
+  assert.equal((await patchItems(run.id, [ep1.id], false)).changed, 1);
+  assert.deepEqual(getRunDetail(run.id).units.find((u) => u.key === "inbox/BEEF.S01.1080p")?.excluded, [ep1.srcPath]);
+  const by = (suffix: string) => listItems(run.id).find((i) => i.srcPath.endsWith(suffix))!;
+  assert.deepEqual([by("S01E01.1080p.WEB-DL.mkv").action, by("S01E01.1080p.WEB-DL.mkv").reason], ["skip", "没勾选这个文件"]);
+  assert.equal(by("chs.srt").action, "skip", "字幕跟着它的视频留下");
+  assert.equal(by("S01E02.1080p.WEB-DL.mkv").action, "move");
+  assert.ok(!listItems(run.id).some((i) => i.action === "rmdir" && i.srcPath === "/tv/inbox/BEEF.S01.1080p"), "源目录还有东西，不删");
+  const counts = getRunDetail(run.id).counts["inbox/BEEF.S01.1080p"];
+  assert.deepEqual([counts.excluded, counts.skipped], [1, 1], "勾掉的算没勾选；跟着留下的字幕算要看一眼的跳过");
+  // 勾回来：用重规划之后清单里的 id
+  await patchItems(run.id, [by("S01E01.1080p.WEB-DL.mkv").id], true);
+  assert.equal(by("S01E01.1080p.WEB-DL.mkv").action, "move");
+  assert.equal(by("chs.srt").action, "move");
+  // 勾掉第二集再执行
+  await patchItems(run.id, [by("S01E02.1080p.WEB-DL.mkv").id], false);
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv"), "勾掉的留在原处");
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv"));
+  await assert.rejects(patchItems(run.id, [ep1.id], true), /只有待执行的整理能改/);
+});
+
+test("批量勾选单元：一次重规划；没识别出来的不能勾", async () => {
+  drive.tree.addFile("/tv/inbox/Unknown.Show.S01E01.mkv");
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  const keys = getRunDetail(run.id).units.map((u) => u.key);
+  assert.equal(keys.length, 3);
+  assert.equal((await patchUnits(run.id, keys, { selected: false })).changed, 2, "识别出来的两个");
+  assert.equal(getRunDetail(run.id).run.stats.planned, 0);
+  assert.equal((await patchUnits(run.id, keys, { selected: true })).changed, 2);
+  assert.ok(getRunDetail(run.id).units.every((u) => u.selected === !!u.match), "没识别的还是不勾");
+  assert.ok(getRunDetail(run.id).run.stats.planned > 0);
+});
+
+test("换匹配弹框的 TMDB 搜索：按类型 / 年份搜（去重）、按编号查；没配 TMDB 400", async () => {
+  assert.deepEqual((await searchCandidates({ query: "beef" })).map((c) => [c.tmdbId, c.mediaType]), [[153312, "tv"]]);
+  assert.equal((await searchCandidates({ query: "beef", year: "2023" })).length, 1, "电影、剧集各搜一次，同一部只留一条");
+  const byId = await lookupCandidate("movie", 693134);
+  assert.deepEqual([byId.title, byId.year, byId.mediaType], ["沙丘：第二部", "2024", "movie"]);
+  await assert.rejects(lookupCandidate("tv", 123456), /TMDB 上没有剧集 123456/);
+  setOrganizeDeps({ tmdb: () => null, notify: async () => true, retryDelayMs: 5 });
+  try {
+    await assert.rejects(searchCandidates({ query: "x" }), /TMDB 未配置/);
+  } finally {
+    setOrganizeDeps({
+      tmdb: () => new StubTmdb(),
+      notify: async (ev) => {
+        notified.push(ev);
+        return true;
+      },
+      retryDelayMs: 5,
+    });
+  }
 });

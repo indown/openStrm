@@ -60,8 +60,13 @@ export interface Unit {
 }
 
 export interface BuildUnitsOptions {
-  /** 范围目录，相对任务 originPath；"" 是任务根 */
+  /** 范围目录，相对任务 originPath；"" 是任务根。给了 scopes 就以 scopes 为准 */
   scopePath: string;
+  /**
+   * 手动选的多个范围：每个范围照单一范围的规则来（范围本身是季目录时单元根越到上一级、范围根的名字不可靠），
+   * 文件按包含它的最深的那个范围算；两个季目录范围落到同一部剧会并成一个单元
+   */
+  scopes?: string[];
   /** 任务根目录的名字（originPath 的最后一段）：单元根落在任务根时当目录名，它本身是季目录时季号也从这来 */
   taskRootName: string;
   videoExts: Set<string>;
@@ -182,10 +187,13 @@ function promoteTrailingEpisodes(files: UnitFile[], libraryType: BuildUnitsOptio
 type RootedFile = { file: UnitFile; root: string };
 
 export function buildUnits(entries: ScopeEntry[], opts: BuildUnitsOptions): Unit[] {
-  const scopePath = opts.scopePath.replace(/^\/+|\/+$/g, "");
+  const scopes = (opts.scopes?.length ? opts.scopes : [opts.scopePath]).map((s) => s.replace(/^\/+|\/+$/g, ""));
+  const scopeRoots = new Set(scopes);
+  // 文件所在的范围：包含它的最深的那个
+  const scopeOf = (p: string) => scopes.filter((s) => s === "" || p === s || p.startsWith(`${s}/`)).sort((a, b) => b.length - a.length)[0] ?? "";
   // 范围直接选在季目录上（`某剧/Season 2`）：和平时一样季目录归上一级——单元根越过范围到剧目录（标题、id 标签、记忆都按剧目录认），
   // 文件还是只有范围里的
-  const boundary = scopePath && seasonDirNumber(baseOf(scopePath)) !== null ? dirOf(scopePath) : scopePath;
+  const boundaryOf = (scope: string) => (scope && seasonDirNumber(baseOf(scope)) !== null ? dirOf(scope) : scope);
   const rooted: RootedFile[] = [];
   for (const e of entries) {
     if (e.isDir) continue;
@@ -196,7 +204,7 @@ export function buildUnits(entries: ScopeEntry[], opts: BuildUnitsOptions): Unit
     const stem = ext ? name.slice(0, -ext.length) : name;
     const { parsed, direct } = parseWithRules(stem, opts.rules, kind === "subtitle");
     if (parsed.isSample) continue;
-    const { root, seasonFromDir, inExtrasDir, artDir } = unitRootFor(dirOf(e.path), boundary, opts.taskRootName);
+    const { root, seasonFromDir, inExtrasDir, artDir } = unitRootFor(dirOf(e.path), boundaryOf(scopeOf(e.path)), opts.taskRootName);
     rooted.push({ root, file: { path: e.path, name, stem, ext, kind, parsed, id: e.id, size: e.size, seasonFromDir, inExtrasDir, artDir, direct } });
   }
 
@@ -225,7 +233,7 @@ export function buildUnits(entries: ScopeEntry[], opts: BuildUnitsOptions): Unit
     const anyMarker = videos.some((v) => hasEpisodeMarker(v.parsed) || v.seasonFromDir !== undefined);
     // 范围目录本身（任务根 / 用户选的那一层）名字不可靠（tv、movie、inbox…），散在里面的文件只看文件标题：
     // 标题一致才算一个作品，否则按标题拆开；里面的目录名可靠时，有集标记或多数文件同名就当一个作品
-    const atScopeRoot = root === scopePath;
+    const atScopeRoot = scopeRoots.has(root);
     const single = atScopeRoot ? distinct.size <= 1 : dirTitleOk ? distinct.size <= 1 || commonShare >= 0.6 || anyMarker : distinct.size <= 1;
 
     if (single) {

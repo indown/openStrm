@@ -249,6 +249,8 @@ export const organizeUnits = sqliteTable(
     videoCount: integer("video_count").notNull().default(0),
     referencedBy: integer("referenced_by").notNull().default(0),
     notes: text("notes").notNull().default("[]"),
+    /** 用户单独取消勾选的文件（网盘绝对路径的 JSON 数组）：规划时跳过，重规划不丢 */
+    excluded: text("excluded").notNull().default("[]"),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.runId, t.key] }),

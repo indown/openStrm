@@ -43,11 +43,15 @@ export function emptyStats(): OrganizeRunStats {
     units: 0,
     items: 0,
     planned: 0,
+    plannedMkdir: 0,
+    plannedRmdir: 0,
     keep: 0,
     conflicts: 0,
     skipped: 0,
     done: 0,
     failed: 0,
+    reverted: 0,
+    pending: 0,
     confidence: { high: 0, medium: 0, low: 0, none: 0 },
     failedByKind: { transient: 0, blocked: 0, stale: 0, rejected: 0, mirror: 0 },
     notReverted: 0,
@@ -98,6 +102,7 @@ function toUnit(row: UnitRow): OrganizeUnit {
     videoCount: row.videoCount,
     referencedBy: row.referencedBy,
     notes: parseJson<string[]>(row.notes, []),
+    excluded: parseJson<string[]>(row.excluded, []),
   };
 }
 
@@ -215,25 +220,49 @@ export function listRunsByStatus(statuses: OrganizeRunStatus[]): OrganizeRun[] {
 }
 
 /**
- * 同一任务里比这次更晚、且已经执行过（有 done 的项）的 run：撤销只允许最近一次。
- * 「更晚」按 rowid（插入顺序）比：created_at 只有秒，同一秒里建的两次 run 分不出先后。
- * 撤销过但还有 done 项没退回的 run 也算：它的文件还占着位置
+ * 挡着这次撤销的后续整理：同一任务里比这次更晚建的 run，动过这次整理挪好的文件——它的改名 / 移动项的源路径正好是这次
+ * done 项的目标路径，而且它确实做了（done，或者改了名还没挪走带着 cur_path），用户也没对那一项放弃撤销。
+ * 这时文件已经被它挪走了，得先撤它。不相干的后续整理（别的目录、自动整理的新一集）不挡：逐项撤销本来就逐项核对位置。
+ * 只比路径不比节点 id（OpenList 的 id 不可靠）；「更晚」按 rowid（插入顺序）比，created_at 只有秒
  */
-export function hasLaterAppliedRun(run: OrganizeRun): boolean {
+export function laterRunTouching(run: OrganizeRun): { id: string; createdAt: number } | null {
   const row = db
-    .select({ id: organizeRuns.id })
+    .select({ id: organizeRuns.id, createdAt: organizeRuns.createdAt })
     .from(organizeRuns)
     .where(
       and(
         eq(organizeRuns.taskId, run.taskId),
-        inArray(organizeRuns.status, ["applying", "done", "reverting", "cancelled", "failed", "reverted"]),
         sql`${organizeRuns}.rowid > (select rowid from ${organizeRuns} where ${organizeRuns.id} = ${run.id})`,
-        // 从没执行过一条的 failed / cancelled 不算
-        sql`exists (select 1 from ${organizeItems} where ${organizeItems.runId} = ${organizeRuns.id} and ${organizeItems.status} = 'done')`,
+        sql`exists (
+          select 1 from ${organizeItems} b
+          where b.run_id = ${organizeRuns.id} and b.action in ('rename', 'move') and b.given_up = 0 and (b.status = 'done' or b.cur_path != '')
+            and b.src_path in (select a.dst_path from ${organizeItems} a where a.run_id = ${run.id} and a.action in ('rename', 'move') and a.status = 'done')
+        )`,
       ),
     )
+    .orderBy(asc(sql`${organizeRuns}.rowid`))
+    .limit(1)
     .get();
-  return !!row;
+  return row ?? null;
+}
+
+/** 同任务里 since 之后落过盘的另一次整理 / 撤销（结束得比 since 晚、有 done / reverted 的项）：给「预览旧了」的提示用 */
+export function changedSince(taskId: string, sinceSec: number, excludeId: string): { id: string; finishedAt: number } | null {
+  const row = db
+    .select({ id: organizeRuns.id, finishedAt: organizeRuns.finishedAt })
+    .from(organizeRuns)
+    .where(
+      and(
+        eq(organizeRuns.taskId, taskId),
+        ne(organizeRuns.id, excludeId),
+        gt(organizeRuns.finishedAt, sinceSec),
+        sql`exists (select 1 from ${organizeItems} where ${organizeItems.runId} = ${organizeRuns.id} and ${organizeItems.status} in ('done', 'reverted'))`,
+      ),
+    )
+    .orderBy(desc(organizeRuns.finishedAt))
+    .limit(1)
+    .get();
+  return row && row.finishedAt !== null ? { id: row.id, finishedAt: row.finishedAt } : null;
 }
 
 export function deleteRun(id: string): boolean {
@@ -244,22 +273,34 @@ export function deleteRun(id: string): boolean {
   });
 }
 
-/** 留存清理：删掉早于 cutoff 且已结束的 run（连同 unit / item） */
-export function deleteFinishedRunsBefore(cutoffSec: number, keepLatestPerTask = 5): number {
+/**
+ * 留存清理：删掉早于 cutoff、不在进行中的 run（连同 unit / item），放着没执行的预览也算。
+ * 每个任务留最近 keepAppliedPerTask 次真正执行过的（有 done 的项，撤销要用的是它们）；没执行过的预览、预览阶段就失败 / 取消的不占名额
+ */
+export function deleteFinishedRunsBefore(cutoffSec: number, keepAppliedPerTask = 5): number {
   const rows = db
     .select({ id: organizeRuns.id, taskId: organizeRuns.taskId })
     .from(organizeRuns)
-    .where(and(lt(organizeRuns.createdAt, cutoffSec), inArray(organizeRuns.status, ["done", "failed", "cancelled", "reverted"])))
-    .orderBy(desc(organizeRuns.createdAt))
+    .where(and(lt(organizeRuns.createdAt, cutoffSec), inArray(organizeRuns.status, ["ready", "done", "failed", "cancelled", "reverted"])))
     .all();
-  const seen = new Map<string, number>();
-  let n = 0;
-  for (const r of rows) {
-    const k = seen.get(r.taskId) ?? 0;
-    seen.set(r.taskId, k + 1);
-    if (k < keepLatestPerTask) continue;
-    if (deleteRun(r.id)) n++;
+  const keep = new Set<string>();
+  for (const taskId of new Set(rows.map((r) => r.taskId))) {
+    const applied = db
+      .select({ id: organizeRuns.id })
+      .from(organizeRuns)
+      .where(
+        and(
+          eq(organizeRuns.taskId, taskId),
+          sql`exists (select 1 from ${organizeItems} where ${organizeItems.runId} = ${organizeRuns.id} and ${organizeItems.status} = 'done')`,
+        ),
+      )
+      .orderBy(desc(sql`${organizeRuns}.rowid`))
+      .limit(keepAppliedPerTask)
+      .all();
+    for (const r of applied) keep.add(r.id);
   }
+  let n = 0;
+  for (const r of rows) if (!keep.has(r.id) && deleteRun(r.id)) n++;
   return n;
 }
 
@@ -287,6 +328,7 @@ export function replaceUnits(runId: string, units: OrganizeUnit[]): void {
           videoCount: u.videoCount,
           referencedBy: u.referencedBy,
           notes: JSON.stringify(u.notes),
+          excluded: JSON.stringify(u.excluded ?? []),
         })
         .run();
     }
@@ -317,6 +359,7 @@ export function updateUnit(runId: string, key: string, patch: Partial<OrganizeUn
         remember: merged.remember,
         referencedBy: merged.referencedBy,
         notes: JSON.stringify(merged.notes),
+        excluded: JSON.stringify(merged.excluded ?? []),
         parsedTitle: merged.parsedTitle,
         parsedYear: merged.parsedYear,
       })
@@ -365,8 +408,15 @@ export function replaceUnitItems(runId: string, unitKey: string, items: NewItem[
   });
 }
 
-export function listItems(runId: string): OrganizeItem[] {
-  return db.select().from(organizeItems).where(eq(organizeItems.runId, runId)).orderBy(asc(organizeItems.seq)).all().map(toItem);
+/** 一次整理的项（按 seq）；给了 unitKey 只要这个单元的（"" 是建目录 / 删空目录） */
+export function listItems(runId: string, unitKey?: string): OrganizeItem[] {
+  return db
+    .select()
+    .from(organizeItems)
+    .where(unitKey === undefined ? eq(organizeItems.runId, runId) : and(eq(organizeItems.runId, runId), eq(organizeItems.unitKey, unitKey)))
+    .orderBy(asc(organizeItems.seq))
+    .all()
+    .map(toItem);
 }
 
 export function updateItem(
@@ -409,8 +459,8 @@ export function bumpAttempts(ids: string[]): void {
 }
 
 const OWN_WINDOW_S = 24 * 3600;
-/** 一条 rename + 一条 move（115 分两条事件报同一次整理），再多就是别人动的 */
-const OWN_MAX_HITS = 2;
+/** 执行、撤销各一条 rename + 一条 move（115 把挪 + 改名分两条事件报），再多就是别人动的 */
+const OWN_MAX_HITS = 4;
 const dirOfPath = (p: string): string => p.slice(0, Math.max(0, p.lastIndexOf("/")));
 const baseOfPath = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
 
@@ -459,13 +509,11 @@ export function findOwnOperation(nodeId: string, path: string, at: number, kind:
       if (it.action === "rmdir" || (it.action === "mkdir" && it.status === "reverted")) return it;
       continue;
     }
+    // 执行是先原地改名再挪走，撤销是先挪回再改回原名，两边的中间位置都是 `源目录/新名字`
+    const intermediate = `${dirOfPath(it.srcPath)}/${baseOfPath(it.dstPath)}`;
     if (it.status === "done") {
-      const intermediate = `${dirOfPath(it.srcPath)}/${baseOfPath(it.dstPath)}`;
       if (path === it.dstPath || path === intermediate) return it;
-    } else {
-      const back = `${dirOfPath(it.dstPath)}/${baseOfPath(it.srcPath)}`;
-      if (path === it.srcPath || path === back) return it;
-    }
+    } else if (path === it.srcPath || path === intermediate) return it;
   }
   return null;
 }
@@ -473,6 +521,30 @@ export function findOwnOperation(nodeId: string, path: string, at: number, kind:
 /** 监控跳过了一条：计一次，超过 OWN_MAX_HITS 就不再认 */
 export function bumpOwnHit(id: string): void {
   db.update(organizeItems).set({ hits: sql`${organizeItems.hits} + 1` }).where(eq(organizeItems.id, id)).run();
+}
+
+/**
+ * 同任务别的整理撤销时因为不空留下的自建目录（mkdir 项 skipped、建过、没放弃），dstPath 在给出的这些目录里：
+ * 后面的整理撤销把文件挪走以后，这些目录可能空了
+ */
+export function listLeftoverDirs(taskId: string, excludeRunId: string, paths: string[]): OrganizeItem[] {
+  if (paths.length === 0) return [];
+  return db
+    .select()
+    .from(organizeItems)
+    .where(
+      and(
+        eq(organizeItems.action, "mkdir"),
+        eq(organizeItems.status, "skipped"),
+        ne(organizeItems.nodeId, ""),
+        ne(organizeItems.runId, excludeRunId),
+        inArray(organizeItems.dstPath, paths),
+        sql`${organizeItems.givenUp} = 0`,
+        sql`${organizeItems.runId} in (select id from ${organizeRuns} where ${organizeRuns.taskId} = ${taskId} and ${organizeRuns.stage} = 'revert')`,
+      ),
+    )
+    .all()
+    .map(toItem);
 }
 
 /* ------------------------------- 识别记忆 ------------------------------- */

@@ -25,6 +25,8 @@ export type {
 } from "./follow.js";
 export type {
   OrganizeAction,
+  OrganizeAttention,
+  OrganizeAttentionReason,
   OrganizeAutoMode,
   OrganizeCandidate,
   OrganizeCategoryRule,
@@ -49,12 +51,14 @@ export type {
   OrganizeRunStage,
   OrganizeRunStats,
   OrganizeRunStatus,
+  OrganizeRunSummary,
   OrganizeSeasonInfo,
   OrganizeSettings,
   OrganizeSkipResult,
   OrganizeTemplatePreview,
   OrganizeTrigger,
   OrganizeUnit,
+  OrganizeUnitCounts,
   OrganizeUnitPatch,
   TaskOrganizeSettings,
 } from "./organize.js";

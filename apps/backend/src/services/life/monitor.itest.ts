@@ -14,13 +14,20 @@ import type { AccountInfo, TaskDefinition } from "@openstrm/shared";
 import { KEY } from "../../db/keys.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { deleteDriveSnapshots, deleteKv, deleteLifeEventsBefore, listRecentLifeEvents, readKv } from "../../db/repositories/life.js";
-import { __test_resetOrganize, insertRun as insertOrganizeRun, replaceItems as replaceOrganizeItems, updateItem as updateOrganizeItem } from "../../db/repositories/organize.js";
+import {
+  __test_resetOrganize,
+  insertRun as insertOrganizeRun,
+  replaceItems as replaceOrganizeItems,
+  updateItem as updateOrganizeItem,
+  updateRun as updateOrganizeRun,
+} from "../../db/repositories/organize.js";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { DATA_DIR } from "../../paths.js";
 import { setDriveProviderFactory } from "../drive/registry.js";
 import type { ChangeEvent } from "../drive/types.js";
 import { FakeDrive } from "../../test/fake-drive.js";
+import { __test_flushAutoOrganize, __test_resetAutoOrganize, setAutoOrganizeDeps } from "../organize/auto.js";
 import { QuarkSnapshotSource } from "./sources/quark.js";
 import { getLifeMonitorStatus, probeLifeEvents, startLifeMonitor, stopLifeMonitor } from "./monitor.js";
 
@@ -188,6 +195,84 @@ test("撤销时挪回来了、改回原名那步失败的项（done 带 curPath�
     await stopLifeMonitor();
     __test_resetOrganize();
     // 事件的时间是造出来的未来值，会一直排在「最近」的最前面，把后面用例里的真事件挤出 listRecentLifeEvents 的窗口
+    deleteLifeEventsBefore(Number.MAX_SAFE_INTEGER);
+  }
+});
+
+test("撤销还在跑、挪回来了还没改回原名（done 带 curPath，run 在 reverting）：正常的中间状态，事件跳过，本地等撤销自己镜像", async () => {
+  configure({ accounts: ["A"], pullMode: "latest", intervalSeconds: 5 });
+  dA.tree.addDir("/tv/Show");
+  dA.tree.addDir("/tv/Other");
+  dA.tree.addFile("/tv/Show/new4.mkv");
+  fs.mkdirSync(path.join(localRoot, "tv", "Other"), { recursive: true });
+  fs.writeFileSync(path.join(localRoot, "tv", "Other", "new4.strm"), "http://x/tv/Other/new4.mkv");
+  const now = Math.floor(Date.now() / 1000);
+  insertOrganizeRun({ id: "org-mid", taskId: "m-a", accountName: "A", scopePath: "", scopePaths: [], mode: "manual", trigger: "manual" });
+  updateOrganizeRun("org-mid", { status: "reverting", stage: "revert" });
+  replaceOrganizeItems("org-mid", [
+    { id: "own-mid", seq: 0, unitKey: "u", kind: "video", action: "move", reason: "", srcPath: "/tv/Show/old4.mkv", dstPath: "/tv/Other/new4.mkv", nodeId: "n-mid", status: "done", error: "" },
+  ]);
+  updateOrganizeItem("own-mid", { finishedAt: now, curPath: "/tv/Show/new4.mkv" });
+  dA.changes!.queue.push(ev({ id: "o4", kind: "move", path: "/tv/Show/new4.mkv", oldPath: "/tv/Other/new4.mkv", nodeId: "n-mid" }));
+  const r = await startLifeMonitor();
+  try {
+    assert.equal(r.ok, true, r.message);
+    await waitFor(() => {
+      const st = statusOf("A")?.stats;
+      return !!st && st.handled + st.skipped + st.failed === 1;
+    }, "处理完");
+    const row = listRecentLifeEvents(10).find((e) => e.id === "o4");
+    assert.equal(row?.status, "skipped", `应该跳过：${row?.detail}`);
+    assert.ok(fs.existsSync(path.join(localRoot, "tv", "Other", "new4.strm")), "本地不动，等撤销改完名自己镜像");
+    assert.ok(!fs.existsSync(path.join(localRoot, "tv", "Show", "new4.strm")));
+  } finally {
+    await stopLifeMonitor();
+    __test_resetOrganize();
+    deleteLifeEventsBefore(Number.MAX_SAFE_INTEGER);
+  }
+});
+
+test("从任务外挪进来的文件按新增处理，也交给自动整理；任务里挪动、本地没有退化成新增的不交", async () => {
+  configure({ accounts: ["A"], pullMode: "latest", intervalSeconds: 5 });
+  // 自动整理要任务开了 review、配了 TMDB；createRun 换成记账的假函数，不真建 run
+  replaceAppSettings({ ...readAppSettings(), tmdb: { apiKey: "x" } });
+  replaceTasks([{ ...taskA, organize: { mode: "review" } }, taskQ]);
+  const calls: Array<{ paths: string[]; trigger: string }> = [];
+  setAutoOrganizeDeps({
+    createRun: async (input) => {
+      calls.push({ paths: input.paths ?? [], trigger: input.trigger ?? "" });
+      return {} as never;
+    },
+    debounceMs: 0,
+  });
+  dA.tree.addDir("/tv/Show");
+  dA.tree.addFile("/tv/Show/ep1.mkv");
+  dA.tree.addFile("/tv/Show/ep2.mkv");
+  dA.tree.addDir("/tv/Show2");
+  dA.tree.addFile("/tv/Show2/ep3.mkv");
+  dA.changes!.queue.push(
+    ev({ id: "a1", kind: "move", path: "/tv/Show/ep1.mkv", oldPath: "/inbox/ep1.mkv" }),
+    ev({ id: "a2", kind: "create", path: "/tv/Show/ep2.mkv" }),
+    ev({ id: "a3", kind: "move", path: "/tv/Show2/ep3.mkv", oldPath: "/tv/Show/ep3.mkv" }),
+  );
+  const r = await startLifeMonitor();
+  try {
+    assert.equal(r.ok, true, r.message);
+    await waitFor(() => {
+      const st = statusOf("A")?.stats;
+      return !!st && st.handled + st.skipped + st.failed === 3;
+    }, "三条都处理完");
+    await __test_flushAutoOrganize();
+    await waitFor(() => calls.flatMap((c) => c.paths).length >= 2, "自动整理收到路径");
+    assert.deepEqual(calls.flatMap((c) => c.paths).sort(), ["Show/ep1.mkv", "Show/ep2.mkv"], "挪进来的和新增的交给自动整理，任务里挪动的不交");
+    assert.ok(calls.every((c) => c.trigger === "monitor"));
+    assert.ok(fs.existsSync(path.join(localRoot, "tv", "Show", "ep1.strm")), "挪进来的照新增生成 strm");
+    assert.ok(fs.existsSync(path.join(localRoot, "tv", "Show2", "ep3.strm")), "本地没有的退化成新增，strm 照样生成");
+  } finally {
+    await stopLifeMonitor();
+    __test_resetAutoOrganize();
+    setAutoOrganizeDeps(null);
+    replaceTasks([taskA, taskQ]);
     deleteLifeEventsBefore(Number.MAX_SAFE_INTEGER);
   }
 });

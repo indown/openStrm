@@ -1,7 +1,17 @@
 /**
  * 整理页的展示映射：run 状态、置信度、动作的文案与配色。
  */
-import type { OrganizeAction, OrganizeConfidence, OrganizeErrorKind, OrganizeFailureGroupKey, OrganizeRunStage, OrganizeRunStatus, OrganizeTrigger } from "@openstrm/shared";
+import type {
+  OrganizeAction,
+  OrganizeAttentionReason,
+  OrganizeConfidence,
+  OrganizeErrorKind,
+  OrganizeFailureGroupKey,
+  OrganizeRun,
+  OrganizeRunStage,
+  OrganizeRunStatus,
+  OrganizeTrigger,
+} from "@openstrm/shared";
 import type { StatusTone } from "@/components/status-badge";
 
 export const RUN_STATUS_META: Record<OrganizeRunStatus, { label: string; tone: StatusTone; pulse?: boolean }> = {
@@ -19,7 +29,7 @@ export const CONFIDENCE_META: Record<OrganizeConfidence, { label: string; tone: 
   high: { label: "把握大", tone: "success", hint: "有 id 证据，或标题和年份都对上" },
   medium: { label: "基本对", tone: "warning", hint: "标题对上但年份缺或差一年，建议看一眼" },
   low: { label: "拿不准", tone: "danger", hint: "只是搜索结果里最像的，请确认" },
-  none: { label: "没识别", tone: "neutral", hint: "TMDB 上搜不到，换个关键词搜或手填" },
+  none: { label: "没识别", tone: "neutral", hint: "TMDB 上搜不到：点「换匹配」换个关键词、限定年份 / 类型，或者直接填 TMDB 编号" },
 };
 
 export const ACTION_META: Record<OrganizeAction, { label: string; tone: StatusTone }> = {
@@ -78,5 +88,27 @@ export const TRIGGER_LABEL: Record<OrganizeTrigger, string> = {
 export const baseName = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
 export const dirName = (p: string): string => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 
+/** run 的范围一句话：手动选的多个目录说「N 个目录」，自动触发的说「N 个新增路径」，单一范围说路径，都没有是整个任务 */
+export function scopeLabel(run: Pick<OrganizeRun, "scopePath" | "scopePaths" | "trigger">): string {
+  const n = run.scopePaths.length;
+  if (n > 0) return run.trigger === "manual" ? `${n} 个目录` : `${n} 个新增路径`;
+  return run.scopePath || "整个任务";
+}
+
 /** 进行中的状态：页面要轮询 */
 export const isBusyStatus = (s: OrganizeRunStatus): boolean => s === "planning" || s === "applying" || s === "reverting";
+
+/** 待处理列表里每种原因的标签 */
+export const ATTENTION_META: Record<OrganizeAttentionReason, { label: string; tone: StatusTone }> = {
+  ready: { label: "待执行", tone: "brand" },
+  busy: { label: "进行中", tone: "info" },
+  failures: { label: "要处理", tone: "danger" },
+  revert: { label: "没退回完", tone: "warning" },
+  "preview-failed": { label: "自动预览失败", tone: "danger" },
+};
+
+/** 整理页做了会改变「待处理」的动作（执行 / 撤销 / 放弃 / 删除 / 预览…）时广播一下，侧栏角标立刻刷新 */
+export const ORGANIZE_CHANGED_EVENT = "openstrm:organize-changed";
+export function notifyOrganizeChanged(): void {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(ORGANIZE_CHANGED_EVENT));
+}

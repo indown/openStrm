@@ -10,9 +10,14 @@ import type {
   AppSettings,
   LifeMonitorSettings,
   MediaLibraryEntry,
+  OrganizeAttention,
+  OrganizeCandidate,
+  OrganizeFailureGroupKey,
+  OrganizeItem,
   OrganizeMatchMemory,
   OrganizeRun,
   OrganizeRunDetail,
+  OrganizeRunSummary,
   OrganizeSkipResult,
   OrganizeTemplatePreview,
   OrganizeUnit,
@@ -507,15 +512,36 @@ export const api = {
   organize: {
     createRun: (input: { taskId: string; subPath?: string; paths?: string[] }) =>
       data(axiosInstance.post<OrganizeRun>("/api/organize/runs", input)),
-    listRuns: (taskId?: string, limit = 30) =>
-      data(axiosInstance.get<{ runs: OrganizeRun[] }>("/api/organize/runs", { params: { taskId: taskId || undefined, limit } })),
+    listRuns: (taskId?: string, limit = 30, offset = 0) =>
+      data(axiosInstance.get<{ runs: OrganizeRun[] }>("/api/organize/runs", { params: { taskId: taskId || undefined, limit, offset: offset || undefined } })),
+    /** 要人管的 run（跨任务）：待执行、进行中、有失败或做了一半、撤销没退回完的、自动触发的预览失败 */
+    attention: () => data(axiosInstance.get<{ runs: OrganizeAttention[] }>("/api/organize/attention")),
+    /** 详情：run + 单元 + 按单元的计数；项不带，展开时用 items 拉 */
     getRun: (id: string) => data(axiosInstance.get<OrganizeRunDetail>(`/api/organize/runs/${encodeURIComponent(id)}`)),
+    /** 进行中轮询用：run（含进度 / 日志）+ 失败分组 + 按钮开关，不带单元和项 */
+    summary: (id: string) => data(axiosInstance.get<OrganizeRunSummary>(`/api/organize/runs/${encodeURIComponent(id)}/summary`)),
+    /** 按需拉项：一个单元的（unit 空串是建目录 / 删空目录），或者失败面板的一组 */
+    items: (id: string, q: { unit: string } | { group: OrganizeFailureGroupKey }) =>
+      data(axiosInstance.get<{ items: OrganizeItem[] }>(`/api/organize/runs/${encodeURIComponent(id)}/items`, { params: q })),
     patchUnit: (id: string, key: string, patch: OrganizeUnitPatch) =>
       data(axiosInstance.put<OrganizeUnit>(`/api/organize/runs/${encodeURIComponent(id)}/unit`, { key, ...patch }, { timeout: 60_000 })),
+    /** 批量勾选单元（全选 / 全不选 / 只选把握大的）：一次重规划 */
+    patchUnits: (id: string, keys: string[], patch: { selected?: boolean; remember?: boolean }) =>
+      data(axiosInstance.put<{ changed: number }>(`/api/organize/runs/${encodeURIComponent(id)}/units`, { keys, ...patch }, { timeout: 120_000 })),
+    /** 按文件勾选：取消勾选的文件跳过，跟着它的字幕 / nfo 一起留下；ids 用最新清单里的 */
+    patchItems: (id: string, ids: string[], selected: boolean) =>
+      data(axiosInstance.put<{ changed: number }>(`/api/organize/runs/${encodeURIComponent(id)}/items`, { ids, selected }, { timeout: 60_000 })),
+    /** 换匹配弹框：按关键词搜（可限类型、年份） */
+    tmdbSearch: (q: { query: string; type?: "movie" | "tv"; year?: string }) =>
+      data(axiosInstance.post<{ results: OrganizeCandidate[] }>("/api/organize/tmdb/search", q)),
+    /** 换匹配弹框：按 TMDB 编号查 */
+    tmdbLookup: (type: "movie" | "tv", id: number) => data(axiosInstance.get<OrganizeCandidate>(`/api/organize/tmdb/${type}/${id}`)),
     /** 不带 ids：ready 的执行全部，其它状态重试失败 / 没做的（默认只重试临时失败）；带 ids 只重试点名的项 */
     apply: (id: string, ids?: string[]) => data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/apply`, ids ? { ids } : {})),
     /** 放弃失败项：标成「已放弃」让 run 收口；原地改了名还没挪走的先在网盘上改回原名，所以给长一点的超时 */
     skip: (id: string, ids: string[]) => data(axiosInstance.post<OrganizeSkipResult>(`/api/organize/runs/${encodeURIComponent(id)}/skip`, { ids }, { timeout: 120_000 })),
+    /** 按原范围、原触发来源重新预览：返回新建的 run */
+    repreview: (id: string) => data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/repreview`)),
     cancel: (id: string) => data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/cancel`)),
     revert: (id: string) => data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/revert`)),
     remove: (id: string) => data(axiosInstance.delete<{ success: true }>(`/api/organize/runs/${encodeURIComponent(id)}`)),

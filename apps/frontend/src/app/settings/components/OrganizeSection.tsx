@@ -175,7 +175,7 @@ export function OrganizeSection({ value, onChange }: Props) {
           <Checkbox checked={value.cleanupEmptyDirs !== false} onCheckedChange={(v) => set({ cleanupEmptyDirs: v === true })} className="mt-0.5" />
           <span>
             <span className="text-sm font-medium">执行后删掉腾空的源目录</span>
-            <span className="block text-xs text-muted-foreground">只删本次挪空的目录，范围目录本身不动。</span>
+            <span className="block text-xs text-muted-foreground">只删这次挪空的目录；范围目录本身是发布目录或季目录时也一起删，任务根目录和 inbox 这种收件箱目录不删。</span>
           </span>
         </label>
         <label className="flex cursor-pointer items-start gap-2 rounded-md border p-3">

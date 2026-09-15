@@ -147,11 +147,18 @@ export interface OrganizeRunStats {
   items: number;
   /** 需要动的项（rename / move / mkdir / rmdir） */
   planned: number;
+  /** planned 里建目录 / 删空目录各几项（其余是改名 / 移动的文件） */
+  plannedMkdir: number;
+  plannedRmdir: number;
   keep: number;
   conflicts: number;
   skipped: number;
   done: number;
   failed: number;
+  /** 已退回的项（累计，建目录 / 删目录也算，和 done 同一个口径） */
+  reverted: number;
+  /** 勾选了、会动网盘、还没做的项：执行中途停下（取消 / 风控 / 重启）时就是「没做完」的 */
+  pending: number;
   /** 置信度分布 */
   confidence: Record<OrganizeConfidence, number>;
   /**
@@ -221,6 +228,8 @@ export interface OrganizeUnit {
   referencedBy: number;
   /** 单元级的问题说明（比如「集数超过该季集数，按绝对集数折算」） */
   notes: string[];
+  /** 用户单独取消勾选的文件（网盘绝对路径）：规划时跳过，跟着它们的字幕 / nfo 一起留下 */
+  excluded: string[];
 }
 
 export interface OrganizeItem {
@@ -270,17 +279,62 @@ export interface OrganizeFailureGroup {
   held: number;
 }
 
-/** GET /api/organize/runs/:id 的形状 */
-export interface OrganizeRunDetail {
+/** GET /api/organize/runs/:id/summary 的形状：run 和按钮开关，不带单元和项；执行 / 撤销进行中页面每 2 秒拉它 */
+export interface OrganizeRunSummary {
   run: OrganizeRun;
-  units: OrganizeUnit[];
-  items: OrganizeItem[];
   /** 还等着处理的失败按下一步分组；后端算，前端只管文案和按钮 */
   groups: OrganizeFailureGroup[];
-  /** 撤销这次 run 允不允许、为什么不允许 */
-  revertable: { ok: boolean; reason?: string };
+  /** 撤销这次 run 允不允许、为什么不允许；blockedBy 是挡着它的那次整理（后面的整理又动过这次挪好的文件） */
+  revertable: { ok: boolean; reason?: string; blockedBy?: { id: string; createdAt: number } };
+  /**
+   * 待执行的预览是不是旧了（执行不拦，页面提示重新预览）：changed 是预览之后同任务又有整理 / 撤销落了盘（at 是那次结束的时间），
+   * old 是预览超过一天（at 是预览的时间）
+   */
+  outdated?: { kind: "changed" | "old"; at: number; runId?: string };
   /** 能不能（再）执行：ready 的执行全部；其它状态是重试失败 / 没做的项，count 是默认会重试的项数 */
   applicable: { ok: boolean; reason?: string; count: number };
+  /** 待执行的预览还能不能改（换匹配 / 季集偏移 / 勾选）：单元结构只在内存里，进程重启过就只能直接执行或重新预览 */
+  editable: boolean;
+  /** 执行过没有（有项被执行 / 撤销过）：待执行的预览被取消或被新的预览取代时是 false，这种 run 只能重新预览 */
+  executed: boolean;
+}
+
+/** 一个单元里各种项的个数：详情不带全部项，单元卡上的数字、筛选都靠它 */
+export interface OrganizeUnitCounts {
+  /** 这个单元一共几项 */
+  total: number;
+  /** 改名 / 移动 */
+  changing: number;
+  conflicts: number;
+  /** 跳过里要看一眼的（看不出集数、找不到对应视频…）；单元没勾选、文件没勾选这种用户自己的选择不算 */
+  skipped: number;
+  keep: number;
+  /** 等着处理的失败（执行阶段）/ 没退回的（撤销阶段），和失败面板同一个口径 */
+  failed: number;
+  done: number;
+  reverted: number;
+  /** 用户单独取消勾选的文件 */
+  excluded: number;
+}
+
+/** GET /api/organize/runs/:id 的形状：summary + 单元 + 按单元的计数；项按需拉（GET /runs/:id/items?unit= / ?group=） */
+export interface OrganizeRunDetail extends OrganizeRunSummary {
+  units: OrganizeUnit[];
+  counts: Record<string, OrganizeUnitCounts>;
+  /** 建目录 / 删空目录的项数（不属于某个作品，页面单列） */
+  dirCount: number;
+}
+
+/**
+ * 待处理列表（跨任务）里一条 run 为什么要人管：ready 待执行；busy 进行中；failures 执行阶段有失败或做了一半；
+ * revert 撤销阶段有没退回的；preview-failed 自动触发的预览失败了（手动的预览失败用户当场就看到了）
+ */
+export type OrganizeAttentionReason = "ready" | "busy" | "failures" | "revert" | "preview-failed";
+
+/** GET /api/organize/attention 的一条；run 不带日志 */
+export interface OrganizeAttention {
+  run: OrganizeRun;
+  reason: OrganizeAttentionReason;
 }
 
 /** POST /api/organize/runs/:id/skip 的结果 */

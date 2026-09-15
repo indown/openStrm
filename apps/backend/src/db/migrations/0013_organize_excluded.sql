@@ -1,0 +1,1 @@
+ALTER TABLE `organize_units` ADD `excluded` text DEFAULT '[]' NOT NULL;
