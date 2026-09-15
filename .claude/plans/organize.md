@@ -520,3 +520,95 @@ UPDATE organize_items SET error_kind = 'mirror' WHERE status = 'done' AND error 
 - 没改的两条存疑：`withRetry` 对 OpenList 按路径的移动在「超时但其实已挪成」后重发，记的原因会从 transient 变成 stale（文件的结局和以前一样，只是记账原因不同）；代理 / WAF 层不带权限字样的 403 现在归 transient 自动重试一次，而不是按登录失效整轮停——更保守，接受。
 
 用例：`drive/errors.test.ts`（facts / accountIssueOf）、`failures.test` 的 stale 先于账号、`run.itest` 五条（owner 失败级联、三链移动、重启收口、放弃后不误收口、撤销阶段 stale 分组）、`monitor.itest` 的半路项。
+
+## 识别补漏：零宽字符与标题后面粘着的集数（2026-09-14 夜）
+
+用户贴了两张预览截图，两个单元的视频全是「跳过 · 看不出是第几集」：
+
+- **回家的诱惑 (2011)**：E36–E68 共 33 个文件，名字看着是 `回家的诱惑.2011.S01E36.mp4`，实际是 `S01E` + U+200B + `36` + U+200B（本机 strm 镜像里 xxd 看得到，分享资源里常见）。`S01E36` 被拆坏，33 个文件解析成同一个标题、没有集数：单元阶段按「同名多版本的电影」猜类型并给了提示，TMDB 却认成剧集，提示和匹配自相矛盾，每集都跳过。E01–E35 名字干净（推测之前已经整理走了，截图单元里只剩这 33 个）。
+- **我和僵尸有个约会 (1998)**：`season1/我和僵尸有个约会01.mp4 … 35.mp4`，标题和集数之间没有分隔，解析器把数字当成标题的一部分。
+
+改动：
+
+- `lib/text.ts` 的 `stripInvisible`：去掉 Unicode Default_Ignorable 字符（零宽空格 / 连接符、BOM、软连字符、方向控制符）。用在 `parseMediaName`、`parseWithRules`（识别词也看干净的名字）、`seasonDirNumber` / `isExtrasDirName`、`hasReleaseNoise`、`idTagFromName`，以及影库刮削的 `media-title.normalizeTitle`。网盘上的真实名字不动，改名的目标本来就是模板拼出来的干净名字。
+- 解析器：标题后面补零的数字是集数——`X01` / `X 01` / `X01-02` / `X001`（在名字最后、或后面跟技术词）；`剧场版01`、`剧场版 01` 是第几部电影，不算。不补零的（`流浪地球2`、`速度与激情10`）解析时不定，`trailingNumber(parsed)` 只负责拆成「标题 + 数字」。
+- `units.promoteTrailingEpisodes`：同一单元根下，尾巴数字在三种上下文里当集数——文件在季目录里；去掉数字后和已经有集数的兄弟同名（`X01 … X09` 带出 `X10 …`）；剧集库里有两个以上同名兄弟。电影系列（`叶问系列/叶问1 … 4`）三样都不沾，照旧按标题拆。字幕也一样认。
+- `plan.resolveEpisode`：单元阶段没敢认的（单独一个新文件、没有季目录也没有兄弟），TMDB 已经认成剧集、去掉数字正好是剧名（对单元标题候选和 TMDB 译名 / 原名 / 英文名，用 `normalizeTitle` 比）时当绝对集数；模板的 `{absolute}` 也用这个数。
+- 「N 个视频没有集数标记，按同一部电影的多个版本处理」改成 `Unit.multiVersion`，规划时 TMDB 没认成剧集才说。`normalizeTitle` 从 identify 挪到 parse-name（plan 要用，纯函数模块不该依赖带库的 identify）。
+
+测试：parse-name 样本 11 条 + 零宽字符 / `trailingNumber` 两组，units 三条（季目录粘集数、平铺 / 剧集库 / 电影系列、零宽字符），plan 两条（TMDB 剧集兜底、多版本提示只对电影），`lib/text.test`，run.itest 一条（零宽字符 + 粘集数走完 预览 → 执行 → 本地 strm 跟着挪）。后端 694 个全过，typecheck / lint 干净。
+
+真数据：拿本机 `data/tv` 镜像里的真实文件名（.strm 换回 .mp4）+ 真 TMDB 跑 单元 → 识别 → 规划（scratch 库，不碰网盘）。截图里的状态：回家的诱惑 33 个 → S01E36–E68（TMDB S1=68，把握大），我和僵尸有个约会 season1 → S01E01–E35（TMDB S1=35，基本对），两条提示都没了；整个镜像（含 season2 / 3 的 `我和僵尸有个约会2.EP01`）182 项移动、零冲突，只有一张 `184445.jpg` 找不到对应视频照旧跳过。
+
+踩坑：测试里写的零宽字符转义（反斜杠 u200B 这种），经 Edit / Write 的参数一解码，文件里落的是真字符（普通字符串里 eslint 不报，模板串里 `no-irregular-whitespace` 才报）。写完用脚本把 Default_Ignorable 字符转回转义写法，再扫一遍确认源码里一个真字符都不剩。
+
+### 范围直接选季目录（同一晚，用户说「季目录那个也一起修」）
+
+原来范围选到 `我和僵尸有个约会/season2` 时，单元根停在范围目录本身（`unitRootFor` 不往范围外走）：季号认不出来、默认第 1 季，范围目录名 `season2` 当不了标题，只能拿文件里的 `我和僵尸有个约会2` 去搜。
+
+- `buildUnits`：范围本身是季目录时，往上找单元根的边界放宽到它的上一级——和平时季目录归上一级一样，单元根是剧目录（标题、id 标签、影库证据、识别记忆都按剧目录认），季号从范围目录名来，文件还是只有范围里的；普通范围照旧不往上走。任务直接建在季目录上（任务根本身叫 `Season 2`）时上不去，季号也照样认。原来的 `scopeName` 选项其实只在单元根落在任务根时用、存的就是任务根的名字，改名 `taskRootName`，`run.ts` 一律传 originPath 的最后一段。
+- `looksLikeReleaseDir` 把季目录（含 `Specials` / `番外`）也算上：范围是季目录、整理后腾空了就删；剧目录在范围外不碰。
+- 追更 / 云下载落点：原来只在「单元根腾空删掉」时改写（单元根 → 作品目录）。季目录当范围时单元根是剧目录、不会被删，新加的 `dirMappings` 给其它腾空删掉的目录也出映射——里面直接放着的项都挪进了同一个目录的（`某剧/season2` → `作品目录/Season 02`），长的 from 排前面（改写取第一个命中的）。撤销时反过来，但非单元根的只认这次新建出来的目标目录（原来就有的目录，别的追更本来就可能指着它，不拽回来）。顺带，整理整部剧时指着 `某剧/season2` 的追更也改到 `Season 02`，不再是前缀拼出来的、并不存在的 `作品目录/season2`。
+- 预览里「被 N 条追更 / 云下载引用」：单元根越到范围外时只数范围里的，指着剧目录的那条这次不会改。
+
+测试：units 一条（季目录范围、季目录范围里粘集数、Specials、任务根是季目录、普通范围不往上走）；run.itest 两条（季目录范围：按剧目录识别、S02、只删季目录、追更跟到 Season 02、撤销改回、referencedBy 只数范围里的；整理整部剧：season2 的追更去 Season 02、剧目录的追更去作品目录、撤销都改回）；`looksLikeReleaseDir` 样本加 season2 / Specials / 番外。后端 697 个全过，typecheck / lint 干净。真数据：本机镜像 `我和僵尸有个约会/season2`（43 个 `我和僵尸有个约会2.EPxx`）当范围跑 → 单元根是剧目录、TMDB #19389、S02E01–E43 进 `Season 02`、删 season2、零冲突零跳过；截图那两个单元复跑结果不变。
+
+## nfo / 图片 / 附属文件（2026-09-14 夜）
+
+用户问「目录里有 nfo、png、jpg 会触发什么问题」。拿本机镜像的真实文件（`黑镜 (2011)` 整套刮削文件：tvshow.nfo、season.nfo、分集 nfo / thumb、poster / banner / clearlogo / background / characterart / seasonXX-*；随手放的 `184445.jpg`、`390561_front.jpg`；发布组的纯文本 nfo）和几种常见布局只跑 单元 → 规划，查到六处问题；用户说「按你推荐的制定计划开始吧」。
+
+### 问题（按严重程度）
+
+1. **nfo 证据取错 id。** 按路径排序只读前三个 nfo（`黑镜` 读到的是 season.nfo 和两个分集 nfo，tvshow.nfo 排不上），每个文件取第一个 `<tmdbid>`（演员块里的也算），整份没有才看 uniqueid（分集 nfo 里是这一集自己的 id）。同一正则套三种写法：本机分集 nfo 剧 id 写在最前 → 42009 对；剧 id 只在 uniqueid、演员带 `<tmdbid>` → 取到演员 40477；分集 nfo 只有自己的 uniqueid → 6085098。证据给 high，还排在目录名 `[tmdbid=…]` 前面，自动整理会直接执行。
+2. **finalizeItems 在冲突判定之前取「会挪走的源」。** 冲突留下的项被当成挪走：删空目录算错（执行时跳过「目录不是空的」，预览是错的）；撞名判断也可能把东西排到还被占着的名字上（执行前的预检会拦成 rejected）。
+3. **新一季并进已有作品目录卡住自动整理。** 新季带的 poster / fanart / tvshow.nfo 和作品目录里已有的撞名算冲突，自动整理要零冲突才直接执行。
+4. **季目录里的 season.nfo / poster.jpg 当成作品级挪到剧目录根。** 放错层；多季互相撞名；剧根没海报时季海报变成剧海报。
+5. **名单外的作品级图片跳过，旧目录删不掉。** background、characterart、seasonXX-thumb、extrafanart/ 这类。
+6. **单视频目录里名字对不上的图片 / nfo 硬配给那个视频，还按视频名长度截原名**（`某片 (2021)0561_front.jpg`）。
+
+### 方案
+
+1. **nfo 证据（新模块 `nfo.ts`）**
+   - `readNfoFacts(xml)`：按层级读 XML，只看根元素直属的子元素（演员 / 导演 / 合集块里的不算）。`tvshow` / `movie`：`uniqueid type="tmdb"`，没有再看 `<tmdbid>`，标题取 title + originaltitle；`episodedetails`：只认 `<tmdbid>`（有的刮削器在这写剧的 id），不认 uniqueid（这一集自己的），标题取 showtitle（它的 title 是集名）；`season` 和其它根没有作品 id；纯文本发布说明没有根元素，什么都不给。
+   - `nfoEvidence(saveDir, unit)`：tvshow.nfo / movie.nfo 在前，其余按目录深浅；花絮目录里的和 season.nfo 不读；最多读 5 个；媒体类型按根元素定。
+   - 识别核对：证据带着 nfo 自己写的标题（没写剧名的分集 nfo 用单元的标题），TMDB 详情的译名 / 原名 / 英文名 / 别名对不上就不用，单元提示里说一句，接着试下一条证据或去搜。
+   - 证据顺序：目录名 `[tmdbid=…]`（多半是整理自己写的）→ 本地 nfo → 影库条目；`IdEvidence.known` 可以是数组，按顺序试。
+2. **finalizeItems 收敛**：冲突判定按「还在挪的项」重算源集合，有新的项留下就再来一轮（项只会从挪变留，一定收敛）；建目录、删空目录都按最终结果。
+3. **附属文件（字幕 / nfo / 图片）两个规划期标记**，不落库：
+   - `soft`：目标被占（已存在、和别的项同目标、改名会撞源目录里的文件）不算冲突，标 skip「……留在原处」，不卡自动整理；
+   - `follows`：跟着哪些视频，一个都没落到计划位置（冲突 / 跳过）就不挪，免得字幕 / nfo 挪到新目录挨着别的版本。
+   - `patchUnit` 改成按内存里的单元把所有单元重新规划一遍再 finalizeItems（原来从库里的项反推，这两个标记会丢）。
+4. **季这一层**：季目录里的目录级图片（poster / folder / fanart / banner / thumb …）和 season.nfo 进这个季目录里的视频要去的新季目录（取目标目录里最多的那个，跟着这批视频）；剧根的 `seasonXX-poster.jpg` 照旧进作品根。
+5. **名单**：目录级图片补 background / characterart / discart / keyart；季图片 `season(数字|-all|-specials)(-图片种类)?`；艺术图目录 extrafanart / extrathumbs / .actors 像花絮目录一样归上一级（标 `artDir`），整个进作品目录。
+6. **名字对不上的图片 / nfo**：单元有自己的目录（不是任务根、不是从大目录里拆出来的；范围根的话目录名就是这部作品）时原名跟进作品目录，否则照旧不动；不再硬配给唯一的视频、不再截名。
+
+### 测试
+
+- `nfo.test`：真实结构（本机三种 nfo 原样）、只有 uniqueid + 演员带 tmdbid、分集只有自己的 uniqueid、合集块、CDATA / 实体、纯文本；证据的读取顺序（临时目录里写文件）。
+- `identify.test`：nfo 标题对不上被弃用、有提示、改去搜；证据数组按顺序、第一条弃用后用下一条；分集 nfo 用单元标题核对。
+- `plan.test`：黑镜真实布局全部各就各位、旧目录删掉；季目录图片 / season.nfo 进新季目录；艺术图目录；并进已有作品目录不算冲突、源目录不删；视频冲突后附属文件留下、源目录不删；冲突让出的位置不再当空；名字对不上的原名跟进 / 大目录里的不动。
+- `units.test`：艺术图目录归上一级；ownsDir。
+- `run.itest`：本地 nfo 标题对不上 → 提示 + 按搜索认；并进已有作品目录零冲突执行成功；patchUnit 之后别的单元的 soft / follows 还在。
+
+### 进度
+
+- [x] nfo.ts + 识别核对 + 证据顺序
+- [x] finalizeItems 收敛 + soft / follows + patchUnit 全量重规划
+- [x] 季层 / 名单 / 艺术图目录 / 名字对不上的
+- [x] 测试、真数据复跑、记录
+
+### 实施记录（2026-09-14 夜）
+
+按方案做完，另有两处是自审时补的：
+
+- 跟某个视频同名的 nfo / thumb，要是那个视频没排上（看不出集数、和别的版本撞了同一个目标），只在已排上的视频里找会找不到，掉进「名字认不出」原名挪进作品目录、把视频留在原处；现在在单元的全部视频里找主人，主人没排上就跟着留下（「对应的视频没挪，跟着留在原处」）。
+- 证据里的 id 在 TMDB 上查不到（分集自己的 id 被当成剧 id 这种）也记一句提示，再往下试。
+
+验证：
+
+- 后端 714 个测试全过（新增 nfo 4、identify 2、plan 7、units 1、run.itest 3），typecheck / lint 干净，源码里没有真零宽字符。
+- 本机真实 nfo：`黑镜` 的 tvshow.nfo → 42009 + 标题「黑镜 / Black Mirror」，排在最前读；season.nfo → 没有作品 id；6 个分集 nfo → 42009（`<tmdbid>`，不取 uniqueid 6085098、不取演员块）；Severance / 美国队长4 的发布说明 nfo → 不是 XML。
+- 真 TMDB（scratch 库）：tvshow.nfo → #42009 high；只有分集 nfo → 用目录名核对 → #42009 high；串进来的演员 id 40477 在 TMDB 上是「绝对达令」→ 对不上弃用、改搜 → #42009 high 并留提示（原来的取法会以 high 认成「绝对达令」）；分集 id 6085098 → TMDB 上查不到 → 提示 + 改搜。
+- 布局模拟（只跑 单元 → 规划）：`黑镜 (2011)` 全部各就各位，零冲突零遗留，Season 7 和剧目录都腾空删掉；季目录里的 poster / season.nfo 进各自的 Season 0X；并进已有作品目录 → 三个 soft skip、零冲突、源目录不删；`雷霆特攻队/390561_front.jpg` → 原名进作品目录，不再截名。
+
+没做：整理不改 nfo 的内容，用了集偏移 / 换匹配之后 nfo 里写的季号集号和新文件名对不上；只有改编号时才会出现，Emby 是否以 nfo 为准也没实测，先不动。

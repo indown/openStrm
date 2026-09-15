@@ -8,7 +8,7 @@ import { buildUnits, type ScopeEntry } from "./units.js";
 
 const videoExts = new Set([".mkv", ".mp4"]);
 const files = (paths: string[]): ScopeEntry[] => paths.map((p, i) => ({ path: p, isDir: false, id: `n${i}` }));
-const opts = { scopePath: "", scopeName: "tv", videoExts, rules: [] as ReturnType<typeof parseRules>["rules"] };
+const opts = { scopePath: "", taskRootName: "tv", videoExts, rules: [] as ReturnType<typeof parseRules>["rules"] };
 
 test("一部剧一个目录：季目录归上一级，字幕 / nfo 跟着走", () => {
   const units = buildUnits(
@@ -41,7 +41,7 @@ test("电影目录：一个视频没有集标记就是电影；同名多版本�
       "Dune.Part.Two.2024.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-FLUX/Dune.Part.Two.2024.1080p.WEB-DL.mkv",
       "Dune.Part.Two.2024.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-FLUX/sample.mkv",
     ]),
-    { ...opts, scopeName: "movie" },
+    { ...opts, taskRootName: "movie" },
   );
   assert.equal(units.length, 1);
   assert.equal(units[0].kindHint, "movie");
@@ -71,11 +71,11 @@ test("扁平的电影堆：按标题拆成多个单元；字幕按同名前缀�
 test("任务根直接放集（字幕组风格）：范围名当标题，绝对集数", () => {
   const units = buildUnits(
     files(["[Nekomoe kissaten][Sousou no Frieren][01][1080p][JPSC].mp4", "[Nekomoe kissaten][Sousou no Frieren][02][1080p][JPSC].mp4"]),
-    { ...opts, scopeName: "inbox" },
+    { ...opts, taskRootName: "inbox" },
   );
   assert.equal(units.length, 1);
   assert.equal(units[0].rootPath, "");
-  assert.equal(units[0].parsed.title, "Sousou no Frieren", "范围名 inbox 解析不出作品，退回文件标题");
+  assert.equal(units[0].parsed.title, "Sousou no Frieren", "任务根叫 inbox，解析不出作品，退回文件标题");
   assert.equal(units[0].kindHint, "tv");
   assert.equal(units[0].files[0].parsed.absolute, 1);
 });
@@ -95,4 +95,82 @@ test("识别词：直指 tmdbid 挂在单元上，屏蔽词先于解析", () => 
   assert.equal(units.length, 1);
   assert.deepEqual(units[0].direct, { tmdbId: 95396, mediaType: "tv", season: 2 });
   assert.equal(units[0].kindHint, "tv");
+});
+
+test("季目录里标题后面直接跟集数（我和僵尸有个约会01 … 33）：补零和不补零的都当集数，一个单元", () => {
+  const units = buildUnits(
+    files([
+      "我和僵尸有个约会/184445.jpg",
+      "我和僵尸有个约会/season1/我和僵尸有个约会01.mp4",
+      "我和僵尸有个约会/season1/我和僵尸有个约会09.mp4",
+      "我和僵尸有个约会/season1/我和僵尸有个约会10.mp4",
+      "我和僵尸有个约会/season1/我和僵尸有个约会33.mp4",
+      "我和僵尸有个约会/season1/我和僵尸有个约会33.chs.srt",
+      "我和僵尸有个约会/season2/我和僵尸有个约会2.EP01.mp4",
+    ]),
+    opts,
+  );
+  assert.equal(units.length, 1);
+  const u = units[0];
+  assert.equal(u.parsed.title, "我和僵尸有个约会");
+  assert.equal(u.kindHint, "tv");
+  const f = (name: string) => u.files.find((x) => x.name === name)!;
+  const eps = ["我和僵尸有个约会01.mp4", "我和僵尸有个约会09.mp4", "我和僵尸有个约会10.mp4", "我和僵尸有个约会33.mp4"].map((n) => [f(n).seasonFromDir, f(n).parsed.absolute]);
+  assert.deepEqual(eps, [[1, 1], [1, 9], [1, 10], [1, 33]]);
+  assert.equal(f("我和僵尸有个约会10.mp4").parsed.title, "我和僵尸有个约会", "尾巴数字从标题里拿掉");
+  assert.equal(f("我和僵尸有个约会33.chs.srt").parsed.absolute, 33, "字幕也一样认");
+  assert.deepEqual([f("我和僵尸有个约会2.EP01.mp4").seasonFromDir, f("我和僵尸有个约会2.EP01.mp4").parsed.absolute], [2, 1]);
+});
+
+test("平铺目录：补零的集数带出不补零的同名兄弟；剧集库里同名兄弟也算；电影系列（叶问1 … 叶问4）照旧按标题拆", () => {
+  const flat = buildUnits(files(["某剧/某剧01.mp4", "某剧/某剧09.mp4", "某剧/某剧10.mp4", "某剧/某剧12.mp4"]), opts);
+  assert.equal(flat.length, 1);
+  assert.equal(flat[0].kindHint, "tv");
+  assert.deepEqual(flat[0].files.map((x) => x.parsed.absolute), [1, 9, 10, 12]);
+  const tvLib = buildUnits(files(["某剧/某剧1.mp4", "某剧/某剧2.mp4"]), { ...opts, libraryType: "tv" });
+  assert.equal(tvLib.length, 1);
+  assert.deepEqual(tvLib[0].files.map((x) => x.parsed.absolute), [1, 2]);
+  const movies = buildUnits(files(["叶问系列/叶问1.mkv", "叶问系列/叶问2.mkv", "叶问系列/叶问3.mkv", "叶问系列/叶问4.mkv"]), opts);
+  assert.deepEqual(movies.map((x) => x.parsed.title).sort(), ["叶问1", "叶问2", "叶问3", "叶问4"]);
+  assert.ok(movies.every((x) => x.kindHint === "movie"));
+});
+
+test("文件名夹着零宽空格：集数照样认出来，不会当成同一部电影的多个版本；网盘上的名字不动", () => {
+  const zw = (ep: string) => `回家的诱惑/回家的诱惑.2011.S01E\u200B${ep}\u200B.mp4`;
+  const units = buildUnits(files([zw("36"), zw("37")]), opts);
+  assert.equal(units.length, 1);
+  assert.equal(units[0].kindHint, "tv");
+  assert.equal(units[0].multiVersion, undefined);
+  assert.equal(units[0].parsed.year, "2011");
+  assert.deepEqual(units[0].files.map((x) => [x.parsed.season, x.parsed.episode]), [[1, 36], [1, 37]]);
+  assert.equal(units[0].files[0].path, zw("36"));
+});
+
+test("范围直接选在季目录上：单元根还是上一级的剧目录，季号从范围目录名来；任务根本身是季目录也认季号；普通范围不往上走", () => {
+  const season2 = buildUnits(files(["我和僵尸有个约会/season2/我和僵尸有个约会2.EP01.mp4", "我和僵尸有个约会/season2/我和僵尸有个约会2.EP02.mp4"]), { ...opts, scopePath: "我和僵尸有个约会/season2" });
+  assert.equal(season2.length, 1);
+  assert.equal(season2[0].rootPath, "我和僵尸有个约会");
+  assert.equal(season2[0].parsed.title, "我和僵尸有个约会", "标题按剧目录认，不用文件里的「我和僵尸有个约会2」");
+  assert.equal(season2[0].kindHint, "tv");
+  assert.deepEqual(season2[0].files.map((x) => [x.seasonFromDir, x.parsed.absolute]), [[2, 1], [2, 2]]);
+  const glued = buildUnits(files(["我和僵尸有个约会/season1/我和僵尸有个约会10.mp4"]), { ...opts, scopePath: "我和僵尸有个约会/season1" });
+  assert.deepEqual([glued[0].files[0].seasonFromDir, glued[0].files[0].parsed.absolute], [1, 10], "季目录里不补零的尾巴数字照样当集数");
+  const specials = buildUnits(files(["某剧 (2020)/Specials/某剧 SP01.mkv"]), { ...opts, scopePath: "某剧 (2020)/Specials" });
+  assert.deepEqual([specials[0].rootPath, specials[0].files[0].seasonFromDir], ["某剧 (2020)", 0]);
+  const taskRoot = buildUnits(files(["某剧.E01.mkv", "某剧.E02.mkv"]), { ...opts, taskRootName: "Season 2" });
+  assert.deepEqual(taskRoot[0].files.map((x) => x.seasonFromDir), [2, 2], "任务直接建在季目录上");
+  const plain = buildUnits(files(["inbox/某剧.E01.mkv"]), { ...opts, scopePath: "inbox" });
+  assert.equal(plain[0].rootPath, "inbox", "普通的范围目录还是不往上走");
+});
+
+test("艺术图目录（extrafanart / extrathumbs / .actors）归上一级；ownsDir：任务根、范围根名字对不上、拆出来的单元都不算", () => {
+  const art = buildUnits(files(["某剧 (2020)/Season 1/某剧.S01E01.mkv", "某剧 (2020)/extrafanart/fanart1.jpg", "某剧 (2020)/.actors/某演员.jpg"]), opts);
+  assert.equal(art.length, 1);
+  assert.equal(art[0].files.find((x) => x.name === "fanart1.jpg")!.artDir, "extrafanart");
+  assert.equal(art[0].files.find((x) => x.name === "某演员.jpg")!.artDir, ".actors");
+  assert.equal(art[0].ownsDir, true);
+  assert.equal(buildUnits(files(["inbox/BEEF.S01E01.mkv", "inbox/random.jpg"]), { ...opts, scopePath: "inbox" })[0].ownsDir, false, "范围根叫 inbox，不是这部作品的目录");
+  assert.equal(buildUnits(files(["我和僵尸有个约会/我和僵尸有个约会01.mp4", "我和僵尸有个约会/184445.jpg"]), { ...opts, scopePath: "我和僵尸有个约会" })[0].ownsDir, true, "范围根的名字就是这部剧");
+  assert.equal(buildUnits(files(["BEEF.S01E01.mkv"]), opts)[0].ownsDir, false, "任务根");
+  assert.ok(buildUnits(files(["dump/Avatar.2009.1080p.mkv", "dump/Inception.2010.1080p.mkv"]), opts).every((u) => !u.ownsDir), "从大目录里拆出来的");
 });

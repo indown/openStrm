@@ -14,7 +14,6 @@
  * 可以再 apply / revert（做完的项跳过，剩下的接着来）。
  */
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type {
   AppSettings,
@@ -62,7 +61,6 @@ import {
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { getTask, listTasks } from "../../db/repositories/tasks.js";
 import { isAbortError } from "../../lib/errors.js";
-import { readTextCapped } from "../../lib/fs.js";
 import { HttpError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { resolveInDataDir } from "../../paths.js";
@@ -75,8 +73,9 @@ import { extSet } from "../strm/naming.js";
 import { notify } from "../telegram/notify.js";
 import { describeFileFailure } from "../download/failure.js";
 import { classifyFailure, FAILURE_LABEL, messageOf, OrganizeFailure, retryableItem, revertPendingItem, revertWorkItem, StaleError } from "./failures.js";
-import { idTagFromName, identifyUnit, TmdbClient, type IdEvidence, type TmdbApi } from "./identify.js";
+import { idTagFromName, identifyUnit, TmdbClient, type IdEvidence, type KnownId, type TmdbApi } from "./identify.js";
 import { mirrorRelocate, mirrorRmdir } from "./mirror.js";
+import { nfoEvidence } from "./nfo.js";
 import { finalizeItems, planUnit, type PlannedItem, type UnitPlan } from "./plan.js";
 import { parseRules } from "./rules.js";
 import { resolveOrganizeSettings, type ResolvedOrganizeSettings } from "./settings.js";
@@ -327,27 +326,8 @@ async function walkScope(provider: DriveProvider, task: TaskDefinition, run: Org
   return { entries, files, roots };
 }
 
-/** 本地 nfo 里的 tmdbid（随片下载的 nfo 才有；网盘上的不读） */
-async function nfoEvidence(task: TaskDefinition, unit: Unit): Promise<IdEvidence["known"]> {
-  const saveDir = resolveInDataDir(task.targetPath);
-  if (!saveDir) return null;
-  const candidates: Array<{ rel: string; kind: OrganizeMediaType }> = [];
-  for (const f of unit.files) {
-    if (f.kind !== "nfo") continue;
-    const kind: OrganizeMediaType = /^tvshow\.nfo$/i.test(f.name) ? "tv" : /^movie\.nfo$/i.test(f.name) ? "movie" : unit.kindHint === "movie" ? "movie" : "tv";
-    candidates.push({ rel: f.path, kind });
-  }
-  for (const c of candidates.slice(0, 3)) {
-    const text = await readTextCapped(path.join(saveDir, ...c.rel.split("/")), 256 * 1024).catch(() => null);
-    if (!text) continue;
-    const m = /<tmdbid>\s*(\d+)\s*<\/tmdbid>/i.exec(text) ?? /<uniqueid[^>]*type="tmdb"[^>]*>\s*(\d+)\s*<\/uniqueid>/i.exec(text);
-    if (m) return { tmdbId: Number(m[1]), mediaType: c.kind, source: `本地 ${baseOf(c.rel)} 里的 tmdbid` };
-  }
-  return null;
-}
-
 /** 影库条目：转存自影库的目录名和条目的 rawName 一致 */
-function libraryEvidence(unit: Unit, entries: ReturnType<typeof listLibraryEntries>): IdEvidence["known"] {
+function libraryEvidence(unit: Unit, entries: ReturnType<typeof listLibraryEntries>): KnownId | null {
   if (!unit.rootPath) return null;
   const name = baseOf(unit.rootPath);
   const hit = entries.find((e) => e.tmdbId && (e.mediaType === "movie" || e.mediaType === "tv") && (e.rawName === name || e.title === name));
@@ -423,7 +403,7 @@ function toUnitRow(runId: string, unit: Unit, match: OrganizeMatch | null, plan:
     fileCount: unit.files.length,
     videoCount: unit.files.filter((f) => f.kind === "video").length,
     referencedBy,
-    notes: plan?.notes ?? unit.notes,
+    notes: plan?.notes ?? [],
   };
 }
 
@@ -466,8 +446,7 @@ async function preview(job: Job, runId: string): Promise<void> {
   signal.throwIfAborted();
 
   const rules = parseRules(org.rules).rules;
-  const scopeName = run.scopePath ? baseOf(run.scopePath) : baseOf(normalizePath(task.originPath));
-  const units = buildUnits(walked.entries, { scopePath: run.scopePath, scopeName, videoExts: videoExtsOf(settings), rules, libraryType: task.organize?.libraryType });
+  const units = buildUnits(walked.entries, { scopePath: run.scopePath, taskRootName: baseOf(normalizePath(task.originPath)), videoExts: videoExtsOf(settings), rules, libraryType: task.organize?.libraryType });
   jobLog(job, `分成 ${units.length} 个作品单元`);
 
   const state: PlanState = { task, settings, org, entries: walked.entries, roots: walked.roots, units: new Map(units.map((u) => [u.key, u])), episodeTitles: new Map() };
@@ -482,21 +461,27 @@ async function preview(job: Job, runId: string): Promise<void> {
     const absRoot = absOf(task, unit.rootPath);
     const evidence: IdEvidence = {
       memory: recallMatch(provider.account.name, absRoot),
-      known: (await nfoEvidence(task, unit)) ?? idTagFromName(unit.rawName, unit.kindHint) ?? libraryEvidence(unit, library),
+      // 目录名里的 [tmdbid=…] 多半是整理自己写的，排最前；本地 nfo 可能是上传者的刮削器写的，识别时要核对标题；影库条目最后
+      known: [idTagFromName(unit.rawName, unit.kindHint), await nfoEvidence(resolveInDataDir(task.targetPath), unit), libraryEvidence(unit, library)],
     };
     let match: OrganizeMatch | null = null;
     let episodeTitles = new Map<string, string>();
+    let identifyNotes: string[] = [];
     try {
       const r = await identifyUnit({ unit, evidence, libraryType: task.organize?.libraryType, episodeTitles: org.episodeTitle }, tmdb);
       match = r.match;
       episodeTitles = r.episodeTitles;
+      identifyNotes = r.notes;
+      for (const n of r.notes) jobLog(job, `「${unit.rawName}」${n}`);
     } catch (err) {
       if (isAbortError(err) || signal.aborted) throw err;
       jobLog(job, `识别「${unit.rawName}」失败：${messageOf(err)}`);
     }
     state.episodeTitles.set(unit.key, episodeTitles);
     const memory = evidence.memory;
-    const row = toUnitRow(runId, unit, match, null, referencesTo(refPaths, unit.rootPath));
+    // 单元根越到了范围外（范围直接选在季目录上，单元根是上一级的剧目录）：只有范围里的会挪走，只数范围里的引用
+    const rootInScope = !run.scopePath || unit.rootPath === run.scopePath || unit.rootPath.startsWith(`${run.scopePath}/`);
+    const row = toUnitRow(runId, unit, match, null, referencesTo(refPaths, rootInScope ? unit.rootPath : run.scopePath));
     if (memory) {
       row.seasonOverride = memory.season;
       row.episodeOffset = memory.episodeOffset;
@@ -506,7 +491,7 @@ async function preview(job: Job, runId: string): Promise<void> {
       { settings: org, libraryType: task.organize?.libraryType },
     );
     row.dstRoot = plan.dstRoot;
-    row.notes = plan.notes;
+    row.notes = [...identifyNotes, ...plan.notes];
     rows.push(row);
     plans.push(plan);
     jobLog(job, match ? `「${unit.rawName}」→ ${match.title} (${match.year}) [${match.confidence}] ${match.reason}` : `「${unit.rawName}」没有识别出来`);
@@ -597,25 +582,25 @@ export async function patchUnit(runId: string, key: string, patch: OrganizeUnitP
     log.warn({ err, runId, key }, "列目标目录失败，冲突检测按已知的条目算");
   }
 
-  // 冲突检测要看全部单元：把其它单元现有的项（去掉目录项）和这个单元的新项一起重算
-  const others = listItems(runId).filter((it) => it.unitKey !== key && it.kind !== "dir");
-  const otherPlans: UnitPlan[] = [
-    {
-      unitKey: "",
-      dstRoot: "",
-      items: others.map((it) => ({
-        unitKey: it.unitKey,
-        kind: it.kind,
-        action: it.action === "conflict" ? (dirOf(it.srcPath) === dirOf(it.dstPath) ? "rename" : "move") : it.action,
-        srcPath: relOf(task, it.srcPath),
-        dstPath: relOf(task, it.dstPath),
-        nodeId: it.nodeId,
-        reason: it.action === "conflict" ? "" : it.reason,
-      })),
-      notes: [],
-    },
-  ];
-  const all = finalizeItems([...otherPlans, plan], { entries: state.entries, scopePath: run.scopePath, scopeRemovable: scopeRemovable(run), items: [], cleanupEmptyDirs: state.org.cleanupEmptyDirs });
+  // 冲突检测要看全部单元：别的单元按内存里的单元结构和库里的匹配 / 季 / 偏移 / 勾选重新规划一遍（顺序和预览一样）。
+  // 附属文件跟着哪个视频、撞名算不算冲突这些规划期标记不落库，从库里的项反推会丢，谁先占到目标也会跟着变
+  const rows = new Map(listUnits(runId).map((r) => [r.key, r]));
+  const plans: UnitPlan[] = [];
+  for (const u of state.units.values()) {
+    if (u.key === key) {
+      plans.push(plan);
+      continue;
+    }
+    const r = rows.get(u.key);
+    if (!r) continue;
+    plans.push(
+      planUnit(
+        { unit: u, match: r.match, seasonOverride: r.seasonOverride, episodeOffset: r.episodeOffset, episodeTitles: state.episodeTitles.get(u.key), selected: r.selected },
+        { settings: state.org, libraryType: task.organize?.libraryType },
+      ),
+    );
+  }
+  const all = finalizeItems(plans, { entries: state.entries, scopePath: run.scopePath, scopeRemovable: scopeRemovable(run), items: [], cleanupEmptyDirs: state.org.cleanupEmptyDirs });
   replaceItems(runId, toItemRows(task, all));
   const units = listUnits(runId);
   updateRun(runId, { stats: computeStats(units, listItems(runId), "apply") });
@@ -1104,17 +1089,44 @@ async function execute(job: Job, runId: string, only: Set<string> | null): Promi
   }
 }
 
+interface DirMapping {
+  from: string;
+  to: string;
+  /** 单元根 → 作品目录（识别记忆跟着挪的只有这种） */
+  root: boolean;
+}
+
+/**
+ * 整理把目录腾空删掉后，追更 / 云下载回执的落点要跟过去的映射（撤销时反过来用）：
+ *   - 腾空删掉的单元根（剧目录 / 发布目录）→ 作品目录；
+ *   - 腾空删掉的其它目录，里面直接放着的项都挪进了同一个目录（`某剧/season2` → `作品目录/Season 02`）→ 那个目录。
+ *     范围直接选在季目录上时单元根是上一级、不会被删，指着这个季目录的追更靠这一条跟过去。
+ * 长的 from 排在前面：改写取第一个命中的，`某剧/season2` 要先于 `某剧`
+ */
+function dirMappings(task: TaskDefinition, units: OrganizeUnit[], items: OrganizeItem[], removed: Set<string>): DirMapping[] {
+  const out: DirMapping[] = [];
+  for (const u of units) {
+    if (u.match && u.dstRoot && u.rootPath && removed.has(u.rootPath) && u.rootPath !== u.dstRoot) out.push({ from: u.rootPath, to: u.dstRoot, root: true });
+  }
+  const roots = new Set(out.map((m) => m.from));
+  const targets = new Map<string, Set<string>>();
+  for (const it of items) {
+    if (it.action !== "move") continue;
+    const from = dirOf(relOf(task, it.srcPath));
+    if (!removed.has(from) || roots.has(from)) continue;
+    const to = targets.get(from) ?? new Set<string>();
+    to.add(dirOf(relOf(task, it.dstPath)));
+    targets.set(from, to);
+  }
+  for (const [from, to] of targets) if (to.size === 1) out.push({ from, to: [...to][0], root: false });
+  return out.sort((a, b) => b.from.length - a.from.length);
+}
+
 /** 收尾：追更 / 云下载回执的目录改写、识别记忆（先把旧记忆挪到新路径，再写这次确认的，新的才不会被旧的盖掉） */
 function afterApply(task: TaskDefinition, provider: DriveProvider, units: OrganizeUnit[], items: OrganizeItem[]): void {
   const removedDirs = new Set(items.filter((it) => it.action === "rmdir" && it.status === "done").map((it) => relOf(task, it.srcPath)));
-  const mappings: Array<{ from: string; to: string }> = [];
-  for (const u of units) {
-    if (!u.match || !u.dstRoot || !u.rootPath) continue;
-    if (removedDirs.has(u.rootPath) && u.rootPath !== u.dstRoot) {
-      mappings.push({ from: u.rootPath, to: u.dstRoot });
-      repathMatches(provider.account.name, absOf(task, u.rootPath), absOf(task, u.dstRoot));
-    }
-  }
+  const mappings = dirMappings(task, units, items, removedDirs);
+  for (const m of mappings) if (m.root) repathMatches(provider.account.name, absOf(task, m.from), absOf(task, m.to));
   for (const u of units) {
     if (!u.match || !u.dstRoot || !u.remember) continue;
     rememberMatch({
@@ -1520,11 +1532,16 @@ async function revert(job: Job, runId: string): Promise<void> {
 /** 撤销的收尾：腾空过的源目录退回来了，追更 / 云下载回执的目录和识别记忆也改回去 */
 function afterRevert(task: TaskDefinition, provider: DriveProvider, units: OrganizeUnit[], items: OrganizeItem[]): void {
   const removedDirs = new Set(items.filter((it) => it.action === "rmdir").map((it) => relOf(task, it.srcPath)));
-  const back = units.filter((u) => u.dstRoot && u.rootPath && removedDirs.has(u.rootPath) && u.rootPath !== u.dstRoot).map((u) => ({ from: u.dstRoot, to: u.rootPath }));
+  // 非单元根的只认这次新建出来的目标目录：原来就有的目录，别的追更本来就可能指着它，不能拽回来
+  const created = new Set(items.filter((it) => it.action === "mkdir").map((it) => relOf(task, it.dstPath)));
+  const back = dirMappings(task, units, items, removedDirs)
+    .filter((m) => m.root || created.has(m.to))
+    .map((m) => ({ from: m.to, to: m.from, root: m.root }))
+    .sort((a, b) => b.from.length - a.from.length);
   if (back.length === 0) return;
   rewriteFollowSubPaths(task.id, back);
   rewriteOfflineSubPaths(task.id, back);
-  for (const m of back) repathMatches(provider.account.name, absOf(task, m.from), absOf(task, m.to));
+  for (const m of back) if (m.root) repathMatches(provider.account.name, absOf(task, m.from), absOf(task, m.to));
 }
 
 export async function revertRun(runId: string): Promise<OrganizeRun> {

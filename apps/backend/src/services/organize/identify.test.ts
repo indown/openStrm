@@ -5,12 +5,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { TmdbDetails, TmdbEpisode, TmdbSearchResult } from "../tmdb.js";
-import { identifyUnit, normalizeTitle, type TmdbApi } from "./identify.js";
+import { identifyUnit, type TmdbApi } from "./identify.js";
+import { normalizeTitle } from "./parse-name.js";
 import { buildUnits, type ScopeEntry } from "./units.js";
 
 const videoExts = new Set([".mkv"]);
-const unitOf = (paths: string[], scopeName = "root") =>
-  buildUnits(paths.map((p, i): ScopeEntry => ({ path: p, isDir: false, id: `n${i}` })), { scopePath: "", scopeName, videoExts, rules: [] })[0];
+const unitOf = (paths: string[], taskRootName = "root") =>
+  buildUnits(paths.map((p, i): ScopeEntry => ({ path: p, isDir: false, id: `n${i}` })), { scopePath: "", taskRootName, videoExts, rules: [] })[0];
 
 const hit = (id: number, mediaType: "movie" | "tv", title: string, year: string, originalTitle?: string): TmdbSearchResult => ({ id, mediaType, title, year, originalTitle, posterUrl: "", overview: "" });
 
@@ -111,4 +112,35 @@ test("中英双名依次搜；别名对上也算；开了集标题就拉季", as
 test("搜不到：none", async () => {
   const r = await identifyUnit({ unit: unitOf(["Nothing.Here.S01E01.mkv"]), evidence: {}, episodeTitles: false }, new StubTmdb({}));
   assert.equal(r.match, null);
+});
+
+test("nfo 证据要和 TMDB 详情的标题对得上：对不上不采用、留提示，接着试下一条证据或去搜", async () => {
+  const tmdb = new StubTmdb(
+    { beef: [hit(153312, "tv", "BEEF", "2023")] },
+    { "tv:40477": { title: "某部别的剧", originalTitle: "Something Else" }, "tv:153312": { title: "怒呛人生", originalTitle: "BEEF", year: "2023" }, "tv:9": { title: "影库" } },
+  );
+  const unit = unitOf(["BEEF.S01E01.mkv"]);
+  const wrong = { tmdbId: 40477, mediaType: "tv" as const, source: "本地 tvshow.nfo 里的 tmdbid", titles: ["怒呛人生", "BEEF"] };
+  const searched = await identifyUnit({ unit, evidence: { known: [wrong] }, episodeTitles: false }, tmdb);
+  assert.equal(searched.match?.tmdbId, 153312, "弃用之后按搜索认");
+  assert.equal(searched.match?.reason, "标题对上，文件名里没有年份");
+  assert.deepEqual(searched.notes, ["本地 tvshow.nfo 里的 tmdbid（40477）在 TMDB 上是「某部别的剧」，和 nfo 里写的标题对不上，没采用"]);
+  const next = await identifyUnit({ unit, evidence: { known: [null, wrong, { tmdbId: 9, mediaType: "tv", source: "影库条目" }] }, episodeTitles: false }, tmdb);
+  assert.equal(next.match?.title, "影库", "第一条弃用后用下一条");
+  const right = await identifyUnit({ unit, evidence: { known: { ...wrong, tmdbId: 153312 } }, episodeTitles: false }, tmdb);
+  assert.deepEqual([right.match?.tmdbId, right.match?.confidence, right.match?.reason], [153312, "high", "本地 tvshow.nfo 里的 tmdbid"]);
+  assert.deepEqual(right.notes, []);
+  const missing = await identifyUnit({ unit, evidence: { known: [{ tmdbId: 123, mediaType: "tv", source: "目录名里的 tmdbid 标签" }] }, episodeTitles: false }, tmdb);
+  assert.equal(missing.match?.tmdbId, 153312, "TMDB 上没有这个 id：去搜");
+  assert.deepEqual(missing.notes, ["目录名里的 tmdbid 标签（123）在 TMDB 上找不到，没采用"]);
+});
+
+test("分集 nfo 里的剧 id 没写剧名：拿单元的标题核对", async () => {
+  const tmdb = new StubTmdb({}, { "tv:42009": { title: "黑镜", originalTitle: "Black Mirror" } });
+  const ep = { tmdbId: 42009, mediaType: "tv" as const, source: "本地 x.nfo 里的 tmdbid", titles: [], strict: true };
+  const ok = await identifyUnit({ unit: unitOf(["黑镜 (2011)/Season 7/黑镜 - S07E01.mkv"]), evidence: { known: ep }, episodeTitles: false }, tmdb);
+  assert.equal(ok.match?.tmdbId, 42009);
+  const bad = await identifyUnit({ unit: unitOf(["某剧/Season 1/某剧 - S01E01.mkv"]), evidence: { known: ep }, episodeTitles: false }, tmdb);
+  assert.equal(bad.match, null, "对不上：不采用，也搜不到");
+  assert.deepEqual(bad.notes, ["本地 x.nfo 里的 tmdbid（42009）在 TMDB 上是「黑镜」，和目录名对不上，没采用"]);
 });

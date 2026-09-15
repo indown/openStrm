@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hasReleaseNoise, isExtrasDirName, parseCjkNumber, parseMediaName, seasonDirNumber, stripSubtitleSuffix, titleCandidates, type ParsedName, looksLikeReleaseDir } from "./parse-name.js";
+import { hasReleaseNoise, isExtrasDirName, parseCjkNumber, parseMediaName, seasonDirNumber, stripSubtitleSuffix, titleCandidates, trailingNumber, type ParsedName, looksLikeReleaseDir } from "./parse-name.js";
 
 type Expect = Partial<Omit<ParsedName, "tags" | "titles">> & { tags?: Partial<ParsedName["tags"]>; titles?: string[] };
 
@@ -74,6 +74,18 @@ const samples: Array<[string, Expect]> = [
   ["Some Show 2nd Season - 05", { title: "Some Show 2nd Season", absolute: 5 }],
   ["Movie Title 导演剪辑版 1080p", { title: "Movie Title", edition: "导演剪辑版" }],
   ["黑客帝国.The.Matrix.1999.Remastered.1080p", { title: "黑客帝国", year: "1999", edition: "Remastered" }],
+  // 标题后面直接跟集数：补零的是集数；不补零的解析时不定（《流浪地球2》），交给单元按上下文判断
+  ["我和僵尸有个约会01", { title: "我和僵尸有个约会", absolute: 1 }],
+  ["我和僵尸有个约会01.1080p", { title: "我和僵尸有个约会", absolute: 1, tags: { resolution: "1080p" } }],
+  ["某剧001", { title: "某剧", absolute: 1 }],
+  ["某剧01-02", { title: "某剧", absolute: 1, absoluteEnd: 2 }],
+  ["Some Show 01", { title: "Some Show", absolute: 1 }],
+  ["我和僵尸有个约会10", { title: "我和僵尸有个约会10", absolute: undefined }],
+  ["我和僵尸有个约会2.EP01", { title: "我和僵尸有个约会2", absolute: 1 }],
+  ["流浪地球2", { title: "流浪地球2", absolute: undefined }],
+  ["Class.of.09.2023", { title: "Class of 09", year: "2023", absolute: undefined }],
+  ["名侦探柯南剧场版01", { title: "名侦探柯南剧场版01", absolute: undefined }],
+  ["名侦探柯南 剧场版 01", { title: "名侦探柯南", edition: "剧场版", absolute: undefined }],
 ];
 
 for (const [name, expect] of samples) {
@@ -155,10 +167,31 @@ test("有没有发布噪音：规范过的名字没有，原始命名有，集�
 });
 
 test("looksLikeReleaseDir：发布目录 vs 收件箱式目录", () => {
-  for (const n of ["Captain.America.Brave.New.World.2025.2160p.WEB-DL.DD5.1.H264-COLLECTiVE", "Lord.of.the.Flies.S01.2160p.WEB-DL.H.265-HiveWeb", "亿万地堡（2025）", "钢铁之心(2025)4KHDR10", "[Nekomoe kissaten] Frieren S01", "Season 01"]) {
+  for (const n of ["Captain.America.Brave.New.World.2025.2160p.WEB-DL.DD5.1.H264-COLLECTiVE", "Lord.of.the.Flies.S01.2160p.WEB-DL.H.265-HiveWeb", "亿万地堡（2025）", "钢铁之心(2025)4KHDR10", "[Nekomoe kissaten] Frieren S01", "Season 01", "season2", "Specials", "番外"]) {
     assert.equal(looksLikeReleaseDir(n), true, n);
   }
   for (const n of ["inbox", "downloads", "电影", "movie", "孤注一掷", "新下载"]) {
     assert.equal(looksLikeReleaseDir(n), false, n);
   }
+});
+
+test("名字里夹着看不见的字符（零宽空格 / BOM / 软连字符）：先去掉再解析", () => {
+  const p = parseMediaName("回家的诱惑.2011.S01E\u200B36\u200B");
+  assert.deepEqual([p.title, p.year, p.season, p.episode], ["回家的诱惑", "2011", 1, 36]);
+  assert.equal(parseMediaName("\uFEFF怒呛人生S01E\u200D02").episode, 2);
+  assert.equal(parseMediaName("Dune\u00AD.Part.Two.2024.2160p").title, "Dune Part Two");
+  assert.equal(seasonDirNumber("Season\u200B 02"), 2);
+  assert.equal(isExtrasDirName("花\u200B絮"), true);
+  assert.equal(hasReleaseNoise("怒呛人生 - S01E\u200B01"), false, "规范形状里夹了零宽空格还是规范形状");
+});
+
+test("标题末尾的数字：拆成标题 + 数字，是不是集数交给调用方", () => {
+  assert.deepEqual(trailingNumber(parseMediaName("我和僵尸有个约会10")), { number: 10, titles: ["我和僵尸有个约会"] });
+  assert.deepEqual(trailingNumber(parseMediaName("Some Show 10")), { number: 10, titles: ["Some Show"] });
+  assert.deepEqual(trailingNumber(parseMediaName("权力的游戏 Game of Thrones 10")), { number: 10, titles: ["权力的游戏", "Game of Thrones", "权力的游戏 Game of Thrones"] });
+  assert.equal(trailingNumber(parseMediaName("请回答1988")), null, "四位数是标题的一部分");
+  assert.equal(trailingNumber(parseMediaName("Blink182")), null, "英文字母后面直接粘数字的不算");
+  assert.equal(trailingNumber(parseMediaName("名侦探柯南剧场版10")), null, "剧场版 N 是第 N 部电影");
+  assert.equal(trailingNumber(parseMediaName("Dune Part 2")), null);
+  assert.equal(trailingNumber(parseMediaName("我和僵尸有个约会01")), null, "已经认出集数的不再拆");
 });

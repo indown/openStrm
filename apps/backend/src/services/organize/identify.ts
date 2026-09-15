@@ -1,6 +1,7 @@
 /**
  * 识别：一个作品单元 → TMDB 上的哪一部。证据优先级从高到低：
- *   识别词直指 → 用户记忆（organize_matches）→ 影库条目 / nfo 里的 tmdbid → 目录名 / 文件名解析后搜索打分。
+ *   识别词直指 → 用户记忆（organize_matches）→ 目录名里的 id 标签 → 本地 nfo（和 nfo 自己写的标题核对）→ 影库条目
+ *   → 目录名 / 文件名解析后搜索打分。
  *
  * 打分：标题（归一化后对 title / original_title / 别名）相等 +3；年份相等 +2、差一年 +1；类型和解析一致 +1；
  * popularity 只做同分排序。置信度：来自 id 证据或「标题相等且年份相等」是 high；标题相等但年份缺 / 差一年、
@@ -10,7 +11,9 @@
  */
 import type { OrganizeCandidate, OrganizeConfidence, OrganizeMatch, OrganizeMatchMemory, OrganizeMediaType } from "@openstrm/shared";
 import { readTmdbCache, writeTmdbCache } from "../../db/repositories/organize.js";
+import { stripInvisible } from "../../lib/text.js";
 import { getDetails, getSeasonEpisodes, searchMovie, searchMulti, searchTv, throttleTmdb, type TmdbDetails, type TmdbEpisode, type TmdbSearchResult } from "../tmdb.js";
+import { normalizeTitle } from "./parse-name.js";
 import type { DirectSpec } from "./rules.js";
 import type { Unit } from "./units.js";
 
@@ -72,15 +75,6 @@ export class TmdbClient implements TmdbApi {
 
 /* ------------------------------- 打分 ------------------------------- */
 
-/** 标题归一化：小写、去标点和空白、全角转半角 */
-export function normalizeTitle(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[！-～]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
-    .replace(/[\s\-–—_.,:：;；!！?？'’"“”()（）[\]【】《》「」『』·・&+]/g, "")
-    .replace(/^the/, "");
-}
-
 interface Scored {
   item: TmdbSearchResult;
   score: number;
@@ -126,17 +120,28 @@ function toCandidate(s: Scored): OrganizeCandidate {
 const RE_ID_TAG = /[[{]\s*(tmdbid|tmdb)\s*[=-]\s*(\d+)\s*[\]}]/i;
 
 /** 目录名里已经写了 id 标签（Emby `[tmdbid=1]`、Jellyfin `[tmdbid-1]`、Plex `{tmdb-1}`）：最硬的证据 */
-export function idTagFromName(name: string, kindHint: Unit["kindHint"]): IdEvidence["known"] {
-  const m = RE_ID_TAG.exec(name);
+export function idTagFromName(name: string, kindHint: Unit["kindHint"]): KnownId | null {
+  const m = RE_ID_TAG.exec(stripInvisible(name));
   if (!m) return null;
   return { tmdbId: Number(m[2]), mediaType: kindHint === "movie" ? "movie" : "tv", source: "目录名里的 tmdbid 标签" };
+}
+
+/** 一条 tmdbid 证据：目录名 id 标签 / 本地 nfo / 影库条目 / 手动指定 */
+export interface KnownId {
+  tmdbId: number;
+  mediaType: OrganizeMediaType;
+  source: string;
+  /** 证据自己写的作品标题（nfo 的 title / originaltitle / showtitle）：TMDB 详情的译名 / 原名 / 别名都对不上就不用 */
+  titles?: string[];
+  /** 没写标题时拿单元的标题核对（分集 nfo 里的 <tmdbid> 不一定是剧的） */
+  strict?: boolean;
 }
 
 export interface IdEvidence {
   direct?: DirectSpec;
   memory?: OrganizeMatchMemory | null;
-  /** 影库条目 / 本地 nfo 里的 tmdbid */
-  known?: { tmdbId: number; mediaType: OrganizeMediaType; source: string } | null;
+  /** 目录名 id 标签 / 本地 nfo / 影库条目里的 tmdbid：按顺序试，第一条核对得上的用 */
+  known?: KnownId | Array<KnownId | null> | null;
 }
 
 export interface IdentifyOptions {
@@ -151,6 +156,8 @@ export interface IdentifyResult {
   match: OrganizeMatch | null;
   /** `season:episode` → 集标题 */
   episodeTitles: Map<string, string>;
+  /** 识别过程里要告诉用户的（nfo 的 id 对不上没采用之类） */
+  notes: string[];
 }
 
 async function fromDetails(tmdb: TmdbApi, kind: OrganizeMediaType, id: number, confidence: OrganizeConfidence, reason: string, candidates: OrganizeCandidate[] = []): Promise<OrganizeMatch | null> {
@@ -198,6 +205,7 @@ async function searchAll(tmdb: TmdbApi, titles: string[], year: string | undefin
 export async function identifyUnit(opts: IdentifyOptions, tmdb: TmdbApi): Promise<IdentifyResult> {
   const { unit, evidence } = opts;
   const episodeTitles = new Map<string, string>();
+  const notes: string[] = [];
   let match: OrganizeMatch | null = null;
 
   const direct = evidence.direct ?? unit.direct;
@@ -208,13 +216,30 @@ export async function identifyUnit(opts: IdentifyOptions, tmdb: TmdbApi): Promis
   if (!match && evidence.memory) {
     match = await fromDetails(tmdb, evidence.memory.mediaType, evidence.memory.tmdbId, "high", "上次确认过的识别结果");
   }
-  if (!match && evidence.known) {
-    match = await fromDetails(tmdb, evidence.known.mediaType, evidence.known.tmdbId, "high", evidence.known.source);
+  for (const k of Array.isArray(evidence.known) ? evidence.known : [evidence.known]) {
+    if (match) break;
+    if (!k) continue;
+    // 本地 nfo 多半是上传者的刮削器写的：写了标题（没写就用单元的标题）就和 TMDB 详情核对，对不上说明 id 串了（演员 / 分集的）或者刮削器认错了
+    const claims = k.titles?.length ? k.titles : k.strict ? unit.parsed.titles : [];
+    if (claims.length > 0) {
+      const d = await tmdb.details(k.mediaType, k.tmdbId);
+      if (!d) {
+        notes.push(`${k.source}（${k.tmdbId}）在 TMDB 上找不到，没采用`);
+        continue;
+      }
+      const names = new Set([d.title, d.originalTitle, d.enTitle ?? "", ...d.aliases].map(normalizeTitle).filter(Boolean));
+      if (!claims.some((t) => names.has(normalizeTitle(t)))) {
+        notes.push(`${k.source}（${k.tmdbId}）在 TMDB 上是「${d.title || d.originalTitle}」，和${k.titles?.length ? " nfo 里写的标题" : "目录名"}对不上，没采用`);
+        continue;
+      }
+    }
+    match = await fromDetails(tmdb, k.mediaType, k.tmdbId, "high", k.source);
+    if (!match) notes.push(`${k.source}（${k.tmdbId}）在 TMDB 上找不到，没采用`);
   }
 
   if (!match) {
     const titles = unit.parsed.titles.length > 0 ? unit.parsed.titles : unit.parsed.title ? [unit.parsed.title] : [];
-    if (titles.length === 0) return { match: null, episodeTitles };
+    if (titles.length === 0) return { match: null, episodeTitles, notes };
     const year = unit.parsed.year;
     const kindHint: Unit["kindHint"] = unit.kindHint !== "unknown" ? unit.kindHint : opts.libraryType && opts.libraryType !== "mixed" ? opts.libraryType : "unknown";
     const searchKind: OrganizeMediaType | "multi" = kindHint === "unknown" ? "multi" : kindHint;
@@ -226,7 +251,7 @@ export async function identifyUnit(opts: IdentifyOptions, tmdb: TmdbApi): Promis
       const tokens = titles[0].split(/\s+/);
       if (tokens.length > 2) results = await searchAll(tmdb, [tokens.slice(0, -1).join(" ")], year, "multi");
     }
-    if (results.length === 0) return { match: null, episodeTitles };
+    if (results.length === 0) return { match: null, episodeTitles, notes };
 
     const scored = results.map((r) => scoreCandidate(r, titles, year, kindHint)).sort((a, b) => b.score - a.score);
     const kindOf = (s: Scored): OrganizeMediaType => (s.item.mediaType === "movie" ? "movie" : "tv");
@@ -276,5 +301,5 @@ export async function identifyUnit(opts: IdentifyOptions, tmdb: TmdbApi): Promis
       }
     }
   }
-  return { match, episodeTitles };
+  return { match, episodeTitles, notes };
 }

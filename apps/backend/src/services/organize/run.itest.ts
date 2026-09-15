@@ -39,11 +39,15 @@ class StubTmdb implements TmdbApi {
     const q = query.toLowerCase();
     if (q === "beef" || q === "怒呛人生") return [hit(153312, "tv", "BEEF", "2023")];
     if (q === "dune part two" || q === "沙丘：第二部") return [hit(693134, "movie", "沙丘：第二部", "2024")];
+    if (q === "回家的诱惑") return [hit(84656, "tv", "回家的诱惑", "2011")];
+    if (q === "我和僵尸有个约会") return [hit(19389, "tv", "我和僵尸有个约会", "1998")];
     return [];
   }
   async details(kind: "movie" | "tv", id: number): Promise<TmdbDetails | null> {
     const base = { id, mediaType: kind, enTitle: "", posterUrl: "", imdbId: "", genreIds: [], countries: [], originalLanguage: "", aliases: [] };
     if (id === 153312) return { ...base, title: "怒呛人生", originalTitle: "BEEF", year: "2023", seasons: [{ season: 1, episodeCount: 10 }] };
+    if (id === 84656) return { ...base, title: "回家的诱惑", originalTitle: "回家的诱惑", year: "2011", seasons: [{ season: 1, episodeCount: 80 }] };
+    if (id === 19389) return { ...base, title: "我和僵尸有个约会", originalTitle: "我和僵尸有个约会", year: "1998", seasons: [{ season: 1, episodeCount: 33 }, { season: 2, episodeCount: 43 }] };
     if (id === 693134) return { ...base, title: "沙丘：第二部", originalTitle: "Dune: Part Two", year: "2024" };
     if (id === 999) return { ...base, title: "另一部剧", originalTitle: "Other", year: "2020", seasons: [{ season: 1, episodeCount: 5 }, { season: 2, episodeCount: 5 }] };
     return null;
@@ -1212,4 +1216,152 @@ test("撤销时网盘说找不到（按文案归 stale）：项保持 done 记 s
   assert.equal(r.skipped, 1);
   assert.equal(getRunDetail(run.id).run.stats.notReverted, 0);
   assert.equal(getRunDetail(run.id).groups.length, 0);
+});
+
+test("文件名夹着零宽空格、集数直接跟在标题后面：预览认出集数，执行后网盘和本地 strm 都换成规范名字", async () => {
+  drive = new FakeDrive("quark", account);
+  fs.rmSync(LOCAL, { recursive: true, force: true });
+  const zw = (ep: string) => `回家的诱惑.2011.S01E\u200B${ep}\u200B`;
+  drive.tree.addFile(`/tv/回家的诱惑/${zw("36")}.mkv`);
+  drive.tree.addFile(`/tv/回家的诱惑/${zw("37")}.mkv`);
+  drive.tree.addFile("/tv/我和僵尸有个约会/season1/我和僵尸有个约会01.mkv");
+  drive.tree.addFile("/tv/我和僵尸有个约会/season1/我和僵尸有个约会10.mkv");
+  writeLocalStrm(`回家的诱惑/${zw("36")}.strm`, `tv/回家的诱惑/${zw("36")}.mkv`);
+  writeLocalStrm("我和僵尸有个约会/season1/我和僵尸有个约会10.strm", "tv/我和僵尸有个约会/season1/我和僵尸有个约会10.mkv");
+  const run = await createRun({ taskId: "t1", subPath: "" });
+  await untilStatus(run.id, ["ready"]);
+  const detail = getRunDetail(run.id);
+  assert.deepEqual(detail.units.map((u) => u.dstRoot).sort(), ["回家的诱惑 (2011) [tmdbid=84656]", "我和僵尸有个约会 (1998) [tmdbid=19389]"]);
+  assert.deepEqual(detail.units.flatMap((u) => u.notes), [], "不再说「按同一部电影的多个版本处理」");
+  const home = "/tv/回家的诱惑 (2011) [tmdbid=84656]/Season 01";
+  const zombie = "/tv/我和僵尸有个约会 (1998) [tmdbid=19389]/Season 01";
+  const srcOf = (dst: string) => detail.items.find((i) => i.dstPath === dst)?.srcPath;
+  assert.equal(srcOf(`${home}/回家的诱惑 - S01E36.mkv`), `/tv/回家的诱惑/${zw("36")}.mkv`);
+  assert.equal(srcOf(`${home}/回家的诱惑 - S01E37.mkv`), `/tv/回家的诱惑/${zw("37")}.mkv`);
+  assert.equal(srcOf(`${zombie}/我和僵尸有个约会 - S01E01.mkv`), "/tv/我和僵尸有个约会/season1/我和僵尸有个约会01.mkv");
+  assert.equal(srcOf(`${zombie}/我和僵尸有个约会 - S01E10.mkv`), "/tv/我和僵尸有个约会/season1/我和僵尸有个约会10.mkv");
+  assert.equal(detail.items.filter((i) => i.action === "skip").length, 0, "没有「看不出是第几集」");
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.ok(drive.tree.get(`${home}/回家的诱惑 - S01E36.mkv`));
+  assert.equal(drive.tree.get(`/tv/回家的诱惑/${zw("36")}.mkv`), undefined);
+  assert.equal(localRead("回家的诱惑 (2011) [tmdbid=84656]/Season 01/回家的诱惑 - S01E36.strm"), `/mnt${home}/回家的诱惑 - S01E36.mkv`);
+  assert.ok(!localExists(`回家的诱惑/${zw("36")}.strm`), "夹着零宽空格的旧 strm 跟着挪走");
+  assert.equal(localRead("我和僵尸有个约会 (1998) [tmdbid=19389]/Season 01/我和僵尸有个约会 - S01E10.strm"), `/mnt${zombie}/我和僵尸有个约会 - S01E10.mkv`);
+});
+
+test("范围直接选在季目录上：季号按目录认、标题按剧目录认；腾空的季目录删掉，指着它的追更改到新的季目录，撤销再改回来", async () => {
+  drive = new FakeDrive("quark", account);
+  fs.rmSync(LOCAL, { recursive: true, force: true });
+  drive.tree.addFile("/tv/我和僵尸有个约会/season1/我和僵尸有个约会01.mkv");
+  drive.tree.addFile("/tv/我和僵尸有个约会/season2/我和僵尸有个约会2.EP01.mkv");
+  drive.tree.addFile("/tv/我和僵尸有个约会/season2/我和僵尸有个约会2.EP02.mkv");
+  const follow = (id: string, shareCode: string, subPath: string) =>
+    insertShareFollow({
+      id, name: "僵尸", libraryId: null, shareUrl: "", shareCode, receiveCode: "", watchCid: "0", watchPath: "", scope: [""],
+      taskId: "t1", subPath, enabled: true, intervalMinutes: 60, status: "idle", lastError: "", errorStreak: 0,
+      lastCheckedAt: null, lastChangeAt: null, nextCheckAt: 0, known: [], recent: [], createdAt: 1, updatedAt: 1,
+    });
+  follow("f3", "abe", "我和僵尸有个约会/season2");
+  follow("f4", "abf", "我和僵尸有个约会");
+  const run = await createRun({ taskId: "t1", subPath: "我和僵尸有个约会/season2" });
+  await untilStatus(run.id, ["ready"]);
+  const detail = getRunDetail(run.id);
+  assert.equal(detail.units.length, 1);
+  const unit = detail.units[0];
+  assert.equal(unit.rootPath, "我和僵尸有个约会", "单元根是剧目录");
+  assert.equal(unit.match?.tmdbId, 19389, "按剧目录名去搜，不是文件里的「我和僵尸有个约会2」");
+  assert.equal(unit.referencedBy, 1, "只数范围里的追更：指着剧目录的那条这次不会改");
+  const season = "/tv/我和僵尸有个约会 (1998) [tmdbid=19389]/Season 02";
+  const srcOf = (dst: string) => detail.items.find((i) => i.dstPath === dst)?.srcPath;
+  assert.equal(srcOf(`${season}/我和僵尸有个约会 - S02E01.mkv`), "/tv/我和僵尸有个约会/season2/我和僵尸有个约会2.EP01.mkv");
+  assert.equal(srcOf(`${season}/我和僵尸有个约会 - S02E02.mkv`), "/tv/我和僵尸有个约会/season2/我和僵尸有个约会2.EP02.mkv");
+  assert.deepEqual(detail.items.filter((i) => i.action === "rmdir").map((i) => i.srcPath), ["/tv/我和僵尸有个约会/season2"], "季目录腾空了删，剧目录在范围外不碰");
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.equal(drive.tree.get("/tv/我和僵尸有个约会/season2"), undefined);
+  assert.ok(drive.tree.get("/tv/我和僵尸有个约会/season1/我和僵尸有个约会01.mkv"), "范围外的季不动");
+  assert.equal(getShareFollow("f3")!.subPath, "我和僵尸有个约会 (1998) [tmdbid=19389]/Season 02", "追更跟到新的季目录");
+  assert.equal(getShareFollow("f4")!.subPath, "我和僵尸有个约会", "剧目录还在，指着它的不动");
+  await revertRun(run.id);
+  await untilStatus(run.id, ["reverted"]);
+  assert.ok(drive.tree.get("/tv/我和僵尸有个约会/season2/我和僵尸有个约会2.EP01.mkv"));
+  assert.equal(getShareFollow("f3")!.subPath, "我和僵尸有个约会/season2", "撤销后改回原来的季目录");
+});
+
+test("整理整部剧：腾空删掉的季目录有自己的映射，指着 season2 的追更改到 Season 02（不是前缀拼出来的 作品目录/season2），撤销都改回来", async () => {
+  drive = new FakeDrive("quark", account);
+  fs.rmSync(LOCAL, { recursive: true, force: true });
+  drive.tree.addFile("/tv/我和僵尸有个约会/season1/我和僵尸有个约会01.mkv");
+  drive.tree.addFile("/tv/我和僵尸有个约会/season2/我和僵尸有个约会2.EP01.mkv");
+  const follow = (id: string, shareCode: string, subPath: string) =>
+    insertShareFollow({
+      id, name: "僵尸", libraryId: null, shareUrl: "", shareCode, receiveCode: "", watchCid: "0", watchPath: "", scope: [""],
+      taskId: "t1", subPath, enabled: true, intervalMinutes: 60, status: "idle", lastError: "", errorStreak: 0,
+      lastCheckedAt: null, lastChangeAt: null, nextCheckAt: 0, known: [], recent: [], createdAt: 1, updatedAt: 1,
+    });
+  follow("f5", "abg", "我和僵尸有个约会/season2");
+  follow("f6", "abh", "我和僵尸有个约会");
+  const run = await createRun({ taskId: "t1", subPath: "" });
+  await untilStatus(run.id, ["ready"]);
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.equal(drive.tree.get("/tv/我和僵尸有个约会"), undefined, "剧目录腾空删掉");
+  assert.equal(getShareFollow("f5")!.subPath, "我和僵尸有个约会 (1998) [tmdbid=19389]/Season 02");
+  assert.equal(getShareFollow("f6")!.subPath, "我和僵尸有个约会 (1998) [tmdbid=19389]");
+  await revertRun(run.id);
+  await untilStatus(run.id, ["reverted"]);
+  assert.equal(getShareFollow("f5")!.subPath, "我和僵尸有个约会/season2");
+  assert.equal(getShareFollow("f6")!.subPath, "我和僵尸有个约会");
+});
+
+test("本地 nfo 的 id 和它自己写的标题对不上：不采用、单元提示里说一句，按搜索认；对得上就直接用", async () => {
+  const nfo = path.join(LOCAL, "inbox/BEEF.S01.1080p/tvshow.nfo");
+  fs.mkdirSync(path.dirname(nfo), { recursive: true });
+  fs.writeFileSync(nfo, `<tvshow><title>怒呛人生</title><uniqueid type="tmdb">999</uniqueid></tvshow>`);
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  const unit = getRunDetail(run.id).units.find((u) => u.rootPath === "inbox/BEEF.S01.1080p")!;
+  assert.deepEqual([unit.match?.tmdbId, unit.match?.reason], [153312, "标题对上，文件名里没有年份"], "按搜索认的");
+  assert.deepEqual(unit.notes, ["本地 tvshow.nfo 里的 tmdbid（999）在 TMDB 上是「另一部剧」，和 nfo 里写的标题对不上，没采用"]);
+  fs.writeFileSync(nfo, `<tvshow><title>怒呛人生</title><originaltitle>BEEF</originaltitle><tmdbid>153312</tmdbid></tvshow>`);
+  const again = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(again.id, ["ready"]);
+  const ok = getRunDetail(again.id).units.find((u) => u.rootPath === "inbox/BEEF.S01.1080p")!;
+  assert.deepEqual([ok.match?.tmdbId, ok.match?.confidence, ok.match?.reason], [153312, "high", "本地 tvshow.nfo 里的 tmdbid"]);
+  assert.deepEqual(ok.notes, []);
+});
+
+test("并进已有作品目录：作品级图片撞名留在原处、不算冲突，执行照常，源目录留着那张图", async () => {
+  drive.tree.addFile("/tv/怒呛人生 (2023) [tmdbid=153312]/poster.jpg");
+  drive.tree.addFile("/tv/inbox/BEEF.S01.1080p/poster.jpg");
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  const ready = await untilStatus(run.id, ["ready"]);
+  assert.equal(ready.stats.conflicts, 0);
+  const detail = getRunDetail(run.id);
+  const poster = detail.items.find((i) => i.srcPath === "/tv/inbox/BEEF.S01.1080p/poster.jpg")!;
+  assert.deepEqual([poster.action, poster.reason], ["skip", "目标位置已经有同名的，留在原处"]);
+  assert.ok(!detail.items.some((i) => i.action === "rmdir" && i.srcPath === "/tv/inbox/BEEF.S01.1080p"), "源目录还剩那张图，不删");
+  await applyRun(run.id);
+  const done = await untilStatus(run.id, ["done"]);
+  assert.equal(done.stats.failed, 0);
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/poster.jpg"));
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv"));
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/tvshow.nfo"), "作品目录里没有的照常挪过去");
+});
+
+test("patchUnit 之后别的单元照旧：谁先占到目标不变，附属文件撞名还是留在原处、不算冲突", async () => {
+  drive.tree.addFile("/tv/inbox/BEEF.S01.1080p/poster.jpg");
+  drive.tree.addFile("/tv/inbox/怒呛人生.S01.720p/怒呛人生.S01E01.720p.mkv");
+  drive.tree.addFile("/tv/inbox/怒呛人生.S01.720p/poster.jpg");
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  const actions = () => {
+    const items = getRunDetail(run.id).items;
+    return ["/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv", "/tv/inbox/怒呛人生.S01.720p/怒呛人生.S01E01.720p.mkv", "/tv/inbox/怒呛人生.S01.720p/poster.jpg"].map((p) => items.find((i) => i.srcPath === p)?.action);
+  };
+  assert.deepEqual(actions(), ["move", "conflict", "skip"]);
+  await patchUnit(run.id, "inbox/BEEF.S01.1080p", { remember: true });
+  assert.deepEqual(actions(), ["move", "conflict", "skip"], "改了别的单元，这边的结果不变（原来从库里的项反推，720p 那集会反过来抢到目标）");
+  assert.equal(getRunDetail(run.id).run.stats.conflicts, 1);
 });

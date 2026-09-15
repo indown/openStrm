@@ -6,8 +6,11 @@
  *   - 先把方括号段、日期、粘连的 CJK+S01E01 拆开，再按空格 / 点 / 下划线分词；
  *   - 从左到右扫，第一个「季集 / 年份 / 技术词 / 特别篇」标记切断标题，后面全是噪音；
  *   - 字幕组风格 `[Group][Title][01][1080p][JPSC]`：第一段是字幕组，纯数字段是绝对集数；
- *   - 标题里同时有中文和英文时给出多个候选，识别时依次去 TMDB 搜。
+ *   - 标题里同时有中文和英文时给出多个候选，识别时依次去 TMDB 搜；
+ *   - 零宽空格这类看不见的字符先去掉（分享里的文件名常夹着它们躲关键词过滤，`S01E\u200B36` 看着正常却认不出）；
+ *   - 标题后面粘着的补零数字（`我和僵尸有个约会01`）是集数；不补零的（`流浪地球2`）解析时不定，见 `trailingNumber`。
  */
+import { stripInvisible } from "../../lib/text.js";
 
 export interface ParsedTags {
   resolution?: string;
@@ -241,10 +244,12 @@ function splitWords(text: string): string[] {
     .filter(Boolean);
 }
 
-/** CJK 和 `S01E01` / 年份 / `EP01` 粘在一起时拆开：`怒呛人生S01E01`、`葬送的芙莉莲2023` */
+/** CJK 和 `S01E01` / 年份 / `EP01` / 补零的集数粘在一起时拆开：`怒呛人生S01E01`、`葬送的芙莉莲2023`、`我和僵尸有个约会01` */
 function unglue(s: string): string {
   return s
     .replace(/([぀-ヿ一-鿿가-힯])(?=[Ss]\d{1,2}[Ee]\d{1,4}\b)/g, "$1 ")
+    // 补零的集数；`剧场版01` 是第 1 部电影，不拆
+    .replace(/([぀-ヿ一-鿿가-힯])(?<!剧场版|劇場版|电影版|大电影)(?=0\d{1,2}(?:v\d)?(?:[-~]\d{1,3})?(?:$|[\s._\-[(【（]))/g, "$1 ")
     .replace(/([぀-ヿ一-鿿가-힯])(?=[Ee][Pp]?\d{1,4}\b)/g, "$1 ")
     .replace(/([぀-ヿ一-鿿가-힯])(?=(?:19|20)\d{2}\s*$)/g, "$1 ")
     .replace(/([぀-ヿ一-鿿가-힯])(?=第[零〇一二两三四五六七八九十百\d]+[季集话話期部回])/g, "$1 ")
@@ -284,6 +289,15 @@ export function titleCandidates(title: string): string[] {
   }
   push(t);
   return out;
+}
+
+/** 标题归一化（比对用）：小写、去标点和空白、全角转半角 */
+export function normalizeTitle(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[！-～]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(/[\s\-–—_.,:：;；!！?？'’"“”()（）[\]【】《》「」『』·・&+]/g, "")
+    .replace(/^the/, "");
 }
 
 /* ------------------------------- 字幕语言 ------------------------------- */
@@ -328,7 +342,7 @@ export interface ParseOptions {
 
 export function parseMediaName(rawName: string, opts: ParseOptions = {}): ParsedName {
   const result: ParsedName = { title: "", titles: [], tags: {} };
-  let name = (rawName ?? "").trim();
+  let name = stripInvisible(rawName ?? "").trim();
   if (!name) return result;
 
   if (opts.subtitle) {
@@ -421,7 +435,7 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
   };
 
   /** 一个词是不是标记（季集 / 年份 / 特别篇 …），是就登记并切断 */
-  const marker = (word: string, ctx: { bracket: boolean; afterDash: boolean; nextIsTech: boolean }): boolean => {
+  const marker = (word: string, ctx: { bracket: boolean; afterDash: boolean; nextIsTech: boolean; atEnd?: boolean }): boolean => {
     const w = stripEdges(word);
     if (!w) return false;
     let m: RegExpExecArray | null;
@@ -516,8 +530,9 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
       yearBeforeCut = w;
       return true;
     }
-    // 字幕组风格的 [01] / [01-12]、`- 01`、`01 [1080p]`（带前导零）
-    if (ctx.bracket || ctx.afterDash || (ctx.nextIsTech && /^0\d{1,2}$/.test(w))) {
+    // 字幕组风格的 [01] / [01-12]、`- 01`；带前导零的 `01 [1080p]`、名字最后的 `某剧 01` / `某剧 01-02`（`剧场版 01` 是第 1 部电影，不算）
+    const paddedTail = /^0\d{1,2}(?:v\d|[-~]\d{1,3})?$/.test(w) && (ctx.nextIsTech || (!!ctx.atEnd && result.edition === undefined));
+    if (ctx.bracket || ctx.afterDash || paddedTail) {
       if ((m = RE_BARE_EP_RANGE.exec(w))) {
         setAbsolute(Number(m[1]), Number(m[2]));
         cutAt("episode");
@@ -617,6 +632,7 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
         continue;
       }
       const nextIsTech = i + 1 < words.length ? isTechWord(words[i + 1]) : ci + 1 < chunks.length && chunks[ci + 1].kind === "bracket";
+      const atEnd = i === words.length - 1 && ci === chunks.length - 1;
       if (!cut) {
         const ed = editionAt(words, i);
         if (ed && (titleWords.length > 0 || yearBeforeCut)) {
@@ -639,7 +655,7 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
         i++;
         continue;
       }
-      if (marker(w, { bracket: false, afterDash, nextIsTech })) {
+      if (marker(w, { bracket: false, afterDash, nextIsTech, atEnd })) {
         afterDash = false;
         continue;
       }
@@ -670,6 +686,37 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
   return result;
 }
 
+/* ------------------------------- 标题末尾的数字 ------------------------------- */
+
+const RE_TRAILING_CJK_NUMBER = /^(.*[぀-ヿ㐀-䶿一-鿿가-힯])(\d{1,3})$/;
+const RE_TRAILING_WORD_NUMBER = /^(.*\S)\s+(\d{1,3})$/;
+/** 这些词后面的数字是标题的一部分：Part 2、Vol 3、剧场版 5 */
+const RE_NUMBERED_TAIL = /(?:part|pt|vol|volume|chapter|剧场版|劇場版|电影版|大电影)$/i;
+
+export interface TrailingNumber {
+  number: number;
+  /** 去掉数字之后的标题候选 */
+  titles: string[];
+}
+
+/**
+ * 标题末尾的数字：`我和僵尸有个约会10` → 我和僵尸有个约会 + 10、`Some Show 10` → Some Show + 10。
+ * 单看一个名字分不清它是集数还是标题的一部分（《流浪地球2》《速度与激情10》），所以解析时不动它，
+ * 由调用方按上下文决定（季目录、同目录的兄弟、TMDB 认成剧集）。英文字母后面直接粘数字的（`Blink182`）不算
+ */
+export function trailingNumber(p: ParsedName): TrailingNumber | null {
+  if (p.episode !== undefined || p.absolute !== undefined) return null;
+  // 候选的最后一个是整段标题（中英混排时前面是拆出来的中文 / 英文）
+  const full = p.titles[p.titles.length - 1] ?? p.title;
+  const m = RE_TRAILING_CJK_NUMBER.exec(full) ?? RE_TRAILING_WORD_NUMBER.exec(full);
+  if (!m) return null;
+  const base = m[1].trim();
+  const number = Number(m[2]);
+  if (number === 0 || (!RE_CJK.test(base) && !RE_LATIN.test(base)) || RE_NUMBERED_TAIL.test(base)) return null;
+  const titles = titleCandidates(base);
+  return titles.length > 0 ? { number, titles } : null;
+}
+
 /* ------------------------------- 目录名 ------------------------------- */
 
 const RE_SEASON_DIR = /^(?:season|s|series)[\s._-]*(\d{1,2})$|^第(\d{1,2}|[一二两三四五六七八九十]+)[季部]$/i;
@@ -678,7 +725,7 @@ const RE_EXTRAS_DIR = /^(?:extras?|featurettes?|trailers?|behind[\s._-]*the[\s._
 
 /** 季目录：Season 1 / S01 / 第一季 → 季号；Specials / SP / 番外 → 0；不是季目录返回 null */
 export function seasonDirNumber(name: string): number | null {
-  const n = name.trim();
+  const n = stripInvisible(name).trim();
   if (RE_SPECIALS_DIR.test(n)) return RE_EXTRAS_DIR.test(n) ? null : 0;
   const m = RE_SEASON_DIR.exec(n);
   if (!m) return null;
@@ -688,7 +735,14 @@ export function seasonDirNumber(name: string): number | null {
 
 /** 花絮目录：里面的东西不是正片 */
 export function isExtrasDirName(name: string): boolean {
-  return RE_EXTRAS_DIR.test(name.trim());
+  return RE_EXTRAS_DIR.test(stripInvisible(name).trim());
+}
+
+const RE_ART_DIR = /^(?:extrafanart|extrathumbs|\.actors)$/i;
+
+/** 艺术图目录：extrafanart / extrathumbs / .actors，里面是作品的图片，整理时整个跟进作品目录 */
+export function isArtDirName(name: string): boolean {
+  return RE_ART_DIR.test(stripInvisible(name).trim());
 }
 
 const RE_CANONICAL_MOVIE = /^.+ \((?:19|20)\d{2}\)(?: - .+)?(?:-part\d+)?$/;
@@ -701,7 +755,7 @@ const STRONG_SOURCE = new Set(["WEB-DL", "WEBRip", "BluRay", "BDRip", "BRRip", "
  * 其余带压制组 / 编码 / 来源词、或字幕组方括号开头的算。集名里的 Web / Opus 这种普通词不算噪音
  */
 export function hasReleaseNoise(stem: string): boolean {
-  const s = stem.trim();
+  const s = stripInvisible(stem).trim();
   if (RE_CANONICAL_MOVIE.test(s) || RE_CANONICAL_TV.test(s)) return false;
   if (/^\[/.test(s)) return true;
   const t = parseMediaName(s).tags;
@@ -709,10 +763,10 @@ export function hasReleaseNoise(stem: string): boolean {
 }
 
 /**
- * 目录名像不像一个发布目录：带年份、季集标记或发布噪音的算；`downloads`、`inbox`、`电影` 这种收件箱式的名字不算。
- * 用来决定「范围就是这个目录」时腾空了删不删
+ * 目录名像不像一个发布目录：带年份、季集标记或发布噪音的算，季目录（Season 2 / Specials / 番外）也算；
+ * `downloads`、`inbox`、`电影` 这种收件箱式的名字不算。用来决定「范围就是这个目录」时腾空了删不删
  */
 export function looksLikeReleaseDir(name: string): boolean {
   const p = parseMediaName(name);
-  return !!p.year || p.season !== undefined || p.episode !== undefined || hasReleaseNoise(name);
+  return !!p.year || p.season !== undefined || p.episode !== undefined || seasonDirNumber(name) !== null || hasReleaseNoise(name);
 }

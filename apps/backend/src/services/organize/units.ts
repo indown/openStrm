@@ -2,13 +2,16 @@
  * 把范围里的文件分成「作品单元」：一部电影 / 一部剧（含所有季）是一个单元。纯函数。
  *
  *   - 直接含视频文件的目录是候选；目录名是 Season 1 / S01 / 第一季 / Specials 时单元根是上一级；
+ *     范围直接选在季目录上时也一样（单元根越过范围到剧目录，文件还是只有范围里的）；
  *     花絮目录（extras / featurettes / 花絮）里的文件归上一级，标 inExtrasDir。
  *   - 一个候选目录里的视频解析出多个不同标题（电影堆、散集堆）就按标题 + 年份拆成多个单元。
  *   - 单元级标题以目录名为准（目录名通常是干净的「剧名 + 年份」），目录名解析不出标题再用文件名里最常见的。
  *   - 识别词先套在每个名字上；直指 tmdbid 的规则命中就带在单元上。
+ *   - 标题末尾不补零的数字（`某剧10`）在季目录里、或同名的兄弟已经有集数时当集数（`promoteTrailingEpisodes`）。
  */
 import type { OrganizeFileKind } from "@openstrm/shared";
-import { isExtrasDirName, parseMediaName, seasonDirNumber, type ParsedName } from "./parse-name.js";
+import { stripInvisible } from "../../lib/text.js";
+import { isArtDirName, isExtrasDirName, normalizeTitle, parseMediaName, seasonDirNumber, trailingNumber, type ParsedName, type TrailingNumber } from "./parse-name.js";
 import { applyRules, type DirectSpec, type ParsedRule } from "./rules.js";
 
 /** 范围里的一项，路径相对任务 originPath，不带前导 / */
@@ -32,6 +35,8 @@ export interface UnitFile {
   /** 所在季目录的季号（Season 02 → 2，Specials → 0）；不在季目录里就没有 */
   seasonFromDir?: number;
   inExtrasDir: boolean;
+  /** 艺术图目录（extrafanart / extrathumbs / .actors）里的文件：这个目录的名字，整理时整个跟进作品目录 */
+  artDir?: string;
   /** 识别词直指 */
   direct?: DirectSpec;
 }
@@ -45,14 +50,20 @@ export interface Unit {
   kindHint: "movie" | "tv" | "unknown";
   files: UnitFile[];
   direct?: DirectSpec;
-  notes: string[];
+  /** 多个视频都没有集数、标题又一样时的视频个数：先按同一部电影的多个版本猜，规划时 TMDB 没认成剧集才提示 */
+  multiVersion?: number;
+  /**
+   * 单元根是这部作品自己的目录（不是任务根、不是从大目录里拆出来的；范围根的话目录名就是这部作品）：
+   * 里面认不出的图片 / nfo 原名跟进作品目录
+   */
+  ownsDir: boolean;
 }
 
 export interface BuildUnitsOptions {
   /** 范围目录，相对任务 originPath；"" 是任务根 */
   scopePath: string;
-  /** 范围目录的名字（任务根就是 originPath 的最后一段） */
-  scopeName: string;
+  /** 任务根目录的名字（originPath 的最后一段）：单元根落在任务根时当目录名，它本身是季目录时季号也从这来 */
+  taskRootName: string;
   videoExts: Set<string>;
   rules: ParsedRule[];
   libraryType?: "movie" | "tv" | "mixed";
@@ -80,20 +91,29 @@ export function fileKindOf(name: string, videoExts: Set<string>): OrganizeFileKi
   return "other";
 }
 
-/** 名字先过识别词再解析 */
+/** 名字先去掉看不见的字符、过识别词，再解析 */
 function parseWithRules(name: string, rules: ParsedRule[], subtitle = false): { parsed: ParsedName; direct?: DirectSpec } {
-  const r = applyRules(name, rules);
+  const r = applyRules(stripInvisible(name), rules);
   const parsed = parseMediaName(r.name, { subtitle });
   return { parsed, direct: r.direct };
 }
 
-/** 从文件所在目录往上找单元根：季目录 / 花絮目录归上一级 */
-function unitRootFor(dir: string, scopePath: string): { root: string; seasonFromDir?: number; inExtrasDir: boolean } {
+/**
+ * 从文件所在目录往上找单元根：季目录 / 花絮目录 / 艺术图目录归上一级，最多走到 boundary
+ * （范围目录；范围本身是季目录时是它的上一级，见 buildUnits）
+ */
+function unitRootFor(dir: string, boundary: string, taskRootName: string): { root: string; seasonFromDir?: number; inExtrasDir: boolean; artDir?: string } {
   let cur = dir;
   let seasonFromDir: number | undefined;
   let inExtrasDir = false;
-  for (let hops = 0; hops < 3 && cur !== scopePath && cur.length >= scopePath.length; hops++) {
+  let artDir: string | undefined;
+  for (let hops = 0; hops < 3 && cur !== boundary && cur.length >= boundary.length; hops++) {
     const name = baseOf(cur);
+    if (isArtDirName(name)) {
+      artDir ??= name;
+      cur = dirOf(cur);
+      continue;
+    }
     if (isExtrasDirName(name)) {
       inExtrasDir = true;
       cur = dirOf(cur);
@@ -107,9 +127,11 @@ function unitRootFor(dir: string, scopePath: string): { root: string; seasonFrom
     }
     break;
   }
-  // 往上不能越出范围目录
-  if (cur.length < scopePath.length) cur = scopePath;
-  return { root: cur, seasonFromDir, inExtrasDir };
+  // 往上不能越出边界
+  if (cur.length < boundary.length) cur = boundary;
+  // 任务根本身就是季目录（任务直接建在 `某剧/Season 2` 上）：上不去了，季号照样认
+  if (cur === "" && seasonFromDir === undefined) seasonFromDir = seasonDirNumber(taskRootName) ?? undefined;
+  return { root: cur, seasonFromDir, inExtrasDir, artDir };
 }
 
 function titleKey(p: ParsedName): string {
@@ -133,11 +155,37 @@ function mostCommon<T>(values: T[]): T | undefined {
 
 const hasEpisodeMarker = (p: ParsedName): boolean =>
   p.episode !== undefined || p.absolute !== undefined || p.season !== undefined || !!p.isSpecial || !!p.date;
+const hasEpisodeNumber = (p: ParsedName): boolean => p.episode !== undefined || p.absolute !== undefined || !!p.isSpecial || !!p.date;
+
+/**
+ * 标题末尾的数字当集数：`我和僵尸有个约会01 … 33`（01–09 解析时已认出，10 以后单看名字不敢定）、`某剧1 … 某剧30`。
+ * 看同一个单元根下的上下文：文件在季目录里；或者去掉数字后和已经有集数的兄弟同名；或者剧集库里有两个以上这样的同名兄弟。
+ * 电影系列（`叶问1 … 叶问4`）三样都不沾，照旧当标题按作品拆开
+ */
+function promoteTrailingEpisodes(files: UnitFile[], libraryType: BuildUnitsOptions["libraryType"]): void {
+  const pending: Array<{ file: UnitFile; t: TrailingNumber; key: string }> = [];
+  for (const file of files) {
+    if ((file.kind !== "video" && file.kind !== "subtitle") || file.inExtrasDir || file.parsed.isExtra || hasEpisodeNumber(file.parsed)) continue;
+    const t = trailingNumber(file.parsed);
+    if (t) pending.push({ file, t, key: normalizeTitle(t.titles[0]) });
+  }
+  if (pending.length === 0) return;
+  const numbered = new Set(files.filter((f) => f.kind === "video" && hasEpisodeNumber(f.parsed)).map((f) => normalizeTitle(f.parsed.title)));
+  const siblings = new Map<string, number>();
+  for (const p of pending) if (p.file.kind === "video") siblings.set(p.key, (siblings.get(p.key) ?? 0) + 1);
+  for (const { file, t, key } of pending) {
+    const episodic = file.seasonFromDir !== undefined || numbered.has(key) || (libraryType === "tv" && (siblings.get(key) ?? 0) >= 2);
+    if (episodic) file.parsed = { ...file.parsed, title: t.titles[0], titles: t.titles, absolute: t.number, cutoff: "episode" };
+  }
+}
 
 type RootedFile = { file: UnitFile; root: string };
 
 export function buildUnits(entries: ScopeEntry[], opts: BuildUnitsOptions): Unit[] {
   const scopePath = opts.scopePath.replace(/^\/+|\/+$/g, "");
+  // 范围直接选在季目录上（`某剧/Season 2`）：和平时一样季目录归上一级——单元根越过范围到剧目录（标题、id 标签、记忆都按剧目录认），
+  // 文件还是只有范围里的
+  const boundary = scopePath && seasonDirNumber(baseOf(scopePath)) !== null ? dirOf(scopePath) : scopePath;
   const rooted: RootedFile[] = [];
   for (const e of entries) {
     if (e.isDir) continue;
@@ -148,8 +196,8 @@ export function buildUnits(entries: ScopeEntry[], opts: BuildUnitsOptions): Unit
     const stem = ext ? name.slice(0, -ext.length) : name;
     const { parsed, direct } = parseWithRules(stem, opts.rules, kind === "subtitle");
     if (parsed.isSample) continue;
-    const { root, seasonFromDir, inExtrasDir } = unitRootFor(dirOf(e.path), scopePath);
-    rooted.push({ root, file: { path: e.path, name, stem, ext, kind, parsed, id: e.id, size: e.size, seasonFromDir, inExtrasDir, direct } });
+    const { root, seasonFromDir, inExtrasDir, artDir } = unitRootFor(dirOf(e.path), boundary, opts.taskRootName);
+    rooted.push({ root, file: { path: e.path, name, stem, ext, kind, parsed, id: e.id, size: e.size, seasonFromDir, inExtrasDir, artDir, direct } });
   }
 
   // 按候选根分组
@@ -162,9 +210,10 @@ export function buildUnits(entries: ScopeEntry[], opts: BuildUnitsOptions): Unit
 
   const units: Unit[] = [];
   for (const [root, list] of byRoot) {
+    promoteTrailingEpisodes(list, opts.libraryType);
     const videos = list.filter((f) => f.kind === "video" && !f.inExtrasDir && !f.parsed.isExtra);
     if (videos.length === 0) continue; // 只有字幕 / 图片的目录不成单元
-    const rootName = root ? baseOf(root) : opts.scopeName;
+    const rootName = root ? baseOf(root) : opts.taskRootName;
     const rootParsed = parseWithRules(rootName, opts.rules);
     const dirTitleOk = rootParsed.parsed.title.length > 0 && !/^(19|20)\d{2}$/.test(rootParsed.parsed.title);
 
@@ -187,7 +236,9 @@ export function buildUnits(entries: ScopeEntry[], opts: BuildUnitsOptions): Unit
       // 另一边的标题也留作搜索候选（目录叫「怒呛人生」、文件叫 BEEF，两个都该试）
       const extra = (useFiles ? (dirTitleOk ? rootParsed.parsed.titles : []) : fileParsed.titles).filter((t) => t && !parsed.titles.includes(t));
       parsed.titles = [...parsed.titles, ...extra];
-      units.push(makeUnit(root, rootName, parsed, list, rootParsed.direct, opts));
+      // 这个目录是不是这部作品自己的（里面认不出的图片 / nfo 原名跟进作品目录）：任务根不算；范围根（tv、inbox 这种）要目录名就是这部作品
+      const ownsDir = root !== "" && (!atScopeRoot || (dirTitleOk && rootParsed.parsed.titles.some((t) => fileParsed.titles.some((f) => normalizeTitle(f) === normalizeTitle(t)))));
+      units.push(makeUnit(root, rootName, parsed, list, rootParsed.direct, opts, ownsDir));
       continue;
     }
     // 拆：每个标题一个单元；非视频文件按同名前缀跟着视频走，跟不上的不进任何单元（原地不动）
@@ -202,7 +253,7 @@ export function buildUnits(entries: ScopeEntry[], opts: BuildUnitsOptions): Unit
     for (const [k, vids] of groups) {
       const mine = others.filter((o) => vids.some((v) => o.stem.startsWith(v.stem) || titleKey(o.parsed) === k));
       const sample = vids[0];
-      units.push(makeUnit(root, sample.parsed.title || rootName, sample.parsed, [...vids, ...mine], sample.direct, opts, `${root}|${k}`));
+      units.push(makeUnit(root, sample.parsed.title || rootName, sample.parsed, [...vids, ...mine], sample.direct, opts, false, `${root}|${k}`));
     }
   }
 
@@ -217,10 +268,11 @@ function makeUnit(
   files: UnitFile[],
   direct: DirectSpec | undefined,
   opts: BuildUnitsOptions,
+  ownsDir: boolean,
   key = root || "(root)",
 ): Unit {
   const videos = files.filter((f) => f.kind === "video" && !f.inExtrasDir && !f.parsed.isExtra);
-  const notes: string[] = [];
+  let multiVersion: number | undefined;
   const fileDirect = files.map((f) => f.direct).find(Boolean);
   const anyMarker = videos.some((v) => hasEpisodeMarker(v.parsed) || v.seasonFromDir !== undefined) || parsed.season !== undefined;
   let kindHint: Unit["kindHint"] = "unknown";
@@ -232,7 +284,7 @@ function makeUnit(
     // 多个视频、都没有集标记：同名不同画质是多版本电影；名字各不相同又拆不开就说不清
     const stems = new Set(videos.map((v) => titleKey(v.parsed)));
     kindHint = stems.size === 1 ? "movie" : "unknown";
-    if (stems.size === 1) notes.push(`${videos.length} 个视频没有集数标记，按同一部电影的多个版本处理`);
+    if (stems.size === 1) multiVersion = videos.length;
   }
   if (kindHint === "unknown" && opts.libraryType && opts.libraryType !== "mixed") kindHint = opts.libraryType;
   // 年份：目录名没有就用文件里最常见的
@@ -247,5 +299,5 @@ function makeUnit(
     }
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
-  return { key, rootPath: root, rawName, parsed: unitParsed, kindHint, files, direct: direct ?? fileDirect, notes };
+  return { key, rootPath: root, rawName, parsed: unitParsed, kindHint, files, direct: direct ?? fileDirect, multiVersion, ownsDir };
 }

@@ -1,3 +1,5 @@
+import { stripInvisible } from "../lib/text.js";
+
 const QUALITY_TOKENS = [
   "2160p",
   "1080p",
@@ -138,7 +140,7 @@ function parseCnOrArabicInt(s: string): number | null {
 // is noise (resolution, codec, audio, platform, release group, etc.)
 export function normalizeTitle(raw: string): NormalizedTitle {
   if (!raw) return { title: "", year: "", isTv: false, season: 0 };
-  let s = raw.trim();
+  let s = stripInvisible(raw).trim();
 
   // Strip bracket characters but keep their content (e.g., "(2013)" → " 2013 ")
   s = s.replace(/[[\]()【】（）]/g, " ");
