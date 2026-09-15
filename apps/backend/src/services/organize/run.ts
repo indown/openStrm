@@ -1070,12 +1070,13 @@ async function execute(job: Job, runId: string, only: Set<string> | null): Promi
   const items = listItems(runId);
   const stats = computeStats(listUnits(runId), items, "apply");
   const finishedAt = now();
+  // 收尾这句先进日志再落库，不然页面上的日志里没有它
   if (fatal) {
-    updateRun(runId, { status: "failed", error: fatal, stats, log: job.logs, finishedAt });
     jobLog(job, fatal);
+    updateRun(runId, { status: "failed", error: fatal, stats, log: job.logs, finishedAt });
   } else {
-    updateRun(runId, { status: signal.aborted ? "cancelled" : "done", stats, log: job.logs, finishedAt });
     jobLog(job, `执行完成：${stats.done} 项完成，${stats.failed} 项失败${stats.failedByKind.mirror > 0 ? `，${stats.failedByKind.mirror} 项本地未同步` : ""}`);
+    updateRun(runId, { status: signal.aborted ? "cancelled" : "done", stats, log: job.logs, finishedAt });
   }
   const moved = items.filter((it) => it.status === "done" && (it.action === "rename" || it.action === "move")).length;
   if (moved > 0) {
@@ -1520,12 +1521,14 @@ async function revert(job: Job, runId: string): Promise<void> {
   const finalItems = listItems(runId);
   afterRevert(task, provider, units, finalItems);
   const stats = computeStats(units, finalItems, "revert");
+  // 「退回了几项」和执行时的「项完成」同一个口径：累计、建目录 / 删目录也算；n 是这一轮做成的，只用来决定刷不刷 Emby
+  const reverted = finalItems.filter((it) => it.status === "reverted").length;
+  jobLog(job, fatal ?? `撤销完成：退回 ${reverted} 项${stats.notReverted > 0 ? `，${stats.notReverted} 项没退回` : ""}`);
   updateRun(runId, { status: fatal ? "failed" : signal.aborted ? "cancelled" : "reverted", error: fatal ?? "", stats, log: job.logs, finishedAt: now() });
-  jobLog(job, fatal ?? `撤销完成：退回 ${n} 项${stats.notReverted > 0 ? `，${stats.notReverted} 项没退回` : ""}`);
   planStates.delete(runId);
   if (n > 0) scheduleEmbyRefresh();
   if (!signal.aborted) {
-    void deps.notify({ type: "organize-done", task, runId, units: stats.units, done: n, failed: stats.failed, reverted: true, failedByKind: stats.failedByKind, notReverted: stats.notReverted });
+    void deps.notify({ type: "organize-done", task, runId, units: stats.units, done: reverted, failed: stats.failed, reverted: true, failedByKind: stats.failedByKind, notReverted: stats.notReverted });
   }
 }
 

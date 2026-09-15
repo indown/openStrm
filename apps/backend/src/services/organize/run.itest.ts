@@ -228,11 +228,20 @@ test("撤销：按流水账逆序退回，网盘和本地都恢复，追更落�
   const run = await createRun({ taskId: "t1", subPath: "inbox" });
   await untilStatus(run.id, ["ready"]);
   await applyRun(run.id);
-  await untilStatus(run.id, ["done"]);
+  const applied = await untilStatus(run.id, ["done"]);
+  assert.ok(applied.log.some((l) => l.includes(`执行完成：${applied.stats.done} 项完成，0 项失败`)), "收尾那句也落进了 run 的日志");
   assert.equal(getRunDetail(run.id).revertable.ok, true);
   await revertRun(run.id);
   const reverted = await untilStatus(run.id, ["reverted"]);
   assert.equal(reverted.status, "reverted");
+  // 「项已退回」和执行时的「项完成」同一个口径：建目录 / 删目录退回了也算，日志和通知里的数一样
+  const back = listItems(run.id).filter((i) => i.status === "reverted");
+  assert.equal(back.length, applied.stats.done);
+  assert.ok(back.some((i) => i.action === "mkdir") && back.some((i) => i.action === "rmdir"));
+  assert.ok(reverted.log.some((l) => l.includes(`撤销完成：退回 ${back.length} 项`)), "撤销的收尾那句也落进日志");
+  const ev = notified.find((e) => e.type === "organize-done" && e.reverted === true);
+  assert.ok(ev?.type === "organize-done");
+  assert.equal(ev.done, back.length);
   assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv"));
   assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.chs.srt"));
   assert.ok(drive.tree.get("/tv/inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv"));

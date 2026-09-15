@@ -283,7 +283,8 @@ function RunView({ runId, onClose, onOpenRun }: { runId: string; onClose: () => 
   const canApply = applicable.ok;
   const canCancel = isBusyStatus(run.status);
   const reverting = run.stage === "revert";
-  const revertedCount = items.filter((i) => i.status === "reverted" && (i.action === "rename" || i.action === "move")).length;
+  // 和「项完成」同一个口径：建目录 / 删目录退回了也算
+  const revertedCount = items.filter((i) => i.status === "reverted").length;
   const mirrorLeft = run.stats.failedByKind.mirror;
   const itemsByUnit = new Map<string, OrganizeItem[]>();
   for (const it of items) {
