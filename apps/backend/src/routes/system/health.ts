@@ -1,12 +1,9 @@
-import { createRequire } from "node:module";
 import type { FastifyInstance } from "fastify";
 import { sqlite } from "../../db/client.js";
 import { HttpError } from "../../lib/http-error.js";
+import { APP_VERSION as version } from "../../lib/version.js";
 
 const startedAt = Date.now();
-// 镜像里由 release 工作流把去掉 v 前缀的 git tag 写进 APP_VERSION；本地开发退回 package.json 的版本号
-const pkg = createRequire(import.meta.url)("../../../package.json") as { version: string };
-const version = process.env.APP_VERSION || pkg.version;
 
 /**
  * 探活。不鉴权：给 Docker HEALTHCHECK、反代和监控用，所以只回"活着 + 库能读 + 版本"，

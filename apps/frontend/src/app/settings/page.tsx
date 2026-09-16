@@ -19,6 +19,7 @@ import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import type { AppSettings } from "@openstrm/shared";
 import { OrganizeSection } from "./components/OrganizeSection";
+import { UpdateSection } from "./components/UpdateSection";
 
 type Settings = AppSettings;
 
@@ -87,6 +88,7 @@ export default function SettingsPage() {
         hdhive: data.hdhive,
         openlistCopy: data.openlistCopy,
         organize: data.organize,
+        update: data.update,
       };
 
       await api.settings.patch(saveData);
@@ -147,6 +149,8 @@ export default function SettingsPage() {
     <div className="space-y-6">
       <PageHeader icon={SettingsIcon} title="设置" description={description} />
       <div className="max-w-3xl space-y-6">
+        <UpdateSection value={data.update ?? {}} onChange={(update) => setData({ ...data, update })} />
+
         <section className="space-y-4 rounded-xl border bg-card p-6">
           <h2 className="text-base font-medium">基础设置</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

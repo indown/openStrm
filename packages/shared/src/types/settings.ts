@@ -36,6 +36,8 @@ export type TelegramNotifySettings = {
   embyNew?: boolean;
   /** 整理：执行完成、有待确认的清单 */
   organize?: boolean;
+  /** 有新版本；默认关（唯一一类和自己的媒体库无关的通知），同一个版本只推一次 */
+  update?: boolean;
 };
 
 export type TelegramSettings = {
@@ -95,7 +97,19 @@ export type AppSettings = {
   openlistCopy?: OpenlistCopySettings;
   /** 整理与规范化命名：模板、id 标签、识别词、分类、自动整理默认策略 */
   organize?: OrganizeSettings;
+  /** 检查更新 */
+  update?: UpdateSettings;
 } & Record<string, unknown>;
+
+/**
+ * 检查更新：问一次 GitHub 的发布接口，比一下版本号。
+ * enabled 默认关——装上不主动联网；它只管定时检查，设置页的「立即检查」是用户自己按的，什么时候都能用
+ */
+export type UpdateSettings = {
+  enabled?: boolean;
+  /** 连预发布（rc）一起看；不填时按当前版本自己判断：跑 rc 就跟 rc 比 */
+  includePrerelease?: boolean;
+};
 
 /** 「复制到 OpenList」：三项都填了才算配置完成 */
 export type OpenlistCopySettings = {

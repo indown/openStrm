@@ -20,6 +20,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useOrganizeAttentionCount } from "@/hooks/use-organize-attention";
+import { useUpdateBadge } from "@/hooks/use-update-badge";
 import { NAV_GROUPS, isNavActive } from "@/lib/nav";
 
 // 构建时由 next.config.ts 注入（APP_VERSION 或 package.json 的版本）
@@ -31,6 +32,8 @@ export function AppSidebar() {
   const { isMobile, setOpenMobile } = useSidebar();
   // 「整理」的角标：要人管的整理（待执行、有失败…）有几个
   const organizeAttention = useOrganizeAttentionCount();
+  // 版本号旁边的小点：有新版本才亮（读缓存，不联网）
+  const update = useUpdateBadge();
   // 手机上侧栏是抽屉，点了导航得自己收起来，shadcn 不会代劳；桌面上什么都不做
   const closeOnMobile = () => {
     if (isMobile) setOpenMobile(false);
@@ -94,11 +97,21 @@ export function AppSidebar() {
             <Github className="size-4" />
             <span className="group-data-[collapsible=icon]:hidden">GitHub</span>
           </a>
-          {appVersion && (
-            <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs tabular-nums group-data-[collapsible=icon]:hidden">
-              v{appVersion}
-            </span>
-          )}
+          {appVersion &&
+            (update.outdated ? (
+              // 有新版本：版本号变成能点的，进设置页的「更新」一节看说明
+              <Link
+                href="/settings#update"
+                onClick={closeOnMobile}
+                title={`有新版本 v${update.latest}`}
+                className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-xs tabular-nums hover:bg-accent group-data-[collapsible=icon]:hidden"
+              >
+                v{appVersion}
+                <span className="size-1.5 rounded-full bg-brand" aria-label="有新版本" />
+              </Link>
+            ) : (
+              <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs tabular-nums group-data-[collapsible=icon]:hidden">v{appVersion}</span>
+            ))}
         </div>
       </SidebarFooter>
       <SidebarRail />

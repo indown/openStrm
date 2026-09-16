@@ -40,6 +40,7 @@ const NOTIFY: Array<{ key: keyof TelegramNotifySettings; label: string; hint: st
   { key: "embyNew", label: "Emby 入库", hint: "Emby 把新条目收进媒体库时提醒（按剧聚合），需要配好 Emby 地址和 API Key。" },
   { key: "organize", label: "整理", hint: "整理执行完成、自动整理生成了待确认的清单时提醒。" },
   { key: "taskStart", label: "任务开始", hint: "每次同步开始都发一条，比较吵，默认关。" },
+  { key: "update", label: "新版本", hint: "检查更新发现有新版本时提醒一次（同一个版本只发一次），要先在「设置」里开自动检查。默认关。" },
 ];
 
 export default function TelegramPage() {

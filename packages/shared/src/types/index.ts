@@ -5,6 +5,7 @@ export type {
   LifeEventMode,
   TelegramSettings,
   TelegramNotifySettings,
+  UpdateSettings,
 } from "./settings.js";
 export type { AccountInfo, Account115, AccountOpenlist, AccountQuark } from "./account.js";
 export type {
@@ -64,6 +65,7 @@ export type {
   OrganizeUnitPatch,
   TaskOrganizeSettings,
 } from "./organize.js";
+export type { UpdateRelease, UpdateState, UpdateStatus } from "./update.js";
 export type {
   StrmEntryKind,
   StrmEntry,

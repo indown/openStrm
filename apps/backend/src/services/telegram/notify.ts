@@ -48,6 +48,8 @@ export type NotifyEvent =
   | { type: "follow-expired"; name: string; reason: string }
   /** 太久没更新，订阅已自动暂停 */
   | { type: "follow-stale"; name: string; days: number }
+  /** OpenStrm 有新版本（默认关，同一个版本只推一次） */
+  | { type: "update-available"; version: string; current: string; url: string }
   /** Emby 把新条目收进媒体库了；groups 为空表示这批太多、只报总数 */
   | { type: "emby-new"; groups: EmbyNewGroup[]; total: number }
   /** 整理执行完了 */
@@ -81,6 +83,7 @@ export const DEFAULT_NOTIFY: Required<TelegramNotifySettings> = {
   follow: true,
   embyNew: true,
   organize: true,
+  update: false,
 };
 
 export function notifyPrefs(settings: AppSettings): Required<TelegramNotifySettings> {
@@ -197,6 +200,8 @@ function render(event: NotifyEvent): string {
       return `⚠️ <b>追更已停止</b>\n${esc(event.name)}\n分享已经打不开了：${esc(event.reason)}\n需要的话到「追更」页换个链接再继续。`;
     case "follow-stale":
       return `💤 <b>追更已暂停</b>\n${esc(event.name)}\n${event.days} 天没有更新，先停下不再检查；要继续到「追更」页点「继续」。`;
+    case "update-available":
+      return `🆕 <b>OpenStrm 有新版本</b>\n${esc(event.current)} → <b>${esc(event.version)}</b>\n${esc(event.url)}\n升级前记得在「设置」里下载一次备份。`;
     case "emby-new": {
       if (event.groups.length === 0) return `📥 <b>Emby 入库</b>\n新增 ${event.total} 个条目（数量太多，不逐条列了）`;
       const lines = event.groups.slice(0, 12).map(embyNewLine);
@@ -309,6 +314,10 @@ export async function notify(event: NotifyEvent): Promise<boolean> {
         break;
       case "emby-new":
         if (!prefs.embyNew) return false;
+        text = render(event);
+        break;
+      case "update-available":
+        if (!prefs.update) return false;
         text = render(event);
         break;
       case "organize-done":

@@ -174,6 +174,7 @@ export const settingsPatchSchema = z.looseObject({
           follow: z.boolean().optional(),
           embyNew: z.boolean().optional(),
           organize: z.boolean().optional(),
+          update: z.boolean().optional(),
         })
         .optional(),
     })
@@ -192,4 +193,5 @@ export const settingsPatchSchema = z.looseObject({
     .looseObject({ account: z.string().optional(), srcDir: z.string().optional(), dstDir: z.string().optional() })
     .optional(),
   organize: organizeSettingsSchema.optional(),
+  update: z.looseObject({ enabled: z.boolean().optional(), includePrerelease: z.boolean().optional() }).optional(),
 }) satisfies z.ZodType<Partial<AppSettings>>;

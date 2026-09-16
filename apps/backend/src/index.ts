@@ -26,6 +26,7 @@ import { startPolling, stopPolling } from "./services/telegram/polling.js";
 import { cancelAllRunningTasks } from "./services/task/registry.js";
 import { reconcileInterruptedExecutions } from "./services/task-history.js";
 import { startHousekeeping } from "./services/housekeeping.js";
+import { startUpdateChecks } from "./services/update/service.js";
 
 // Auth routes
 import authLoginRoute from "./routes/auth/login.js";
@@ -82,6 +83,7 @@ import { flushEmbyRefresh } from "./services/media-server.js";
 import clearDirectoryRoute from "./routes/system/clear-directory.js";
 import clearRateLimitersRoute from "./routes/system/clear-rate-limiters.js";
 import healthRoute from "./routes/system/health.js";
+import updateRoute from "./routes/update/index.js";
 import backupRoute from "./routes/system/backup.js";
 
 const app = Fastify({
@@ -103,6 +105,8 @@ const collapsedRuns = collapseStaleReadyRuns();
 if (collapsedRuns > 0) app.log.info(`[organize] ${collapsedRuns} 次待执行的预览被同范围更新的取代，已作废`);
 // 只增不减的几张表：启动清一次，之后每天一次
 startHousekeeping();
+// 检查更新：开了才查（默认关），启动后等一会儿再问，之后每天一次
+startUpdateChecks();
 
 // Global plugins
 // 生产是同源（API 进程托管前端），开发走 next dev 的 rewrites，两种情况都用不到跨域；
@@ -162,6 +166,7 @@ await app.register(organizeRoute);
 await app.register(clearDirectoryRoute);
 await app.register(clearRateLimitersRoute);
 await app.register(healthRoute);
+await app.register(updateRoute);
 await app.register(backupRoute);
 
 // Telegram routes

@@ -11,6 +11,7 @@ import type {
   LifeMonitorSettings,
   MediaLibraryEntry,
   OrganizeAttention,
+  UpdateStatus,
   OrganizeCandidate,
   OrganizeConflictResolution,
   OrganizeFailureGroupKey,
@@ -510,6 +511,11 @@ export const api = {
   },
 
   /** 整理与规范化命名：预览 / 执行 / 撤销都是后台作业，接口立刻返回，轮询 get 看进度 */
+  /** 检查更新：GET 只读缓存（不联网），POST 才真去问 GitHub（用户自己按的，有节流） */
+  update: {
+    get: () => data(axiosInstance.get<UpdateStatus>("/api/update")),
+    check: () => data(axiosInstance.post<UpdateStatus>("/api/update/check", undefined, { timeout: 20_000 })),
+  },
   organize: {
     createRun: (input: { taskId: string; subPath?: string; paths?: string[] }) =>
       data(axiosInstance.post<OrganizeRun>("/api/organize/runs", input)),
