@@ -3,6 +3,28 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* 等宽字体自托管。路径、cron、文件大小、计数是这个产品的主要内容，值得一副真正的等宽面孔。
+   放 public/fonts 而不是 next/font/google：后者构建期要联网拉字体，离线环境下 next build 直接失败（见 layout.tsx）。
+   只带 latin 子集（两个字重共约 43KB），中文照旧走系统 CJK 字体回退 */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-400.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-500.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -50,12 +72,13 @@
 
 :root {
   color-scheme: light;
-  /* 系统字体栈。变量名沿用 next/font 时代的 --font-geist-*，@theme 里的 --font-sans / --font-mono 还指着它们 */
+  /* 字体栈。变量名沿用 next/font 时代的 --font-geist-*，@theme 里的 --font-sans / --font-mono 还指着它们。
+     sans 是纯系统栈；mono 首位是文件顶部自托管的 JetBrains Mono，后面照旧是系统兜底 */
   --font-geist-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif, "Apple Color Emoji",
     "Segoe UI Emoji";
-  --font-geist-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
-    monospace;
+  --font-geist-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -65,26 +88,26 @@
   --popover-foreground: oklch(0.145 0 0);
   --primary: oklch(0.205 0 0);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
+  --secondary: oklch(0.97 0.005 245);
   --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
+  --muted: oklch(0.97 0.005 245);
+  --muted-foreground: oklch(0.55 0.015 245);
+  --accent: oklch(0.97 0.005 245);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
+  --border: oklch(0.92 0.006 245);
+  --input: oklch(0.92 0.006 245);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
+  --sidebar: oklch(0.985 0.003 245);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent: oklch(0.97 0.005 245);
   --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-border: oklch(0.92 0.006 245);
   /* 品牌色取 logo 里那个 S 的青蓝。只做点缀：侧栏选中态、链接、进度条、焦点环；主按钮仍是黑白 */
   --brand: oklch(0.6 0.13 220);
   --brand-foreground: oklch(0.985 0 0);
@@ -99,19 +122,19 @@
 
 .dark {
   color-scheme: dark;
-  --background: oklch(0.145 0 0);
+  --background: oklch(0.16 0.012 250);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
+  --card: oklch(0.205 0.014 250);
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
+  --popover: oklch(0.205 0.014 250);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
+  --secondary: oklch(0.27 0.014 250);
   --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
+  --muted: oklch(0.27 0.014 250);
+  --muted-foreground: oklch(0.71 0.02 250);
+  --accent: oklch(0.27 0.014 250);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
@@ -121,10 +144,11 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
+  /* 导航轨比内容区更深一档，暗色下和画布分得开 */
+  --sidebar: oklch(0.185 0.014 250);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary-foreground: oklch(0.2 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent: oklch(0.27 0.014 250);
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --brand: oklch(0.78 0.11 220);
@@ -154,5 +178,59 @@
       color-mix(in oklch, var(--brand) 14%, transparent),
       transparent 100%
     );
+  }
+
+  /* 面板质感：暗色下沿上沿一条高光，浅色下一层极淡的投影，让面板从"色块"变成有厚度的面。
+     挂在 bg-card 这个工具类上而不是新建 .panel：components/ui 之外的 bg-card 几乎全是面板，
+     这样 48 处调用点一个都不用改，以后新写的面板也自动有。
+     两个例外不用管：bg-card/60（空状态）是另一个类名不会命中；自带 shadow-* 工具类的几处
+     （auth-shell、history 卡片、library 卡片）优先级更高，会盖掉这里，视觉上没问题 */
+  .dark .bg-card {
+    box-shadow: inset 0 1px 0 oklch(1 0 0 / 6%);
+  }
+  :root:not(.dark) .bg-card {
+    box-shadow: 0 1px 2px oklch(0 0 0 / 3%);
+  }
+
+  /* 网格底纹：空状态用，替掉那个到处都是的虚线框。
+     网格画在伪元素上而不是元素本身——遮罩会连同子元素一起吃掉，图标和文字会跟着淡出 */
+  .grid-surface {
+    --grid-line: color-mix(in oklch, var(--border) 60%, transparent);
+    position: relative;
+    isolation: isolate;
+  }
+  :root:not(.dark) .grid-surface {
+    /* 浅色下 --border 本身就淡了，再稀释一遍就看不见了 */
+    --grid-line: var(--border);
+  }
+  .grid-surface::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    background-image:
+      linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+    background-size: 12px 12px;
+    -webkit-mask-image: radial-gradient(ellipse 65% 65% at 50% 50%, #000 25%, transparent 100%);
+    mask-image: radial-gradient(ellipse 65% 65% at 50% 50%, #000 25%, transparent 100%);
+  }
+
+  /* 侧栏选中项左侧的品牌色竖条。挂在 data 属性上，手机抽屉里是同一套按钮，一起生效 */
+  [data-sidebar="menu-button"][data-active="true"] {
+    position: relative;
+  }
+  [data-sidebar="menu-button"][data-active="true"]::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 0;
+    height: 1.125rem;
+    width: 2px;
+    translate: 0 -50%;
+    border-radius: 0 2px 2px 0;
+    background: var(--brand);
   }
 }

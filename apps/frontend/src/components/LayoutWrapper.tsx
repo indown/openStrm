@@ -160,7 +160,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
         {/* 内容列是浅灰画布，表格和面板用 bg-card 浮在上面；暗色下画布就是 background，面板靠 card 更亮来区分。
             min-w-0 不能少：它是侧栏旁边的 flex 项，默认 min-width:auto 会按宽表格的最小宽度算，连同侧栏把整页撑出横向滚动条 */}
         <SidebarInset className="min-w-0 bg-muted/50 dark:bg-background">
-          <header className="sticky top-0 z-20 flex h-14 items-center gap-2 border-b bg-background px-3 sm:px-4">
+          <header className="sticky top-0 z-20 flex h-14 items-center gap-2 border-b border-border/60 bg-background/80 px-3 backdrop-blur-md sm:px-4">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <SidebarTrigger className="-ml-1" />
               <Separator orientation="vertical" className="mr-1 data-[orientation=vertical]:h-5" />

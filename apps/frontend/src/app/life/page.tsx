@@ -312,7 +312,7 @@ export default function LifeMonitorPage() {
                   );
                 })}
               </div>
-              <div className="hidden overflow-hidden rounded-lg border bg-card md:block">
+              <div className="hidden overflow-hidden rounded-xl border bg-card md:block">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -563,7 +563,7 @@ export default function LifeMonitorPage() {
                   </div>
                 ))}
               </div>
-              <div className="hidden overflow-hidden rounded-lg border bg-card md:block">
+              <div className="hidden overflow-hidden rounded-xl border bg-card md:block">
                 <Table>
                   <TableHeader>
                     <TableRow>

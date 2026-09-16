@@ -10,12 +10,12 @@ type EmptyStateProps = {
   className?: string;
 };
 
-/** 列表为空时的占位：虚线框 + 图标 + 一句话 + 主操作，全站一个样 */
+/** 列表为空时的占位：网格底纹 + 图标 + 一句话 + 主操作，全站一个样 */
 export function EmptyState({ icon: Icon, title, description, action, className }: EmptyStateProps) {
   return (
     <div
       className={cn(
-        "flex flex-col items-center justify-center rounded-xl border border-dashed bg-card/60 px-6 py-14 text-center",
+        "grid-surface flex flex-col items-center justify-center rounded-xl border bg-card/60 px-6 py-14 text-center",
         className,
       )}
     >

@@ -323,7 +323,7 @@ function LibraryCard({ entry, followed, savingToTask, onOpen, onEdit, onSaveToTa
   const failed = entry.scrapeStatus === "failed";
 
   return (
-    <div className="group relative rounded-lg border bg-card overflow-hidden flex flex-col hover:shadow-md transition-shadow">
+    <div className="group relative rounded-xl border bg-card overflow-hidden flex flex-col hover:shadow-md transition-shadow">
       <button
         type="button"
         onClick={onOpen}
