@@ -26,3 +26,5 @@ apps/frontend/out
 
 # 个人的 Claude Code 权限设置
 .claude/settings.local.json
+# 临时的 git worktree（工具自己建的），别当子模块提交进来
+.claude/worktrees/

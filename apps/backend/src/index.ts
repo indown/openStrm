@@ -74,7 +74,7 @@ import strmRoute from "./routes/strm/index.js";
 // 115 life-event monitor (incremental cloud-drive change detection)
 import lifeMonitorRoute from "./routes/life/index.js";
 import organizeRoute from "./routes/organize/index.js";
-import { cancelAllRuns, reconcileInterruptedRuns } from "./services/organize/run.js";
+import { cancelAllRuns, collapseStaleReadyRuns, reconcileInterruptedRuns } from "./services/organize/run.js";
 import { startLifeMonitor, stopLifeMonitor } from "./services/life/monitor.js";
 import { flushEmbyRefresh } from "./services/media-server.js";
 
@@ -98,6 +98,9 @@ const interrupted = reconcileInterruptedExecutions();
 if (interrupted > 0) app.log.warn(`[history] ${interrupted} 条执行记录因进程重启被标为失败`);
 const interruptedRuns = reconcileInterruptedRuns();
 if (interruptedRuns > 0) app.log.warn(`[organize] ${interruptedRuns} 次整理因进程重启被标为失败，可以重新执行`);
+// 同一个任务、同一个范围的待执行预览只留最新的一条：旧的按旧网盘状态算，待处理列表里也分不清谁是谁
+const collapsedRuns = collapseStaleReadyRuns();
+if (collapsedRuns > 0) app.log.info(`[organize] ${collapsedRuns} 次待执行的预览被同范围更新的取代，已作废`);
 // 只增不减的几张表：启动清一次，之后每天一次
 startHousekeeping();
 

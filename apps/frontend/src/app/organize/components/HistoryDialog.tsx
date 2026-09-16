@@ -10,7 +10,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Spinner } from "@/components/loading";
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
-import { fmtTime } from "@/lib/format";
+import { fmtTime, fmtWhen } from "@/lib/format";
 import { RUN_STATUS_META, TRIGGER_LABEL, scopeLabel } from "@/lib/organize";
 
 const HISTORY_PAGE = 30;
@@ -76,7 +76,8 @@ export function HistoryDialog({ open, onOpenChange, taskId, onPick }: { open: bo
                       {r.stats.failedByKind.mirror > 0 && <StatusBadge tone="warning" className="tabular-nums">{r.stats.failedByKind.mirror} 本地未同步</StatusBadge>}
                       <span className="min-w-0 flex-1 break-all">{scopeLabel(r)}</span>
                       <span className="text-xs text-muted-foreground tabular-nums">
-                        {r.stats.units} 部 · {r.stats.done > 0 ? `完成 ${r.stats.done}` : `${r.stats.planned} 项`} · {TRIGGER_LABEL[r.trigger]} · {fmtTime(r.createdAt * 1000)}
+                        {r.stats.units} 部 · {r.stats.done > 0 ? `完成 ${r.stats.done}` : `${r.stats.planned} 项`} · {TRIGGER_LABEL[r.trigger]} ·{" "}
+                        <span title={fmtTime(r.createdAt * 1000)}>{fmtWhen(r.createdAt * 1000)}</span>
                       </span>
                       {(r.status === "cancelled" || r.status === "failed") && r.error && <span className="w-full break-all text-xs text-muted-foreground">{r.error}</span>}
                     </button>

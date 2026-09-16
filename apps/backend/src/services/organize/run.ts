@@ -370,8 +370,14 @@ const scopeListOf = (run: OrganizeRun): string[] => (run.scopePaths.length > 0 ?
 /** inner 的每一条路径都在 outer 的某一条路径之下（整个任务覆盖一切） */
 const covers = (outer: string[], inner: string[]): boolean => inner.every((p) => outer.some((o) => o === "" || p === o || p.startsWith(`${o}/`)));
 
+/** 一次预览作废另一次：标已取消、写明原因，内存里的单元结构也丢掉 */
+function supersede(old: OrganizeRun, reason: string): void {
+  updateRun(old.id, { status: "cancelled", error: reason, finishedAt: Math.floor(Date.now() / 1000) });
+  planStates.delete(old.id);
+}
+
 /**
- * 预览完成时，把同任务里范围被它覆盖的旧「待执行」预览作废（标已取消，写明原因）：网盘已经按这次预览的样子来了，
+ * 预览完成时，把同任务里范围被它覆盖的旧「待执行」预览作废：网盘已经按这次预览的样子来了，
  * 旧的留着只会被误执行；范围不被覆盖的（别的目录）照旧留着
  */
 function supersedeCovered(run: OrganizeRun): number {
@@ -379,8 +385,32 @@ function supersedeCovered(run: OrganizeRun): number {
   let n = 0;
   for (const old of listRunsByStatus(["ready"])) {
     if (old.id === run.id || old.taskId !== run.taskId || !covers(scope, scopeListOf(old))) continue;
-    updateRun(old.id, { status: "cancelled", error: "已被新的预览取代", finishedAt: Math.floor(Date.now() / 1000) });
-    planStates.delete(old.id);
+    supersede(old, "已被新的预览取代");
+    n++;
+  }
+  return n;
+}
+
+/**
+ * 启动时收拢堆在一起的「待执行」预览：同一个任务里范围被更新的那次覆盖的，留最新的一条，其余作废。
+ * 每次预览完成本来就会这么收（`supersedeCovered`），这里管的是那之前留下的、和进程重启后没法再改的旧预览——
+ * 待处理列表里一串「tv · 整个任务」谁也分不清，还都是按旧网盘状态算的
+ */
+export function collapseStaleReadyRuns(): number {
+  // createdAt 只到秒，同一秒建的按落库顺序算新旧（后进的更新）
+  const ready = listRunsByStatus(["ready"])
+    .map((run, i) => ({ run, i }))
+    .sort((a, b) => b.run.createdAt - a.run.createdAt || b.i - a.i)
+    .map((x) => x.run);
+  const kept: OrganizeRun[] = [];
+  let n = 0;
+  for (const run of ready) {
+    const newer = kept.find((k) => k.taskId === run.taskId && covers(scopeListOf(k), scopeListOf(run)));
+    if (!newer) {
+      kept.push(run);
+      continue;
+    }
+    supersede(run, "已被同范围更新的预览取代");
     n++;
   }
   return n;

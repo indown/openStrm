@@ -20,6 +20,7 @@ import {
 import { ChevronRight, FolderOpen } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { api, type DirectoryNode, type DriveKind } from "@/lib/api";
+import { DRIVE_FULL_LABEL } from "@/lib/drive";
 import { DEFAULT_FOLLOW_INTERVAL, FOLLOW_INTERVALS } from "@/lib/follow";
 import { toast } from "sonner";
 
@@ -54,8 +55,6 @@ interface SaveToDriveDialogProps {
 }
 
 type RemoteDir = DirectoryNode;
-
-const KIND_LABEL: Record<DriveKind, string> = { "115": "115 网盘", quark: "夸克网盘", openlist: "OpenList" };
 
 export function SaveToDriveDialog({
   open,
@@ -178,7 +177,7 @@ export function SaveToDriveDialog({
               <div className="text-sm text-muted-foreground">加载中...</div>
             ) : tasks.length === 0 ? (
               <div className="text-sm text-muted-foreground">
-                {kind ? `没有${KIND_LABEL[kind]}账号的任务，请先到首页用同类账号创建一个指向目标目录的任务。` : "暂无任务，请先到首页创建一个指向你希望保存到的网盘目录的任务。"}
+                {kind ? `没有${DRIVE_FULL_LABEL[kind]}账号的任务，请先到首页用同类账号创建一个指向目标目录的任务。` : "暂无任务，请先到首页创建一个指向你希望保存到的网盘目录的任务。"}
               </div>
             ) : (
               <Select value={selectedTaskId} onValueChange={handleSelectTask}>

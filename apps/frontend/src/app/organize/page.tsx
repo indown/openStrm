@@ -14,6 +14,7 @@ import { EmptyState } from "@/components/empty-state";
 import { TableSkeleton } from "@/components/loading";
 import { TreeSelectDialog } from "@/components/TreeSelectDialog";
 import { api, type TaskRow } from "@/lib/api";
+import { accountLabel } from "@/lib/drive";
 import { apiErrorMessage } from "@/lib/axios";
 import { notifyOrganizeChanged } from "@/lib/organize";
 import { AttentionList } from "./components/AttentionList";
@@ -202,7 +203,7 @@ function OrganizeContent() {
                 <SelectContent>
                   {tasks.map((t) => (
                     <SelectItem key={t.id} value={t.id}>
-                      {t.originPath} → {t.targetPath}
+                      {accountLabel(t.account, t.accountType)} · {t.originPath} → {t.targetPath}
                     </SelectItem>
                   ))}
                 </SelectContent>

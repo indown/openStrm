@@ -5,7 +5,8 @@ import { Inbox } from "lucide-react";
 import type { OrganizeAttention, OrganizeRun } from "@openstrm/shared";
 import { StatusBadge } from "@/components/status-badge";
 import { api, type TaskRow } from "@/lib/api";
-import { fmtTime } from "@/lib/format";
+import { accountLabel } from "@/lib/drive";
+import { fmtTime, fmtWhen } from "@/lib/format";
 import { ATTENTION_META, ORGANIZE_CHANGED_EVENT, RUN_STATUS_META, TRIGGER_LABEL, notifyOrganizeChanged, scopeLabel } from "@/lib/organize";
 import { POLL_MS } from "./helpers";
 
@@ -15,7 +16,7 @@ function attentionSummary({ run, reason }: OrganizeAttention): string {
   const k = s.failedByKind;
   switch (reason) {
     case "ready":
-      return `${s.units} 部 · ${s.planned} 项要动`;
+      return `${s.units} 部 · ${s.planned} 项要动${s.conflicts > 0 ? ` · ${s.conflicts} 项冲突` : ""}`;
     case "busy":
       return run.progress?.message || RUN_STATUS_META[run.status].label;
     case "failures": {
@@ -28,6 +29,12 @@ function attentionSummary({ run, reason }: OrganizeAttention): string {
     case "preview-failed":
       return run.error || "预览失败";
   }
+}
+
+/** 范围一句话 + 具体是哪几个目录（鼠标停上去看） */
+function scopeTitle(run: OrganizeRun): string {
+  const paths = run.scopePaths.length > 0 ? run.scopePaths : run.scopePath ? [run.scopePath] : [];
+  return paths.length > 0 ? paths.join("\n") : "整个任务目录";
 }
 
 /** 没打开 run 时列出要人管的整理（跨任务）：自动整理的待确认清单、有失败要处理的、撤销没退完的 */
@@ -62,7 +69,11 @@ export function AttentionList({ tasks, onOpen }: { tasks: TaskRow[] | null; onOp
     };
   }, []);
   if (!list || list.length === 0) return null;
-  const taskLabel = (id: string) => tasks?.find((t) => t.id === id)?.originPath ?? id;
+  // 115 和夸克上都可以有个叫 tv 的任务：只写目录名分不出是哪个网盘的
+  const label = (run: OrganizeRun) => {
+    const task = tasks?.find((t) => t.id === run.taskId);
+    return task ? `${accountLabel(task.account, task.accountType)} · ${task.originPath}` : accountLabel(run.accountName);
+  };
   return (
     <section className="space-y-2 rounded-xl border bg-card p-4">
       <div className="flex items-center gap-2 text-sm font-medium">
@@ -80,11 +91,18 @@ export function AttentionList({ tasks, onOpen }: { tasks: TaskRow[] | null; onOp
                   {meta.label}
                 </StatusBadge>
                 <span className="min-w-0 flex-1 break-all">
-                  {taskLabel(r.taskId)}
-                  <span className="text-muted-foreground"> · {scopeLabel(r)}</span>
+                  {label(r)}
+                  <span className="text-muted-foreground" title={scopeTitle(r)}>
+                    {" "}
+                    · {scopeLabel(r)}
+                  </span>
+                  {/* 同一个任务、同一个范围的好几条长得一模一样，时间紧跟在后面才分得清是哪一条 */}
+                  <span className="ml-1.5 text-xs text-muted-foreground tabular-nums" title={fmtTime(r.createdAt * 1000)}>
+                    {fmtWhen(r.createdAt * 1000)}
+                  </span>
                 </span>
                 <span className="text-xs text-muted-foreground tabular-nums">
-                  {attentionSummary(a)} · {TRIGGER_LABEL[r.trigger]} · {fmtTime(r.createdAt * 1000)}
+                  {attentionSummary(a)} · {TRIGGER_LABEL[r.trigger]}
                 </span>
               </button>
             </li>

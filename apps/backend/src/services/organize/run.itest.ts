@@ -50,6 +50,7 @@ import {
   patchItems,
   patchUnit,
   patchUnits,
+  collapseStaleReadyRuns,
   reconcileInterruptedRuns,
   repreviewRun,
   revertRun,
@@ -1592,6 +1593,25 @@ test("单元结构不在内存里（进程重启过）：editable=false、改单
   await untilStatus(again.id, ["ready"]);
   assert.equal(notified.filter((e) => e.type === "organize-review").length, 1, "重新预览是手动的，不再发待确认通知");
   assert.equal(getRunDetail(again.id).units.length, 1);
+});
+
+test("启动时收拢堆着的待执行预览：同任务同范围只留最新的一条", async () => {
+  // 老版本留下的那种堆积：同一个任务连着好几次预览，谁也没作废谁（新预览作废旧的是后来才有的）
+  const small = await createRun({ taskId: "t1", subPath: "inbox/BEEF.S01.1080p" });
+  await untilStatus(small.id, ["ready"]);
+  const whole: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const run = await createRun({ taskId: "t1" });
+    await untilStatus(run.id, ["ready"]);
+    whole.push(run.id);
+  }
+  // 把被新预览作废掉的那几条扳回待执行，模拟没有这套收拢时的样子
+  for (const id of [small.id, ...whole.slice(0, 2)]) updateRun(id, { status: "ready", error: "", finishedAt: null });
+  assert.equal(collapseStaleReadyRuns(), 3, "留最新的一条「整个任务」，它覆盖得了的都作废");
+  assert.deepEqual(whole.map((id) => getRunDetail(id).run.status), ["cancelled", "cancelled", "ready"]);
+  assert.equal(getRunDetail(whole[0]).run.error, "已被同范围更新的预览取代");
+  assert.equal(getRunDetail(small.id).run.status, "cancelled", "范围更小的那次被「整个任务」覆盖");
+  assert.equal(collapseStaleReadyRuns(), 0, "再来一次没有可收的");
 });
 
 test("预览完成时作废范围被它覆盖的旧待执行预览（不覆盖的留着，整个任务覆盖一切）；作废 / 取消的预览不能当失败项执行", async () => {

@@ -20,6 +20,7 @@ import { EmptyState } from "@/components/empty-state";
 import { Spinner, TableSkeleton } from "@/components/loading";
 import { api, type TaskRow } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
+import { accountLabel } from "@/lib/drive";
 import { fmtTime } from "@/lib/format";
 import { RUN_STATUS_META, TRIGGER_LABEL, isBusyStatus, notifyOrganizeChanged } from "@/lib/organize";
 import { AdjustDialog } from "./AdjustDialog";
@@ -306,7 +307,7 @@ export function RunView({
             </div>
             {task && (
               <div className="break-all text-xs text-muted-foreground">
-                任务：{task.originPath} → {task.targetPath}
+                任务：{accountLabel(task.account, task.accountType)} · {task.originPath} → {task.targetPath}
               </div>
             )}
             <div className="break-all text-sm">
