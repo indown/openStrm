@@ -17,7 +17,6 @@ import { writeAuthPassword } from "../../db/repositories/auth.js";
 import { KEY } from "../../db/keys.js";
 import { writeKv } from "../../db/repositories/life.js";
 import { patchAppSettings, readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
-import { APP_VERSION } from "../../lib/version.js";
 import { setNotifySender } from "../../services/telegram/notify.js";
 import { checkForUpdates, EMPTY_STATE, readState, setUpdateDeps } from "../../services/update/service.js";
 
@@ -31,6 +30,9 @@ let calls: Array<{ includePrerelease: boolean }> = [];
 let fail: Error | null = null;
 let notified: string[] = [];
 let clock = 1_000_000;
+/** 当前跑的版本；仓库自己的版本号在 rc 期间是 `x.y.z-rc.n`，用例不能跟着它走 */
+const RELEASE = "2.7.0";
+let current = RELEASE;
 
 const rel = (tag: string, opts: { prerelease?: boolean; draft?: boolean; body?: string } = {}) => ({
   tag_name: tag,
@@ -57,6 +59,7 @@ before(async () => {
       return releases;
     },
     now: () => clock,
+    current: () => current,
   });
   setNotifySender(async (_chatId, text) => {
     notified.push(text);
@@ -84,13 +87,14 @@ beforeEach(() => {
   fail = null;
   notified = [];
   clock = 1_000_000;
+  current = RELEASE;
   writeKv(KEY.updateState, EMPTY_STATE);
   replaceAppSettings({ ...baseline, update: {}, telegram: {} });
 });
 
 test("默认不联网：GET 只回缓存，定时检查不查", async () => {
   const status = await json<UpdateStatus>("GET", "/api/update");
-  assert.deepEqual([status.current, status.enabled, status.outdated, status.state.checkedAt], [APP_VERSION, false, false, 0]);
+  assert.deepEqual([status.current, status.enabled, status.outdated, status.state.checkedAt], [RELEASE, false, false, 0]);
   await checkForUpdates();
   assert.deepEqual(calls, [], "自动检查关着就一个请求都不发");
 });
@@ -111,10 +115,10 @@ test("手动检查：关着也能按，查到新版本写进缓存", async () =>
 });
 
 test("比当前旧或一样的版本不算更新", async () => {
-  releases = [rel(`v${APP_VERSION}`)];
+  releases = [rel(`v${RELEASE}`)];
   const status = await json<UpdateStatus>("POST", "/api/update/check");
   assert.equal(status.outdated, false);
-  assert.equal(status.state.latest?.version, APP_VERSION);
+  assert.equal(status.state.latest?.version, RELEASE);
 });
 
 test("手动检查有节流：5 分钟内再按只回缓存，429 带上还要等多久", async () => {
@@ -152,6 +156,16 @@ test("预发布：正式版只看正式版；跑 rc 或开了开关才看 rc", a
   const status = await json<UpdateStatus>("POST", "/api/update/check");
   assert.equal(calls[1].includePrerelease, true);
   assert.equal(status.state.latest?.version, "99.1.0-rc.1", "开了开关就挑得出 rc");
+
+  // 手上跑的就是 rc：开关没动过也跟 rc 比，不然会被告知「有新版 99.0.0」（比手上的还旧）
+  replaceAppSettings({ ...baseline, update: {}, telegram: {} });
+  writeKv(KEY.updateState, EMPTY_STATE);
+  current = "99.1.0-rc.0";
+  clock += 400;
+  const onRc = await json<UpdateStatus>("POST", "/api/update/check");
+  assert.equal(calls[2].includePrerelease, true, "跑 rc 就自动看 rc");
+  assert.equal(onRc.state.latest?.version, "99.1.0-rc.1");
+  assert.equal(onRc.outdated, true);
 });
 
 test("草稿和认不出的 tag 不当数", async () => {

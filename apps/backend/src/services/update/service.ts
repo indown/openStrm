@@ -42,6 +42,8 @@ interface Deps {
   /** 拉发布列表；includePrerelease 时多拉几条自己挑 */
   fetchReleases: (includePrerelease: boolean, signal?: AbortSignal) => Promise<RawRelease[]>;
   now: () => number;
+  /** 当前跑的版本；用例要同时验「跑正式版」和「跑 rc」两条路，不能跟着仓库自己的版本号走 */
+  current: () => string;
 }
 
 async function fetchFromGithub(includePrerelease: boolean, signal?: AbortSignal): Promise<RawRelease[]> {
@@ -57,7 +59,7 @@ async function fetchFromGithub(includePrerelease: boolean, signal?: AbortSignal)
   return Array.isArray(data) ? data : [data];
 }
 
-const realDeps: Deps = { fetchReleases: fetchFromGithub, now: () => Math.floor(Date.now() / 1000) };
+const realDeps: Deps = { fetchReleases: fetchFromGithub, now: () => Math.floor(Date.now() / 1000), current: () => APP_VERSION };
 let deps: Deps = { ...realDeps };
 
 /** 仅供测试 */
@@ -78,7 +80,7 @@ export const updateEnabled = (settings: AppSettings = readAppSettings()): boolea
 
 /** 这次要不要连预发布一起看：设置里明说了就听它，没说就看当前跑的是不是 rc */
 export const wantsPrerelease = (settings: AppSettings = readAppSettings()): boolean =>
-  settings.update?.includePrerelease ?? isPrerelease(APP_VERSION);
+  settings.update?.includePrerelease ?? isPrerelease(deps.current());
 
 /** 一条发布转成我们要的形状；不是正经版本号（草稿、乱打的 tag）返回 null */
 function toRelease(raw: RawRelease): UpdateRelease | null {
@@ -108,13 +110,13 @@ export function pickLatest(raws: RawRelease[], includePrerelease: boolean): Upda
 }
 
 /** 有没有比当前跑的新 */
-export const isOutdated = (state: UpdateState): boolean => !!state.latest && isNewerVersion(state.latest.version, APP_VERSION);
+export const isOutdated = (state: UpdateState): boolean => !!state.latest && isNewerVersion(state.latest.version, deps.current());
 
 let checking = false;
 
 export function updateStatus(): UpdateStatus {
   const state = readState();
-  return { current: APP_VERSION, enabled: updateEnabled(), outdated: isOutdated(state), checking, state };
+  return { current: deps.current(), enabled: updateEnabled(), outdated: isOutdated(state), checking, state };
 }
 
 export class ThrottledError extends Error {
@@ -171,7 +173,7 @@ async function notifyIfNew(state: UpdateState, settings: AppSettings): Promise<v
   writeState({ ...state, notifiedVersion: latest.version });
   if (settings.telegram?.notify?.update !== true) return;
   try {
-    await notify({ type: "update-available", version: latest.version, current: APP_VERSION, url: latest.url });
+    await notify({ type: "update-available", version: latest.version, current: deps.current(), url: latest.url });
   } catch (err) {
     log.warn({ err }, "新版本通知没发出去");
   }
