@@ -19,3 +19,18 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+Third-party licenses
+
+The monospaced font bundled with the web interface is not covered by the MIT
+license above:
+
+  apps/frontend/public/fonts/jetbrains-mono-latin-400.woff2
+  apps/frontend/public/fonts/jetbrains-mono-latin-500.woff2
+
+  JetBrains Mono, Copyright 2020 The JetBrains Mono Project Authors
+  (https://github.com/JetBrains/JetBrainsMono), licensed under the SIL Open
+  Font License, Version 1.1. The full license text is distributed alongside
+  the font files in apps/frontend/public/fonts/OFL.txt.

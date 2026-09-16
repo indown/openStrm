@@ -279,6 +279,8 @@ docker logs -f openstrm 2>&1 | grep -E "直链|直连|回源|凭据"
 
 本项目采用 [MIT License](LICENSE) 许可证。
 
+界面自带的等宽字体不在 MIT 的范围内：`apps/frontend/public/fonts/` 下的 `jetbrains-mono-latin-*.woff2` 是 JetBrains Mono，按 SIL Open Font License 1.1 分发，许可证原文和字体放在一起（[OFL.txt](apps/frontend/public/fonts/OFL.txt)）。
+
 ## 💬 交流群组
 
 欢迎加入我们的 Telegram 群组进行交流讨论：
