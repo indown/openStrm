@@ -238,3 +238,26 @@ CSS 都在 `globals.css` 的 `@layer components` 里：`progress-scan`、`progre
 **验证**：`typecheck` + `next lint` + 干净 `next build` / 静态导出全过，首屏 JS 仍是 100 kB 没变；构建产物里确认了 reduced-motion 块（`@media (prefers-reduced-motion:reduce){.progress-drift,.running-outline:after,.stream-row,tr[data-running=true]>td:first-child:before{animation:none}...}`）。没有后端造不出"正在跑"，所以临时开了一个 `app/ui-preview` 页把各状态摆出来，浅色暗色都看过，**已删除**。
 
 **没验到的**：页面级接线（真的有任务在跑时的样子）只过了类型和 diff，没跑真机；`prefers-reduced-motion` 只确认了 CSS 进产物，没在系统里真开过；窄屏同样没验。日志行的新行淡入不会在开页时炸一片——SSE 没有快照回放事件，文件行只从连上之后逐条来。
+
+### 阶段 3（2026-09-16，worktree `task-ui`）
+
+登录页背景：一圈慢慢转的雷达扫描，`components/radar-backdrop.tsx`，接在 `AuthShell` 上（登录页和强制改密码页共用这个壳，两边一起有）。
+
+**和计划不一样的一点**：原计划写的是"引 `ogl` 自己写着色器"。真做的时候发现**不需要 WebGL** —— 雷达是同心圆 + 辐条 + 扫描扇形，纯几何，canvas 2D 就够，而且省一个依赖、颜色能直接读 `--brand` 跟主题走、低端设备上更稳。**最终零依赖**，登录 / 改密码两条路由各 +1 kB，共享首屏包没变。
+
+实现上值得记的几点：
+
+- 圆心放在卡片后面偏上（`height * 0.42`）。卡片是不透明的，正好盖住最密的中心，只留外圈的弧。
+- 扫描扇形切成 22 片薄扇叠出渐变，不用 `createConicGradient`（省掉浏览器支持的判断）；总绘制面积就是一个 75° 扇形，不重叠。
+- 光点的亮度只由"扫描线转过它多久"算（`exp(-passed / 0.85)`），**不存状态**，所以改窗口大小、切主题都不会闪。
+- 主题切换只改 `<html>` 的 class，用 MutationObserver 重新读色；标签页切走 / reduced-motion 都走同一条"画一帧静态的然后停"的分支；dpr 封顶 2。
+
+**浏览器里改掉的两处**：
+
+1. 12 根辐条里正好有一根是水平的，横穿整屏、圆心又被卡片挡着，看着像一条分割线。整组转半格（`(i + 0.5) / SPOKE_COUNT`），不让任何一根落在正轴上。
+2. 环和扫描扇的透明度改成按主题分开（浅色 0.15 / 0.3，暗色 0.1 / 0.24）：同一个值在两个主题下轻重差很多。
+3. 顺手把 `.auth-backdrop` 的径向渐变加了个中间色标，尾巴拉长一点，和雷达叠起来更顺。
+
+**验证**：typecheck + lint + 干净构建 / 静态导出全过；浅色暗色都看过；控制台无报错。
+
+**一个教训（测试方法本身出的错）**：想用 `document.hidden` 伪造标签页切走来验"停止 / 静止帧"分支，前两次结论都是错的 —— 这个被扩展驱动的标签页真实 `visibilityState` 就是 `hidden`，Chrome 在这种标签页里**根本不跑 rAF**（自插的计数 rAF 在 500ms 里跑了 0 次），所以"前后两帧相同"根本不能证明什么。正确的验法是反过来：把伪造删掉、让 `document.hidden` 回到真实的 `true`，静止分支会**同步**画一帧 —— 采样到 9109 个像素被画到，700ms 后仍是同一帧。以后在这个环境里验 canvas 动画，别拿"帧有没有变"当判据。

@@ -171,11 +171,13 @@
 }
 
 @layer components {
-  /* 登录 / 改密码页的背景：顶部一团很淡的品牌色光晕，别的什么都不加 */
+  /* 登录 / 改密码页的背景：顶部一团很淡的品牌色光晕，雷达扫描画在它上面。
+     中间多一个色标是为了把尾巴拉长——两个色标的线性衰减在椭圆边缘会留一条看得见的横向硬边 */
   .auth-backdrop {
     background-image: radial-gradient(
-      60% 45% at 50% 0%,
+      70% 50% at 50% 0%,
       color-mix(in oklch, var(--brand) 14%, transparent),
+      color-mix(in oklch, var(--brand) 4%, transparent) 55%,
       transparent 100%
     );
   }
