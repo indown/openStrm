@@ -9,9 +9,14 @@
  *   conflict  目标已存在且不是同一节点 / 两个源指向同一目标 / 目标落进别的任务（附属文件——字幕 / nfo / 图片——撞名不算，留在原处）
  *   skip      没识别、没集数、找不到对应视频的字幕、不认识的文件；附属文件的目标被占、或它跟着的视频没挪
  *
+ * 冲突项用户可以选怎么办（`resolutions`）：改名保留（加区分后缀）、自己填名字、挪进任务根下的重复文件目录、
+ * 删掉这一份、覆盖（删掉目标那份再挪过去）；跟着的字幕 / nfo 一起走。不选就留在原处。
+ * 删除只在用户明确选了才有，落成单独的 delete 项——执行后撤销退不回来
+ *
  * 路径：输入输出都是相对任务 originPath 的路径；run.ts 落库时再拼成网盘绝对路径。
  */
-import type { OrganizeAction, OrganizeFileKind, OrganizeMatch } from "@openstrm/shared";
+import type { OrganizeAction, OrganizeConflictChoice, OrganizeConflictResolution, OrganizeFileKind, OrganizeMatch } from "@openstrm/shared";
+import { DUPLICATES_DIR, duplicatePathFor } from "./duplicates.js";
 import { normalizeTitle, trailingNumber } from "./parse-name.js";
 import type { ResolvedOrganizeSettings } from "./settings.js";
 import { pickCategory } from "./settings.js";
@@ -31,7 +36,12 @@ export interface PlannedItem {
   follows?: string[];
   /** 附属文件：目标被占了就留在原处（skip），不算冲突、不卡自动整理。规划期用，不落库 */
   soft?: boolean;
+  /** 用户给这一项选的冲突处理；撞上了才用得着。规划期用，不落库 */
+  resolve?: OrganizeConflictChoice;
+  /** 改名保留时依次试的目标（先按画质 / 来源这些标签区分，再 (2)(3)）。规划期用，不落库 */
+  variants?: string[];
 }
+
 
 export interface UnitPlan {
   unitKey: string;
@@ -51,6 +61,8 @@ export interface UnitPlanInput {
   selected: boolean;
   /** 用户单独取消勾选的文件（相对任务 originPath）：跳过，跟着它们的字幕 / nfo 一起留下 */
   excluded?: ReadonlySet<string>;
+  /** 用户给冲突项选的处理（相对任务 originPath）：撞上了按它来，没选就留在原处 */
+  resolutions?: ReadonlyMap<string, OrganizeConflictResolution>;
 }
 
 /** 单独取消勾选的文件跳过时的原因 */
@@ -164,6 +176,36 @@ function fileVars(file: UnitFile): TemplateVars {
   };
 }
 
+/**
+ * 改名保留时依次试的目标名：先拿这个文件自己的版本标签区分（`凡人修仙传 - S01E135 - 2160p.mp4`，Emby 认这种多版本写法），
+ * 标签都用上了还撞就 `(2)`、`(3)`。目标名里已经有的标签不再重复加
+ */
+function renameVariants(dst: string, file: UnitFile): string[] {
+  const dir = dirOf(dst);
+  const name = baseOf(dst);
+  const ext = name.includes(".") ? name.slice(name.lastIndexOf(".")) : "";
+  const stem = ext ? name.slice(0, -ext.length) : name;
+  const lower = stem.toLowerCase();
+  const t = file.parsed.tags;
+  const tags = [t.resolution, t.source, t.hdr, t.videoCodec, t.audio, t.group, file.parsed.edition].filter((x): x is string => !!x && !lower.includes(x.toLowerCase()));
+  const out: string[] = [];
+  let suffix = "";
+  for (const tag of tags) {
+    suffix += ` - ${tag}`;
+    out.push(join(dir, `${stem}${suffix}${ext}`));
+  }
+  for (let i = 2; i <= 9; i++) out.push(join(dir, `${stem}${suffix} (${i})${ext}`));
+  return out;
+}
+
+/** 这个路径本身，加上撞了名再往后排的 `(2)`…`(9)`：挪进重复文件目录时那边也可能已经有同名的 */
+function numberedVariants(path: string): string[] {
+  const m = /\.[^./]+$/.exec(path);
+  const ext = m ? m[0] : "";
+  const stem = ext ? path.slice(0, -ext.length) : path;
+  return [path, ...Array.from({ length: 8 }, (_, i) => `${stem} (${i + 2})${ext}`)];
+}
+
 /** 字幕的目标：视频主名 + 语言 + 标记 + 扩展名 */
 function subtitleName(videoDst: string, sub: UnitFile): string {
   const stem = videoDst.replace(/\.[^./]+$/, "");
@@ -180,9 +222,20 @@ export function planUnit(input: UnitPlanInput, ctx: PlanContext): UnitPlan {
   // 单元阶段按「同名的多个版本」猜成了电影；TMDB 认成剧集时这句话就不对了
   if (unit.multiVersion && match?.mediaType !== "tv") notes.push(`${unit.multiVersion} 个视频没有集数标记，按同一部电影的多个版本处理`);
   const items: PlannedItem[] = [];
+  const resolutions = input.resolutions;
+  /** 用户自己填了目标文件名：目录还是整理算出来的，名字换成他填的（没带扩展名就沿用原来的） */
+  const named = (file: UnitFile, dst: string | null): string | null => {
+    const r = resolutions?.get(file.path);
+    if (!dst || r?.how !== "custom" || !r.name) return dst;
+    const name = r.name.trim();
+    return join(dirOf(dst), name.toLowerCase().endsWith(file.ext) ? name : `${name}${file.ext}`);
+  };
   const push = (file: UnitFile, dst: string | null, reason = "", forced?: OrganizeAction, extra?: Pick<PlannedItem, "follows" | "soft">) => {
-    const action = forced ?? (dst === null ? "skip" : actionFor(file.path, dst));
-    items.push({ unitKey: unit.key, kind: file.kind, action, srcPath: file.path, dstPath: dst ?? file.path, nodeId: file.id ?? "", reason, ...extra });
+    const target = named(file, dst);
+    const action = forced ?? (target === null ? "skip" : actionFor(file.path, target));
+    const resolve = resolutions?.get(file.path)?.how;
+    const variants = resolve === "rename" && target ? renameVariants(target, file) : undefined;
+    items.push({ unitKey: unit.key, kind: file.kind, action, srcPath: file.path, dstPath: target ?? file.path, nodeId: file.id ?? "", reason, resolve, variants, ...extra });
   };
 
   if (!match) {
@@ -257,15 +310,17 @@ export function planUnit(input: UnitPlanInput, ctx: PlanContext): UnitPlan {
       push(f, null, `模板有问题：${r.errors.join("；") || "空路径"}`);
       continue;
     }
-    videoDst.set(f, r.path);
+    videoDst.set(f, named(f, r.path)!);
     push(f, r.path);
   }
 
-  // 同一单元里两个视频算出同一个目标（画质标签一样的多版本）：后面的标冲突
+  // 同一单元里两个视频算出同一个目标（画质标签一样的多版本）：后面的标冲突。
+  // 用户给这一份选过办法（改名保留 / 删掉…）就先留着目标，让 finalizeItems 按他选的安排
   const seen = new Map<string, UnitFile>();
   for (const [f, dst] of videoDst) {
     const first = seen.get(dst);
     if (first) {
+      if (resolutions?.has(f.path)) continue;
       const it = items.find((i) => i.srcPath === f.path)!;
       it.action = "conflict";
       it.reason = `和 ${first.name} 算出同一个目标名，请改模板加上 {source} / {group} 之类的区分`;
@@ -393,12 +448,18 @@ export interface DirOpsInput {
  * 跨单元冲突检测 + 目录操作。返回完整的项列表（mkdir 在前、文件项在中、rmdir 在后）。
  *   - 两个源指向同一目标：后者冲突
  *   - 目标已存在且不是正被挪走的源：冲突
+ *   - 冲突项用户选过办法（改名保留 / 挪进重复文件 / 删掉这一份 / 覆盖）的按他选的来，跟着的字幕 / nfo 一起走
  *   - 目标目录缺失：mkdir（按深度）
  *   - 源目录腾空：rmdir（按深度倒序）
  */
 export function finalizeItems(plans: UnitPlan[], input: DirOpsInput): PlannedItem[] {
   const items = plans.flatMap((p) => p.items);
   const existing = new Set(input.entries.map((e) => e.path));
+  const entryByPath = new Map(input.entries.map((e) => [e.path, e]));
+  /** 用户选了删除 / 覆盖，执行时会从网盘上删掉的路径：撞名检查和「源目录腾空了没」都当它不在 */
+  const removed = new Set<string>();
+  /** 覆盖时先删掉占位那份：挂在对应的项前面，一起落进最终的清单 */
+  const before = new Map<PlannedItem, PlannedItem[]>();
   const existingDirs = new Set<string>();
   const dirIds = new Map<string, string>();
   for (const e of input.entries) {
@@ -418,6 +479,8 @@ export function finalizeItems(plans: UnitPlan[], input: DirOpsInput): PlannedIte
     it.action = it.soft ? "skip" : "conflict";
     it.reason = it.soft ? softReason : conflictReason;
   };
+  /** 一项只换一次目标：换完还撞（别的项抢在前面）就按冲突留下，免得两项互相挤来挤去 */
+  const retargeted = new Set<PlannedItem>();
   // 冲突、「跟着的视频没挪」都会让项留在原处，它占着的源位置就不能再当「会腾出来」：按还在挪的项重算，
   // 直到一轮下来没有新的项留下。项只会从挪变留，一定收敛，通常一两轮
   for (let changed = true; changed; ) {
@@ -425,6 +488,56 @@ export function finalizeItems(plans: UnitPlan[], input: DirOpsInput): PlannedIte
     const movingSrc = new Set(items.filter(isMoving).map((i) => i.srcPath));
     const settled = new Set(items.filter((i) => isMoving(i) || i.action === "keep").map((i) => i.srcPath));
     const claimed = new Map<string, PlannedItem>();
+    const taken = (p: string) => (existing.has(p) && !movingSrc.has(p) && !removed.has(p)) || existingDirs.has(p) || claimed.has(p);
+    /** 跨目录且改名的项先在源目录里原地改名再挪：中间名字也得是空的 */
+    const usable = (it: PlannedItem, dst: string) => {
+      if (taken(dst)) return false;
+      if (dirOf(dst) === dirOf(it.srcPath) || baseOf(it.srcPath) === baseOf(dst)) return true;
+      return !taken(join(dirOf(it.srcPath), baseOf(dst)));
+    };
+    /**
+     * 用户给这个冲突项选过办法就换个目标接着走：改名保留（加区分后缀）或挪进重复文件目录；跟着它的字幕 / nfo 一起换。
+     * 没选、或者候选位置全被占了，返回 false 按冲突留在原处
+     */
+    const retarget = (it: PlannedItem): boolean => {
+      if (!it.resolve || it.resolve === "custom" || retargeted.has(it)) return false;
+      const stem = it.dstPath.replace(/\.[^./]+$/, "");
+      // 跟着这个视频、又是按它的名字命名的（字幕、同名 nfo）：一起走
+      const followers = items.filter((f) => f !== it && f.follows?.includes(it.srcPath) && f.dstPath.startsWith(stem));
+      if (it.resolve === "delete") {
+        retargeted.add(it);
+        for (const f of [it, ...followers]) {
+          removed.add(f.srcPath);
+          f.action = "delete";
+          f.dstPath = f.srcPath;
+          f.reason = f === it ? "你选了删掉这一份" : `跟着 ${baseOf(it.srcPath)} 一起删掉`;
+        }
+        return true;
+      }
+      if (it.resolve === "replace") {
+        // 占着位置的得是网盘上一个实实在在的文件：目录、或者本轮别的项要挪过去的位置，覆盖不了
+        const hit = entryByPath.get(it.dstPath);
+        if (!hit || hit.isDir || existingDirs.has(it.dstPath) || claimed.has(it.dstPath)) return false;
+        retargeted.add(it);
+        removed.add(it.dstPath);
+        before.set(it, [{ unitKey: it.unitKey, kind: it.kind, action: "delete", srcPath: it.dstPath, dstPath: it.dstPath, nodeId: hit.id ?? "", reason: `覆盖：先删掉这里原来的 ${baseOf(it.dstPath)}` }]);
+        it.reason = "覆盖：删掉原来那份再挪过来";
+        return true; // 目标这一轮才腾出来，下一轮再认领
+      }
+      const candidates = it.resolve === "rename" ? (it.variants ?? []) : numberedVariants(duplicatePathFor(it.srcPath));
+      const free = candidates.find((c) => usable(it, c));
+      if (!free) return false;
+      retargeted.add(it);
+      const dup = it.resolve === "duplicate";
+      it.dstPath = free;
+      it.action = actionFor(it.srcPath, free);
+      it.reason = dup ? `和已有的重复，挪进 ${DUPLICATES_DIR}/ 留着` : `目标已存在，改名保留成 ${baseOf(free)}`;
+      for (const f of followers) {
+        f.dstPath = dup ? duplicatePathFor(f.srcPath) : `${free.replace(/\.[^./]+$/, "")}${f.dstPath.slice(stem.length)}`;
+        f.action = actionFor(f.srcPath, f.dstPath);
+      }
+      return true;
+    };
     for (const it of items) {
       if (!isMoving(it)) continue;
       if (it.follows && !it.follows.some((p) => settled.has(p))) {
@@ -435,20 +548,20 @@ export function finalizeItems(plans: UnitPlan[], input: DirOpsInput): PlannedIte
       }
       const other = claimed.get(it.dstPath);
       if (other) {
-        stay(it, `目标和 ${baseOf(other.srcPath)} 重复`, `和 ${baseOf(other.srcPath)} 要去同一个位置，留在原处`);
+        if (!retarget(it)) stay(it, `目标和 ${baseOf(other.srcPath)} 重复`, `和 ${baseOf(other.srcPath)} 要去同一个位置，留在原处`);
         changed = true;
         continue;
       }
-      if ((existing.has(it.dstPath) && !movingSrc.has(it.dstPath)) || existingDirs.has(it.dstPath)) {
-        stay(it, "目标已存在", "目标位置已经有同名的，留在原处");
+      if ((existing.has(it.dstPath) && !movingSrc.has(it.dstPath) && !removed.has(it.dstPath)) || existingDirs.has(it.dstPath)) {
+        if (!retarget(it)) stay(it, "目标已存在", "目标位置已经有同名的，留在原处");
         changed = true;
         continue;
       }
       // 跨目录且改名的项先在源目录里原地改名再挪：中间名字不能撞上源目录里不动的文件，也不能两个项撞同一个
       if (it.action === "move" && baseOf(it.srcPath) !== baseOf(it.dstPath)) {
         const intermediate = join(dirOf(it.srcPath), baseOf(it.dstPath));
-        if ((existing.has(intermediate) && !movingSrc.has(intermediate)) || existingDirs.has(intermediate) || claimed.has(intermediate)) {
-          stay(it, `源目录里已有 ${baseOf(it.dstPath)}，改名会撞上`, `源目录里已有 ${baseOf(it.dstPath)}，改名会撞上，留在原处`);
+        if (taken(intermediate)) {
+          if (!retarget(it)) stay(it, `源目录里已有 ${baseOf(it.dstPath)}，改名会撞上`, `源目录里已有 ${baseOf(it.dstPath)}，改名会撞上，留在原处`);
           changed = true;
           continue;
         }
@@ -477,11 +590,11 @@ export function finalizeItems(plans: UnitPlan[], input: DirOpsInput): PlannedIte
   // rmdir：源目录里没剩东西的（按范围里的清单算）
   const rmdirs: PlannedItem[] = [];
   if (input.cleanupEmptyDirs) {
-    // 按最终结果算：留在原处的项（冲突、附属文件留下）还占着源目录
+    // 按最终结果算：留在原处的项（冲突、附属文件留下）还占着源目录；删掉的不占
     const moved = items.filter(isMoving);
     const movedSrc = new Set(moved.map((i) => i.srcPath));
     const remaining = new Set<string>();
-    for (const p of existing) if (!movedSrc.has(p)) remaining.add(p);
+    for (const p of existing) if (!movedSrc.has(p) && !removed.has(p)) remaining.add(p);
     for (const it of moved) remaining.add(it.dstPath);
     for (const d of needDirs) remaining.add(`${d}/`);
     const roots = input.scopeRoots ?? [{ path: input.scopePath ?? "", removable: !!input.scopeRemovable }];
@@ -489,8 +602,8 @@ export function finalizeItems(plans: UnitPlan[], input: DirOpsInput): PlannedIte
     const inside = (d: string) => roots.some((r) => (r.path === "" ? d !== "" : d.startsWith(`${r.path}/`)));
     const removableRoot = (d: string) => roots.some((r) => r.removable && r.path !== "" && r.path === d);
     const candidates = new Set<string>();
-    for (const it of moved) {
-      if (it.action !== "move") continue;
+    for (const it of [...moved, ...items.filter((i) => i.action === "delete")]) {
+      if (it.action !== "move" && it.action !== "delete") continue;
       let d = dirOf(it.srcPath);
       while (d && inside(d)) {
         candidates.add(d);
@@ -510,5 +623,5 @@ export function finalizeItems(plans: UnitPlan[], input: DirOpsInput): PlannedIte
       remaining.delete(d);
     }
   }
-  return [...mkdirs, ...items, ...rmdirs];
+  return [...mkdirs, ...items.flatMap((it) => [...(before.get(it) ?? []), it]), ...rmdirs];
 }

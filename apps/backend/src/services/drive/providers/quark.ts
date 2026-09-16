@@ -328,6 +328,12 @@ class QuarkWrite implements DriveWriteOps {
     forgetQuarkPaths(this.account, [node.path]);
     return true;
   }
+
+  /** 夸克的删除是进回收站 */
+  async remove(node: WriteNode, signal?: AbortSignal): Promise<void> {
+    await this.settle(await quarkDelete(this.account, [node.id], signal), signal);
+    forgetQuarkPaths(this.account, [node.path]);
+  }
 }
 
 /** 给日志用：节点名 */

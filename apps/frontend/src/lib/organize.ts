@@ -5,6 +5,7 @@ import type {
   OrganizeAction,
   OrganizeAttentionReason,
   OrganizeConfidence,
+  OrganizeConflictChoice,
   OrganizeErrorKind,
   OrganizeFailureGroupKey,
   OrganizeRun,
@@ -40,6 +41,25 @@ export const ACTION_META: Record<OrganizeAction, { label: string; tone: StatusTo
   rmdir: { label: "删空目录", tone: "neutral" },
   skip: { label: "跳过", tone: "neutral" },
   conflict: { label: "冲突", tone: "danger" },
+  delete: { label: "删除", tone: "danger" },
+};
+
+/** 冲突怎么办：下拉里的选项，顺序就是这里的顺序。删除的两条排最后，文案里说清楚退不回来 */
+export const CONFLICT_CHOICES: Array<{ key: OrganizeConflictChoice | "stay"; label: string; hint: string; danger?: boolean }> = [
+  { key: "stay", label: "留在原处", hint: "这个文件不动，还是冲突（也可以直接取消勾选它）" },
+  { key: "rename", label: "改名保留两份", hint: "给这一份加个区分后缀（画质 / 来源 / 压制组，认不出就 (2)），两份并排放着" },
+  { key: "custom", label: "自己改名…", hint: "自己填目标文件名，目录还是整理算出来的位置" },
+  { key: "duplicate", label: "挪进重复文件目录", hint: "挪到任务根下的「重复文件」目录，原来的目录层级留着；那里不生成本地 strm、也不再被整理扫描，之后自己在网盘里处理" },
+  { key: "delete", label: "删掉这一份", hint: "把正在整理的这个文件删掉，目标那份不动；115 / 夸克进回收站，撤销退不回来", danger: true },
+  { key: "replace", label: "覆盖那一份", hint: "先删掉目标位置已有的那个文件，再把这一份挪过去；撤销退不回来", danger: true },
+];
+
+export const CONFLICT_LABEL: Record<OrganizeConflictChoice, string> = {
+  rename: "改名保留",
+  custom: "自己改名",
+  duplicate: "挪进重复文件",
+  delete: "删掉这一份",
+  replace: "覆盖",
 };
 
 /** 失败类别：一句话说清楚为什么、下一步做什么（执行阶段的含义；撤销阶段的文案在失败面板里单独写） */

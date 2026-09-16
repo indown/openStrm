@@ -66,7 +66,7 @@ export interface WriteNode {
 
 /**
  * 网盘写操作（整理用）。约定：
- *   - 只改名 / 移动 / 建目录 / 删空目录，绝不删文件。
+ *   - 改名 / 移动 / 建目录 / 删空目录；删文件只在用户对某个冲突明确选了删除 / 覆盖时才会调 remove，整理自己永远不删。
  *   - 返回改动后的 id：115 / 夸克的 id 不变，OpenList 的 id 就是路径，改名 / 移动后会变。
  *   - 各家自己更新缓存（115 的 path_cache 让监控之后还能认出旧路径）。
  */
@@ -79,6 +79,11 @@ export interface DriveWriteOps {
   move(nodes: WriteNode[], to: { id: string; path: string }, signal?: AbortSignal): Promise<Array<{ id: string }>>;
   /** 目录空了才删；非空返回 false */
   rmdirIfEmpty(node: WriteNode, signal?: AbortSignal): Promise<boolean>;
+  /**
+   * 删掉一个文件：只有用户在整理的冲突上选了「删掉这一份」/「覆盖」才调。
+   * 115 / 夸克进回收站，OpenList 看存储后端（本地存储是直接删）
+   */
+  remove(node: WriteNode, signal?: AbortSignal): Promise<void>;
 }
 
 export interface DriveProvider {

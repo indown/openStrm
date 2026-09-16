@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hasReleaseNoise, isExtrasDirName, parseCjkNumber, parseMediaName, seasonDirNumber, stripSubtitleSuffix, titleCandidates, trailingNumber, type ParsedName, looksLikeReleaseDir } from "./parse-name.js";
+import { hasReleaseNoise, isExtrasDirName, numericTitle, parseCjkNumber, parseMediaName, seasonDirNumber, stripSubtitleSuffix, titleCandidates, trailingNumber, type ParsedName, looksLikeReleaseDir } from "./parse-name.js";
 
 type Expect = Partial<Omit<ParsedName, "tags" | "titles">> & { tags?: Partial<ParsedName["tags"]>; titles?: string[] };
 
@@ -183,6 +183,16 @@ test("名字里夹着看不见的字符（零宽空格 / BOM / 软连字符）�
   assert.equal(seasonDirNumber("Season\u200B 02"), 2);
   assert.equal(isExtrasDirName("花\u200B絮"), true);
   assert.equal(hasReleaseNoise("怒呛人生 - S01E\u200B01"), false, "规范形状里夹了零宽空格还是规范形状");
+});
+
+test("整个标题就是数字：是不是集数交给调用方", () => {
+  assert.equal(numericTitle(parseMediaName("129 4K")), 129, "数字后面只剩技术词");
+  assert.equal(numericTitle(parseMediaName("0129 4K")), 129, "前导零去掉");
+  assert.equal(numericTitle(parseMediaName("007 1080p")), null, "补零的两位数解析时已经当集数了");
+  assert.equal(numericTitle(parseMediaName("129")), null, "整名就是数字：解析时已经当集数了");
+  assert.equal(numericTitle(parseMediaName("1917 4K")), null, "四位数不给");
+  assert.equal(numericTitle(parseMediaName("2012 2009 1080p")), null, "名字里带年份的更像电影");
+  assert.equal(numericTitle(parseMediaName("某剧 129 4K")), null, "还有别的标题词");
 });
 
 test("标题末尾的数字：拆成标题 + 数字，是不是集数交给调用方", () => {

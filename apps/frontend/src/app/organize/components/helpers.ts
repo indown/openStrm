@@ -19,10 +19,11 @@ export function toastRunError(err: unknown, fallback: string, openRun: (id: stri
 
 /** 执行确认框里的「会动什么」：stats.planned 里含建目录 / 删目录，文件和目录分开说 */
 export function plannedText(stats: OrganizeRunStats): string {
-  const files = stats.planned - stats.plannedMkdir - stats.plannedRmdir;
+  const files = stats.planned - stats.plannedMkdir - stats.plannedRmdir - (stats.plannedDelete ?? 0);
   const parts = [`改名 / 移动 ${files} 个文件`];
   if (stats.plannedMkdir > 0) parts.push(`建 ${stats.plannedMkdir} 个目录`);
   if (stats.plannedRmdir > 0) parts.push(`删 ${stats.plannedRmdir} 个腾空的目录`);
+  if (stats.plannedDelete > 0) parts.push(`删掉 ${stats.plannedDelete} 个文件`);
   return parts.join("，");
 }
 

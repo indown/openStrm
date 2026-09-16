@@ -78,6 +78,21 @@ export async function mirrorRelocate(op: { oldPath: string; newPath: string; isD
   return "none";
 }
 
+/**
+ * 网盘上删掉了一个文件（用户在整理的冲突上选了删除 / 覆盖）：本地对应的 strm / 下载文件也删掉，顺带清掉空目录。
+ * 本地没有就当做完
+ */
+export async function mirrorDelete(panPath: string, deps: MirrorDeps): Promise<boolean> {
+  const ctx = { tasks: deps.tasks, settings: deps.settings };
+  const match = matchTask(ctx, panPath);
+  if (!match) return false;
+  const local = localPathFor(match, ctx, match.relPath);
+  if (!local || !(await pathExists(local))) return false;
+  await fsp.rm(local, { force: true });
+  await removeEmptyParents(path.dirname(local), match.saveDir);
+  return true;
+}
+
 /** 网盘上删掉了空目录：本地同名目录空的话也删掉 */
 export async function mirrorRmdir(dirPath: string, deps: MirrorDeps): Promise<boolean> {
   const match = matchTask({ tasks: deps.tasks }, dirPath);

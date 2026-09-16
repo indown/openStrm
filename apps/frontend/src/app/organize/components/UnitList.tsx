@@ -3,12 +3,13 @@
 import { useMemo, useState } from "react";
 import Image from "next/image";
 import { AlertTriangle, CheckCheck, ChevronDown, ChevronRight, ExternalLink, Film, Loader2, Search, SlidersHorizontal, Tv } from "lucide-react";
-import type { OrganizeItem, OrganizeRunStage, OrganizeUnit, OrganizeUnitCounts, OrganizeUnitPatch } from "@openstrm/shared";
+import type { OrganizeConflictChoice, OrganizeItem, OrganizeRunStage, OrganizeUnit, OrganizeUnitCounts, OrganizeUnitPatch } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status-badge";
-import { ACTION_META, CONFIDENCE_META, ERROR_KIND_META, baseName, dirName } from "@/lib/organize";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { ACTION_META, CONFIDENCE_META, CONFLICT_CHOICES, CONFLICT_LABEL, ERROR_KIND_META, baseName, dirName } from "@/lib/organize";
 import { useRunItems } from "./helpers";
 
 const NO_COUNTS: OrganizeUnitCounts = { total: 0, changing: 0, conflicts: 0, skipped: 0, keep: 0, failed: 0, done: 0, reverted: 0, excluded: 0 };
@@ -43,7 +44,8 @@ const rank = (r: Row) => (r.attention ? 0 : r.changing ? 1 : 2);
 
 /**
  * 单元列表：工具条（筛选 / 按名字找 / 排序 / 批量勾选）+ 一部作品一张卡 + 不属于任何作品的目录操作。
- * 「全部」里已经规范的作品收成一行；文件清单展开时才拉
+ * 「全部」里已经规范的作品收成一行；文件清单展开时才拉；冲突的行上有「怎么办」下拉（改名保留 / 自己改名 /
+ * 挪进重复文件 / 删掉 / 覆盖）
  */
 export function UnitList({
   runId,
@@ -60,6 +62,7 @@ export function UnitList({
   onBulk,
   onOnlyHigh,
   onToggleItems,
+  onResolve,
   onMatch,
   onAdjust,
 }: {
@@ -81,6 +84,8 @@ export function UnitList({
   onBulk: (keys: string[], selected: boolean) => void;
   onOnlyHigh: (units: OrganizeUnit[]) => void;
   onToggleItems: (unit: OrganizeUnit, ids: string[], selected: boolean) => void;
+  /** 冲突行上选了办法（"stay" 是撤回选择，"custom" 由调用方弹框问名字） */
+  onResolve: (unit: OrganizeUnit, item: OrganizeItem, how: OrganizeConflictChoice | "stay") => void;
   onMatch: (unit: OrganizeUnit) => void;
   onAdjust: (unit: OrganizeUnit) => void;
 }) {
@@ -162,6 +167,7 @@ export function UnitList({
           onToggle={(selected) => onPatch(r.unit, { selected })}
           onRemember={(remember) => onPatch(r.unit, { remember })}
           onToggleItems={(ids, selected) => onToggleItems(r.unit, ids, selected)}
+          onResolve={(item, how) => onResolve(r.unit, item, how)}
           onMatch={() => onMatch(r.unit)}
           onAdjust={() => onAdjust(r.unit)}
         />
@@ -199,6 +205,7 @@ function UnitCard({
   onToggle,
   onRemember,
   onToggleItems,
+  onResolve,
   onMatch,
   onAdjust,
 }: {
@@ -213,6 +220,7 @@ function UnitCard({
   onToggle: (selected: boolean) => void;
   onRemember: (remember: boolean) => void;
   onToggleItems: (ids: string[], selected: boolean) => void;
+  onResolve: (item: OrganizeItem, how: OrganizeConflictChoice | "stay") => void;
   onMatch: () => void;
   onAdjust: () => void;
 }) {
@@ -317,6 +325,7 @@ function UnitCard({
           editable={editable && unit.selected && !!m}
           pending={pending}
           onToggleItems={onToggleItems}
+          onResolve={onResolve}
         />
       )}
     </div>
@@ -341,6 +350,7 @@ function UnitFiles({
   editable,
   pending,
   onToggleItems,
+  onResolve,
 }: {
   runId: string;
   unit: OrganizeUnit;
@@ -349,12 +359,25 @@ function UnitFiles({
   editable: boolean;
   pending: boolean;
   onToggleItems: (ids: string[], selected: boolean) => void;
+  onResolve: (item: OrganizeItem, how: OrganizeConflictChoice | "stay") => void;
 }) {
   const { items, error } = useRunItems(runId, { unit: unit.key }, true, version);
   const excluded = useMemo(() => new Set(unit.excluded), [unit.excluded]);
   if (error) return <p className="mt-3 break-all text-xs text-destructive">{error}</p>;
   if (!items) return <FilesLoading />;
-  return <ItemsTable items={items} stage={stage} unitSelected={unit.selected} editable={editable} excluded={excluded} pending={pending} onToggleItems={onToggleItems} />;
+  return (
+    <ItemsTable
+      items={items}
+      stage={stage}
+      unitSelected={unit.selected}
+      editable={editable}
+      excluded={excluded}
+      resolutions={unit.resolutions ?? {}}
+      pending={pending}
+      onToggleItems={onToggleItems}
+      onResolve={onResolve}
+    />
+  );
 }
 
 /** 状态只描述文件在哪，类别说为什么：done 带 mirror 是网盘好了本地没跟上，撤销阶段 done 带别的类别是没退回 */
@@ -388,14 +411,38 @@ function reasonClass(it: OrganizeItem, unitSelected: boolean, userExcluded: bool
   return "text-muted-foreground";
 }
 
+/** 冲突怎么办：下拉菜单，当前选了什么就显示什么 */
+function ConflictMenu({ current, disabled, onPick }: { current?: string; disabled: boolean; onPick: (how: OrganizeConflictChoice | "stay") => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm" className="mt-1 h-6 gap-1 px-1.5 text-[11px] font-normal" disabled={disabled}>
+          {current ?? "怎么办"}
+          <ChevronDown className="size-3 opacity-60" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="max-w-[min(20rem,calc(100vw-2rem))]">
+        {CONFLICT_CHOICES.map((c) => (
+          <DropdownMenuItem key={c.key} onSelect={() => onPick(c.key)} className={`flex-col items-start gap-0.5 ${c.danger ? "text-destructive focus:text-destructive" : ""}`}>
+            <span className="text-xs font-medium">{c.label}</span>
+            <span className="text-[11px] whitespace-normal text-muted-foreground">{c.hint}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function ItemsTable({
   items,
   stage,
   unitSelected,
   editable,
   excluded,
+  resolutions,
   pending,
   onToggleItems,
+  onResolve,
 }: {
   items: OrganizeItem[];
   stage: OrganizeRunStage;
@@ -404,8 +451,11 @@ function ItemsTable({
   editable: boolean;
   /** 单独取消勾选的文件（网盘绝对路径） */
   excluded: ReadonlySet<string>;
+  /** 冲突项选过的办法（网盘绝对路径 → 办法） */
+  resolutions: OrganizeUnit["resolutions"];
   pending: boolean;
   onToggleItems: (ids: string[], selected: boolean) => void;
+  onResolve: (item: OrganizeItem, how: OrganizeConflictChoice | "stay") => void;
 }) {
   // 能单独勾的：要改名 / 移动的、冲突的（勾掉一份另一份就能走），和已经被勾掉的
   const toggleable = (it: OrganizeItem) => it.kind !== "dir" && (excluded.has(it.srcPath) || it.action === "rename" || it.action === "move" || it.action === "conflict");
@@ -436,6 +486,13 @@ function ItemsTable({
                 <td className="px-2 py-1.5 whitespace-nowrap">
                   <ItemStatus it={it} stage={stage} />
                   {it.attempts > 1 && <div className="mt-0.5 text-muted-foreground tabular-nums">已试 {it.attempts} 轮</div>}
+                  {editable && !userExcluded && (it.action === "conflict" || resolutions[it.srcPath]) && (
+                    <ConflictMenu
+                      current={resolutions[it.srcPath] ? CONFLICT_LABEL[resolutions[it.srcPath].how] : undefined}
+                      disabled={pending}
+                      onPick={(how) => onResolve(it, how)}
+                    />
+                  )}
                 </td>
                 <td className="px-2 py-1.5">
                   <div className="break-all">{baseName(it.srcPath)}</div>

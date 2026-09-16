@@ -1747,7 +1747,7 @@ test("按文件勾选：勾掉的文件和它的字幕留下、源目录不删�
   const run = await createRun({ taskId: "t1", subPath: "inbox" });
   await untilStatus(run.id, ["ready"]);
   const ep1 = listItems(run.id).find((i) => i.srcPath.endsWith("S01E01.1080p.WEB-DL.mkv"))!;
-  assert.equal((await patchItems(run.id, [ep1.id], false)).changed, 1);
+  assert.equal((await patchItems(run.id, [ep1.id], { selected: false })).changed, 1);
   assert.deepEqual(getRunDetail(run.id).units.find((u) => u.key === "inbox/BEEF.S01.1080p")?.excluded, [ep1.srcPath]);
   const by = (suffix: string) => listItems(run.id).find((i) => i.srcPath.endsWith(suffix))!;
   assert.deepEqual([by("S01E01.1080p.WEB-DL.mkv").action, by("S01E01.1080p.WEB-DL.mkv").reason], ["skip", "没勾选这个文件"]);
@@ -1757,16 +1757,90 @@ test("按文件勾选：勾掉的文件和它的字幕留下、源目录不删�
   const counts = getRunDetail(run.id).counts["inbox/BEEF.S01.1080p"];
   assert.deepEqual([counts.excluded, counts.skipped], [1, 1], "勾掉的算没勾选；跟着留下的字幕算要看一眼的跳过");
   // 勾回来：用重规划之后清单里的 id
-  await patchItems(run.id, [by("S01E01.1080p.WEB-DL.mkv").id], true);
+  await patchItems(run.id, [by("S01E01.1080p.WEB-DL.mkv").id], { selected: true });
   assert.equal(by("S01E01.1080p.WEB-DL.mkv").action, "move");
   assert.equal(by("chs.srt").action, "move");
   // 勾掉第二集再执行
-  await patchItems(run.id, [by("S01E02.1080p.WEB-DL.mkv").id], false);
+  await patchItems(run.id, [by("S01E02.1080p.WEB-DL.mkv").id], { selected: false });
   await applyRun(run.id);
   await untilStatus(run.id, ["done"]);
   assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E02.1080p.WEB-DL.mkv"), "勾掉的留在原处");
   assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv"));
-  await assert.rejects(patchItems(run.id, [ep1.id], true), /只有待执行的整理能改/);
+  await assert.rejects(patchItems(run.id, [ep1.id], { selected: true }), /只有待执行的整理能改/);
+});
+
+test("目录名末尾带空格（网盘上真有这种名字）：按文件勾选 / 冲突处理照样对得上号", async () => {
+  drive.tree.addFile("/tv/怒呛人生/Season 1 /BEEF.S01E03.1080p.WEB-DL.mkv");
+  const run = await createRun({ taskId: "t1", subPath: "怒呛人生" });
+  await untilStatus(run.id, ["ready"]);
+  const it = listItems(run.id).find((i) => i.srcPath.endsWith("S01E03.1080p.WEB-DL.mkv"))!;
+  assert.equal(it.srcPath, "/tv/怒呛人生/Season 1 /BEEF.S01E03.1080p.WEB-DL.mkv", "记账的路径保留段尾的空格");
+  assert.equal((await patchItems(run.id, [it.id], { selected: false })).changed, 1);
+  const after = listItems(run.id).find((i) => i.srcPath.endsWith("S01E03.1080p.WEB-DL.mkv"))!;
+  assert.deepEqual([after.action, after.reason], ["skip", "没勾选这个文件"], "取消勾选真的生效了");
+});
+
+test("冲突选「改名保留」/「挪进重复文件」：预览按办法重排，执行后网盘和本地都对得上", async () => {
+  drive.tree.addFile("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv");
+  writeLocalStrm("怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.strm", "tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv");
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  const by = (suffix: string) => listItems(run.id).find((i) => i.srcPath.endsWith(suffix))!;
+  assert.deepEqual([by("S01E01.1080p.WEB-DL.mkv").action, by("S01E01.1080p.WEB-DL.mkv").reason], ["conflict", "目标已存在"]);
+  // 改名保留：加画质后缀，字幕跟着新名字
+  await patchItems(run.id, [by("S01E01.1080p.WEB-DL.mkv").id], { resolve: { how: "rename" } });
+  assert.equal(by("S01E01.1080p.WEB-DL.mkv").dstPath, "/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01 - 1080p.mkv");
+  assert.equal(by("chs.srt").dstPath, "/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01 - 1080p.zh-CN.srt");
+  assert.deepEqual(getRunDetail(run.id).units.find((u) => u.key === "inbox/BEEF.S01.1080p")?.resolutions, {
+    "/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv": { how: "rename" },
+  });
+  // 改主意：挪进重复文件目录，原来的目录层级留着
+  await patchItems(run.id, [by("S01E01.1080p.WEB-DL.mkv").id], { resolve: { how: "duplicate" } });
+  assert.equal(by("S01E01.1080p.WEB-DL.mkv").dstPath, "/tv/重复文件/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv");
+  assert.equal(by("chs.srt").dstPath, "/tv/重复文件/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.chs.srt");
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.ok(drive.tree.get("/tv/重复文件/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv"));
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv"), "原来那份不动");
+  assert.ok(!localExists("inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.strm"), "挪进重复文件目录 = 出了媒体库：本地 strm 删掉");
+  assert.ok(!localExists("重复文件/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.strm"), "重复文件目录不镜像到本地");
+  // 重复文件目录里的东西不再当作品扫
+  const again = await createRun({ taskId: "t1" });
+  await untilStatus(again.id, ["ready"]);
+  assert.ok(getRunDetail(again.id).units.every((u) => !u.rootPath.startsWith("重复文件")), "重复文件目录不成单元");
+  // 撤销挪回来：本地 strm 跟着回来
+  await revertRun(run.id);
+  await untilStatus(run.id, ["reverted", "failed", "done"]);
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv"), "网盘上挪回原处");
+  assert.ok(localExists("inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.strm"), "本地 strm 重新生成");
+});
+
+test("冲突选「删掉这一份」/「覆盖」：执行时真删，删掉的项撤销退不回来", async () => {
+  drive.tree.addFile("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv");
+  const run = await createRun({ taskId: "t1", subPath: "inbox" });
+  await untilStatus(run.id, ["ready"]);
+  const by = (suffix: string) => listItems(run.id).find((i) => i.srcPath.endsWith(suffix))!;
+  await patchItems(run.id, [by("S01E01.1080p.WEB-DL.mkv").id], { resolve: { how: "delete" } });
+  assert.deepEqual([by("S01E01.1080p.WEB-DL.mkv").action, by("chs.srt").action], ["delete", "delete"], "跟着的字幕一起删");
+  assert.equal(getRunDetail(run.id).run.stats.plannedDelete, 2);
+  // 改成覆盖：先删目标那份，再挪过去
+  await patchItems(run.id, [by("S01E01.1080p.WEB-DL.mkv").id], { resolve: { how: "replace" } });
+  const del = listItems(run.id).find((i) => i.action === "delete")!;
+  assert.equal(del.srcPath, "/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv");
+  assert.equal(by("S01E01.1080p.WEB-DL.mkv").action, "move");
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.ok(drive.log.includes("remove /tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv"), "先删掉原来那份");
+  const removeAt = drive.log.indexOf("remove /tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv");
+  const moveAt = drive.log.findIndex((l) => l.startsWith("move ") && l.includes("怒呛人生 - S01E01.mkv"));
+  assert.ok(removeAt >= 0 && moveAt > removeAt, `删除要排在移动前面：${JSON.stringify(drive.log)}`);
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv"), "位置上现在是新挪过去的那份");
+  await revertRun(run.id);
+  await untilStatus(run.id, ["reverted", "failed", "done"]);
+  const reverted = getRunDetail(run.id);
+  assert.ok(reverted.run.log.some((l) => l.includes("退不回来")), "撤销日志里说清楚删掉的退不回来");
+  assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv"), "挪走的退回来了");
+  assert.equal(listItems(run.id).find((i) => i.action === "delete")!.status, "done", "删掉的还是删掉了");
 });
 
 test("批量勾选单元：一次重规划；没识别出来的不能勾", async () => {

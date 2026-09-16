@@ -47,7 +47,15 @@ export interface FakeNode {
   modifiedAt?: number;
 }
 
-const parentOf = (p: string): string => normalizePath(splitPath(p).slice(0, -1).join("/"));
+/**
+ * 假网盘自己的路径归一：只收拢斜杠，不削每段首尾的空格——网盘上真有 `Season 1 ` 这种名字（夸克按名字找时是 trim 过再比的），
+ * 树里得摆得出来。`normalizePath` 会把空格削掉，只用在「应用传进来的路径」上（见 find）
+ */
+const norm = (p: string): string => {
+  const segs = p.split("/").filter(Boolean);
+  return segs.length === 0 ? "/" : `/${segs.join("/")}`;
+};
+const parentOf = (p: string): string => norm(p.split("/").filter(Boolean).slice(0, -1).join("/"));
 const baseOf = (p: string): string => splitPath(p).pop() ?? "";
 const isUnder = (p: string, dir: string): boolean => dir === "/" ? p !== "/" : p.startsWith(`${dir}/`);
 
@@ -63,7 +71,7 @@ export class FakeTree {
   }
 
   addDir(path: string, extra: Partial<FakeNode> = {}): FakeNode {
-    const p = normalizePath(path);
+    const p = norm(path);
     if (p === "/") return { id: "0", isDir: true };
     const existing = this.nodes.get(p);
     if (existing) return existing;
@@ -74,7 +82,7 @@ export class FakeTree {
   }
 
   addFile(path: string, extra: Partial<FakeNode> = {}): FakeNode {
-    const p = normalizePath(path);
+    const p = norm(path);
     this.addDir(parentOf(p));
     const node: FakeNode = { id: this.nextId(), isDir: false, size: 1, ...extra };
     this.nodes.set(p, node);
@@ -82,14 +90,14 @@ export class FakeTree {
   }
 
   remove(path: string): void {
-    const p = normalizePath(path);
+    const p = norm(path);
     for (const key of [...this.nodes.keys()]) if (key === p || isUnder(key, p)) this.nodes.delete(key);
   }
 
   /** 改名 / 移动：整棵子树跟着走，id 不变 */
   move(from: string, to: string): void {
-    const a = normalizePath(from);
-    const b = normalizePath(to);
+    const a = norm(from);
+    const b = norm(to);
     const moved: Array<[string, FakeNode]> = [];
     for (const [key, node] of this.nodes) {
       if (key === a || isUnder(key, a)) moved.push([`${b}${key.slice(a.length)}`, node]);
@@ -105,13 +113,26 @@ export class FakeTree {
     return null;
   }
 
+  /**
+   * 应用传进来的路径可能已经被 normalizePath 削掉了段首尾的空格：先精确找，再按「每段 trim 过再比」找一次，
+   * 找出树里真正的那个路径。真网盘按名字找时也是 trim 过再比的（见夸克 quarkResolvePath）
+   */
+  realPath(path: string): string {
+    const p = norm(path);
+    if (p === "/" || this.nodes.has(p)) return p;
+    const trimmed = (x: string) => x.split("/").map((seg) => seg.trim()).join("/");
+    const want = trimmed(p);
+    for (const key of this.nodes.keys()) if (trimmed(key) === want) return key;
+    return p;
+  }
+
   get(path: string): FakeNode | undefined {
-    const p = normalizePath(path);
+    const p = this.realPath(path);
     return p === "/" ? { id: "0", isDir: true } : this.nodes.get(p);
   }
 
   children(dir: string): Array<{ path: string; node: FakeNode }> {
-    const d = normalizePath(dir);
+    const d = this.realPath(dir);
     return [...this.nodes]
       .filter(([p]) => parentOf(p) === d && p !== "/")
       .map(([path, node]) => ({ path, node }))
@@ -119,7 +140,7 @@ export class FakeTree {
   }
 
   descendants(dir: string): Array<{ path: string; node: FakeNode }> {
-    const d = normalizePath(dir);
+    const d = this.realPath(dir);
     return [...this.nodes]
       .filter(([p]) => isUnder(p, d))
       .map(([path, node]) => ({ path, node }))
@@ -318,7 +339,7 @@ export class FakeDrive implements DriveProvider {
   readonly notes?: { verify?: string };
   readonly withHash: boolean;
   readonly linkBase: string;
-  readonly calls = { resolvePath: 0, listDir: 0, listSubtree: 0, walkSubtree: 0, downloadLink: 0, mkdir: 0, rename: 0, move: 0, rmdir: 0 };
+  readonly calls = { resolvePath: 0, listDir: 0, listSubtree: 0, walkSubtree: 0, downloadLink: 0, mkdir: 0, rename: 0, move: 0, rmdir: 0, remove: 0 };
   /** 每次网盘调用记一行 `<方法> <参数>`，测试断言调用顺序 / 次数用 */
   readonly log: string[] = [];
   /** 设了就让所有网盘调用抛这个错（模拟 cookie 失效 / 风控） */
@@ -326,7 +347,7 @@ export class FakeDrive implements DriveProvider {
   /** 每次网盘调用前先等它（模拟慢接口 / 卡住） */
   beforeCall: (() => Promise<void>) | null = null;
   /** 写操作前先问它：返回错误就让这次写失败（模拟某个文件改不了名） */
-  failWriteOn: ((op: "mkdir" | "rename" | "move" | "rmdir", path: string) => Error | null) | null = null;
+  failWriteOn: ((op: "mkdir" | "rename" | "move" | "rmdir" | "remove", path: string) => Error | null) | null = null;
 
   constructor(
     readonly kind: DriveKind,
@@ -374,7 +395,8 @@ export class FakeDrive implements DriveProvider {
   }
 
   private rootPath(path: string, id?: string): string {
-    const root = id ? this.tree.pathOf(id) : normalizePath(path);
+    // 应用给的路径可能被 normalizePath 削过空格：按树里真正的那个路径来，子树条目才拼得回原名
+    const root = id ? this.tree.pathOf(id) : this.tree.realPath(path);
     if (root === null) throw new RemoteDirNotFoundError(path);
     const node = this.tree.get(root);
     if (!node || !node.isDir) throw new RemoteDirNotFoundError(path);
@@ -385,7 +407,8 @@ export class FakeDrive implements DriveProvider {
     this.calls.listSubtree++;
     await this.guard("listSubtree", opts?.id ?? path);
     const root = this.rootPath(path, opts?.id);
-    return syncViewFromPaths(this.tree.descendants(root).map(({ path: p }) => splitPath(p.slice(root === "/" ? 0 : root.length))));
+    // 段里的空格照原样带出来（真网盘列目录给的就是原名），别用会 trim 的 splitPath
+    return syncViewFromPaths(this.tree.descendants(root).map(({ path: p }) => p.slice(root === "/" ? 0 : root.length).split("/").filter(Boolean)));
   }
 
   async walkSubtree(path: string, opts?: { id?: string }): Promise<SubtreeEntry[]> {
@@ -393,7 +416,7 @@ export class FakeDrive implements DriveProvider {
     await this.guard("walkSubtree", opts?.id ?? path);
     const root = this.rootPath(path, opts?.id);
     return this.tree.descendants(root).map(({ path: p, node }) => ({
-      path: splitPath(p.slice(root === "/" ? 0 : root.length)).join("/"),
+      path: p.slice(root === "/" ? 0 : root.length).split("/").filter(Boolean).join("/"),
       id: node.id,
       isDir: node.isDir,
       size: node.size,
@@ -423,7 +446,7 @@ export class FakeDrive implements DriveProvider {
 export class FakeWrite implements DriveWriteOps {
   constructor(private readonly drive: FakeDrive) {}
 
-  private async check(op: "mkdir" | "rename" | "move" | "rmdir", path: string): Promise<void> {
+  private async check(op: "mkdir" | "rename" | "move" | "rmdir" | "remove", path: string): Promise<void> {
     await this.drive.guard(op, path);
     const err = this.drive.failWriteOn?.(op, path);
     if (err) throw err;
@@ -481,5 +504,14 @@ export class FakeWrite implements DriveWriteOps {
     this.drive.log.push(`rmdir ${p}`);
     this.drive.tree.remove(p);
     return true;
+  }
+
+  async remove(node: WriteNode): Promise<void> {
+    const p = normalizePath(node.path);
+    this.drive.calls.remove++;
+    await this.check("remove", p);
+    if (!this.drive.tree.get(p)) throw new Error(`fake remove: no such path ${p}`);
+    this.drive.log.push(`remove ${p}`);
+    this.drive.tree.remove(p);
   }
 }

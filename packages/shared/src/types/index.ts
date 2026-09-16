@@ -33,6 +33,8 @@ export type {
   OrganizeCategorySettings,
   OrganizeColonStyle,
   OrganizeConfidence,
+  OrganizeConflictChoice,
+  OrganizeConflictResolution,
   OrganizeErrorKind,
   OrganizeExtrasMode,
   OrganizeFailureGroup,

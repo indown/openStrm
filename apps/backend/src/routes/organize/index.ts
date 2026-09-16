@@ -67,8 +67,19 @@ const unitsPatchSchema = z
   .object({ keys: z.array(z.string().min(1)).min(1).max(5000), selected: z.boolean().optional(), remember: z.boolean().optional() })
   .refine((b) => b.selected !== undefined || b.remember !== undefined, { message: "selected 或 remember 至少给一个" });
 
-/** 按文件勾选：ids 是当前清单里的项 */
-const itemsPatchSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(5000), selected: z.boolean() });
+/**
+ * 按文件改：勾选 / 取消勾选，或者给冲突项选个办法（resolve 为 null 是撤回选择）。ids 是当前清单里的项。
+ * custom 要带 name（目标文件名，不能带目录）
+ */
+const conflictResolveSchema = z
+  .object({
+    how: z.enum(["rename", "custom", "duplicate", "delete", "replace"]),
+    name: z.string().trim().min(1).max(200).refine((n) => !n.includes("/"), { message: "目标文件名不能带目录" }).optional(),
+  })
+  .refine((r) => r.how !== "custom" || !!r.name, { message: "自己改名要填目标文件名" });
+const itemsPatchSchema = z
+  .object({ ids: z.array(z.string().min(1)).min(1).max(5000), selected: z.boolean().optional(), resolve: conflictResolveSchema.nullable().optional() })
+  .refine((b) => b.selected !== undefined || b.resolve !== undefined, { message: "selected 或 resolve 至少给一个" });
 
 /** 换匹配弹框的 TMDB 搜索：可以限定类型和年份 */
 const tmdbSearchSchema = z.object({
@@ -129,11 +140,11 @@ export default async function (fastify: FastifyInstance) {
     return patchUnits(id, body.keys, { selected: body.selected, remember: body.remember });
   });
 
-  /** 按文件勾选：取消勾选的文件跳过，跟着它的字幕 / nfo 一起留下 */
+  /** 按文件勾选（取消勾选的跳过，跟着它的字幕 / nfo 一起留下），或给冲突项选办法（改名保留 / 自己改名 / 挪进重复文件 / 删掉 / 覆盖） */
   fastify.put("/api/organize/runs/:id/items", { preHandler: [fastify.authenticate] }, async (request) => {
     const { id } = parse(idParamsSchema, request.params, "params");
     const body = parse(itemsPatchSchema, request.body);
-    return patchItems(id, body.ids, body.selected);
+    return patchItems(id, body.ids, { selected: body.selected, resolve: body.resolve });
   });
 
   /** 换匹配弹框：按关键词搜（可限类型、年份） */

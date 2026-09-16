@@ -7,11 +7,12 @@
  *   - 一个候选目录里的视频解析出多个不同标题（电影堆、散集堆）就按标题 + 年份拆成多个单元。
  *   - 单元级标题以目录名为准（目录名通常是干净的「剧名 + 年份」），目录名解析不出标题再用文件名里最常见的。
  *   - 识别词先套在每个名字上；直指 tmdbid 的规则命中就带在单元上。
- *   - 标题末尾不补零的数字（`某剧10`）在季目录里、或同名的兄弟已经有集数时当集数（`promoteTrailingEpisodes`）。
+ *   - 标题末尾不补零的数字（`某剧10`）在季目录里、或同名的兄弟已经有集数时当集数；整个标题就是数字的（`129 4K.mp4`）
+ *     在季目录里、或上级就是这部作品的目录时当集数（`promoteEpisodeNumbers`）。
  */
 import type { OrganizeFileKind } from "@openstrm/shared";
 import { stripInvisible } from "../../lib/text.js";
-import { isArtDirName, isExtrasDirName, normalizeTitle, parseMediaName, seasonDirNumber, trailingNumber, type ParsedName, type TrailingNumber } from "./parse-name.js";
+import { isArtDirName, isEditionOnlyName, isExtrasDirName, normalizeTitle, numericTitle, parseMediaName, seasonDirNumber, trailingNumber, type ParsedName, type TrailingNumber } from "./parse-name.js";
 import { applyRules, type DirectSpec, type ParsedRule } from "./rules.js";
 
 /** 范围里的一项，路径相对任务 originPath，不带前导 / */
@@ -162,6 +163,13 @@ const hasEpisodeMarker = (p: ParsedName): boolean =>
   p.episode !== undefined || p.absolute !== undefined || p.season !== undefined || !!p.isSpecial || !!p.date;
 const hasEpisodeNumber = (p: ParsedName): boolean => p.episode !== undefined || p.absolute !== undefined || !!p.isSpecial || !!p.date;
 
+/** 作品单元的上下文：这个目录的名字能不能当标题（任务根、名字是年份的不给），和任务的库类型 */
+interface PromoteContext {
+  /** 上级目录解析出来的标题；这个目录的名字不能当标题时不给 */
+  dirTitle?: string;
+  libraryType: BuildUnitsOptions["libraryType"];
+}
+
 /**
  * 标题末尾的数字当集数：`我和僵尸有个约会01 … 33`（01–09 解析时已认出，10 以后单看名字不敢定）、`某剧1 … 某剧30`。
  * 看同一个单元根下的上下文：文件在季目录里；或者去掉数字后和已经有集数的兄弟同名；或者剧集库里有两个以上这样的同名兄弟。
@@ -182,6 +190,27 @@ function promoteTrailingEpisodes(files: UnitFile[], libraryType: BuildUnitsOptio
     const episodic = file.seasonFromDir !== undefined || numbered.has(key) || (libraryType === "tv" && (siblings.get(key) ?? 0) >= 2);
     if (episodic) file.parsed = { ...file.parsed, title: t.titles[0], titles: t.titles, absolute: t.number, cutoff: "episode" };
   }
+}
+
+/**
+ * 整个标题就是数字的当集数：`遮天/129 4K.mp4`——文件名只有集数，片名在目录名上。数字后面没有别的词时解析就认了（`129.mp4`），
+ * 粘着画质 / 来源这些技术词的到这里按上下文定：文件在季目录里，或者上级目录的名字能当标题、又不是这个数字本身
+ * （`1917 (2019)/1917 4K.mkv` 是电影，不动）。电影库不给。
+ */
+function promoteNumericTitles(files: UnitFile[], ctx: PromoteContext): void {
+  for (const file of files) {
+    if ((file.kind !== "video" && file.kind !== "subtitle") || file.inExtrasDir || file.parsed.isExtra) continue;
+    const n = numericTitle(file.parsed);
+    if (n === null) continue;
+    const ownWork = !!ctx.dirTitle && ctx.libraryType !== "movie" && normalizeTitle(ctx.dirTitle) !== normalizeTitle(file.parsed.title);
+    if (file.seasonFromDir !== undefined || ownWork) file.parsed = { ...file.parsed, title: "", titles: [], absolute: n, cutoff: "episode" };
+  }
+}
+
+/** 名字里的数字到底是不是集数，要看同一个目录里的上下文，解析阶段定不了：见上面两个 */
+function promoteEpisodeNumbers(files: UnitFile[], ctx: PromoteContext): void {
+  promoteNumericTitles(files, ctx);
+  promoteTrailingEpisodes(files, ctx.libraryType);
 }
 
 type RootedFile = { file: UnitFile; root: string };
@@ -218,12 +247,14 @@ export function buildUnits(entries: ScopeEntry[], opts: BuildUnitsOptions): Unit
 
   const units: Unit[] = [];
   for (const [root, list] of byRoot) {
-    promoteTrailingEpisodes(list, opts.libraryType);
-    const videos = list.filter((f) => f.kind === "video" && !f.inExtrasDir && !f.parsed.isExtra);
-    if (videos.length === 0) continue; // 只有字幕 / 图片的目录不成单元
     const rootName = root ? baseOf(root) : opts.taskRootName;
     const rootParsed = parseWithRules(rootName, opts.rules);
-    const dirTitleOk = rootParsed.parsed.title.length > 0 && !/^(19|20)\d{2}$/.test(rootParsed.parsed.title);
+    // 目录名能不能当片名：空的、只是年份、只是个版本词（`导演剪辑版`——真有一部电影叫这名字）都不行
+    const dirTitleOk = rootParsed.parsed.title.length > 0 && !/^(19|20)\d{2}$/.test(rootParsed.parsed.title) && !isEditionOnlyName(rootName);
+    // 任务根的名字（`tv`、`media`）不是作品名，纯数字文件名在那里不当集数
+    promoteEpisodeNumbers(list, { dirTitle: dirTitleOk && root ? rootParsed.parsed.title : undefined, libraryType: opts.libraryType });
+    const videos = list.filter((f) => f.kind === "video" && !f.inExtrasDir && !f.parsed.isExtra);
+    if (videos.length === 0) continue; // 只有字幕 / 图片的目录不成单元
 
     // 目录里视频的标题分布：目录名能当标题、且文件标题一致（或文件根本没标题）→ 一个单元；否则按文件标题拆
     const keys = videos.map((v) => titleKey(v.parsed));

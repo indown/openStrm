@@ -135,6 +135,34 @@ test("平铺目录：补零的集数带出不补零的同名兄弟；剧集库�
   assert.ok(movies.every((x) => x.kindHint === "movie"));
 });
 
+test("文件名整个就是数字（遮天/129 4K.mp4）：在剧目录里当集数，一部剧一个单元；电影的数字片名不动", () => {
+  const units = buildUnits(files(["遮天/129 4K.mp4", "遮天/130 4K.mp4", "遮天/131 4K.mp4", "遮天/131 4K.srt"]), opts);
+  assert.equal(units.length, 1, "三集是同一部剧，不是三部电影");
+  assert.equal(units[0].parsed.title, "遮天", "片名从目录名来");
+  assert.equal(units[0].kindHint, "tv");
+  assert.deepEqual(units[0].files.map((x) => x.parsed.absolute), [129, 130, 131, 131], "字幕也一样认");
+  assert.equal(units[0].files[0].parsed.tags.resolution, "4K", "画质标签留着");
+  const scoped = buildUnits(files(["遮天/129 4K.mp4"]), { ...opts, scopePath: "遮天" });
+  assert.deepEqual([scoped[0].parsed.title, scoped[0].files[0].parsed.absolute], ["遮天", 129], "范围直接选剧目录也一样");
+  const season = buildUnits(files(["某剧/Season 2/129 4K.mp4"]), opts);
+  assert.deepEqual([season[0].files[0].seasonFromDir, season[0].files[0].parsed.absolute], [2, 129]);
+  const movie = buildUnits(files(["1917 (2019)/1917 4K.mkv"]), opts);
+  assert.deepEqual([movie[0].parsed.title, movie[0].kindHint, movie[0].files[0].parsed.absolute], ["1917", "movie", undefined], "目录名就是这个数字：电影");
+  const atRoot = buildUnits(files(["129 4K.mp4", "130 4K.mp4"]), opts);
+  assert.deepEqual(atRoot.map((u) => u.kindHint), ["movie", "movie"], "任务根的名字不是作品名，散在根上的照旧按电影认");
+  const movieLib = buildUnits(files(["某目录/129 4K.mp4"]), { ...opts, libraryType: "movie" });
+  assert.equal(movieLib[0].files[0].parsed.title, "129", "电影库不拿数字当集数");
+  const y = buildUnits(files(["某剧/1917 2019 1080p.mkv"]), opts);
+  assert.equal(y[0].files[0].parsed.title, "1917", "四位数 / 名字里带年份的不当集数");
+});
+
+test("目录名只是个版本词（导演剪辑版）：不拿它当片名，按文件名认", () => {
+  const units = buildUnits(files(["凡人修仙传/导演剪辑版/虚天战纪 导演剪辑版（下）.mp4"]), opts);
+  assert.equal(units.length, 1);
+  assert.equal(units[0].parsed.title, "虚天战纪", "不是《导演剪辑版》那部电影");
+  assert.equal(units[0].files[0].parsed.edition, "导演剪辑版");
+});
+
 test("文件名夹着零宽空格：集数照样认出来，不会当成同一部电影的多个版本；网盘上的名字不动", () => {
   const zw = (ep: string) => `回家的诱惑/回家的诱惑.2011.S01E\u200B${ep}\u200B.mp4`;
   const units = buildUnits(files([zw("36"), zw("37")]), opts);

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Ban, ChevronDown, ChevronRight, Film, Loader2, Play, RefreshCw, RotateCw, Search, Square, Trash2, Undo2 } from "lucide-react";
 import { toast } from "sonner";
-import type { OrganizeRun, OrganizeRunDetail, OrganizeRunStatus, OrganizeUnit, OrganizeUnitPatch } from "@openstrm/shared";
+import type { OrganizeConflictChoice, OrganizeConflictResolution, OrganizeItem, OrganizeRun, OrganizeRunDetail, OrganizeRunStatus, OrganizeUnit, OrganizeUnitPatch } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -25,6 +25,7 @@ import { RUN_STATUS_META, TRIGGER_LABEL, isBusyStatus, notifyOrganizeChanged } f
 import { AdjustDialog } from "./AdjustDialog";
 import { FailurePanel } from "./FailurePanel";
 import { MatchDialog } from "./MatchDialog";
+import { RenameDialog } from "./RenameDialog";
 import { UnitList } from "./UnitList";
 import { POLL_MS, plannedText, toastRunError } from "./helpers";
 
@@ -52,6 +53,8 @@ export function RunView({
   const [busy, setBusy] = useState(false);
   const [matching, setMatching] = useState<OrganizeUnit | null>(null);
   const [adjusting, setAdjusting] = useState<OrganizeUnit | null>(null);
+  /** 冲突项「自己改名」弹框：要改的项和它所在的单元 */
+  const [renaming, setRenaming] = useState<{ unit: OrganizeUnit; item: OrganizeItem } | null>(null);
   const [confirm, setConfirm] = useState<"apply" | "revert" | "delete" | null>(null);
   const [showLog, setShowLog] = useState(false);
   const [showScopes, setShowScopes] = useState(false);
@@ -184,7 +187,7 @@ export function RunView({
   const toggleItems = async (unit: OrganizeUnit, ids: string[], selected: boolean) => {
     markPatching([unit.key], true);
     try {
-      await api.organize.patchItems(runId, ids, selected);
+      await api.organize.patchItems(runId, ids, { selected });
       await load();
     } catch (err) {
       toast.error(apiErrorMessage(err, "修改失败"));
@@ -192,6 +195,28 @@ export function RunView({
     } finally {
       markPatching([unit.key], false);
     }
+  };
+
+  /** 冲突项选了办法：重新规划一遍（删除 / 覆盖只是写进计划，真删要等执行） */
+  const resolveItem = async (unit: OrganizeUnit, ids: string[], resolve: OrganizeConflictResolution | null): Promise<boolean> => {
+    markPatching([unit.key], true);
+    try {
+      await api.organize.patchItems(runId, ids, { resolve });
+      await load();
+      return true;
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "修改失败"));
+      await load();
+      return false;
+    } finally {
+      markPatching([unit.key], false);
+    }
+  };
+
+  /** 下拉里选的：自己改名先弹框问名字，其余直接重规划 */
+  const pickResolve = (unit: OrganizeUnit, item: OrganizeItem, how: OrganizeConflictChoice | "stay") => {
+    if (how === "custom") setRenaming({ unit, item });
+    else void resolveItem(unit, [item.id], how === "stay" ? null : { how });
   };
 
   const repreview = async () => {
@@ -475,6 +500,7 @@ export function RunView({
             ])
           }
           onToggleItems={(u, ids, selected) => void toggleItems(u, ids, selected)}
+          onResolve={pickResolve}
           onMatch={setMatching}
           onAdjust={setAdjusting}
         />
@@ -482,6 +508,11 @@ export function RunView({
 
       <MatchDialog unit={matching} onOpenChange={(o) => !o && setMatching(null)} onPick={(pick) => (matching ? patchUnit(matching, { match: pick }) : Promise.resolve(false))} />
       <AdjustDialog unit={adjusting} onOpenChange={(o) => !o && setAdjusting(null)} onSave={(p) => (adjusting ? patchUnit(adjusting, p) : Promise.resolve(false))} />
+      <RenameDialog
+        item={renaming?.item ?? null}
+        onOpenChange={(o) => !o && setRenaming(null)}
+        onSave={(name) => (renaming ? resolveItem(renaming.unit, [renaming.item.id], { how: "custom", name }) : Promise.resolve(false))}
+      />
 
       <AlertDialog open={confirm != null} onOpenChange={(o) => !o && setConfirm(null)}>
         <AlertDialogContent>
@@ -490,7 +521,7 @@ export function RunView({
             <AlertDialogDescription>
               {confirm === "apply" &&
                 (run.status === "ready"
-                  ? `会在网盘上${plannedText(run.stats)}，本地 strm 跟着挪。Emby 会把改名后的条目当新条目，播放记录可能丢失。${unsure > 0 ? `有 ${unsure} 部识别把握不大，建议先确认。` : ""}`
+                  ? `会在网盘上${plannedText(run.stats)}，本地 strm 跟着挪。Emby 会把改名后的条目当新条目，播放记录可能丢失。${run.stats.plannedDelete > 0 ? `其中 ${run.stats.plannedDelete} 个文件是你选了删除 / 覆盖的，会进网盘回收站，撤销退不回来。` : ""}${unsure > 0 ? `有 ${unsure} 部识别把握不大，建议先确认。` : ""}`
                   : `只重试失败和没做的 ${applicable.count} 项（临时失败、风控中断、本地没跟上的），已完成的不会重做。「预览后变了」「名字不被接受」的项不在里面，在上面的面板里单独处理。`)}
               {confirm === "revert" && (reverting ? "把还没退回的项接着退回原处；已经退回的不会重做。" : "按记录把文件退回原来的位置和名字；已经被别的操作动过的项会跳过，之后可以放弃。")}
               {confirm === "delete" && "只删这条记录，网盘和本地文件都不动；删掉之后就不能撤销这次整理了。"}

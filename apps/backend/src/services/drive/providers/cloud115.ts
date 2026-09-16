@@ -353,4 +353,11 @@ class Cloud115Write implements DriveWriteOps {
     forgetPathsUnder(this.account.name, node.path);
     return true;
   }
+
+  /** 115 的删除是进回收站 */
+  async remove(node: WriteNode, signal?: AbortSignal): Promise<void> {
+    await fsDeleteMany([node.id], this.ctx(signal));
+    dropSubtree(node.path);
+    forgetPathsUnder(this.account.name, node.path);
+  }
 }

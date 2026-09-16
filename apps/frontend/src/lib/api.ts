@@ -12,6 +12,7 @@ import type {
   MediaLibraryEntry,
   OrganizeAttention,
   OrganizeCandidate,
+  OrganizeConflictResolution,
   OrganizeFailureGroupKey,
   OrganizeItem,
   OrganizeMatchMemory,
@@ -528,9 +529,12 @@ export const api = {
     /** 批量勾选单元（全选 / 全不选 / 只选把握大的）：一次重规划 */
     patchUnits: (id: string, keys: string[], patch: { selected?: boolean; remember?: boolean }) =>
       data(axiosInstance.put<{ changed: number }>(`/api/organize/runs/${encodeURIComponent(id)}/units`, { keys, ...patch }, { timeout: 120_000 })),
-    /** 按文件勾选：取消勾选的文件跳过，跟着它的字幕 / nfo 一起留下；ids 用最新清单里的 */
-    patchItems: (id: string, ids: string[], selected: boolean) =>
-      data(axiosInstance.put<{ changed: number }>(`/api/organize/runs/${encodeURIComponent(id)}/items`, { ids, selected }, { timeout: 60_000 })),
+    /**
+     * 按文件改：勾选 / 取消勾选（取消的跳过，跟着它的字幕 / nfo 一起留下），或给冲突项选办法
+     * （resolve 为 null 是回到「留在原处」）；ids 用最新清单里的
+     */
+    patchItems: (id: string, ids: string[], patch: { selected?: boolean; resolve?: OrganizeConflictResolution | null }) =>
+      data(axiosInstance.put<{ changed: number }>(`/api/organize/runs/${encodeURIComponent(id)}/items`, { ids, ...patch }, { timeout: 60_000 })),
     /** 换匹配弹框：按关键词搜（可限类型、年份） */
     tmdbSearch: (q: { query: string; type?: "movie" | "tv"; year?: string }) =>
       data(axiosInstance.post<{ results: OrganizeCandidate[] }>("/api/organize/tmdb/search", q)),

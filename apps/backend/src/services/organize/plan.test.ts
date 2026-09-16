@@ -131,6 +131,97 @@ test("跨单元冲突：目标已存在（且不是正在挪走的源）", () =>
   assert.equal(v.reason, "目标已存在");
 });
 
+test("冲突选「改名保留」：加画质后缀并排放着，字幕跟着新名字走", () => {
+  const es = [
+    ...entries(["inbox/BEEF.S01E01.2160p.WEB-DL.mkv", "inbox/BEEF.S01E01.2160p.WEB-DL.chs.srt"]),
+    { path: "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv", isDir: false, id: "old" },
+  ];
+  const [unit] = buildUnits(es, { scopePath: "", taskRootName: "root", videoExts, rules: [] });
+  const resolutions = new Map([["inbox/BEEF.S01E01.2160p.WEB-DL.mkv", { how: "rename" as const }]]);
+  const p = planUnit({ unit, match: beef, seasonOverride: null, episodeOffset: 0, selected: true, resolutions }, { settings });
+  const items = finalizeItems([p], { entries: es, scopePath: "", items: p.items, cleanupEmptyDirs: true });
+  const v = items.find((i) => i.kind === "video")!;
+  assert.equal(v.action, "move");
+  assert.equal(v.dstPath, "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01 - 2160p.mkv");
+  assert.match(v.reason, /改名保留/);
+  assert.equal(items.find((i) => i.kind === "subtitle")!.dstPath, "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01 - 2160p.zh-CN.srt");
+});
+
+test("冲突选「自己改名」：目录不变、名字按填的来；没写扩展名就补上", () => {
+  const es = [...entries(["inbox/BEEF.S01E01.2160p.WEB-DL.mkv"]), { path: "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv", isDir: false, id: "old" }];
+  const [unit] = buildUnits(es, { scopePath: "", taskRootName: "root", videoExts, rules: [] });
+  const resolutions = new Map([["inbox/BEEF.S01E01.2160p.WEB-DL.mkv", { how: "custom" as const, name: "怒呛人生 - S01E01 - 4K版" }]]);
+  const p = planUnit({ unit, match: beef, seasonOverride: null, episodeOffset: 0, selected: true, resolutions }, { settings });
+  const items = finalizeItems([p], { entries: es, scopePath: "", items: p.items, cleanupEmptyDirs: true });
+  const v = items.find((i) => i.kind === "video")!;
+  assert.equal(v.action, "move");
+  assert.equal(v.dstPath, "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01 - 4K版.mkv");
+});
+
+test("冲突选「挪进重复文件目录」：原来的目录层级留着，字幕跟着；源目录腾空了照样删", () => {
+  const es = [
+    ...entries(["inbox/BEEF.S01E01.2160p.WEB-DL.mkv", "inbox/BEEF.S01E01.2160p.WEB-DL.chs.srt"]),
+    { path: "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv", isDir: false, id: "old" },
+  ];
+  const [unit] = buildUnits(es, { scopePath: "", taskRootName: "root", videoExts, rules: [] });
+  const resolutions = new Map([["inbox/BEEF.S01E01.2160p.WEB-DL.mkv", { how: "duplicate" as const }]]);
+  const p = planUnit({ unit, match: beef, seasonOverride: null, episodeOffset: 0, selected: true, resolutions }, { settings });
+  const items = finalizeItems([p], { entries: es, scopePath: "", items: p.items, cleanupEmptyDirs: true });
+  const v = items.find((i) => i.kind === "video")!;
+  assert.equal(v.action, "move");
+  assert.equal(v.dstPath, "重复文件/inbox/BEEF.S01E01.2160p.WEB-DL.mkv");
+  assert.equal(items.find((i) => i.kind === "subtitle")!.dstPath, "重复文件/inbox/BEEF.S01E01.2160p.WEB-DL.chs.srt");
+  assert.deepEqual(items.filter((i) => i.action === "mkdir").map((i) => i.dstPath), ["重复文件", "重复文件/inbox"]);
+  assert.deepEqual(items.filter((i) => i.action === "rmdir").map((i) => i.srcPath), ["inbox"]);
+});
+
+test("冲突选「删掉这一份」：这一份和跟着它的字幕都标删除，源目录腾空了删掉", () => {
+  const es = [
+    ...entries(["inbox/BEEF.S01E01.2160p.WEB-DL.mkv", "inbox/BEEF.S01E01.2160p.WEB-DL.chs.srt"]),
+    { path: "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv", isDir: false, id: "old" },
+  ];
+  const [unit] = buildUnits(es, { scopePath: "", taskRootName: "root", videoExts, rules: [] });
+  const resolutions = new Map([["inbox/BEEF.S01E01.2160p.WEB-DL.mkv", { how: "delete" as const }]]);
+  const p = planUnit({ unit, match: beef, seasonOverride: null, episodeOffset: 0, selected: true, resolutions }, { settings });
+  const items = finalizeItems([p], { entries: es, scopePath: "", items: p.items, cleanupEmptyDirs: true });
+  assert.deepEqual(items.filter((i) => i.action === "delete").map((i) => i.srcPath), ["inbox/BEEF.S01E01.2160p.WEB-DL.mkv", "inbox/BEEF.S01E01.2160p.WEB-DL.chs.srt"]);
+  assert.equal(items.find((i) => i.kind === "video")!.dstPath, "inbox/BEEF.S01E01.2160p.WEB-DL.mkv", "删除项的目标就是它自己");
+  assert.deepEqual(items.filter((i) => i.action === "rmdir").map((i) => i.srcPath), ["inbox"]);
+  assert.deepEqual(items.filter((i) => i.action === "mkdir"), [], "不用建目标目录");
+});
+
+test("冲突选「覆盖」：先删掉目标那份（排在前面），这一份照常挪过去", () => {
+  const es = [...entries(["inbox/BEEF.S01E01.2160p.WEB-DL.mkv"]), { path: "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv", isDir: false, id: "old" }];
+  const [unit] = buildUnits(es, { scopePath: "", taskRootName: "root", videoExts, rules: [] });
+  const resolutions = new Map([["inbox/BEEF.S01E01.2160p.WEB-DL.mkv", { how: "replace" as const }]]);
+  const p = planUnit({ unit, match: beef, seasonOverride: null, episodeOffset: 0, selected: true, resolutions }, { settings });
+  const items = finalizeItems([p], { entries: es, scopePath: "", items: p.items, cleanupEmptyDirs: true });
+  const del = items.find((i) => i.action === "delete")!;
+  const v = items.find((i) => i.action === "move")!;
+  assert.equal(del.srcPath, "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv");
+  assert.equal(del.nodeId, "old");
+  assert.ok(items.indexOf(del) < items.indexOf(v), "删除排在移动前面");
+  assert.equal(v.dstPath, "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv");
+});
+
+test("同一单元两个版本撞同一个名字：选「改名保留」的那份加后缀走，选「覆盖」的没东西可覆盖、照旧留在原处", () => {
+  const paths = ["inbox/BEEF.S01E01.1080p.WEB-DL.mkv", "inbox/BEEF.S01E01.2160p.WEB-DL.mkv"];
+  const dst = "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv";
+  const run = (how: "rename" | "replace") => {
+    const es = entries(paths);
+    const [unit] = buildUnits(es, { scopePath: "", taskRootName: "root", videoExts, rules: [] });
+    const resolutions = new Map([["inbox/BEEF.S01E01.2160p.WEB-DL.mkv", { how }]]);
+    const p = planUnit({ unit, match: beef, seasonOverride: null, episodeOffset: 0, selected: true, resolutions }, { settings });
+    return finalizeItems([p], { entries: es, scopePath: "", items: p.items, cleanupEmptyDirs: true });
+  };
+  const renamed = run("rename");
+  assert.equal(renamed.find((i) => i.srcPath.includes("1080p"))!.dstPath, dst, "先排上的那份照常");
+  assert.equal(renamed.find((i) => i.srcPath.includes("2160p"))!.dstPath, "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01 - 2160p.mkv");
+  const replaced = run("replace");
+  assert.equal(replaced.find((i) => i.srcPath.includes("2160p"))!.action, "conflict", "占位的是本轮另一项，不是网盘上的文件");
+  assert.equal(replaced.filter((i) => i.action === "delete").length, 0);
+});
+
 test("二级分类开着时多一层目录，且作品根随之变化", () => {
   const cat = resolveOrganizeSettings({ organize: { categories: { enabled: true } } });
   const { plan: p } = plan(["m/Dune.Part.Two.2024.2160p.mkv"], { ...dune, genreIds: [878], originalLanguage: "en" }, {}, cat);

@@ -26,8 +26,26 @@ export type OrganizeRunMode = "manual" | "review" | "auto";
 /** 谁发起的：手动、转存、追更、云下载、网盘监控 */
 export type OrganizeTrigger = "manual" | "share" | "follow" | "offline" | "monitor";
 
-/** 计划项的动作 */
-export type OrganizeAction = "keep" | "rename" | "move" | "mkdir" | "rmdir" | "skip" | "conflict";
+/** 计划项的动作；delete 只有用户在冲突上选了删除 / 覆盖才会有 */
+export type OrganizeAction = "keep" | "rename" | "move" | "mkdir" | "rmdir" | "skip" | "conflict" | "delete";
+
+/**
+ * 冲突（目标已存在 / 两个源要去同一个位置）用户选的处理：
+ *   rename     改名保留：给这一份加个区分后缀（画质 / 来源 / 压制组，认不出就 (2)），两份并排放着
+ *   custom     自己填目标文件名（只改名字，目录还是整理后的位置）
+ *   duplicate  挪进任务根下的重复文件目录，原来的目录层级留着，之后自己在网盘里处理
+ *   delete     删掉正在整理的这一份（源文件），目标那份不动
+ *   replace    覆盖：先删掉目标位置那份，再把这一份挪过去
+ * 不选就是默认的「留在原处」——文件不动，还算冲突；也可以直接把这个文件取消勾选。
+ * 删除走网盘的删除接口（115 / 夸克进回收站，OpenList 看存储后端），删掉的项撤销退不回来
+ */
+export type OrganizeConflictChoice = "rename" | "custom" | "duplicate" | "delete" | "replace";
+
+export interface OrganizeConflictResolution {
+  how: OrganizeConflictChoice;
+  /** how 是 custom 时用户填的目标文件名（不带目录；没带扩展名就沿用原来的） */
+  name?: string;
+}
 
 export type OrganizeItemStatus = "pending" | "done" | "failed" | "skipped" | "reverted";
 
@@ -147,9 +165,11 @@ export interface OrganizeRunStats {
   items: number;
   /** 需要动的项（rename / move / mkdir / rmdir） */
   planned: number;
-  /** planned 里建目录 / 删空目录各几项（其余是改名 / 移动的文件） */
+  /** planned 里建目录 / 删空目录 / 删文件各几项（其余是改名 / 移动的文件） */
   plannedMkdir: number;
   plannedRmdir: number;
+  /** 用户在冲突上选了删除 / 覆盖的项：执行后退不回来，执行确认里单说 */
+  plannedDelete: number;
   keep: number;
   conflicts: number;
   skipped: number;
@@ -230,6 +250,8 @@ export interface OrganizeUnit {
   notes: string[];
   /** 用户单独取消勾选的文件（网盘绝对路径）：规划时跳过，跟着它们的字幕 / nfo 一起留下 */
   excluded: string[];
+  /** 用户给冲突项选的处理，键是网盘绝对路径；没有这一项就是默认的「留在原处」 */
+  resolutions: Record<string, OrganizeConflictResolution>;
 }
 
 export interface OrganizeItem {

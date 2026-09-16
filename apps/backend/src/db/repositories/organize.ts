@@ -45,6 +45,7 @@ export function emptyStats(): OrganizeRunStats {
     planned: 0,
     plannedMkdir: 0,
     plannedRmdir: 0,
+    plannedDelete: 0,
     keep: 0,
     conflicts: 0,
     skipped: 0,
@@ -103,6 +104,7 @@ function toUnit(row: UnitRow): OrganizeUnit {
     referencedBy: row.referencedBy,
     notes: parseJson<string[]>(row.notes, []),
     excluded: parseJson<string[]>(row.excluded, []),
+    resolutions: parseJson<OrganizeUnit["resolutions"]>(row.resolutions, {}),
   };
 }
 
@@ -329,6 +331,7 @@ export function replaceUnits(runId: string, units: OrganizeUnit[]): void {
           referencedBy: u.referencedBy,
           notes: JSON.stringify(u.notes),
           excluded: JSON.stringify(u.excluded ?? []),
+          resolutions: JSON.stringify(u.resolutions ?? {}),
         })
         .run();
     }
@@ -360,6 +363,7 @@ export function updateUnit(runId: string, key: string, patch: Partial<OrganizeUn
         referencedBy: merged.referencedBy,
         notes: JSON.stringify(merged.notes),
         excluded: JSON.stringify(merged.excluded ?? []),
+        resolutions: JSON.stringify(merged.resolutions ?? {}),
         parsedTitle: merged.parsedTitle,
         parsedYear: merged.parsedYear,
       })

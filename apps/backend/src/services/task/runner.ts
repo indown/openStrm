@@ -45,6 +45,7 @@ import {
   type StartOutcome,
 } from "./registry.js";
 import { LogBatcher } from "./log-batch.js";
+import { underDuplicates } from "../organize/duplicates.js";
 import { planSync } from "./plan.js";
 import { collectFilesAndTopEmptyDirs, type TreeNode } from "./tree.js";
 
@@ -110,7 +111,8 @@ async function loadRemoteEntries(
   if (splitPath(originPath).length === 0) return { fail: fail(400, "远程路径不能是根目录，请填一个具体目录") };
   const label = KIND_LABEL[provider.kind];
   try {
-    return { entries: await provider.listSubtree(originPath) };
+    // 整理挪进「重复文件」的东西只在网盘上留着，不进媒体库：不给它生成 strm，也别当本地多余的删（本来就没生成过）
+    return { entries: (await provider.listSubtree(originPath)).filter((p) => !underDuplicates(p)) };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     const issue = provider.classifyError(error);

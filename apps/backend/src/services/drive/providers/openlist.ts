@@ -169,4 +169,10 @@ class OpenlistWrite implements DriveWriteOps {
     await openlistRemove(this.account, normalizePath(splitPath(p).slice(0, -1).join("/")), [splitPath(p).pop() ?? ""], signal);
     return true;
   }
+
+  /** OpenList 的删除交给存储后端：网盘类的多半进回收站，本地存储是直接删 */
+  async remove(node: WriteNode, signal?: AbortSignal): Promise<void> {
+    const p = normalizePath(node.path);
+    await openlistRemove(this.account, normalizePath(splitPath(p).slice(0, -1).join("/")), [splitPath(p).pop() ?? ""], signal);
+  }
 }

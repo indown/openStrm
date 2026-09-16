@@ -251,6 +251,8 @@ export const organizeUnits = sqliteTable(
     notes: text("notes").notNull().default("[]"),
     /** 用户单独取消勾选的文件（网盘绝对路径的 JSON 数组）：规划时跳过，重规划不丢 */
     excluded: text("excluded").notNull().default("[]"),
+    /** 用户给冲突项选的处理（JSON：网盘绝对路径 → rename / duplicate），重规划不丢 */
+    resolutions: text("resolutions").notNull().default("{}"),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.runId, t.key] }),

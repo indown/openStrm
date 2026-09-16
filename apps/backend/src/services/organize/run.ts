@@ -21,6 +21,7 @@ import type {
   OrganizeAttentionReason,
   OrganizeCandidate,
   OrganizeConfidence,
+  OrganizeConflictResolution,
   OrganizeItem,
   OrganizeMatch,
   OrganizeMediaType,
@@ -84,8 +85,9 @@ import { notify } from "../telegram/notify.js";
 import { describeFileFailure } from "../download/failure.js";
 import { classifyFailure, FAILURE_LABEL, messageOf, OrganizeFailure, retryableItem, revertPendingItem, revertWorkItem, StaleError } from "./failures.js";
 import { idTagFromName, identifyUnit, TmdbClient, type IdEvidence, type KnownId, type TmdbApi } from "./identify.js";
-import { mirrorRelocate, mirrorRmdir } from "./mirror.js";
+import { mirrorDelete, mirrorRelocate, mirrorRmdir } from "./mirror.js";
 import { nfoEvidence } from "./nfo.js";
+import { duplicatePathFor, underDuplicates } from "./duplicates.js";
 import { finalizeItems, planUnit, type PlannedItem, type ScopeRoot, type UnitPlan } from "./plan.js";
 import { parseRules } from "./rules.js";
 import { resolveOrganizeSettings, type ResolvedOrganizeSettings } from "./settings.js";
@@ -186,17 +188,22 @@ const baseOf = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
 const dirOf = (p: string): string => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 const joinRel = (a: string, b: string): string => (a && b ? `${a}/${b}` : a || b);
 
-/** 相对任务 originPath 的路径 → 网盘绝对路径 */
+/**
+ * 相对任务 originPath 的路径 → 网盘绝对路径。只拼、不动每一段的内容：
+ * normalizePath 会把每段首尾的空格削掉（`凡人修仙传/Season 1 ` 这种网盘上真实存在的名字），
+ * 那样 abs → rel 就回不到原来的路径，按文件勾选 / 冲突处理（都按绝对路径记）会对不上号
+ */
 function absOf(task: TaskDefinition, rel: string): string {
-  return normalizePath(rel ? `${task.originPath}/${rel}` : task.originPath);
+  const origin = normalizePath(task.originPath);
+  return rel ? `${origin === "/" ? "" : origin}/${rel.replace(/^\/+/, "")}` : origin;
 }
 
-/** 网盘绝对路径 → 相对任务 originPath */
+/** 网盘绝对路径 → 相对任务 originPath；和 absOf 严格互逆（段里的空格照原样留着） */
 function relOf(task: TaskDefinition, abs: string): string {
   const origin = normalizePath(task.originPath);
-  const p = normalizePath(abs);
+  const p = abs.startsWith("/") ? abs : `/${abs}`;
   if (p === origin) return "";
-  return p.startsWith(`${origin}/`) ? p.slice(origin.length + 1) : p.replace(/^\//, "");
+  return p.startsWith(`${origin === "/" ? "" : origin}/`) ? p.slice(origin === "/" ? 1 : origin.length + 1) : p.replace(/^\//, "");
 }
 
 function videoExtsOf(settings: AppSettings): Set<string> {
@@ -220,6 +227,7 @@ function computeStats(units: OrganizeUnit[], items: OrganizeItem[], stage: Organ
       stats.planned++;
       if (it.action === "mkdir") stats.plannedMkdir++;
       else if (it.action === "rmdir") stats.plannedRmdir++;
+      else if (it.action === "delete") stats.plannedDelete++;
     }
     if (it.status === "done") stats.done++;
     if (it.status === "failed") stats.failed++;
@@ -396,6 +404,9 @@ function scopeRootsOf(run: OrganizeRun, walkedDirs: string[]): ScopeRoot[] {
 
 /** 单元里单独取消勾选的文件（网盘绝对路径）换成规划用的相对路径 */
 const excludedRel = (task: TaskDefinition, unit: OrganizeUnit): Set<string> => new Set(unit.excluded.map((p) => relOf(task, p)));
+/** 单元上按网盘绝对路径记的冲突处理 → 相对任务 originPath（规划用的路径） */
+const resolutionsRel = (task: TaskDefinition, unit: OrganizeUnit): Map<string, OrganizeConflictResolution> =>
+  new Map(Object.entries(unit.resolutions ?? {}).map(([p, r]) => [relOf(task, p), r]));
 
 /** 本地镜像只看同一账号的任务：不同网盘上同名的目录（都叫 tv）各有各的本地目录，按路径匹配会串到别的账号的任务上 */
 const accountTasks = (accountName: string): TaskDefinition[] => listTasks().filter((t) => t.account === accountName);
@@ -459,7 +470,13 @@ async function listOutsideDstDirs(
 ): Promise<ScopeEntry[]> {
   const inScope = (rel: string) => roots.some((r) => r === "" || rel === r || rel.startsWith(`${r}/`));
   const dirs = new Set<string>();
-  for (const p of plans) for (const it of p.items) if ((it.action === "rename" || it.action === "move") && !inScope(dirOf(it.dstPath))) dirs.add(dirOf(it.dstPath));
+  for (const p of plans) {
+    for (const it of p.items) {
+      if ((it.action === "rename" || it.action === "move") && !inScope(dirOf(it.dstPath))) dirs.add(dirOf(it.dstPath));
+      // 用户选了挪进重复文件目录：那边现在有什么也得知道（撞名了往后排 (2)）
+      if (it.resolve === "duplicate" && !inScope(dirOf(duplicatePathFor(it.srcPath)))) dirs.add(dirOf(duplicatePathFor(it.srcPath)));
+    }
+  }
   // 只列最深的那些目录：它存在就顺便说明祖先都存在；不存在就往上找到第一个存在的祖先列出来
   const known = new Set(entries.map((e) => e.path));
   const out: ScopeEntry[] = [];
@@ -536,6 +553,7 @@ function toUnitRow(runId: string, unit: Unit, match: OrganizeMatch | null, plan:
     referencedBy,
     notes: plan?.notes ?? [],
     excluded: [],
+    resolutions: {},
   };
 }
 
@@ -581,7 +599,8 @@ async function preview(job: Job, runId: string): Promise<void> {
 
   const rules = parseRules(org.rules).rules;
   const scopes = unitScopesOf(run);
-  const units = buildUnits(walked.entries, {
+  // 重复文件目录是用户自己处理的暂存区（冲突项挪进去的），不再当作品扫；冲突检测还是要知道里面有什么，所以只挡 buildUnits
+  const units = buildUnits(walked.entries.filter((e) => !underDuplicates(e.path)), {
     scopePath: run.scopePath,
     scopes,
     taskRootName: baseOf(normalizePath(task.originPath)),
@@ -727,6 +746,7 @@ function replanRun(run: OrganizeRun, state: PlanState, changed: Map<string, Orga
         episodeTitles: state.episodeTitles.get(u.key),
         selected: r.selected,
         excluded: excludedRel(state.task, r),
+        resolutions: resolutionsRel(state.task, r),
       },
       planContext(state),
     );
@@ -798,6 +818,7 @@ export async function patchUnit(runId: string, key: string, patch: OrganizeUnitP
         episodeTitles: picked?.episodeTitles ?? state.episodeTitles.get(key),
         selected: draft.selected,
         excluded: excludedRel(state.task, draft),
+        resolutions: resolutionsRel(state.task, draft),
       },
       planContext(state),
     );
@@ -831,7 +852,7 @@ export async function patchUnits(runId: string, keys: string[], patch: { selecte
       if (!wanted.has(row.key) || !unit || !row.match || !patch.selected || row.selected) continue;
       drafts.push(
         planUnit(
-          { unit, match: row.match, seasonOverride: row.seasonOverride, episodeOffset: row.episodeOffset, episodeTitles: state.episodeTitles.get(row.key), selected: true, excluded: excludedRel(state.task, row) },
+          { unit, match: row.match, seasonOverride: row.seasonOverride, episodeOffset: row.episodeOffset, episodeTitles: state.episodeTitles.get(row.key), selected: true, excluded: excludedRel(state.task, row), resolutions: resolutionsRel(state.task, row) },
           planContext(state),
         ),
       );
@@ -853,10 +874,18 @@ export async function patchUnits(runId: string, keys: string[], patch: { selecte
 }
 
 /**
- * 按文件勾选：取消勾选的文件记在单元的 excluded 里（网盘绝对路径，重规划不丢），规划时跳过，跟着它的字幕 / nfo 一起留下；
- * 冲突的两份勾掉一份，另一份就能走。ids 是当前清单里的项（重规划之后 id 会换，页面拿最新的清单）
+ * 按文件改：勾选 / 取消勾选（记在单元的 excluded 里，网盘绝对路径，重规划不丢），或者给冲突项选个办法（记在 resolutions 里）。
+ * 取消勾选的文件规划时跳过、跟着它的字幕 / nfo 一起留下——冲突的两份勾掉一份，另一份就能走；
+ * 选了办法的（改名保留 / 自己改名 / 挪进重复文件 / 删掉 / 覆盖）按办法规划，顺带勾回来。
+ * ids 是当前清单里的项（重规划之后 id 会换，页面拿最新的清单）
  */
-export async function patchItems(runId: string, ids: string[], selected: boolean): Promise<{ changed: number }> {
+export interface ItemsPatch {
+  selected?: boolean;
+  /** 给冲突项选的办法；null 是撤回选择，回到「留在原处」 */
+  resolve?: OrganizeConflictResolution | null;
+}
+
+export async function patchItems(runId: string, ids: string[], patch: ItemsPatch): Promise<{ changed: number }> {
   const { state } = editableRun(runId);
   const wanted = new Set(ids);
   const end = beginOp(runId);
@@ -866,27 +895,35 @@ export async function patchItems(runId: string, ids: string[], selected: boolean
       if (!wanted.has(it.id) || it.unitKey === "" || it.kind === "dir") continue;
       byUnit.set(it.unitKey, [...(byUnit.get(it.unitKey) ?? []), it.srcPath]);
     }
-    const toggled = (row: OrganizeUnit): string[] => {
-      const next = new Set(row.excluded);
+    // 选了办法就算勾上（不然规划阶段先跳过了，轮不到冲突）；取消勾选就撤掉之前选的办法
+    const selected = patch.resolve !== undefined ? patch.resolve !== null : patch.selected;
+    const next = (row: OrganizeUnit): Pick<OrganizeUnit, "excluded" | "resolutions"> => {
+      const excluded = new Set(row.excluded);
+      const resolutions = { ...row.resolutions };
       for (const p of byUnit.get(row.key) ?? []) {
-        if (selected) next.delete(p);
-        else next.add(p);
+        if (selected !== false) excluded.delete(p);
+        else excluded.add(p);
+        if (patch.resolve !== undefined || selected === false) {
+          if (patch.resolve) resolutions[p] = patch.resolve;
+          else delete resolutions[p];
+        }
       }
-      return [...next].sort();
+      return { excluded: [...excluded].sort(), resolutions };
     };
-    // 重新勾上的文件：目标目录可能没列过
+    const same = (a: OrganizeUnit, b: Pick<OrganizeUnit, "excluded" | "resolutions">) =>
+      [...a.excluded].sort().join("\n") === b.excluded.join("\n") && JSON.stringify(a.resolutions ?? {}) === JSON.stringify(b.resolutions);
+    // 重新勾上 / 换了办法的文件：目标目录（含重复文件目录）可能没列过
     const drafts: UnitPlan[] = [];
-    if (selected) {
-      for (const row of listUnits(runId)) {
-        const unit = state.units.get(row.key);
-        if (!byUnit.has(row.key) || !unit || !row.match || !row.selected) continue;
-        drafts.push(
-          planUnit(
-            { unit, match: row.match, seasonOverride: row.seasonOverride, episodeOffset: row.episodeOffset, episodeTitles: state.episodeTitles.get(row.key), selected: true, excluded: excludedRel(state.task, { ...row, excluded: toggled(row) }) },
-            planContext(state),
-          ),
-        );
-      }
+    for (const row of listUnits(runId)) {
+      const unit = state.units.get(row.key);
+      if (!byUnit.has(row.key) || !unit || !row.match || !row.selected || selected === false) continue;
+      const draft = { ...row, ...next(row) };
+      drafts.push(
+        planUnit(
+          { unit, match: row.match, seasonOverride: row.seasonOverride, episodeOffset: row.episodeOffset, episodeTitles: state.episodeTitles.get(row.key), selected: true, excluded: excludedRel(state.task, draft), resolutions: resolutionsRel(state.task, draft) },
+          planContext(state),
+        ),
+      );
     }
     const extra = await listDraftTargets(runId, state, drafts);
     const current = assertStillEditable(runId, state);
@@ -894,8 +931,8 @@ export async function patchItems(runId: string, ids: string[], selected: boolean
     const changed = new Map<string, OrganizeUnit>();
     for (const fresh of listUnits(runId)) {
       if (!byUnit.has(fresh.key) || !state.units.has(fresh.key)) continue;
-      const excluded = toggled(fresh);
-      if (excluded.join("\n") !== [...fresh.excluded].sort().join("\n")) changed.set(fresh.key, { ...fresh, excluded });
+      const patched = next(fresh);
+      if (!same(fresh, patched)) changed.set(fresh.key, { ...fresh, ...patched });
     }
     if (changed.size > 0) replanRun(current, state, changed);
     return { changed: changed.size };
@@ -989,6 +1026,11 @@ function noteRenamed(ctx: ListCtx, dir: string, oldName: string, newName: string
   listing.set(newName, node);
 }
 
+/** 我们自己把目录里的一项删掉了：更新本轮的目录缓存 */
+function noteRemoved(ctx: ListCtx, dir: string, name: string): void {
+  ctx.listings.get(normalizePath(dir))?.delete(name);
+}
+
 /** 我们自己把文件从 from 挪到了 to：两边的目录缓存都更新 */
 function noteMoved(ctx: ListCtx, from: string, to: string, name: string, node: DirEntryRef): void {
   ctx.listings.get(normalizePath(from))?.delete(name);
@@ -1063,7 +1105,7 @@ async function withRetry<T>(ctx: ExecCtx, fn: () => Promise<T>): Promise<T> {
 
 
 /** 会在网盘上动手的动作 */
-const WORK_ACTIONS = new Set<OrganizeItem["action"]>(["mkdir", "rename", "move", "rmdir"]);
+const WORK_ACTIONS = new Set<OrganizeItem["action"]>(["mkdir", "rename", "move", "rmdir", "delete"]);
 
 /** 只有勾选且识别出来的单元的项才动；目录项（unitKey 为空）随时动 */
 function activeItemFilter(runId: string, known: OrganizeUnit[] = listUnits(runId)): (it: OrganizeItem) => boolean {
@@ -1152,6 +1194,43 @@ async function execute(job: Job, runId: string, only: Set<string> | null): Promi
         // 刚建的目录肯定是空的：撞名检查不用再列一遍（115 刚建的目录列出来也可能滞后）
         ctx.listings.set(it.dstPath, new Map());
         updateItem(it.id, { status: "done", nodeId: node.id, finishedAt: now(), error: "", errorKind: "" });
+        done++;
+      });
+    } catch (err) {
+      if (isAbortError(err) || signal.aborted) throw err;
+      fail(it, err);
+    }
+  }
+
+  // 1b. 删除：只有用户在冲突上明确选了「删掉这一份」/「覆盖」的项。放在改名 / 移动之前，覆盖才腾得出位置。
+  //     动手前按目录清单核对名字和 id：预览之后位置上换了别的文件就不删（stale）。删掉的撤销退不回来
+  const deletes = pending.filter((i) => i.action === "delete");
+  for (const it of deletes) {
+    if (fatal || signal.aborted) break;
+    setProgress(job, "apply", done, total, `删除 ${it.srcPath}`);
+    try {
+      await withRetry(ctx, async () => {
+        const dir = dirOf(it.srcPath);
+        const name = baseOf(it.srcPath);
+        const hit = (await namesIn(ctx, dir)).get(name);
+        if (!hit) {
+          // 已经不在了（上次执行删过、或者别人删了）：当做完，别再报错
+          updateItem(it.id, { status: "done", finishedAt: now(), error: "网盘上已经没有这个文件", errorKind: "" });
+          done++;
+          return;
+        }
+        if (it.nodeId && hit.id !== it.nodeId) throw new StaleError(`预览之后 ${it.srcPath} 换成了另一个文件，没有删`);
+        await write.remove({ id: hit.id, path: it.srcPath, isDir: hit.isDir }, signal);
+        noteRemoved(ctx, dir, name);
+        jobLog(job, `删除 ${it.srcPath}`);
+        let error = "";
+        try {
+          await mirrorDelete(it.srcPath, { tasks: ctx.tasks, settings });
+        } catch (err) {
+          error = `本地文件没删掉：${messageOf(err)}`;
+          jobLog(job, `${error}（${it.srcPath}）`);
+        }
+        updateItem(it.id, { status: "done", nodeId: hit.id, finishedAt: now(), error, errorKind: error ? "mirror" : "" });
         done++;
       });
     } catch (err) {
@@ -1720,7 +1799,10 @@ async function giveUpItems(runId: string, ids: string[]): Promise<OrganizeSkipRe
 export function revertability(run: OrganizeRun, items: OrganizeItem[] = listItems(run.id)): OrganizeRunDetail["revertable"] {
   if (!["done", "failed", "cancelled", "reverted"].includes(run.status)) return { ok: false, reason: "只有执行过的整理能撤销" };
   // 没执行过文件的不用撤；撤销中断过的连没删的自建目录也算还有事
-  if (!items.some((it) => (run.stage === "revert" ? revertWorkItem(it) : revertPendingItem(it)))) return { ok: false, reason: run.stage === "revert" ? "已经全部退回" : "这次整理没有改动任何文件" };
+  if (!items.some((it) => (run.stage === "revert" ? revertWorkItem(it) : revertPendingItem(it)))) {
+    if (run.stage !== "revert" && items.some((it) => it.action === "delete" && it.status === "done")) return { ok: false, reason: "这次整理只删了文件，删掉的退不回来（在网盘回收站里找）" };
+    return { ok: false, reason: run.stage === "revert" ? "已经全部退回" : "这次整理没有改动任何文件" };
+  }
   // 后面的整理动过这次挪好的文件：文件已经被它挪走了，得先撤它。不相干的后续整理（别的目录、自动整理的新一集）不挡
   const blocker = laterRunTouching(run);
   if (blocker) return { ok: false, reason: "后面的一次整理又动过这次整理挪好的文件，先撤销那一次", blockedBy: blocker };
@@ -1782,6 +1864,9 @@ async function revert(job: Job, runId: string): Promise<void> {
   let fatal: string | null = null;
   bumpAttempts([...items, ...stuck].map((it) => it.id));
   jobLog(job, `开始撤销：${items.length + stuck.length} 项`);
+  // 用户选了删除 / 覆盖的项已经进了网盘回收站，这里退不回来，只说一声
+  const deleted = listItems(runId).filter((it) => it.action === "delete" && it.status === "done").length;
+  if (deleted > 0) jobLog(job, `其中 ${deleted} 项是删掉的文件，退不回来（在网盘回收站里找）`);
 
   const failRevert = (it: OrganizeItem, err: unknown) => {
     const kind = classifyFailure(provider, err);

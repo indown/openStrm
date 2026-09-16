@@ -1,0 +1,1 @@
+ALTER TABLE `organize_units` ADD `resolutions` text DEFAULT '{}' NOT NULL;

@@ -17,6 +17,7 @@ import { normalizePath, type ChangeEvent, type DriveEntry, type DriveProvider } 
 import { resolveInDataDir } from "../../paths.js";
 import { decodeSegments, strmContent, toStrmPath } from "../strm/naming.js";
 import { isDirectoryEntry, pathExists, removeEmptyParents } from "../../lib/fs.js";
+import { underDuplicates } from "../organize/duplicates.js";
 
 export interface LifeContext {
   provider: DriveProvider;
@@ -62,6 +63,8 @@ export function matchTask(ctx: Pick<LifeContext, "tasks">, panPath: string): Tas
     if (panPath === origin) rel = "";
     else if (panPath.startsWith(`${origin}/`)) rel = panPath.slice(origin.length + 1);
     if (rel === null) continue;
+    // 整理把重复的文件挪进任务根下的「重复文件」目录：那是网盘上的暂存区，不进媒体库，本地不生成 strm
+    if (underDuplicates(rel)) continue;
     if (best && normalizeOrigin(best.task.originPath).length >= origin.length) continue;
     const saveDir = resolveInDataDir(task.targetPath);
     if (!saveDir) continue; // targetPath 越出数据目录的任务不参与匹配

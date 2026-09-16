@@ -8,7 +8,8 @@
  *   - 字幕组风格 `[Group][Title][01][1080p][JPSC]`：第一段是字幕组，纯数字段是绝对集数；
  *   - 标题里同时有中文和英文时给出多个候选，识别时依次去 TMDB 搜；
  *   - 零宽空格这类看不见的字符先去掉（分享里的文件名常夹着它们躲关键词过滤，`S01E\u200B36` 看着正常却认不出）；
- *   - 标题后面粘着的补零数字（`我和僵尸有个约会01`）是集数；不补零的（`流浪地球2`）解析时不定，见 `trailingNumber`。
+ *   - 标题后面粘着的补零数字（`我和僵尸有个约会01`）是集数；不补零的（`流浪地球2`）和整个标题就是数字的（`129 4K`）
+ *     解析时不定，见 `trailingNumber` / `numericTitle`。
  */
 import { stripInvisible } from "../../lib/text.js";
 
@@ -715,6 +716,32 @@ export function trailingNumber(p: ParsedName): TrailingNumber | null {
   if (number === 0 || (!RE_CJK.test(base) && !RE_LATIN.test(base)) || RE_NUMBERED_TAIL.test(base)) return null;
   const titles = titleCandidates(base);
   return titles.length > 0 ? { number, titles } : null;
+}
+
+/** 整个标题就是一个 1-3 位数字 */
+const RE_NUMERIC_TITLE = /^0*(\d{1,3})$/;
+
+/**
+ * 标题整个就是一个数字（`129 4K.mp4` 的 129、`130 4K.mp4` 的 130）：整名就是数字时（`129.mp4`）解析时就当集数，
+ * 后面粘着画质 / 来源这些技术词就不敢定了——《1917》《2012》也是这个形状。和 `trailingNumber` 一样交给调用方按上下文决定
+ * （在季目录里、或者上级目录就是这部作品）。名字里自带年份的（`129 2023 1080p`）更像电影，不给。
+ */
+export function numericTitle(p: ParsedName): number | null {
+  if (p.episode !== undefined || p.absolute !== undefined || p.isSpecial || p.date || p.year) return null;
+  const m = RE_NUMERIC_TITLE.exec(p.title.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  return n > 0 ? n : null;
+}
+
+/**
+ * 名字整个就是一个版本词（`导演剪辑版`、`加长版`、`Extended`）：这是版本，不是作品名。
+ * 解析时切不断（标题不能为空，第一个词只能留给标题），所以单独给调用方一个问法——
+ * 目录叫这个名字时别拿它当片名去搜（`凡人修仙传/导演剪辑版/…` 会搜出一部真叫《导演剪辑版》的电影）
+ */
+export function isEditionOnlyName(name: string): boolean {
+  const words = lower(stripInvisible(name).trim()).split(/[\s._-]+/).filter(Boolean);
+  return words.length > 0 && EDITIONS.some((e) => e.words.length === words.length && e.words.every((w, i) => w === words[i]));
 }
 
 /* ------------------------------- 目录名 ------------------------------- */

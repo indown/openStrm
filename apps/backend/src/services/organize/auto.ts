@@ -11,6 +11,7 @@ import { readAppSettings } from "../../db/repositories/settings.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { HttpError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
+import { DUPLICATES_DIR } from "./duplicates.js";
 import { createRun } from "./run.js";
 import { taskAutoMode } from "./settings.js";
 
@@ -55,7 +56,8 @@ export interface AutoOrganizeInput {
 }
 
 export function maybeAutoOrganize(input: AutoOrganizeInput): void {
-  const paths = input.paths.map((p) => p.replace(/^\/+|\/+$/g, "")).filter(Boolean);
+  // 重复文件目录是整理自己挪进去的暂存区，扫它只会空跑一轮
+  const paths = input.paths.map((p) => p.replace(/^\/+|\/+$/g, "")).filter((p) => p && p !== DUPLICATES_DIR && !p.startsWith(`${DUPLICATES_DIR}/`));
   if (paths.length === 0) return;
   const settings = readAppSettings();
   const mode = input.mode ?? taskAutoMode(input.task, settings);
