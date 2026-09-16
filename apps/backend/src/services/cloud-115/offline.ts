@@ -11,7 +11,7 @@
  * 字段含义（真实响应对照）：
  *   - file_id      目标目录 id（等于 wp_path_id），**不是**下载产物
  *   - delete_file_id 下载产物（文件或目录）的 id；BT 任务两者相同
- *   - del_path     产物在目标目录下的名字
+ *   - del_path     产物在目标目录下的名字；目录产物结尾带 `/`（归一化时去掉，不然当不了条目名）
  *   - file_category 1 文件 / 0 目录
  *   - status       -1 失败、0 等待、1 下载中、2 完成；status_text 是 115 给的中文说明
  *   - move         -1 表示下载完了但转存失败（一般是空间不足）
@@ -250,7 +250,8 @@ export function normalizeOfflineTask(raw: Record<string, unknown>): OfflineTask 
     rateDownload: num(raw.rateDownload),
     dirId: str(raw.wp_path_id ?? raw.file_id),
     resultId: str(raw.delete_file_id),
-    resultName: str(raw.del_path) || name,
+    // 目录产物的 del_path 结尾带 `/`（真实响应如 `Mutiny.2026….mkv/`）：留着会被当成路径，生成 strm 那步直接判名字不合法
+    resultName: str(raw.del_path).replace(/\/+$/, "") || name,
     isDir: String(raw.file_category ?? "1") === "0",
     move,
     pickCode: str(raw.pick_code),

@@ -77,6 +77,7 @@ test("normalizeOfflineTask：file_id 是目标目录，产物是 delete_file_id 
   assert.equal(t.size, 10495107242);
   assert.equal(t.pickCode, "ak28mngiisul4h4kc");
 
+  // 目录产物：115 的 del_path 结尾带斜杠（真实响应就是 `Mutiny.2026.x265.WEB-DL.2160p.HDR.mkv/`）
   const bt = normalizeOfflineTask({
     ...fileTask,
     info_hash: HASH40,
@@ -84,9 +85,10 @@ test("normalizeOfflineTask：file_id 是目标目录，产物是 delete_file_id 
     delete_file_id: "3117196816742397488",
     file_category: 0,
     name: "Captain.America.2025",
-    del_path: "Captain.America.2025",
+    del_path: "Captain.America.2025/",
   });
   assert.equal(bt.isDir, true);
+  assert.equal(bt.resultName, "Captain.America.2025", "结尾的斜杠要去掉，不然当不了条目名");
   assert.equal(bt.resultId, "3117196816742397488");
   assert.equal(bt.dirId, "2931676988586898668", "目录任务的 file_id 是产物本身，目标目录要看 wp_path_id");
 });
