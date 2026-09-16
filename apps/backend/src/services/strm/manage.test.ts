@@ -324,3 +324,41 @@ test("verify：按网盘父目录分组只问一次；文件缺失 / 目录没�
   d.failWith = null;
   assert.equal((await verify(fresh, d, "")).checked, 0, "根不存在给空");
 });
+
+test("verify：目录多到逐个问不划算时改拉一次子树比对；内容指向任务目录之外的仍逐个问，太多才 400", async () => {
+  // 一部电影一个文件夹，70 个：逐个问要 140 次请求，以前直接回 400 让人「进更小的子目录」，而这里根本没有更小的
+  const dirAt = (i: number) => `Big/M${String(i).padStart(2, "0")}`;
+  for (let i = 1; i <= 70; i++) write(`${dirAt(i)}/movie.strm`, `/mnt/pan/tv/${dirAt(i)}/movie.mkv`);
+  const d = drive();
+  for (let i = 1; i <= 70; i++) {
+    if (i === 5) continue; // 整个目录不在了
+    d.tree.addFile(`/tv/${dirAt(i)}/${i === 3 ? "other.mkv" : "movie.mkv"}`); // 3：目录还在，文件没了
+  }
+
+  const r = await verify(main, d, "Big");
+  assert.deepEqual(d.log, ["listSubtree tv/Big"], "一次拉整棵子树，不再逐个目录解析 + 列目录");
+  assert.equal(r.checked, 70);
+  assert.equal(r.dirs, 70);
+  assert.deepEqual(r.missing, [
+    { path: "Big/M03/movie.strm", remotePath: "tv/Big/M03/movie.mkv", reason: "file-missing" },
+    { path: "Big/M05/movie.strm", remotePath: "tv/Big/M05/movie.mkv", reason: "dir-missing" },
+  ]);
+  assert.deepEqual(r.errors, []);
+
+  // 任务改过 originPath 的老内容：子树盖不到，这些照旧逐个问
+  write("Big/Old/movie.strm", "/mnt/pan/old/Big/Old/movie.mkv");
+  d.log.length = 0;
+  const mixed = await verify(main, d, "Big");
+  assert.deepEqual(d.log.filter((l) => !l.startsWith("listSubtree ")), ["resolvePath old/Big/Old"]);
+  assert.deepEqual(
+    mixed.missing.filter((m) => m.path === "Big/Old/movie.strm"),
+    [{ path: "Big/Old/movie.strm", remotePath: "old/Big/Old/movie.mkv", reason: "dir-missing" }],
+  );
+
+  for (let i = 1; i <= 61; i++) write(`Big/Out${i}/movie.strm`, `/mnt/pan/old/Out${i}/movie.mkv`);
+  await assert.rejects(
+    verify(main, d, "Big"),
+    (e: unknown) => status(400)(e) && /62 个网盘目录不在任务目录 tv\/Big 之下/.test((e as Error).message),
+  );
+  fs.rmSync(at("Big"), { recursive: true, force: true });
+});

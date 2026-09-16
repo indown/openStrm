@@ -598,9 +598,9 @@ export const api = {
     /** 扫描一个目录（"" 是整个任务），大目录要一两分钟 */
     scan: (taskId: string, path = "") =>
       data(axiosInstance.post<StrmScanResult>("/api/strm/scan", { taskId, path }, { timeout: 120_000 })),
-    /** 逐个到 115 确认文件还在不在，可能要三分钟；范围太大后端回 400 */
+    /** 到网盘确认文件还在不在：目录多的时候后端改成拉一次整棵目录树，和「重新生成」一样最长可能等五分钟 */
     verify: (taskId: string, path = "") =>
-      data(axiosInstance.post<StrmVerifyResult>("/api/strm/verify", { taskId, path }, { timeout: 200_000 })),
+      data(axiosInstance.post<StrmVerifyResult>("/api/strm/verify", { taskId, path }, { timeout: 330_000 })),
     /** 读 115 目录再生成，最长五分钟；根目录 400、任务同步中 409、115 目录没了 404 */
     regenerate: (taskId: string, path: string, mode: StrmRegenerateMode) =>
       data(axiosInstance.post<StrmRegenerateResult>("/api/strm/regenerate", { taskId, path, mode }, { timeout: 330_000 })),

@@ -23,6 +23,9 @@ import { PARSE_REASON_LABEL, baseName, strmErrorMessage, type RequestDelete } fr
 type Phase = "idle" | "running" | "done" | "error";
 type Missing = StrmVerifyResult["missing"][number];
 
+/** 缺失项可能上千，列表只铺这么多行（「删除全部缺失」删的还是全部） */
+const LIST_CAP = 300;
+
 type Props = {
   /** 要校验的目录或文件；null = 关着 */
   target: string | null;
@@ -92,7 +95,7 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
           {phase === "idle" && (
             <p className="text-sm text-muted-foreground">
-              会逐个到网盘确认 strm 指向的文件还在不在。目录大时要两三分钟；范围太大时会被拒绝，进更小的子目录再试。
+              会到网盘确认 strm 指向的文件还在不在。目录少时逐个目录问，目录多时改成一次读取整棵目录树再比对，大库可能要几分钟。
             </p>
           )}
           {running && <Spinner label="正在向网盘逐个确认，请不要关闭页面…" />}
@@ -126,7 +129,7 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
                     </Button>
                   </div>
                   <div className="max-h-[40vh] divide-y overflow-y-auto">
-                    {missing.map((m) => (
+                    {missing.slice(0, LIST_CAP).map((m) => (
                       <div key={m.path} className="flex items-start gap-2 px-3 py-2">
                         <div className="min-w-0 flex-1 space-y-0.5">
                           <div className="break-all font-mono text-xs">{m.path}</div>
@@ -147,6 +150,11 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
                         </Button>
                       </div>
                     ))}
+                    {missing.length > LIST_CAP && (
+                      <p className="px-3 py-2 text-xs text-muted-foreground tabular-nums">
+                        还有 {missing.length - LIST_CAP} 个没列出来，「删除全部缺失」会一起删。
+                      </p>
+                    )}
                   </div>
                 </div>
               )}

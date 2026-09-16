@@ -12,7 +12,7 @@ import { toast } from "sonner";
 import type { StrmDeleteResult, StrmEntry } from "@openstrm/shared";
 import { api, type TaskRow } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
-import { joinPath, parentOf, strmErrorMessage, type RequestDelete } from "@/lib/strm";
+import { DELETE_CHUNK, joinPath, parentOf, strmErrorMessage, type RequestDelete } from "@/lib/strm";
 
 export type StrmRow = StrmEntry & { path: string };
 export type BrowseMode = "browse" | "search";
@@ -235,9 +235,26 @@ export function useStrmBrowser() {
     if (!deleteTarget || !taskId) return;
     setDeleting(true);
     try {
-      const res = await api.strm.remove(taskId, deleteTarget.paths);
+      // 校验出来的缺失项可能上千，一次发不完：分批发，中途断了也把已经删掉的算数
+      const res: StrmDeleteResult = { deleted: 0, failed: [] };
+      const sent: string[] = [];
+      let broke = false;
+      for (let i = 0; i < deleteTarget.paths.length && !broke; i += DELETE_CHUNK) {
+        const batch = deleteTarget.paths.slice(i, i + DELETE_CHUNK);
+        try {
+          const part = await api.strm.remove(taskId, batch);
+          res.deleted += part.deleted;
+          res.failed.push(...part.failed);
+          sent.push(...batch);
+        } catch (err) {
+          // 这一批和后面没发出去的都算没删掉，调用方才不会把它们从自己的列表里划掉
+          const msg = strmErrorMessage(err, "删除失败");
+          for (const p of deleteTarget.paths.slice(i)) res.failed.push({ path: p, message: msg });
+          broke = true;
+        }
+      }
       const failed = new Set(res.failed.map((f) => f.path));
-      const removed = deleteTarget.paths.filter((p) => !failed.has(p));
+      const removed = sent.filter((p) => !failed.has(p));
       const gone = (p: string) => removed.some((r) => isUnder(p, r));
       setEntries((prev) => prev.filter((e) => !gone(e.path)));
       setResults((prev) => prev.filter((e) => !gone(e.path)));
@@ -252,8 +269,6 @@ export function useStrmBrowser() {
       const hit = removed.find((r) => isUnder(path, r));
       if (hit) go({ path: parentOf(hit) });
       else void load();
-    } catch (err) {
-      toast.error(strmErrorMessage(err, "删除失败"));
     } finally {
       setDeleting(false);
     }

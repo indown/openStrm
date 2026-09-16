@@ -58,8 +58,9 @@ export const STRM_LIMITS = {
   /** 体检每类问题最多列这么多条，总数在 counts 里 */
   ISSUE_LIST: 200,
   REWRITE_SAMPLES: 50,
-  /** 校验一次最多看的 strm 数 / 要问网盘的目录数：每个目录 1 次解析 + 至少 1 次列目录，默认限速 2/s */
-  VERIFY_FILES: 2000,
+  /** 校验一次最多看的 strm 数：只影响本地读，网盘那边的成本看目录数 */
+  VERIFY_FILES: 20_000,
+  /** 逐个目录问网盘的上限（每个目录 1 次解析 + 至少 1 次列目录）；超过就改成拉一次整棵子树比对 */
   VERIFY_DIRS: 60,
   DELETE_MAX: 500,
 } as const;
@@ -638,6 +639,74 @@ export async function regenerate(
 /* ------------------------------- 校验 ------------------------------- */
 
 const collapseSlashes = (p: string): string => p.replace(/\/{2,}/g, "/");
+/** 比对用的归一：每段去首尾空格（网盘上真有 `Season 1 ` 这种名字，逐目录那条路也是 trim 过再比的） */
+const trimSegs = (p: string): string => p.split("/").map((s) => s.trim()).join("/");
+const dirOf = (p: string): string => p.slice(0, Math.max(p.lastIndexOf("/"), 0));
+/** 和 collectFilesAndTopEmptyDirs 认文件的口径一致：末段带扩展名的是文件，否则是空目录 */
+const looksLikeFile = (p: string): boolean => /\.[a-z0-9]+$/i.test(p.slice(p.lastIndexOf("/") + 1));
+
+/** 一组路径最深的公共上级；空数组给 "" */
+function commonDir(dirs: string[]): string {
+  let segs: string[] | null = null;
+  for (const d of dirs) {
+    const s = d.split("/");
+    if (segs === null) {
+      segs = s;
+      continue;
+    }
+    let i = 0;
+    while (i < segs.length && i < s.length && segs[i] === s[i]) i++;
+    segs = segs.slice(0, i);
+  }
+  return (segs ?? []).join("/");
+}
+
+type VerifyItem = { path: string; remotePath: string; name: string };
+
+/**
+ * 目录多的时候走这条：整棵子树拉一次在内存里比对，而不是一个目录问一次。
+ * 115 是一次导出目录树，成本和目录数无关；夸克 / OpenList 是一次递归遍历，也比「每个目录先解析再列」省。
+ * 同步任务和「重新生成」用的就是同一个接口，所以大范围校验并不比跑一次同步重。
+ *
+ * 和逐目录的一点差别：子树清单里只有文件（和没有文件的顶层空目录），
+ * 所以目录还在、里面一个文件都没有的，这里报的是 dir-missing 而不是 file-missing——strm 一样是死的，只是措辞粗一点。
+ */
+async function verifyBySubtree(provider: DriveProvider, dirs: Array<[string, VerifyItem[]]>, result: StrmVerifyResult): Promise<void> {
+  const root = commonDir(dirs.map(([dir]) => dir));
+  let listed: string[];
+  try {
+    listed = await provider.listSubtree(root);
+  } catch (err) {
+    if (err instanceof RemoteDirNotFoundError) {
+      // 共同上级都没了，底下的自然全没
+      for (const [, items] of dirs) {
+        for (const it of items) result.missing.push({ path: it.path, remotePath: it.remotePath, reason: "dir-missing" });
+      }
+      return;
+    }
+    const msg = errMsg(err);
+    // 封控 / cookie 失效：和逐目录那条一样整体中止
+    if (provider.classifyError(err)) throw upstreamError(msg);
+    result.errors.push({ remoteDir: root, message: msg });
+    return;
+  }
+
+  const files = new Set<string>();
+  const seenDirs = new Set<string>([trimSegs(root)]);
+  for (const rel of listed) {
+    const full = trimSegs(collapseSlashes(`${root}/${rel}`));
+    if (looksLikeFile(full)) files.add(full);
+    else seenDirs.add(full);
+    for (let d = dirOf(full); d !== "" && !seenDirs.has(d); d = dirOf(d)) seenDirs.add(d);
+  }
+  for (const [dir, items] of dirs) {
+    const exists = seenDirs.has(trimSegs(dir));
+    for (const it of items) {
+      if (files.has(trimSegs(it.remotePath))) continue;
+      result.missing.push({ path: it.path, remotePath: it.remotePath, reason: exists ? "file-missing" : "dir-missing" });
+    }
+  }
+}
 
 export async function verify(task: TaskDefinition, provider: DriveProvider, rel: string): Promise<StrmVerifyResult> {
   const mp = await resolveManagedPath(task, rel);
@@ -650,7 +719,7 @@ export async function verify(task: TaskDefinition, provider: DriveProvider, rel:
   }
 
   const result: StrmVerifyResult = { checked: 0, dirs: 0, missing: [], unparsable: [], errors: [], note: provider.notes?.verify ?? "" };
-  const groups = new Map<string, Array<{ path: string; remotePath: string; name: string }>>();
+  const groups = new Map<string, VerifyItem[]>();
   await mapLimit(rels, 16, async (r) => {
     const full = path.join(mp.root, ...r.split("/"));
     let content: string | null;
@@ -679,12 +748,29 @@ export async function verify(task: TaskDefinition, provider: DriveProvider, rel:
     if (list) list.push(item);
     else groups.set(dir, [item]);
   });
-  if (groups.size > STRM_LIMITS.VERIFY_DIRS) {
-    throw new HttpError(400, `范围太大（涉及 ${groups.size} 个网盘目录，上限 ${STRM_LIMITS.VERIFY_DIRS}），请选一个更小的目录分批校验`);
-  }
   result.dirs = groups.size;
 
-  await mapLimit([...groups], 4, async ([dir, items]) => {
+  // 这次校验的范围对应的网盘目录；内容指向它之外的（任务改过 originPath 的老 strm）子树那条路盖不到
+  const rangeRel = extOf(mp.rel) === ".strm" ? dirOf(mp.rel) : mp.rel;
+  const rangeRoot = trimSegs(collapseSlashes(rangeRel ? `${task.originPath}/${rangeRel}` : task.originPath).replace(/\/+$/, ""));
+  const all = [...groups];
+  const inside: Array<[string, VerifyItem[]]> = [];
+  const outside: Array<[string, VerifyItem[]]> = [];
+  for (const g of all) (isUnder(trimSegs(g[0]), rangeRoot) ? inside : outside).push(g);
+  // 目录多到逐个问不划算：范围内的那些改成拉一次子树比对，范围外的零星几个仍然逐个问。
+  // rangeRoot 为空（任务原路径就是网盘根）时不走这条，免得把整个网盘导出来
+  const byTree = rangeRoot !== "" && all.length > STRM_LIMITS.VERIFY_DIRS && inside.length > 0 ? inside : [];
+  const oneByOne = byTree.length > 0 ? outside : all;
+  if (oneByOne.length > STRM_LIMITS.VERIFY_DIRS) {
+    throw new HttpError(
+      400,
+      `有 ${oneByOne.length} 个网盘目录不在任务目录 ${rangeRoot} 之下（一次最多查 ${STRM_LIMITS.VERIFY_DIRS} 个），` +
+        "多半是任务改过原路径，先用「修正内容」把这些 strm 指回现在的路径再校验",
+    );
+  }
+  if (byTree.length > 0) await verifyBySubtree(provider, byTree, result);
+
+  await mapLimit(oneByOne, 4, async ([dir, items]) => {
     try {
       const node = await provider.resolvePath(dir);
       if (!node || !node.isDir) {
@@ -704,6 +790,7 @@ export async function verify(task: TaskDefinition, provider: DriveProvider, rel:
   });
   result.missing.sort((a, b) => a.path.localeCompare(b.path));
   result.unparsable.sort((a, b) => a.path.localeCompare(b.path));
-  log.info(`校验 ${result.checked} 个 strm / ${result.dirs} 个网盘目录：缺失 ${result.missing.length} ← 任务 ${task.id} ${mp.rel || "/"}`);
+  const how = byTree.length > 0 ? `子树 ${byTree.length} + 逐个 ${oneByOne.length}` : "逐个";
+  log.info(`校验 ${result.checked} 个 strm / ${result.dirs} 个网盘目录（${how}）：缺失 ${result.missing.length} ← 任务 ${task.id} ${mp.rel || "/"}`);
   return result;
 }

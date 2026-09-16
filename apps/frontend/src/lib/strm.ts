@@ -55,6 +55,9 @@ export const PARSE_REASON_LABEL: Record<StrmParseReason, string> = {
   "prefix-mismatch": "前缀和任务现在的 strmPrefix 对不上",
 };
 
+/** 删除接口一次最多收 500 个路径（后端 STRM_LIMITS.DELETE_MAX），多了分批发 */
+export const DELETE_CHUNK = 500;
+
 export const joinPath = (dir: string, name: string): string => (dir ? `${dir}/${name}` : name);
 export const parentOf = (p: string): string => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 export const baseName = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
