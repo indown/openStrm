@@ -14,7 +14,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/status-badge";
-import { Film, Edit, Trash2, Search, FileText, Loader2, AlertCircle, CloudUpload } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
+import { EmptyState } from "@/components/empty-state";
+import { PosterGridSkeleton } from "@/components/loading";
+import { Film, Edit, Trash2, Search, FileText, Loader2, AlertCircle, CloudUpload, Library } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import type { MediaLibraryEntry, ShareFollowSummary } from "@openstrm/shared";
@@ -227,29 +230,44 @@ export default function LibraryPage() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <h1 className="text-2xl font-semibold">影库</h1>
-        <div className="flex items-center gap-2 min-w-[240px]">
-          <Search className="h-4 w-4 text-muted-foreground" />
-          <Input
-            ref={searchRef}
-            placeholder="搜索标题、原名、路径、标签、备注、年份…  按 / 聚焦"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="h-8 text-sm"
-          />
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        icon={Library}
+        title="影库"
+        description="收藏的分享，刮削到封面后按海报墙摆出来；点一张卡片就能打开分享、转存或追更"
+        actions={
+          <div className="relative w-full sm:w-72">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              ref={searchRef}
+              placeholder="搜索标题、路径、标签…（按 / 聚焦）"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="pl-8"
+            />
+          </div>
+        }
+      />
 
       {!loaded ? (
-        <div className="text-muted-foreground p-8 text-center">加载中...</div>
+        <PosterGridSkeleton />
+      ) : entries.length === 0 ? (
+        <EmptyState
+          icon={Library}
+          title="影库是空的"
+          description="在分享详情里点「加入影库」，收藏的分享就会摆在这里。"
+        />
       ) : filtered.length === 0 ? (
-        <div className="text-muted-foreground p-8 text-center border rounded-md">
-          {entries.length === 0
-            ? "影库为空，从分享详情中点击「加入影库」开始收藏。"
-            : "没有匹配的结果。"}
-        </div>
+        <EmptyState
+          icon={Search}
+          title="没有匹配的结果"
+          description={`影库里没有和「${query.trim()}」相关的收藏，换个词试试。`}
+          action={
+            <Button variant="outline" onClick={() => setQuery("")}>
+              清空搜索
+            </Button>
+          }
+        />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {filtered.map((entry) => (
@@ -323,7 +341,7 @@ function LibraryCard({ entry, followed, savingToTask, onOpen, onEdit, onSaveToTa
   const failed = entry.scrapeStatus === "failed";
 
   return (
-    <div className="group relative rounded-xl border bg-card overflow-hidden flex flex-col hover:shadow-md transition-shadow">
+    <div className="group relative flex flex-col overflow-hidden rounded-xl border bg-card transition-colors hover:border-brand/40">
       <button
         type="button"
         onClick={onOpen}
@@ -367,11 +385,8 @@ function LibraryCard({ entry, followed, savingToTask, onOpen, onEdit, onSaveToTa
           </Badge>
         )}
         {entry.fileCount > 0 && (
-          <Badge
-            variant="secondary"
-            className="absolute bottom-2 right-2 text-xs"
-          >
-            <FileText className="h-3 w-3 mr-1" />
+          <Badge variant="secondary" className="absolute right-2 bottom-2 text-xs tabular-nums">
+            <FileText className="mr-1 size-3" />
             {entry.fileCount}
           </Badge>
         )}

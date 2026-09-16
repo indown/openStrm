@@ -261,3 +261,17 @@ CSS 都在 `globals.css` 的 `@layer components` 里：`progress-scan`、`progre
 **验证**：typecheck + lint + 干净构建 / 静态导出全过；浅色暗色都看过；控制台无报错。
 
 **一个教训（测试方法本身出的错）**：想用 `document.hidden` 伪造标签页切走来验"停止 / 静止帧"分支，前两次结论都是错的 —— 这个被扩展驱动的标签页真实 `visibilityState` 就是 `hidden`，Chrome 在这种标签页里**根本不跑 rAF**（自插的计数 rAF 在 500ms 里跑了 0 次），所以"前后两帧相同"根本不能证明什么。正确的验法是反过来：把伪造删掉、让 `document.hidden` 回到真实的 `true`，静止分支会**同步**画一帧 —— 采样到 9109 个像素被画到，700ms 后仍是同一帧。以后在这个环境里验 canvas 动画，别拿"帧有没有变"当判据。
+
+### 阶段 4（2026-09-16，worktree `task-ui`）
+
+`app/library/page.tsx` 拉回 [[ui-review-2026-09-03]] 的约定 —— 这页之前还停在重做之前：自己写 `<h1>`、自己写"加载中..."、空状态是个裸边框、外层 `space-y-4`。
+
+- 页头换 `PageHeader`（图标用侧栏同一个 `Library`），搜索框收进 `actions`，图标改成绝对定位压在输入框里，和顶栏的分享链接框一个写法
+- 首屏骨架：`components/loading.tsx` 新增 `PosterGridSkeleton`（竖版海报 + 两行字），骨架归在 loading.tsx 是既有约定
+- 两个空状态都换 `EmptyState`：影库为空 / 搜索没有匹配（后者带「清空搜索」按钮，文案里带上搜的词）
+- 卡片 hover 从 `hover:shadow-md` 改成 `hover:border-brand/40` —— 顺手了结阶段 1 留下的尾巴：`shadow-*` 工具类优先级更高，会盖掉面板的顶边高光
+- 文件数角标补 `tabular-nums`
+
+**验证**：typecheck + lint + 干净构建 / 静态导出全过。浏览器里三个状态都看了（海报墙明暗两套、搜索无匹配、影库为空）。没有后端时用了个假后端：scratchpad 里一个 40 行的 node http 服务监听 4000 返回假的 `/api/library` 和 `/api/follow`，dev 的 rewrites 会把 `/api/*` 转过去 —— 比在页面里 mock XHR 干净得多，**这个办法以后看任何需要数据的页面都能用**。用完已删。
+
+**发现但没动的**：影库加载**失败**时，页面也显示"影库是空的"（只多一个 toast）。这是这页原来就有的行为，不是这次改出来的；要区分"空"和"没加载上"得加一个错误态，超出这一阶段的范围，先记在这里。

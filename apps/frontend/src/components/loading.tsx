@@ -44,6 +44,23 @@ export function CardListSkeleton({ count = 3 }: { count?: number }) {
   );
 }
 
+/** 海报墙骨架（影库）：一格一张竖版海报 + 两行字 */
+export function PosterGridSkeleton({ count = 10 }: { count?: number }) {
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="overflow-hidden rounded-xl border bg-card">
+          <Skeleton className="aspect-[2/3] w-full rounded-none" />
+          <div className="space-y-2 p-2">
+            <Skeleton className="h-4 w-4/5" />
+            <Skeleton className="h-3 w-3/5" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** 表单页骨架：几组 label + 输入框 */
 export function FormSkeleton({ fields = 6 }: { fields?: number }) {
   return (
