@@ -15,7 +15,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { StatusBadge, TONE_CLASS } from "@/components/status-badge";
+import { StatusBadge } from "@/components/status-badge";
+import { ProgressBar } from "@/components/progress-bar";
 import { EmptyState } from "@/components/empty-state";
 import { Spinner, TableSkeleton } from "@/components/loading";
 import { api, type TaskRow } from "@/lib/api";
@@ -391,12 +392,12 @@ export function RunView({
                 </span>
               )}
             </div>
-            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-              <div
-                className={`h-full ${TONE_CLASS.brand.bar} transition-all`}
-                style={{ width: run.progress.total > 0 ? `${Math.round((run.progress.done / run.progress.total) * 100)}%` : "30%" }}
-              />
-            </div>
+            {/* 识别阶段拿不到总数，走不确定态：一小段来回漂，不假装知道百分比 */}
+            <ProgressBar
+              percent={run.progress.total > 0 ? (run.progress.done / run.progress.total) * 100 : 0}
+              running
+              indeterminate={run.progress.total === 0}
+            />
           </div>
         )}
 

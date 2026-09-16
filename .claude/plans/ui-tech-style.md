@@ -205,3 +205,36 @@ OpenStrm 是 MIT 仓库、源码公开。直接复制文件会有两处摩擦：
 **验证**：`typecheck` 通过；`next lint` 无告警；干净 `next build` + 静态导出通过，`out/fonts/` 三个文件都在、导出的 CSS 正确引用；浏览器里浅色 / 暗色各走了登录、任务（空状态）、设置三页，面板内高光、侧栏竖条、毛玻璃、等宽字体都确认生效。JS 首屏包大小没变（没加依赖）。
 
 **留的尾巴**：等宽 500 字重目前没有任何地方用（全站 `font-mono` 都没配 `font-medium`），文件留着等阶段 2 用 —— 它按 `unicode-range` 懒加载，不用就一个字节都不下载；确定不做阶段 2 的话删掉即可。窄屏没在浏览器里验（这台机器 `resize_window` 不生效），但这轮七项都不动布局。
+
+### 阶段 2（2026-09-16，worktree `task-ui`）
+
+主题只有一个：**让「正在跑」看起来像在跑**。四个落点加一条 reduced-motion 兜底，**仍然没加任何 npm 依赖，也没引入 reactbits 的代码**——四个效果都是照着它的思路自己写的（见第四节的理由）。
+
+新增两个共享件：
+
+- `components/progress-bar.tsx` —— 全站统一的进度条。收掉了四处各写一遍的 `h-1.5 overflow-hidden rounded-full bg-muted`（`log` 总进度 + 单文件、`offline`、`organize/RunView`）。颜色走 StatusBadge 的 tone；`running` 时条上一道循环扫过的高光；`indeterminate` 给总量未知的场景。
+- `hooks/use-count-up.ts` —— 数字滚到位而不是跳变。目标值中途再变就从当前显示值接着滚，不回跳；reduced-motion 下直接返回目标值。
+
+CSS 都在 `globals.css` 的 `@layer components` 里：`progress-scan`、`progress-drift`、`running-outline`、`tr[data-running]`、`stream-row`、`scroll-fade`；文件末尾一个 `@media (prefers-reduced-motion: reduce)` 把这一组循环动画全部关掉（放在所有 layer 之外，不用 `!important` 就盖得住）。
+
+接线：
+
+| 落点 | 改了什么 |
+|---|---|
+| 日志页总进度 | 换 `<ProgressBar size="md">`，颜色仍跟状态标签走，跑着时有扫描高光；`progressColor` 那个局部变量连同 `TONE_CLASS` 的 import 一起删了 |
+| 日志页统计面板 | 跑着时套 `running-outline`，一圈呼吸的品牌色描边 |
+| 日志页 7 个统计数字 | 数字类的走 `CountUpValue`；「用时」「连接」是文字，原样显示 |
+| 日志行 | 新行淡入（`stream-row`，只在 running 时加）；单文件进度条换共享组件 |
+| 日志列表 | 底部渐隐 |
+| 云下载 | 进度条换共享组件，`downloading` 时有扫描高光 |
+| 整理 RunView | 进度条换共享组件；识别阶段拿不到总数，走 `indeterminate` 而不是像原来那样假装 30% |
+| 任务页 | 正在跑的表格行：行底色带品牌色 + 首格一条呼吸的竖条；手机卡片套 `running-outline` |
+
+**浏览器里改掉的两处**：
+
+1. `indeterminate` 原来单向漂 `-120% → 420%`，两端会滑出轨道外还停顿，看着像断了。改成 `0 → 300%` + `alternate`，在轨道里来回扫。
+2. `scroll-fade` 原来上下都渐隐。**上边是错的**：日志是最新的在最上面、滚动条停在顶部，顶部渐隐等于永久压着最新那一行。改成只渐隐底部。
+
+**验证**：`typecheck` + `next lint` + 干净 `next build` / 静态导出全过，首屏 JS 仍是 100 kB 没变；构建产物里确认了 reduced-motion 块（`@media (prefers-reduced-motion:reduce){.progress-drift,.running-outline:after,.stream-row,tr[data-running=true]>td:first-child:before{animation:none}...}`）。没有后端造不出"正在跑"，所以临时开了一个 `app/ui-preview` 页把各状态摆出来，浅色暗色都看过，**已删除**。
+
+**没验到的**：页面级接线（真的有任务在跑时的样子）只过了类型和 diff，没跑真机；`prefers-reduced-motion` 只确认了 CSS 进产物，没在系统里真开过；窄屏同样没验。日志行的新行淡入不会在开页时炸一片——SSE 没有快照回放事件，文件行只从连上之后逐条来。

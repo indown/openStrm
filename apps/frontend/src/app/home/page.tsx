@@ -361,7 +361,8 @@ export default function Home() {
     const run = task.lastRun;
     const runMeta = run ? RUN_STATUS[run.status] : null;
     return (
-      <TableRow key={task.id}>
+      // 正在跑的行：行底色带一点品牌色 + 首格一条呼吸的竖条（globals.css）
+      <TableRow key={task.id} data-running={running ? "true" : undefined}>
         <TableCell className="align-top">
           <div className="min-w-0 space-y-1">
             <div className="flex min-w-0 items-center gap-2">
@@ -476,7 +477,7 @@ export default function Home() {
     const run = task.lastRun;
     const runMeta = run ? RUN_STATUS[run.status] : null;
     return (
-      <div key={task.id} className="rounded-xl border bg-card p-4">
+      <div key={task.id} className={`rounded-xl border bg-card p-4 ${running ? "running-outline" : ""}`}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">

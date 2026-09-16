@@ -46,7 +46,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
-import { StatusBadge, TONE_CLASS, type StatusTone } from "@/components/status-badge";
+import { StatusBadge, type StatusTone } from "@/components/status-badge";
+import { ProgressBar } from "@/components/progress-bar";
 import { EmptyState } from "@/components/empty-state";
 import { TableSkeleton } from "@/components/loading";
 import {
@@ -663,9 +664,12 @@ function OfflineIcon({ isDir }: { isDir: boolean }) {
 /** 进度条 + 百分比/速度：表格里上下两行，卡片里一行铺满 */
 function OfflineProgress({ task: t, layout }: { task: OfflineTask; layout: "stack" | "inline" }) {
   const bar = (
-    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
-      <div className={`h-full rounded-full ${TONE_CLASS[STATE_META[t.state].tone].bar}`} style={{ width: `${t.percent}%` }} />
-    </div>
+    <ProgressBar
+      percent={t.percent}
+      tone={STATE_META[t.state].tone}
+      running={t.state === "downloading"}
+      className="flex-1"
+    />
   );
   const text = (
     <div className="whitespace-nowrap text-xs text-muted-foreground tabular-nums">

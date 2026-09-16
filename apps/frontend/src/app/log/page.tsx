@@ -19,12 +19,14 @@ import type { TaskExecutionHistory } from "@openstrm/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { PageHeader } from "@/components/page-header";
-import { StatusBadge, TONE_CLASS } from "@/components/status-badge";
+import { StatusBadge } from "@/components/status-badge";
+import { ProgressBar } from "@/components/progress-bar";
 import { EmptyState } from "@/components/empty-state";
 import { Spinner } from "@/components/loading";
 import { api } from "@/lib/api";
 import { apiErrorMessage, getToken } from "@/lib/axios";
 import { RUN_STATUS } from "@/lib/status";
+import { useCountUp } from "@/hooks/use-count-up";
 import { FILE_FAILURE_LABEL, failureActionLink } from "@/lib/task-failures";
 import {
   applyEvents,
@@ -314,8 +316,6 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
 
   const statusMeta = connection === "not-running" ? null : RUN_STATUS[state.status];
   const title = taskInfo?.originPath || `任务 ${taskId.slice(0, 8)}…`;
-  // 总进度条的颜色跟着状态标签走，同一个语义色
-  const progressColor = TONE_CLASS[statusMeta?.tone ?? "neutral"].bar;
 
   return (
     <div className="space-y-6">
@@ -369,7 +369,7 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
         />
       ) : (
         <>
-          <div className="space-y-4 rounded-xl border bg-card p-5">
+          <div className={`space-y-4 rounded-xl border bg-card p-5 ${running ? "running-outline" : ""}`}>
             <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4 lg:grid-cols-7">
               <Stat label="总文件" value={counts.total ?? "—"} hint={kindKnown ? `strm ${state.strmTotal} · 下载 ${state.downloadTotal}` : undefined} />
               <Stat label="已完成" value={counts.done} />
@@ -384,12 +384,8 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
                 <span>总进度</span>
                 <span className="font-medium tabular-nums text-foreground">{counts.percent.toFixed(2)}%</span>
               </div>
-              <div className="h-2 overflow-hidden rounded bg-muted">
-                <div
-                  className={`h-full transition-[width] duration-300 ${progressColor}`}
-                  style={{ width: `${Math.min(100, counts.percent)}%` }}
-                />
-              </div>
+              {/* 颜色跟状态标签走，同一个语义色；跑着的时候条上会有一道扫过去的高光 */}
+              <ProgressBar percent={counts.percent} tone={statusMeta?.tone ?? "neutral"} running={running} size="md" />
             </div>
             {execution && execution.summary.deletedFiles > 0 && (
               <p className="text-xs text-muted-foreground">这次同步清理了 {execution.summary.deletedFiles} 个本地多余文件</p>
@@ -446,27 +442,29 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
                 <span className="ml-auto text-muted-foreground">只显示最近 {MAX_ROWS} 条</span>
               )}
             </div>
-            <div className="max-h-[60vh] overflow-y-auto">
-              {rows.length === 0 ? (
-                <div className="p-8 text-center text-sm text-muted-foreground">
-                  {connection === "connecting"
-                    ? "连接中…"
-                    : filter !== "all"
-                      ? "没有这一类的文件"
-                      : connection === "history"
-                        ? "这条记录没有文件级日志"
-                        : state.starting
-                          ? (
-                            <span className="inline-flex items-center gap-2">
-                              <Loader2 className="size-4 animate-spin" />
-                              正在读取远端目录，拿到文件清单后开始处理…
-                            </span>
-                          )
-                          : "还没有文件开始处理"}
-                </div>
-              ) : (
-                rows.map((f) => <FileLine key={f.path} file={f} running={running} />)
-              )}
+            <div className="scroll-fade">
+              <div className="max-h-[60vh] overflow-y-auto">
+                {rows.length === 0 ? (
+                  <div className="p-8 text-center text-sm text-muted-foreground">
+                    {connection === "connecting"
+                      ? "连接中…"
+                      : filter !== "all"
+                        ? "没有这一类的文件"
+                        : connection === "history"
+                          ? "这条记录没有文件级日志"
+                          : state.starting
+                            ? (
+                              <span className="inline-flex items-center gap-2">
+                                <Loader2 className="size-4 animate-spin" />
+                                正在读取远端目录，拿到文件清单后开始处理…
+                              </span>
+                            )
+                            : "还没有文件开始处理"}
+                  </div>
+                ) : (
+                  rows.map((f) => <FileLine key={f.path} file={f} running={running} />)
+                )}
+              </div>
             </div>
           </div>
         </>
@@ -475,12 +473,18 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
   );
 }
 
+/** 数字滚到位而不是跳变。计数每来一个文件就变一次，直接换数字会闪 */
+function CountUpValue({ value }: { value: number }) {
+  return <>{useCountUp(value)}</>;
+}
+
 function Stat({ label, value, hint, tone }: { label: string; value: string | number; hint?: string; tone?: "bad" | "warn" }) {
   return (
     <div className="min-w-0">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={`truncate font-medium tabular-nums ${tone === "bad" ? "text-destructive" : tone === "warn" ? "text-warning" : ""}`} title={hint}>
-        {value}
+        {/* 用时和连接状态是文字，原样显示 */}
+        {typeof value === "number" ? <CountUpValue value={value} /> : value}
       </div>
       {hint && <div className="truncate text-xs text-muted-foreground">{hint}</div>}
     </div>
@@ -557,7 +561,7 @@ function FileLine({ file, running }: { file: FileRow; running: boolean }) {
   const interrupted = !failed && !done && !running;
   return (
     // 手机上文件名占满一行，类型和进度折到下一行；sm 起恢复成一行
-    <div className="flex items-start gap-3 border-b px-4 py-2 last:border-b-0 sm:items-center">
+    <div className={`flex items-start gap-3 border-b px-4 py-2 last:border-b-0 sm:items-center ${running ? "stream-row" : ""}`}>
       <span className="mt-0.5 shrink-0 sm:mt-0">
         {failed ? (
           <XCircle className="size-4 text-destructive" />
@@ -595,9 +599,7 @@ function FileLine({ file, running }: { file: FileRow; running: boolean }) {
               <span className="text-muted-foreground tabular-nums">中断于 {Math.floor(file.percent)}%</span>
             ) : (
               <div className="flex items-center gap-2 sm:justify-end">
-                <div className="h-1.5 w-16 overflow-hidden rounded bg-muted">
-                  <div className={`h-full ${TONE_CLASS.info.bar}`} style={{ width: `${file.percent}%` }} />
-                </div>
+                <ProgressBar percent={file.percent} tone="info" running={running} className="w-16" />
                 <span className="w-9 text-muted-foreground tabular-nums">{Math.floor(file.percent)}%</span>
               </div>
             )}

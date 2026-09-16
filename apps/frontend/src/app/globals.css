@@ -218,6 +218,123 @@
     mask-image: radial-gradient(ellipse 65% 65% at 50% 50%, #000 25%, transparent 100%);
   }
 
+  /* ---------- 「正在跑」的动态。这一组全部在文件末尾的 reduced-motion 块里统一静音 ---------- */
+
+  /* 进度条上循环扫过的一道高光。只有任务真的在跑时才加，停了就是一条静态的条 */
+  @keyframes progress-scan {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(100%);
+    }
+  }
+  .progress-scan {
+    position: relative;
+    overflow: hidden;
+  }
+  .progress-scan::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, oklch(1 0 0 / 40%), transparent);
+    animation: progress-scan 1.8s linear infinite;
+  }
+
+  /* 还不知道总量时：一小段在轨道里来回扫，表示"在动，但说不出还剩多少"。
+     alternate 是为了让它一直待在轨道内——单向循环会在两端滑出去，看着像断了 */
+  @keyframes progress-drift {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(300%);
+    }
+  }
+  .progress-drift {
+    animation: progress-drift 1.4s ease-in-out infinite alternate;
+  }
+
+  /* 正在跑的面板 / 卡片：一圈呼吸的品牌色描边。画在伪元素上，不碰元素自己的 box-shadow
+     —— 面板的顶边高光就挂在那上面 */
+  @keyframes running-glow {
+    0%,
+    100% {
+      opacity: 0.45;
+      box-shadow: 0 0 10px -2px color-mix(in oklch, var(--brand) 35%, transparent);
+    }
+    50% {
+      opacity: 1;
+      box-shadow: 0 0 20px -2px color-mix(in oklch, var(--brand) 55%, transparent);
+    }
+  }
+  .running-outline {
+    position: relative;
+  }
+  .running-outline::after {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    border: 1px solid color-mix(in oklch, var(--brand) 45%, transparent);
+    pointer-events: none;
+    animation: running-glow 2.4s ease-in-out infinite;
+  }
+
+  /* 表格里正在跑的那一行：行底色带一点品牌色，首格左侧一条呼吸的竖条。
+     表格是 border-collapse，box-shadow 挂 tr 上不可靠，所以走底色 + 首格伪元素。
+     hover 的 bg-muted 是工具类，层级在后面，照样盖得住这条底色 */
+  tr[data-running="true"] > td {
+    background: color-mix(in oklch, var(--brand) 6%, transparent);
+  }
+  tr[data-running="true"] > td:first-child {
+    position: relative;
+  }
+  tr[data-running="true"] > td:first-child::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 2px;
+    background: var(--brand);
+    animation: running-glow 2.4s ease-in-out infinite;
+  }
+
+  /* 实时日志里新到的一行淡入一下，看得出是刚来的。
+     行的 key 是文件路径，已有的行更新百分比不会重新挂载，所以只有真正的新行会动 */
+  @keyframes stream-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  .stream-row {
+    animation: stream-in 0.2s ease-out;
+  }
+
+  /* 滚动区底部的渐隐，暗示下面还有。
+     只做底部：日志是最新的在最上面、滚动条停在顶部，加顶部渐隐等于永久压住最新那一行。
+     用盖在上面的渐变而不是 mask —— mask 会连滚动条一起吃掉 */
+  .scroll-fade {
+    position: relative;
+  }
+  .scroll-fade::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 1;
+    height: 1.5rem;
+    pointer-events: none;
+    background: linear-gradient(to top, var(--card), transparent);
+  }
+
   /* 侧栏选中项左侧的品牌色竖条。挂在 data 属性上，手机抽屉里是同一套按钮，一起生效 */
   [data-sidebar="menu-button"][data-active="true"] {
     position: relative;
@@ -232,5 +349,18 @@
     translate: 0 -50%;
     border-radius: 0 2px 2px 0;
     background: var(--brand);
+  }
+}
+
+/* 系统设了"减少动态效果"时，把上面那组循环动画全部关掉；静态样式照常 */
+@media (prefers-reduced-motion: reduce) {
+  .progress-drift,
+  .running-outline::after,
+  tr[data-running="true"] > td:first-child::before,
+  .stream-row {
+    animation: none;
+  }
+  .progress-scan::after {
+    display: none;
   }
 }
