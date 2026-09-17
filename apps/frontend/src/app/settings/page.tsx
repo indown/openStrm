@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,53 @@ import { UpdateSection } from "./components/UpdateSection";
 
 type Settings = AppSettings;
 
+/** 逗号分隔的扩展名 → 规范化数组：去空白、补点号、转小写 */
+function parseExtensions(input: string): string[] {
+  return input
+    .split(",")
+    .map((ext) => ext.trim())
+    .filter((ext) => ext.length > 0)
+    .map((ext) => (ext.startsWith(".") ? ext : `.${ext}`))
+    .map((ext) => ext.toLowerCase());
+}
+
+/**
+ * 要提交的那份设置。只含本页拥有的键——后端按顶层键合并，
+ * Telegram / 生活事件监控那些由别的页面写的设置不会被这里加载时的快照覆盖掉。
+ * 脏状态和保存共用它，比的和存的才是同一个东西。
+ */
+function buildPayload(data: Settings, strmExt: string, downloadExt: string, mountPath: string): Settings {
+  return {
+    "user-agent": data["user-agent"],
+    strmExtensions: parseExtensions(strmExt),
+    downloadExtensions: parseExtensions(downloadExt),
+    mediaMountPath: mountPath
+      .split(",")
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0),
+    emby: data.emby,
+    download: data.download,
+    tmdb: data.tmdb,
+    hdhive: data.hdhive,
+    openlistCopy: data.openlistCopy,
+    organize: data.organize,
+    update: data.update,
+  };
+}
+
+/** 递归比叶子，数出几处和基准不一样。数组当一个叶子——扩展名列表改三个也是"一处改动" */
+function countChanges(base: unknown, next: unknown): number {
+  if (base === next) return 0;
+  const isPlain = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  if (isPlain(base) && isPlain(next)) {
+    let n = 0;
+    for (const key of new Set([...Object.keys(base), ...Object.keys(next)])) n += countChanges(base[key], next[key]);
+    return n;
+  }
+  return JSON.stringify(base) === JSON.stringify(next) ? 0 : 1;
+}
+
 export default function SettingsPage() {
   const [data, setData] = useState<Settings>({});
   const [loading, setLoading] = useState(true);
@@ -32,14 +79,26 @@ export default function SettingsPage() {
   const [mediaMountPathInput, setMediaMountPathInput] = useState("");
   const [backingUp, setBackingUp] = useState(false);
   const [openlistAccounts, setOpenlistAccounts] = useState<string[]>([]);
+  /** 上次从服务器读到（或刚存成功）的那份，用来算改了几处 */
+  const [baseline, setBaseline] = useState<Settings | null>(null);
+  /** 保存条上那个快捷键提示。取 navigator 要等挂载后，否则静态导出时服务端没有它 */
+  const [modKey, setModKey] = useState("Ctrl");
+
+  useEffect(() => {
+    if (/Mac|iPhone|iPad|iPod/.test(navigator.userAgent)) setModKey("⌘");
+  }, []);
 
   useEffect(() => {
     api.settings.get()
       .then((settings) => {
         setData(settings);
-        setStrmExtensionsInput((settings.strmExtensions || []).join(", "));
-        setDownloadExtensionsInput((settings.downloadExtensions || []).join(", "));
-        setMediaMountPathInput((settings.mediaMountPath || []).join(", "));
+        const strmExt = (settings.strmExtensions || []).join(", ");
+        const downloadExt = (settings.downloadExtensions || []).join(", ");
+        const mountPath = (settings.mediaMountPath || []).join(", ");
+        setStrmExtensionsInput(strmExt);
+        setDownloadExtensionsInput(downloadExt);
+        setMediaMountPathInput(mountPath);
+        setBaseline(buildPayload(settings, strmExt, downloadExt, mountPath));
       })
       .catch((err) => toast.error(apiErrorMessage(err, "加载设置失败")))
       .finally(() => setLoading(false));
@@ -50,49 +109,18 @@ export default function SettingsPage() {
       .catch(() => {});
   }, []);
 
-  const onSave = async () => {
+  const payload = useMemo(
+    () => buildPayload(data, strmExtensionsInput, downloadExtensionsInput, mediaMountPathInput),
+    [data, strmExtensionsInput, downloadExtensionsInput, mediaMountPathInput],
+  );
+  const changes = baseline ? countChanges(baseline, payload) : 0;
+
+  const onSave = useCallback(async () => {
     setSaving(true);
     try {
-      // 处理strmExtensions输入
-      const strmExtensions = strmExtensionsInput
-        .split(",")
-        .map(ext => ext.trim())
-        .filter(ext => ext.length > 0)
-        .map(ext => ext.startsWith(".") ? ext : `.${ext}`)
-        .map(ext => ext.toLowerCase()); // 确保扩展名都是小写
-      
-      // 处理downloadExtensions输入
-      const downloadExtensions = downloadExtensionsInput
-        .split(",")
-        .map(ext => ext.trim())
-        .filter(ext => ext.length > 0)
-        .map(ext => ext.startsWith(".") ? ext : `.${ext}`)
-        .map(ext => ext.toLowerCase()); // 确保扩展名都是小写
-      
-      // 处理mediaMountPath输入
-      const mediaMountPath = mediaMountPathInput
-        .split(",")
-        .map(p => p.trim())
-        .filter(p => p.length > 0);
-      
-      // 只发本页拥有的键。后端按顶层键合并，Telegram / 生活事件监控那些
-      // 由别的页面写的设置不会被这里加载时的快照覆盖掉。
-      const saveData: Settings = {
-        "user-agent": data["user-agent"],
-        strmExtensions,
-        downloadExtensions,
-        mediaMountPath,
-        emby: data.emby,
-        download: data.download,
-        tmdb: data.tmdb,
-        hdhive: data.hdhive,
-        openlistCopy: data.openlistCopy,
-        organize: data.organize,
-        update: data.update,
-      };
-
-      await api.settings.patch(saveData);
-      setData({ ...data, ...saveData });
+      await api.settings.patch(payload);
+      setData((prev) => ({ ...prev, ...payload }));
+      setBaseline(payload);
       toast.success("保存成功");
     } catch (error: unknown) {
       if (error && typeof error === 'object' && 'response' in error) {
@@ -111,7 +139,36 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
+  }, [payload]);
+
+  /** 放弃：把三个文本框和 data 都退回基准那一份 */
+  const onRevert = () => {
+    if (!baseline) return;
+    setData((prev) => ({ ...prev, ...baseline }));
+    setStrmExtensionsInput((baseline.strmExtensions || []).join(", "));
+    setDownloadExtensionsInput((baseline.downloadExtensions || []).join(", "));
+    setMediaMountPathInput((baseline.mediaMountPath || []).join(", "));
   };
+
+  // ⌘S / Ctrl+S 保存。浏览器那个"保存网页"对这里没意义，脏着就接管
+  useEffect(() => {
+    if (changes === 0 || saving) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "s" || !(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      void onSave();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [changes, saving, onSave]);
+
+  // 改了没存就关标签页 / 刷新时拦一下。站内跳转拦不住（App Router 没给钩子），保存条已经一直摆在那儿
+  useEffect(() => {
+    if (changes === 0) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [changes]);
 
   // 备份接口要带登录 token，普通 <a download> 带不上，只能拉成 blob 再触发下载
   const downloadBackup = async () => {
@@ -467,9 +524,6 @@ export default function SettingsPage() {
         <OrganizeSection value={data.organize ?? {}} onChange={(organize) => setData({ ...data, organize })} />
 
         <div className="flex flex-wrap items-center gap-3">
-          <Button disabled={saving} onClick={onSave}>
-            {saving ? "保存中..." : "保存"}
-          </Button>
           <Button variant="outline" disabled={backingUp} onClick={downloadBackup}>
             {backingUp ? "打包中..." : "下载备份"}
           </Button>
@@ -477,6 +531,24 @@ export default function SettingsPage() {
             一致性快照（openstrm.db）；库是 WAL 模式，直接拷文件可能拷到一半
           </span>
         </div>
+
+        {/* 改了才出现，跟着这一列贴在视口底部：这页有 3000px 高，保存不能只待在最下面 */}
+        {changes > 0 && (
+          <div className="sticky bottom-4 z-10 flex items-center gap-3 rounded-xl border bg-card/90 p-3 shadow-lg backdrop-blur-md">
+            <span className="text-sm font-medium tabular-nums">{changes} 处未保存</span>
+            <kbd className="hidden rounded border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline">
+              {modKey === "⌘" ? "⌘S" : "Ctrl+S"}
+            </kbd>
+            <div className="ml-auto flex items-center gap-2">
+              <Button variant="ghost" size="sm" disabled={saving} onClick={onRevert}>
+                放弃更改
+              </Button>
+              <Button size="sm" disabled={saving} onClick={() => void onSave()}>
+                {saving ? "保存中..." : "保存"}
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
