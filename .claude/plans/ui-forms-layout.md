@@ -92,3 +92,31 @@
 ---
 
 ## 实施记录
+
+### 2026-09-17（worktree `task-ui`，基于 v2 的 `37feca8`）
+
+五步全部做完，**零新依赖**，首屏共享 JS 仍是 100 kB。
+
+| 提交 | 内容 |
+|---|---|
+| `91da14b` | `ui/switch.tsx` + `switch-row.tsx`，12 处开关语义的勾选框换掉（`AddTaskDialog` 里那个 RHF 版本留在本地，和共享的那个同一副长相） |
+| `6bcdcaf` | 设置页 `buildPayload` / `countChanges` / baseline，sticky 保存条、⌘S、`beforeunload` |
+| `e38d2a8` | `--primary` 换品牌色（浅色 `oklch(0.52 0.13 220)`，暗色指向 `--brand`） |
+| `dedad02` | 对话框三档宽度 |
+| `7a41b3a` | 容器 `max-w-6xl` → `max-w-[88rem]`，PageHeader 说明收 `max-w-3xl` |
+
+**验证**：typecheck + lint + 一次干净构建全过。浏览器真机（假后端在 4000，dev 在 3223）逐条看过：
+
+- 开关浅色 / 暗色都对，禁用态（strm 路径 URL 编码）是半透明；**点标题文字能翻转**，`<label htmlFor>` 对 button 生效那条成立，而且只翻一次（没有 label 和 button 双触发）。
+- 脏状态：改 User-Agent → 「1 处未保存」，再开一个开关 → 「2 处未保存」；点「放弃更改」三个文本框和开关一起退回，保存条消失；手动把开关点回原值，计数自己归零。
+- `beforeunload` 真的拦住了跳转（浏览器弹了"离开站点？"）。
+- 420px 窄屏：开关行的文字换行、开关不缩，保存条照样贴底，⌘S 提示按 `sm:` 隐掉。
+- 容器放宽后任务表的路径列不再折行；新建任务弹框是 md 档，footer 的「保存」是品牌色。
+
+**没验的**：`lg` 档那几个弹框（strm / 整理页要更多假数据才进得去）、真机上系统开 reduced-motion。
+
+### 一处和方案不一样的地方
+
+方案 2.4 里 `lg` 原本写的是 `sm:max-w-3xl`（768px），实做改成 `sm:max-w-2xl`（672px）—— 七个 `lg` 档里六个本来就是 2xl，按 3xl 会把它们统统撑宽 96px，那是"顺手改设计"，不是归一。
+
+另外确认框（`AlertDialogContent`）默认从 `sm:max-w-lg` 变成了最窄的 `sm:max-w-md`：10 个没写宽度的确认框跟着变窄，而四个显式写了 425 / 460 的本来就在往窄里调，方向一致。
