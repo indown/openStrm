@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { OrganizeCategoryRule, OrganizeSettings, OrganizeTemplatePreview } from "@openstrm/shared";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
+import { SwitchRow } from "@/components/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
@@ -164,34 +164,39 @@ export function OrganizeSection({ value, onChange }: Props) {
       </div>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <label className="flex cursor-pointer items-start gap-2 rounded-md border p-3">
-          <Checkbox checked={episodeTitle} onCheckedChange={(v) => set({ episodeTitle: v === true })} className="mt-0.5" />
-          <span>
-            <span className="text-sm font-medium">文件名里写集标题</span>
-            <span className="block text-xs text-muted-foreground">每部剧多拉几次 TMDB 季详情；对 Emby 识别没影响，纯观感。</span>
-          </span>
-        </label>
-        <label className="flex cursor-pointer items-start gap-2 rounded-md border p-3">
-          <Checkbox checked={value.cleanupEmptyDirs !== false} onCheckedChange={(v) => set({ cleanupEmptyDirs: v === true })} className="mt-0.5" />
-          <span>
-            <span className="text-sm font-medium">执行后删掉腾空的源目录</span>
-            <span className="block text-xs text-muted-foreground">只删这次挪空的目录；范围目录本身是发布目录或季目录时也一起删，任务根目录和 inbox 这种收件箱目录不删。</span>
-          </span>
-        </label>
-        <label className="flex cursor-pointer items-start gap-2 rounded-md border p-3">
-          <Checkbox checked={value.extras === "move"} onCheckedChange={(v) => set({ extras: v === true ? "move" : "keep" })} className="mt-0.5" />
-          <span>
-            <span className="text-sm font-medium">花絮挪进作品目录下的 extras/</span>
-            <span className="block text-xs text-muted-foreground">预告、NCOP、Featurettes 目录里的文件；不勾就原地不动。</span>
-          </span>
-        </label>
-        <label className="flex cursor-pointer items-start gap-2 rounded-md border p-3">
-          <Checkbox checked={value.categories?.enabled === true} onCheckedChange={(v) => set({ categories: { ...(value.categories ?? {}), enabled: v === true, movie: parseCategoryLines(movieCats), tv: parseCategoryLines(tvCats) } })} className="mt-0.5" />
-          <span>
-            <span className="text-sm font-medium">二级分类（{"{category}"} 那一层）</span>
-            <span className="block text-xs text-muted-foreground">按 TMDB 的类型 / 国家 / 语言分到 动画电影、国产剧 这类子目录；关掉时模板里的分类段自动消失。</span>
-          </span>
-        </label>
+        <SwitchRow
+          label="文件名里写集标题"
+          description="每部剧多拉几次 TMDB 季详情；对 Emby 识别没影响，纯观感。"
+          checked={episodeTitle}
+          onCheckedChange={(v) => set({ episodeTitle: v })}
+        />
+        <SwitchRow
+          label="执行后删掉腾空的源目录"
+          description="只删这次挪空的目录；范围目录本身是发布目录或季目录时也一起删，任务根目录和 inbox 这种收件箱目录不删。"
+          checked={value.cleanupEmptyDirs !== false}
+          onCheckedChange={(v) => set({ cleanupEmptyDirs: v })}
+        />
+        <SwitchRow
+          label="花絮挪进作品目录下的 extras/"
+          description="预告、NCOP、Featurettes 目录里的文件；关掉就原地不动。"
+          checked={value.extras === "move"}
+          onCheckedChange={(v) => set({ extras: v ? "move" : "keep" })}
+        />
+        <SwitchRow
+          label={`二级分类（${"{category}"} 那一层）`}
+          description="按 TMDB 的类型 / 国家 / 语言分到 动画电影、国产剧 这类子目录；关掉时模板里的分类段自动消失。"
+          checked={value.categories?.enabled === true}
+          onCheckedChange={(v) =>
+            set({
+              categories: {
+                ...(value.categories ?? {}),
+                enabled: v,
+                movie: parseCategoryLines(movieCats),
+                tv: parseCategoryLines(tvCats),
+              },
+            })
+          }
+        />
       </div>
 
       {value.categories?.enabled && (

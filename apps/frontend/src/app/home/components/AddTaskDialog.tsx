@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { FolderOpen } from "lucide-react";
 import type { TaskDefinition } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogClose,
@@ -121,7 +121,8 @@ function defaultsFor(task: TaskEditable | undefined): TaskFormValues {
   };
 }
 
-function CheckboxRow({
+/** 和全站共用的 <SwitchRow> 同一副长相，只是值从 react-hook-form 来 */
+function SwitchRow({
   control,
   name,
   label,
@@ -139,19 +140,21 @@ function CheckboxRow({
       control={control}
       name={name}
       render={({ field }) => (
-        <FormItem className={`flex items-start gap-3 rounded-md border p-3 space-y-0 ${disabled ? "opacity-60" : ""}`}>
+        <FormItem
+          className={`flex items-start justify-between gap-4 rounded-md border p-3 space-y-0 ${disabled ? "opacity-60" : ""}`}
+        >
+          <div className="min-w-0 space-y-1 leading-snug">
+            <FormLabel className={`font-medium ${disabled ? "" : "cursor-pointer"}`}>{label}</FormLabel>
+            <FormDescription className="text-xs">{description}</FormDescription>
+          </div>
           <FormControl>
-            <Checkbox
+            <Switch
               checked={field.value === true}
-              onCheckedChange={(v) => field.onChange(v === true)}
+              onCheckedChange={field.onChange}
               disabled={disabled}
               className="mt-0.5"
             />
           </FormControl>
-          <div className="space-y-1 leading-snug">
-            <FormLabel className={`font-medium ${disabled ? "" : "cursor-pointer"}`}>{label}</FormLabel>
-            <FormDescription className="text-xs">{description}</FormDescription>
-          </div>
         </FormItem>
       )}
     />
@@ -534,20 +537,20 @@ export function AddTaskDialog({
 
             <div className="space-y-2">
               {is115Account && (
-                <CheckboxRow
+                <SwitchRow
                   control={form.control}
                   name="enable302"
                   label="Emby 302 直链"
                   description={redirectHint(prefixIsHttp)}
                 />
               )}
-              <CheckboxRow
+              <SwitchRow
                 control={form.control}
                 name="removeExtraFiles"
                 label="删除本地多余文件"
                 description="同步时删掉本地有、网盘已经没有的文件，保持两边一致。网盘目录读出来是空的时候会跳过，防止误删。"
               />
-              <CheckboxRow
+              <SwitchRow
                 control={form.control}
                 name="enablePathEncoding"
                 label="strm 路径 URL 编码"

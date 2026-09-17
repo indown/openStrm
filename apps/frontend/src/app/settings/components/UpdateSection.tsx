@@ -5,7 +5,7 @@ import { Check, Copy, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import type { UpdateSettings, UpdateStatus } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { SwitchRow } from "@/components/switch-row";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { api } from "@/lib/api";
 import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
@@ -118,14 +118,18 @@ export function UpdateSection({ value, onChange }: { value: UpdateSettings; onCh
       )}
 
       <div className="space-y-2">
-        <label className="flex cursor-pointer items-center gap-2 text-sm">
-          <Checkbox checked={value.enabled === true} onCheckedChange={(v) => onChange({ ...value, enabled: v === true })} />
-          自动检查更新（每天一次）
-        </label>
-        <label className="flex cursor-pointer items-center gap-2 text-sm">
-          <Checkbox checked={value.includePrerelease === true} onCheckedChange={(v) => onChange({ ...value, includePrerelease: v === true })} />
-          包含预发布版本（rc）
-        </label>
+        <SwitchRow
+          label="自动检查更新"
+          description="每天一次"
+          checked={value.enabled === true}
+          onCheckedChange={(v) => onChange({ ...value, enabled: v })}
+        />
+        <SwitchRow
+          label="包含预发布版本"
+          description="rc 版本也算新版本"
+          checked={value.includePrerelease === true}
+          onCheckedChange={(v) => onChange({ ...value, includePrerelease: v })}
+        />
         <p className="text-xs text-muted-foreground">
           默认不自动检查，装上不会主动联网。检查只向 GitHub 发一个匿名请求（看最新发布的版本号和说明），不带账号、路径或任何统计。
           「立即检查」是你自己按的，开关关着也能用。跑 rc 版本时会自动和 rc 比。改完记得点页面底部的「保存」。

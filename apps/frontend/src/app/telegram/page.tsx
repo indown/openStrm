@@ -9,7 +9,7 @@ import { FormSkeleton } from "@/components/loading";
 import type { TelegramNotifySettings } from "@openstrm/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { SwitchRow } from "@/components/switch-row";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -285,17 +285,13 @@ export default function TelegramPage() {
           </div>
           <div className="space-y-2">
             {PERMISSIONS.map((p) => (
-              <label key={p.key} className="flex items-start gap-3 rounded-md border p-3 cursor-pointer">
-                <Checkbox
-                  checked={status?.permissions[p.key] === true}
-                  onCheckedChange={(v) => patch({ [p.key]: v === true }, v === true ? `已开启：${p.label}` : `已关闭：${p.label}`)}
-                  className="mt-0.5"
-                />
-                <span>
-                  <span className="text-sm font-medium">{p.label}</span>
-                  <span className="block text-xs text-muted-foreground">{p.hint}</span>
-                </span>
-              </label>
+              <SwitchRow
+                key={p.key}
+                label={p.label}
+                description={p.hint}
+                checked={status?.permissions[p.key] === true}
+                onCheckedChange={(v) => patch({ [p.key]: v }, v ? `已开启：${p.label}` : `已关闭：${p.label}`)}
+              />
             ))}
           </div>
         </section>
@@ -308,19 +304,15 @@ export default function TelegramPage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {NOTIFY.map((n) => (
-              <label key={n.key} className="flex items-start gap-3 rounded-md border p-3 cursor-pointer">
-                <Checkbox
-                  checked={status?.notify[n.key] === true}
-                  onCheckedChange={(v) =>
-                    patch({ notify: { ...(status?.notify ?? {}), [n.key]: v === true } }, v === true ? `已开启：${n.label}` : `已关闭：${n.label}`)
-                  }
-                  className="mt-0.5"
-                />
-                <span>
-                  <span className="text-sm font-medium">{n.label}</span>
-                  <span className="block text-xs text-muted-foreground">{n.hint}</span>
-                </span>
-              </label>
+              <SwitchRow
+                key={n.key}
+                label={n.label}
+                description={n.hint}
+                checked={status?.notify[n.key] === true}
+                onCheckedChange={(v) =>
+                  patch({ notify: { ...(status?.notify ?? {}), [n.key]: v } }, v ? `已开启：${n.label}` : `已关闭：${n.label}`)
+                }
+              />
             ))}
           </div>
         </section>
