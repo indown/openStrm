@@ -251,7 +251,7 @@ export default function AccountPage() {
       />
 
       <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <AlertDialogContent className="sm:max-w-[425px]">
+        <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>确认删除</AlertDialogTitle>
             <AlertDialogDescription>

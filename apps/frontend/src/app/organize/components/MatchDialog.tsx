@@ -138,7 +138,7 @@ export function MatchDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !picking && onOpenChange(o)}>
-      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
+      <DialogContent size="lg" className="flex max-h-[85vh] flex-col">
         <DialogHeader>
           <DialogTitle>换匹配</DialogTitle>
           <DialogDescription className="break-all">

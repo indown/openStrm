@@ -68,7 +68,7 @@ export function MemoryDialog({ open, onOpenChange }: { open: boolean; onOpenChan
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
+      <DialogContent size="lg" className="flex max-h-[85vh] flex-col">
         <DialogHeader>
           <DialogTitle>识别记忆</DialogTitle>
           <DialogDescription>预览里勾了「记住这个识别」的目录：下次整理同一个目录直接按它认（算把握大）。记错了的删掉，下次就重新识别。</DialogDescription>

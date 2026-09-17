@@ -324,7 +324,7 @@ export function HdhiveSearchDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[760px] lg:max-w-[1100px] max-h-[85vh] overflow-y-auto">
+      <DialogContent size="lg" className="max-h-[85vh] overflow-y-auto lg:max-w-[1100px]">
         <DialogHeader>
           <DialogTitle>HDHive 资源搜索</DialogTitle>
           <DialogDescription>

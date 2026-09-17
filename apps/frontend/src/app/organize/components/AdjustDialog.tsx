@@ -41,7 +41,7 @@ export function AdjustDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !saving && onOpenChange(o)}>
-      <DialogContent className="sm:max-w-[420px]">
+      <DialogContent size="sm">
         <DialogHeader>
           <DialogTitle>季与集偏移</DialogTitle>
           <DialogDescription className="break-all">「{unit?.rawName}」</DialogDescription>

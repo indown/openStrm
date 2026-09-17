@@ -307,7 +307,7 @@ export default function LibraryPage() {
       />
 
       <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <DialogContent className="sm:max-w-[425px]">
+        <DialogContent size="sm">
           <DialogHeader>
             <DialogTitle>确认删除</DialogTitle>
             <DialogDescription>

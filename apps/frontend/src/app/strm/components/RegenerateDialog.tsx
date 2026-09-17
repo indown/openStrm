@@ -70,7 +70,7 @@ export function RegenerateDialog({ target, onOpenChange, taskId, syncing, onDone
 
   return (
     <Dialog open={open} onOpenChange={(o) => !running && onOpenChange(o)}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>重新生成 strm</DialogTitle>
           <DialogDescription className="break-all">读取网盘上对应的目录，{target ? `重新生成「${target}」` : "重新生成"}下的 strm。</DialogDescription>

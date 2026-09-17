@@ -223,7 +223,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       </SidebarProvider>
       {/* 手机上的分享链接输入：靠上摆，免得软键盘弹起来把居中的弹框顶没了 */}
       <Dialog open={shareBoxOpen} onOpenChange={setShareBoxOpen}>
-        <DialogContent className="top-20 translate-y-0 sm:max-w-md">
+        <DialogContent size="sm" className="top-20 translate-y-0">
           <DialogHeader>
             <DialogTitle>查看分享</DialogTitle>
             <DialogDescription>粘贴分享链接，看内容并转存到网盘</DialogDescription>

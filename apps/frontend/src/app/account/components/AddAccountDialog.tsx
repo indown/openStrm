@@ -150,7 +150,7 @@ export function AddAccountDialog({ account, trigger, onSuccess, open: openProp, 
         </DialogTrigger>
       )}
 
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent size="sm">
         <DialogHeader>
           <DialogTitle>{account ? "编辑账户" : "新增账户"}</DialogTitle>
           <DialogDescription>

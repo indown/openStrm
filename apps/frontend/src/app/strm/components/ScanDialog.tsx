@@ -185,7 +185,7 @@ export function ScanDialog({ open, onOpenChange, taskId, path, onOpenPath, onDel
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
+      <DialogContent size="lg" className="flex max-h-[85vh] flex-col">
         <DialogHeader>
           <DialogTitle>体检</DialogTitle>
           <DialogDescription className="break-all">范围：{path ? path : "整个任务目录"}</DialogDescription>

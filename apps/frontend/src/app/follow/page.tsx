@@ -565,7 +565,7 @@ function EditFollowDialog({
 
   return (
     <Dialog open={target != null} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[420px]">
+      <DialogContent size="sm">
         <DialogHeader>
           <DialogTitle>编辑追更</DialogTitle>
         </DialogHeader>

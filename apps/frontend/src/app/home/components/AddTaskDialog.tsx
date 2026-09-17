@@ -298,7 +298,7 @@ export function AddTaskDialog({
         <DialogTrigger asChild>{trigger ?? <Button variant="outline">{task ? "编辑" : "新增任务"}</Button>}</DialogTrigger>
       )}
 
-      <DialogContent className="sm:max-w-[560px] max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{task ? "编辑任务" : "新建任务"}</DialogTitle>
           <DialogDescription>

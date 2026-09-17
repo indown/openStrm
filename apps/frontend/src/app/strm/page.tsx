@@ -694,7 +694,7 @@ function DeleteStrmDialog({
   const paths = target?.paths ?? [];
   return (
     <AlertDialog open={target != null} onOpenChange={(open) => !open && !deleting && onCancel()}>
-      <AlertDialogContent className="sm:max-w-[460px]">
+      <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle className="break-all">删除{target?.label}</AlertDialogTitle>
           <AlertDialogDescription asChild>

@@ -351,7 +351,7 @@ export function ShareDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+      <DialogContent size="lg" className="flex max-h-[85vh] flex-col">
         <DialogHeader>
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">

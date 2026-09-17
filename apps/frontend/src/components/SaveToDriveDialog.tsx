@@ -162,7 +162,7 @@ export function SaveToDriveDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[85vh] flex flex-col">
+      <DialogContent className="flex max-h-[85vh] flex-col">
         <DialogHeader>
           <DialogTitle>保存到任务目录</DialogTitle>
           <DialogDescription>

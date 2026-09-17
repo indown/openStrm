@@ -628,7 +628,7 @@ export default function Home() {
       />
 
       <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <AlertDialogContent className="sm:max-w-[460px]">
+        <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>删除任务</AlertDialogTitle>
             <AlertDialogDescription asChild>
@@ -656,7 +656,7 @@ export default function Home() {
       </AlertDialog>
 
       <AlertDialog open={clearTarget !== null} onOpenChange={(open) => !open && setClearTarget(null)}>
-        <AlertDialogContent className="sm:max-w-[460px]">
+        <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>清空本地目录</AlertDialogTitle>
             <AlertDialogDescription asChild>

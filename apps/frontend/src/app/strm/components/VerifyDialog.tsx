@@ -139,7 +139,7 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
   return (
     // 跑着的时候 Esc / 点外面不关：一轮大目录校验要几分钟，手滑关掉就白跑了，要停得按「停止校验」
     <Dialog open={open} onOpenChange={(o) => !running && onOpenChange(o)}>
-      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
+      <DialogContent size="lg" className="flex max-h-[85vh] flex-col">
         <DialogHeader>
           <DialogTitle>校验网盘路径</DialogTitle>
           <DialogDescription className="break-all">范围：{target ? target : "整个任务目录"}</DialogDescription>

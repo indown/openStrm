@@ -161,7 +161,7 @@ export function TreeSelectDialog({ open, onOpenChange, title, description, load,
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[600px] max-h-[80vh] flex flex-col">
+      <DialogContent className="flex max-h-[80vh] flex-col">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}

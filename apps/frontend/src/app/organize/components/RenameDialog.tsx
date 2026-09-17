@@ -43,7 +43,7 @@ export function RenameDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !saving && onOpenChange(o)}>
-      <DialogContent className="sm:max-w-[520px]">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>自己改名</DialogTitle>
           <DialogDescription className="break-all">{item ? baseName(item.srcPath) : ""}</DialogDescription>

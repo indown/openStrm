@@ -51,7 +51,7 @@ export function HistoryDialog({ open, onOpenChange, taskId, onPick }: { open: bo
   };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-xl">
+      <DialogContent className="flex max-h-[85vh] flex-col">
         <DialogHeader>
           <DialogTitle>整理历史</DialogTitle>
           <DialogDescription>这个任务的整理记录，新的在前。要是后面的整理又动过某次挪好的文件，得先撤销后面那次才能撤它。</DialogDescription>

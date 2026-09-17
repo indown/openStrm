@@ -231,7 +231,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[85vh] flex flex-col">
+      <DialogContent className="flex max-h-[85vh] flex-col">
         <DialogHeader>
           <DialogTitle>添加云下载</DialogTitle>
           <DialogDescription>

@@ -166,7 +166,7 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl max-h-[90vh] flex flex-col">
+      <DialogContent className="flex max-h-[90vh] flex-col">
         <DialogHeader>
           <DialogTitle>{isEdit ? "编辑影库条目" : "加入影库"}</DialogTitle>
           <DialogDescription className="truncate">{initial?.shareUrl}</DialogDescription>
