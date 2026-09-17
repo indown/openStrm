@@ -1,6 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
 import { Bot, Loader2, Play, RefreshCw, RotateCcw, Send, Square, Trash2, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
@@ -12,7 +15,8 @@ import { Button } from "@/components/ui/button";
 import { SwitchRow } from "@/components/switch-row";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
-import { Label } from "@/components/ui/label";
+import { SecretInput } from "@/components/ui/secret-input";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,48 +48,55 @@ const NOTIFY: Array<{ key: keyof TelegramNotifySettings; label: string; hint: st
   { key: "update", label: "新版本", hint: "检查更新发现有新版本时提醒一次（同一个版本只发一次），要先在「设置」里开自动检查。默认关。" },
 ];
 
+/** 连接那一段的字段。chat id 可以留空（只用命令、不要通知），填了就得是一串数字，群是负号开头 */
+const connectSchema = z.object({
+  botToken: z.string().trim().min(1, "请填 bot token"),
+  chatId: z
+    .string()
+    .trim()
+    .refine((v) => v === "" || /^-?\d+$/.test(v), "chat id 是一串数字，给机器人发 /id 就能看到"),
+});
+
+type ConnectValues = z.infer<typeof connectSchema>;
+
 export default function TelegramPage() {
   const [status, setStatus] = useState<TelegramBotStatus | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const [botToken, setBotToken] = useState("");
-  const [chatId, setChatId] = useState("");
-  const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [newUserId, setNewUserId] = useState("");
   const [removeOpen, setRemoveOpen] = useState(false);
+
+  const form = useForm<ConnectValues>({
+    resolver: zodResolver(connectSchema),
+    defaultValues: { botToken: "", chatId: "" },
+  });
+  const saving = form.formState.isSubmitting;
 
   const load = useCallback(async (silent = false) => {
     try {
       const s = await api.telegram.status();
       setStatus(s);
-      setBotToken(s.botToken);
-      setChatId(s.chatId);
+      // reset 而不是 setValue：这也是新的"未改动"基准，重新加载后表单不该还是脏的
+      form.reset({ botToken: s.botToken, chatId: s.chatId });
     } catch (err) {
       if (!silent) toast.error(apiErrorMessage(err, "加载 Telegram 配置失败"));
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [form]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const save = async () => {
-    if (!botToken.trim()) {
-      toast.error("请填 bot token");
-      return;
-    }
-    setSaving(true);
+  const save = async (values: ConnectValues) => {
     try {
-      await api.telegram.configure({ botToken: botToken.trim(), chatId: chatId.trim() });
+      await api.telegram.configure({ botToken: values.botToken, chatId: values.chatId });
       toast.success("已保存");
       await load(true);
     } catch (err) {
       const body = apiErrorBody(err);
       toast.error(body.details ? `${body.message}：${body.details}` : apiErrorMessage(err, "保存失败"));
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -145,45 +156,76 @@ export default function TelegramPage() {
         {/* ---------------- 连接 ---------------- */}
         <section className="space-y-4 rounded-xl border bg-card p-6">
           <h2 className="text-base font-medium">连接</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="botToken">Bot token</Label>
-              <Input
-                id="botToken"
-                type="password"
-                value={botToken}
-                onChange={(e) => setBotToken(e.target.value)}
-                placeholder="123456789:ABC…（找 @BotFather 创建机器人获得）"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="chatId">Chat id（通知发到这里）</Label>
-              <Input id="chatId" value={chatId} onChange={(e) => setChatId(e.target.value)} placeholder="例如 123456789 或群的 -100…" />
-              <p className="text-xs text-muted-foreground">给机器人发 <code>/id</code> 就能看到。填群 id 的话机器人只在这个群里响应命令。</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <Button onClick={save} disabled={saving}>
-              {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-              保存
-            </Button>
-            {configured && (
-              <>
-                <Button
-                  variant="outline"
-                  onClick={() => run("test", () => api.telegram.test(), "测试消息已发出，看看 Telegram")}
-                  disabled={busy === "test"}
-                >
-                  {busy === "test" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                  发测试消息
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(save)} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="botToken"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Bot token</FormLabel>
+                      <FormControl>
+                        <SecretInput
+                          placeholder="123456789:ABC…（找 @BotFather 创建机器人获得）"
+                          value={field.value}
+                          onChange={field.onChange}
+                          onBlur={field.onBlur}
+                          name={field.name}
+                          masked={status?.botToken}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="chatId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Chat id（通知发到这里）</FormLabel>
+                      <FormControl>
+                        <Input placeholder="例如 123456789 或群的 -100…" {...field} />
+                      </FormControl>
+                      <FormDescription className="text-xs">
+                        给机器人发 <code>/id</code> 就能看到。填群 id 的话机器人只在这个群里响应命令。
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Button type="submit" disabled={saving}>
+                  {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+                  保存
                 </Button>
-                <Button variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setRemoveOpen(true)}>
-                  <Trash2 className="h-4 w-4" />
-                  清除配置
-                </Button>
-              </>
-            )}
-          </div>
+                {configured && (
+                  <>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => run("test", () => api.telegram.test(), "测试消息已发出，看看 Telegram")}
+                      disabled={busy === "test"}
+                    >
+                      {busy === "test" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                      发测试消息
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => setRemoveOpen(true)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      清除配置
+                    </Button>
+                  </>
+                )}
+              </div>
+            </form>
+          </Form>
 
           {configured && (
             <div className="space-y-3 rounded-lg border bg-muted/30 p-4">

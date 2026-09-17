@@ -7,6 +7,7 @@ import type { UpdateSettings, UpdateStatus } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
 import { SwitchRow } from "@/components/switch-row";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
+import { FieldHint } from "@/components/field-hint";
 import { api } from "@/lib/api";
 import { fmtWhen } from "@/lib/format";
 import { checkForUpdate } from "@/lib/update";
@@ -100,7 +101,7 @@ export function UpdateSection({ value, onChange }: { value: UpdateSettings; onCh
             <Button variant="ghost" size="sm" className="h-6 px-1.5" onClick={() => void copy()} title="复制命令">
               {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
             </Button>
-            <span>升级前先点页面底部的「下载备份」。</span>
+            <span>升级前先在设置页点一次「下载备份」。</span>
           </div>
         </div>
       )}
@@ -123,8 +124,11 @@ export function UpdateSection({ value, onChange }: { value: UpdateSettings; onCh
           onCheckedChange={(v) => onChange({ ...value, includePrerelease: v })}
         />
         <p className="text-xs text-muted-foreground">
-          默认不自动检查，装上不会主动联网。检查只向 GitHub 发一个匿名请求（看最新发布的版本号和说明），不带账号、路径或任何统计。
-          「立即检查」是你自己按的，开关关着也能用。跑 rc 版本时会自动和 rc 比。改完记得点页面底部的「保存」。
+          装上不会主动联网，检查也不带任何账号信息
+          <FieldHint label="检查更新做了什么">
+            默认不自动检查。检查只向 GitHub 发一个匿名请求（看最新发布的版本号和说明），不带账号、路径或任何统计。
+            「立即检查」是你自己按的，开关关着也能用。跑 rc 版本时会自动和 rc 比。
+          </FieldHint>
         </p>
       </div>
     </section>

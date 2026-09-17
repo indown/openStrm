@@ -1,9 +1,13 @@
 "use client";
 import { Fragment, useCallback, useEffect, useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
 import { Activity, Loader2, Play, Radar, RotateCw, Square, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -27,6 +31,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { FormSkeleton } from "@/components/loading";
 import type { LifeMonitorSettings } from "@openstrm/shared";
 import { api, type LifeEventMode as EventMode, type LifeEventRow, type LifeMonitorStatus as Status } from "@/lib/api";
+import { FieldHint } from "@/components/field-hint";
 import { apiErrorMessage } from "@/lib/axios";
 
 /**
@@ -65,15 +70,63 @@ function relative(ms: number | null) {
   return `${Math.floor(d / 3600)} 小时前`;
 }
 
+/**
+ * 三个秒数以前是 `parseInt(e.target.value) || 默认值`：打错一个字符会被悄悄改回默认值，
+ * 人还以为自己填进去了。现在合法性说出来。
+ */
+const seconds = (min: number, max: number) =>
+  z
+    .string()
+    .trim()
+    .refine((v) => /^\d+$/.test(v) && Number(v) >= min && Number(v) <= max, `填 ${min}–${max} 之间的整数秒`);
+
+const configSchema = z.object({
+  accounts: z.array(z.string()),
+  pullMode: z.enum(["latest", "all", "last"]),
+  eventModes: z.array(z.enum(["create", "move", "rename", "remove"])),
+  intervalSeconds: seconds(5, 3600),
+  mediaServerRefreshDelay: seconds(1, 3600),
+  mediaServerRefreshMaxWait: seconds(1, 86400),
+});
+
+/** 三个秒数在表单里是字符串，提交时才转回数字——这样"空着"和"填了 0"分得开，也能说出为什么不合法 */
+type ConfigValues = z.infer<typeof configSchema>;
+
+const CONFIG_DEFAULTS: ConfigValues = {
+  accounts: [],
+  pullMode: "latest",
+  eventModes: ALL_MODES.map((m) => m.value),
+  intervalSeconds: "15",
+  mediaServerRefreshDelay: "30",
+  mediaServerRefreshMaxWait: "300",
+};
+
+/** 表单值 → 存进设置的形状 */
+function toConfig(v: ConfigValues): LifeMonitorConfig {
+  return {
+    accounts: v.accounts,
+    pullMode: v.pullMode,
+    eventModes: v.eventModes,
+    intervalSeconds: Number(v.intervalSeconds),
+    mediaServerRefreshDelay: Number(v.mediaServerRefreshDelay),
+    mediaServerRefreshMaxWait: Number(v.mediaServerRefreshMaxWait),
+  };
+}
+
 export default function LifeMonitorPage() {
   const [status, setStatus] = useState<Status | null>(null);
   const [events, setEvents] = useState<LifeEventRow[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [cfg, setCfg] = useState<LifeMonitorConfig>({});
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [probing, setProbing] = useState(false);
+
+  const form = useForm<ConfigValues>({
+    resolver: zodResolver(configSchema),
+    defaultValues: CONFIG_DEFAULTS,
+  });
+  const saving = form.formState.isSubmitting;
+  const cfg = form.watch();
 
   const loadStatus = useCallback(async () => {
     try {
@@ -95,9 +148,16 @@ export default function LifeMonitorPage() {
     Promise.all([
       api.settings.get().then((s) => {
         // 运行态归启停按钮管，别让表单把它带回来
-        const saved = { ...(s.lifeMonitor ?? {}) };
-        delete saved.enabled;
-        setCfg(saved);
+        const saved = s.lifeMonitor ?? {};
+        // reset 而不是逐个 setValue：这同时是新的"未改动"基准。enabled 归启停按钮管，不进表单
+        form.reset({
+          accounts: saved.accounts ?? CONFIG_DEFAULTS.accounts,
+          pullMode: saved.pullMode ?? CONFIG_DEFAULTS.pullMode,
+          eventModes: saved.eventModes ?? CONFIG_DEFAULTS.eventModes,
+          intervalSeconds: String(saved.intervalSeconds ?? CONFIG_DEFAULTS.intervalSeconds),
+          mediaServerRefreshDelay: String(saved.mediaServerRefreshDelay ?? CONFIG_DEFAULTS.mediaServerRefreshDelay),
+          mediaServerRefreshMaxWait: String(saved.mediaServerRefreshMaxWait ?? CONFIG_DEFAULTS.mediaServerRefreshMaxWait),
+        });
       }),
       // 能做变更监控的账号：115（生活事件）和夸克（快照对比）；OpenList 没有
       api.accounts.list().then((list) => setAccounts((list || []).filter((a) => a.accountType !== "openlist"))),
@@ -106,7 +166,7 @@ export default function LifeMonitorPage() {
     ])
       .catch((err) => toast.error(apiErrorMessage(err, "加载监控配置失败")))
       .finally(() => setLoading(false));
-  }, [loadStatus, loadEvents]);
+  }, [loadStatus, loadEvents, form]);
 
   // 运行时每 5s 刷新一次状态，停止时不必轮询
   useEffect(() => {
@@ -118,25 +178,23 @@ export default function LifeMonitorPage() {
     return () => clearInterval(t);
   }, [status?.running, loadStatus, loadEvents]);
 
-  const saveConfig = async () => {
-    setSaving(true);
+  const saveConfig = async (values: ConfigValues) => {
     try {
       // 只动 lifeMonitor 这一个键；enabled 由启停按钮维护，合并时保留库里的值
       const current = (await api.settings.get()).lifeMonitor ?? {};
-      await api.settings.patch({ lifeMonitor: { ...current, ...cfg } });
+      await api.settings.patch({ lifeMonitor: { ...current, ...toConfig(values) } });
+      form.reset(values);
       toast.success("配置已保存");
       if (status?.running) toast.info("部分参数需要重启监控后生效");
     } catch {
       toast.error("保存失败");
-    } finally {
-      setSaving(false);
     }
   };
 
   const start = async () => {
     setBusy(true);
     try {
-      const r = await api.life.start(cfg);
+      const r = await api.life.start(toConfig(cfg));
       // 起来了但有账号没起来：按警告提示，别让一条失败原因藏在绿色对勾后面
       if (r.partial) toast.warning(r.message);
       else toast.success(r.message || "已启动");
@@ -175,20 +233,20 @@ export default function LifeMonitorPage() {
   };
 
   const toggleMode = (m: EventMode, on: boolean) => {
-    const cur = new Set<EventMode>(cfg.eventModes ?? ALL_MODES.map((x) => x.value));
+    const cur = new Set<EventMode>(cfg.eventModes);
     if (on) cur.add(m);
     else cur.delete(m);
-    setCfg({ ...cfg, eventModes: ALL_MODES.map((x) => x.value).filter((v) => cur.has(v)) });
+    form.setValue("eventModes", ALL_MODES.map((x) => x.value).filter((v) => cur.has(v)), { shouldDirty: true });
   };
 
   const toggleAccount = (name: string, on: boolean) => {
-    const cur = new Set(cfg.accounts ?? []);
+    const cur = new Set(cfg.accounts);
     if (on) cur.add(name);
     else cur.delete(name);
     // 按账号表的顺序存，勾选的先后不影响结果；已不存在的账号名排最后
     const known = accounts.map((a) => a.name).filter((n) => cur.has(n));
     const unknown = [...cur].filter((n) => !accounts.some((a) => a.name === n));
-    setCfg({ ...cfg, accounts: [...known, ...unknown] });
+    form.setValue("accounts", [...known, ...unknown], { shouldDirty: true });
   };
 
   const description = "盯着网盘的变动增量更新本地 strm 库，无需跑全量任务：115 走生活事件流，夸克定时对比任务目录；多个账号各自轮询";
@@ -204,8 +262,8 @@ export default function LifeMonitorPage() {
     );
   }
 
-  const modes = new Set<EventMode>(cfg.eventModes ?? ALL_MODES.map((x) => x.value));
-  const selected = new Set(cfg.accounts ?? []);
+  const modes = new Set<EventMode>(cfg.eventModes);
+  const selected = new Set(cfg.accounts);
   const unknownAccounts = [...selected].filter((n) => !accounts.some((a) => a.name === n));
   const runningCount = status?.accounts.filter((a) => a.running).length ?? 0;
   // 只有一个账号时事件表不用多一列账号
@@ -397,142 +455,158 @@ export default function LifeMonitorPage() {
         {/* ---------------- 配置 ---------------- */}
         <section className="space-y-4 rounded-xl border bg-card p-6">
           <h2 className="text-base font-medium">配置</h2>
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(saveConfig)} className="space-y-4">
 
-          <div className="space-y-2">
-            <Label>监控账号</Label>
-            {accounts.length === 0 && unknownAccounts.length === 0 ? (
-              <p className="text-sm text-muted-foreground">暂无可监控的账号，请先到「账户」页添加 115 或夸克账号</p>
-            ) : (
+            <div className="space-y-2">
+              <Label>监控账号</Label>
+              {accounts.length === 0 && unknownAccounts.length === 0 ? (
+                <p className="text-sm text-muted-foreground">暂无可监控的账号，请先到「账户」页添加 115 或夸克账号</p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {accounts.map((a) => (
+                    <label key={a.name} className="flex items-center gap-2 rounded-md border p-3 cursor-pointer">
+                      <Checkbox
+                        checked={selected.has(a.name)}
+                        onCheckedChange={(v) => toggleAccount(a.name, v === true)}
+                      />
+                      <span className="text-sm font-medium">{a.name}</span>
+                    </label>
+                  ))}
+                  {unknownAccounts.map((name) => (
+                    <label key={name} className="flex items-center gap-2 rounded-md border border-dashed p-3 cursor-pointer">
+                      <Checkbox checked onCheckedChange={(v) => toggleAccount(name, v === true)} />
+                      <span className="text-sm">
+                        <span className="font-medium">{name}</span>
+                        <span className="block text-xs text-muted-foreground">账号已不存在，取消勾选后保存</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                一个都不勾时监控全部 115 / 夸克账号
+                <FieldHint label="账号是怎么监控的">
+                  勾选的账号各跑一条轮询，互不影响。事件路径按该账号同步任务的原始路径前缀匹配。
+                  夸克没有事件流，靠每轮列一遍任务目录和上一轮对比，最短 5 分钟一轮。
+                </FieldHint>
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="pullMode"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>冷启动模式</FormLabel>
+                    <Select value={field.value || "latest"} onValueChange={field.onChange}>
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {PULL_MODES.map((m) => (
+                          <SelectItem key={m.value} value={m.value}>
+                            {m.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormDescription className="text-xs">
+                      首次启用建议 latest；all 会把历史事件全部补一遍，耗时较长
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                  control={form.control}
+                  name="intervalSeconds"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>轮询间隔（秒）</FormLabel>
+                      <FormControl>
+                        <Input inputMode="numeric" {...field} />
+                      </FormControl>
+                      <FormDescription className="text-xs">默认 15 秒，太短容易触发 115 风控；夸克账号最短 5 分钟；每个账号各算各的</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+            </div>
+
+            <div className="space-y-2">
+              <Label>处理的事件类型</Label>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                {accounts.map((a) => (
-                  <label key={a.name} className="flex items-center gap-2 rounded-md border p-3 cursor-pointer">
+                {ALL_MODES.map((m) => (
+                  <label key={m.value} className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
                     <Checkbox
-                      checked={selected.has(a.name)}
-                      onCheckedChange={(v) => toggleAccount(a.name, v === true)}
+                      checked={modes.has(m.value)}
+                      onCheckedChange={(v) => toggleMode(m.value, v === true)}
+                      className="mt-0.5"
                     />
-                    <span className="text-sm font-medium">{a.name}</span>
-                  </label>
-                ))}
-                {unknownAccounts.map((name) => (
-                  <label key={name} className="flex items-center gap-2 rounded-md border border-dashed p-3 cursor-pointer">
-                    <Checkbox checked onCheckedChange={(v) => toggleAccount(name, v === true)} />
-                    <span className="text-sm">
-                      <span className="font-medium">{name}</span>
-                      <span className="block text-xs text-muted-foreground">账号已不存在，取消勾选后保存</span>
+                    <span>
+                      <span className="text-sm font-medium">{m.label}</span>
+                      <span className="block text-xs text-muted-foreground">{m.hint}</span>
                     </span>
                   </label>
                 ))}
               </div>
-            )}
-            <p className="text-xs text-muted-foreground">
-              勾选的账号各跑一条轮询，互不影响；一个都不勾时监控全部 115 / 夸克账号。事件路径按该账号同步任务的原始路径前缀匹配。
-              夸克没有事件流，靠每轮列一遍任务目录和上一轮对比，最短 5 分钟一轮
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>冷启动模式</Label>
-              <Select
-                value={cfg.pullMode || "latest"}
-                onValueChange={(v) => setCfg({ ...cfg, pullMode: v as LifeMonitorConfig["pullMode"] })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PULL_MODES.map((m) => (
-                    <SelectItem key={m.value} value={m.value}>
-                      {m.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
               <p className="text-xs text-muted-foreground">
-                首次启用建议 latest；all 会把历史事件全部补一遍，耗时较长
+                关掉「删除」可以避免网盘误删连带清掉本地 strm
               </p>
             </div>
 
-            <div className="space-y-2">
-              <Label>轮询间隔（秒）</Label>
-              <Input
-                type="number"
-                min={5}
-                max={3600}
-                value={cfg.intervalSeconds ?? 15}
-                onChange={(e) =>
-                  setCfg({ ...cfg, intervalSeconds: parseInt(e.target.value) || 15 })
-                }
-              />
-              <p className="text-xs text-muted-foreground">默认 15 秒，太短容易触发 115 风控；夸克账号最短 5 分钟；每个账号各算各的</p>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label>处理的事件类型</Label>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {ALL_MODES.map((m) => (
-                <label key={m.value} className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
-                  <Checkbox
-                    checked={modes.has(m.value)}
-                    onCheckedChange={(v) => toggleMode(m.value, v === true)}
-                    className="mt-0.5"
-                  />
-                  <span>
-                    <span className="text-sm font-medium">{m.label}</span>
-                    <span className="block text-xs text-muted-foreground">{m.hint}</span>
-                  </span>
-                </label>
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              关掉「删除」可以避免网盘误删连带清掉本地 strm
-            </p>
-          </div>
-
-          <div className="space-y-4 border-t pt-4">
-            <div className="space-y-1">
-              <h3 className="text-sm font-medium">Emby 刷新</h3>
-              <p className="text-xs text-muted-foreground">
-                /Library/Refresh 是全库扫描，变更事件逐条触发会打瘫 Emby，所以合并成一次再发。
-                未配置 Emby 地址时不会发出任何请求。
-              </p>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>安静期（秒）</Label>
-                <Input
-                  type="number"
-                  min={1}
-                  value={cfg.mediaServerRefreshDelay ?? 30}
-                  onChange={(e) =>
-                    setCfg({ ...cfg, mediaServerRefreshDelay: parseInt(e.target.value) || 30 })
-                  }
-                />
-                <p className="text-xs text-muted-foreground">最后一次变更后再等这么久才通知</p>
-              </div>
-              <div className="space-y-2">
-                <Label>最长等待（秒）</Label>
-                <Input
-                  type="number"
-                  min={1}
-                  value={cfg.mediaServerRefreshMaxWait ?? 300}
-                  onChange={(e) =>
-                    setCfg({ ...cfg, mediaServerRefreshMaxWait: parseInt(e.target.value) || 300 })
-                  }
-                />
+            <div className="space-y-4 border-t pt-4">
+              <div className="space-y-1">
+                <h3 className="text-sm font-medium">Emby 刷新</h3>
                 <p className="text-xs text-muted-foreground">
-                  变更持续不断时的封顶时间，防止刷新被无限推后
+                  /Library/Refresh 是全库扫描，变更事件逐条触发会打瘫 Emby，所以合并成一次再发。
+                  未配置 Emby 地址时不会发出任何请求。
                 </p>
               </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="mediaServerRefreshDelay"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>安静期（秒）</FormLabel>
+                      <FormControl>
+                        <Input inputMode="numeric" {...field} />
+                      </FormControl>
+                      <FormDescription className="text-xs">最后一次变更后再等这么久才通知</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="mediaServerRefreshMaxWait"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>最长等待（秒）</FormLabel>
+                      <FormControl>
+                        <Input inputMode="numeric" {...field} />
+                      </FormControl>
+                      <FormDescription className="text-xs">变更持续不断时的封顶时间，防止刷新被无限推后</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
             </div>
-          </div>
 
-          <div className="pt-2">
-            <Button disabled={saving} onClick={saveConfig}>
-              {saving ? "保存中..." : "保存"}
-            </Button>
-          </div>
+            <div className="pt-2">
+              <Button type="submit" disabled={saving}>
+                {saving ? "保存中..." : "保存"}
+              </Button>
+            </div>
+            </form>
+          </Form>
         </section>
 
         {/* ---------------- 最近事件 ---------------- */}

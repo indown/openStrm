@@ -8,6 +8,7 @@ import { SwitchRow } from "@/components/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import { FieldHint } from "@/components/field-hint";
 
 export const DEFAULT_TEMPLATES = {
   movie: "{category}/{title} ({year}) {idTag}/{title} ({year})[ - {edition}][ - {resolution}][-{part}].{ext}",
@@ -226,7 +227,12 @@ export function OrganizeSection({ value, onChange }: Props) {
             />
           </div>
           <p className="text-xs text-muted-foreground md:col-span-2">
-            每行一条，从上到下第一条命中的生效，没有条件的那条是兜底：<code>名称: genre=16,99; country=CN,TW; lang=zh</code>。genre 是 TMDB 的类型 id（16 动画、99 纪录片、10764 真人秀、10767 脱口秀）。
+            每行一条，从上到下第一条命中的生效
+            <FieldHint label="分类规则怎么写">
+              每行一条，从上到下第一条命中的生效，没有条件的那条是兜底：
+              <code className="mt-1 block break-all">名称: genre=16,99; country=CN,TW; lang=zh</code>
+              <span className="mt-1 block">genre 是 TMDB 的类型 id（16 动画、99 纪录片、10764 真人秀、10767 脱口秀）。</span>
+            </FieldHint>
           </p>
         </div>
       )}
@@ -244,7 +250,21 @@ export function OrganizeSection({ value, onChange }: Props) {
           placeholder={"高清剧集\nFrieren => 葬送的芙莉莲\n葬送的芙莉莲 - <> [ >> EP-12\n某某剧 第二部 => {[tmdbid=95396;type=tv;s=2]}"}
         />
         <p className="text-xs text-muted-foreground">
-          每行一条：<code>屏蔽词</code>、<code>被替换词 =&gt; 替换词</code>、<code>前定位词 &lt;&gt; 后定位词 &gt;&gt; EP+12</code>（集数偏移）、<code>被替换词 =&gt; {"{[tmdbid=123;type=tv;s=2]}"}</code>（直接指定）。
+          每行一条，四种写法
+          <FieldHint label="识别词怎么写">
+            <span className="block">
+              <code>屏蔽词</code>
+            </span>
+            <span className="mt-1 block">
+              <code>被替换词 =&gt; 替换词</code>
+            </span>
+            <span className="mt-1 block break-all">
+              <code>前定位词 &lt;&gt; 后定位词 &gt;&gt; EP+12</code>（集数偏移）
+            </span>
+            <span className="mt-1 block break-all">
+              <code>被替换词 =&gt; {"{[tmdbid=123;type=tv;s=2]}"}</code>（直接指定）
+            </span>
+          </FieldHint>
         </p>
       </div>
     </section>
