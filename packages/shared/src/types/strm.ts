@@ -143,7 +143,8 @@ export interface StrmDeleteResult {
 
 /**
  * 一个目录的海报。按四级回退拿：
- *   local 目录里现成的图片（默认 downloadExtensions 带 .jpg/.png，随片下载过来的）
+ *   local 目录里现成的图片：刮削器写的 poster / folder / cover，或者跟 strm 同名的那张
+ *         （默认 downloadExtensions 带 .jpg/.png，图片跟着片子从网盘下过来，名字就是片名）
  *   tmdb  目录名里的 id 标签或本地 nfo 给出 tmdbId，再查 TMDB 缓存
  *   run   这个任务整理过的记录里存着的识别结果
  */

@@ -1,7 +1,8 @@
 /**
  * strm 管理页背景用的海报：本地目录能拿到什么就用什么，四级回退，尽量不碰外网。
  *
- *   ① local 目录里现成的图片（poster / folder / cover）——默认 downloadExtensions 带 .jpg/.png，随片下载过来的
+ *   ① local 目录里现成的图片：刮削器写的 poster / folder / cover，或者跟 strm 同名的那张
+ *              （默认 downloadExtensions 带 .jpg/.png，图片跟着片子从网盘下过来，名字就是片名）
  *   ② tmdb  目录名里的 id 标签（整理后的默认命名就带 `[tmdbid=1]`）→ TMDB 详情缓存
  *   ③ tmdb  目录里的 tvshow.nfo / movie.nfo 给出 tmdbId → 同上
  *   ④ run   这个任务整理过的记录：organize_units.match 自带海报地址
@@ -44,8 +45,15 @@ const IMAGE_TYPES: Record<string, string> = {
   ".webp": "image/webp",
 };
 
-/** 海报文件名（不带扩展名），按优先级：Emby 写 poster，Jellyfin 写 folder，刮削器还会留 cover / default */
+/** 目录级艺术图的文件名（不带扩展名），按优先级：Emby 写 poster，Jellyfin 写 folder，刮削器还会留 cover / default */
 const POSTER_STEMS = ["poster", "folder", "cover", "default"];
+
+/**
+ * 跟视频同名的图片里，只有这些后缀是竖版海报，按优先级。
+ * 空串是裸的同名图（`片名.jpg`）——网盘里图片就叫这个名，跟着片子一起下过来。
+ * 刻意不收 -thumb / -fanart / -landscape / -banner：那些是横版或者透明挂件，铺成海报墙会变形。
+ */
+const POSTER_SUFFIXES = ["-poster", "-cover", "-folder", "-keyart", ""];
 
 /** 作品级 nfo，按优先级 */
 const NFO_NAMES = ["tvshow.nfo", "movie.nfo"];
@@ -63,13 +71,38 @@ interface Pending {
 
 /* ------------------------------- ① 本地图片 ------------------------------- */
 
+/**
+ * 目录里能当海报的图片，两条规则：
+ *
+ *   1. 目录级艺术图 poster / folder / cover —— 刮削器写的，最确定；
+ *   2. 跟某个 strm 同名的图。**这才是本工具自己的产物**：网盘里的图片就叫片名，
+ *      跟着片子一起下过来（默认 downloadExtensions 带 .jpg/.png），整理时又跟着视频改名
+ *      —— 和 organize/plan.ts 认「跟某个视频同名的附属文件」是同一条规则。
+ *
+ * 规则 2 里裸的同名图（`片名.jpg`）只在目录只有一个 strm 时才认。一个季目录里
+ * 每集都有 `SxxExx.jpg`，那是集的剧照不是作品海报，认了会把整季的背景变成第一集的截图；
+ * 带明确海报后缀的（`片名-poster.jpg`）没这个歧义，几个 strm 都认。
+ */
 function localPosterName(names: string[]): string | null {
   const lower = new Map<string, string>();
   for (const n of names) lower.set(n.toLowerCase(), n);
+
   for (const stem of POSTER_STEMS) {
     for (const ext of Object.keys(IMAGE_TYPES)) {
       const hit = lower.get(`${stem}${ext}`);
       if (hit) return hit;
+    }
+  }
+
+  const strmStems = names.filter((n) => n.toLowerCase().endsWith(".strm")).map((n) => n.slice(0, -5).toLowerCase());
+  const onlyOne = strmStems.length === 1;
+  for (const suffix of POSTER_SUFFIXES) {
+    if (suffix === "" && !onlyOne) continue;
+    for (const stem of strmStems) {
+      for (const ext of Object.keys(IMAGE_TYPES)) {
+        const hit = lower.get(`${stem}${suffix}${ext}`);
+        if (hit) return hit;
+      }
     }
   }
   return null;

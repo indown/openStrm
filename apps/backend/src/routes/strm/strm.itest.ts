@@ -73,9 +73,22 @@ before(async () => {
   write("Show/Season 1/ep1.strm", "/mnt/pan/tv/Show/Season 1/ep1.mkv");
   write("Show/Season 1/ep2.strm", "/old/tv/Show/Season 1/ep2.mkv");
   write("Show/x.part", "");
-  // 海报用的四个目录：本地图片 / 目录名里的 id 标签 / 只有整理记录认得 / 什么线索都没有
+  // 海报用的目录：本地图片 / 目录名里的 id 标签 / 只有整理记录认得 / 什么线索都没有
   writePoster("Local Show/poster.jpg", "fake-jpeg-bytes");
   writePoster("Local Show/Season 1/ep1.strm", "/mnt/pan/posters/Local Show/Season 1/ep1.mkv");
+  // 跟 strm 同名的图：本工具自己的产物就长这样（图片跟着片子从网盘下过来）
+  writePoster("Named Movie (2025)/雷霆特攻队 (2025) - 2160p.strm", "/mnt/pan/posters/Named Movie (2025)/雷霆特攻队 (2025) - 2160p.mkv");
+  writePoster("Named Movie (2025)/雷霆特攻队 (2025) - 2160p.jpg", "fake-jpeg-bytes");
+  // 一季里每集都有同名图：那是集的剧照，不能拿来当整季的海报
+  writePoster("Thumbed Season/ep1.strm", "/mnt/pan/posters/Thumbed Season/ep1.mkv");
+  writePoster("Thumbed Season/ep1.jpg", "fake-jpeg-bytes");
+  writePoster("Thumbed Season/ep2.strm", "/mnt/pan/posters/Thumbed Season/ep2.mkv");
+  writePoster("Thumbed Season/ep2.jpg", "fake-jpeg-bytes");
+  // 但带明确海报后缀的，几集都不歧义
+  writePoster("Suffixed Season/ep1.strm", "/mnt/pan/posters/Suffixed Season/ep1.mkv");
+  writePoster("Suffixed Season/ep1-thumb.jpg", "fake-jpeg-bytes");
+  writePoster("Suffixed Season/ep2.strm", "/mnt/pan/posters/Suffixed Season/ep2.mkv");
+  writePoster("Suffixed Season/ep2-poster.jpg", "fake-jpeg-bytes");
   writePoster("Tagged Show (2024) [tmdbid=77]/Season 1/ep1.strm", "/mnt/pan/posters/Tagged Show (2024) [tmdbid=77]/Season 1/ep1.mkv");
   writePoster("Organized Show/Season 1/ep1.strm", "/mnt/pan/posters/Organized Show/Season 1/ep1.mkv");
   writePoster("Plain Show/ep1.strm", "/mnt/pan/posters/Plain Show/ep1.mkv");
@@ -355,12 +368,31 @@ test("海报：本地图片 / 目录名 id 标签 / 整理记录三级都能拿�
   try {
     const res = await post("/api/strm/posters", {
       taskId: "r-poster",
-      paths: ["Local Show", "Tagged Show (2024) [tmdbid=77]", "Organized Show", "Plain Show"],
+      paths: [
+        "Local Show",
+        "Named Movie (2025)",
+        "Thumbed Season",
+        "Suffixed Season",
+        "Tagged Show (2024) [tmdbid=77]",
+        "Organized Show",
+        "Plain Show",
+      ],
     });
     assert.equal(res.statusCode, 200, res.body);
     const { posters } = res.json<StrmPosterResult>();
 
     assert.deepEqual(posters["Local Show"], { source: "local", url: "Local Show/poster.jpg" });
+    assert.deepEqual(
+      posters["Named Movie (2025)"],
+      { source: "local", url: "Named Movie (2025)/雷霆特攻队 (2025) - 2160p.jpg" },
+      "跟 strm 同名的图要认出来——这是本工具自己产出的样子",
+    );
+    assert.equal(posters["Thumbed Season"], undefined, "一季里每集一张同名图是剧照，不能当整季海报");
+    assert.deepEqual(
+      posters["Suffixed Season"],
+      { source: "local", url: "Suffixed Season/ep2-poster.jpg" },
+      "带 -poster 后缀的不歧义，几集都认；-thumb 是横版，不认",
+    );
     assert.equal(posters["Tagged Show (2024) [tmdbid=77]"]?.source, "tmdb");
     assert.equal(posters["Tagged Show (2024) [tmdbid=77]"]?.url, "https://image.tmdb.org/t/p/w500/tag.jpg");
     assert.equal(posters["Organized Show"]?.source, "run");
