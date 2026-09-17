@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   CalendarClock,
   ChevronRight,
@@ -120,7 +120,25 @@ type RowState = {
   startTitle: string;
 };
 
+const DESCRIPTION = "每个任务把网盘的一个目录同步成本地的 strm 目录；可以手动跑，也可以定时";
+
+/** 静态导出下 useSearchParams 必须包在 Suspense 里（和 strm / 历史页一样） */
 export default function Home() {
+  return (
+    <Suspense
+      fallback={
+        <div className="space-y-6">
+          <PageHeader icon={ListChecks} title="任务管理" description={DESCRIPTION} />
+          <TableSkeleton rows={4} />
+        </div>
+      }
+    >
+      <HomeContent />
+    </Suspense>
+  );
+}
+
+function HomeContent() {
   const [data, setData] = useState<TaskRow[]>([]);
   // 只有首次加载显示骨架；之后的刷新和轮询表格留在屏幕上
   const [loaded, setLoaded] = useState(false);
@@ -136,6 +154,9 @@ export default function Home() {
   // 列表请求的序号：慢的旧响应不能盖掉新状态（比如启动前发出的轮询把乐观标上的 processing 改回去）
   const listSeqRef = useRef(0);
   const router = useRouter();
+  const search = useSearchParams();
+  const wantNew = search.get("new") === "1";
+  const wantEdit = search.get("edit") ?? "";
 
   /** 拉任务列表。silent：后台轮询用，不转刷新按钮、失败也不弹提示（每 5 秒一条太吵） */
   const fetchTasks = useCallback(async (silent = false) => {
@@ -168,6 +189,26 @@ export default function Home() {
     fetchTasks();
     fetchAccounts();
   }, [fetchTasks, fetchAccounts]);
+
+  // 命令面板用 /home?new=1 和 ?edit=<id> 直接开弹框。开完把参数抹掉，
+  // 否则刷新或后退会再弹一次；抹掉之后 wantNew / wantEdit 变空，这个 effect 自己就停了
+  useEffect(() => {
+    if (!wantNew && !wantEdit) return;
+    if (wantNew) {
+      setEditing(null);
+      setEditorOpen(true);
+    } else {
+      // 编辑要等列表回来才知道是哪一行
+      if (!loaded) return;
+      const task = data.find((t) => t.id === wantEdit);
+      if (!task) toast.error("找不到这个任务，可能已经删了");
+      else {
+        setEditing(task);
+        setEditorOpen(true);
+      }
+    }
+    router.replace("/home");
+  }, [wantNew, wantEdit, loaded, data, router]);
 
   // 有任务在跑时每 5 秒刷一次状态；页面切到后台不刷，切回来立刻刷一次
   const hasProcessing = data.some((task) => task.status === "processing");
@@ -603,7 +644,7 @@ export default function Home() {
       <PageHeader
         icon={ListChecks}
         title="任务管理"
-        description="每个任务把网盘的一个目录同步成本地的 strm 目录；可以手动跑，也可以定时"
+        description={DESCRIPTION}
         actions={
           <>
             <Button variant="outline" onClick={() => fetchTasks()} disabled={refreshing}>

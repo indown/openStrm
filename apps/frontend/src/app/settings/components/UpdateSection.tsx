@@ -8,9 +8,8 @@ import { Button } from "@/components/ui/button";
 import { SwitchRow } from "@/components/switch-row";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { api } from "@/lib/api";
-import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 import { fmtWhen } from "@/lib/format";
-import { notifyUpdateChanged } from "@/lib/update";
+import { checkForUpdate } from "@/lib/update";
 
 const UPGRADE_CMD = "docker compose pull && docker compose up -d";
 
@@ -40,17 +39,10 @@ export function UpdateSection({ value, onChange }: { value: UpdateSettings; onCh
 
   const check = async () => {
     setChecking(true);
-    try {
-      const next = await api.update.check();
-      setStatus(next);
-      notifyUpdateChanged();
-      toast[next.outdated ? "success" : "info"](next.outdated ? `有新版本 ${next.state.latest?.version}` : "已经是最新版本");
-    } catch (err) {
-      const retry = (apiErrorBody(err) as { retryAfter?: number }).retryAfter;
-      toast.error(typeof retry === "number" ? `刚查过，${Math.ceil(retry / 60)} 分钟后再试` : apiErrorMessage(err, "检查更新失败"));
-    } finally {
-      setChecking(false);
-    }
+    // 提示和角标通知都在 checkForUpdate 里，这里只管把状态接下来（失败时它回 null，保留原来那份）
+    const next = await checkForUpdate();
+    if (next) setStatus(next);
+    setChecking(false);
   };
 
   const copy = async () => {

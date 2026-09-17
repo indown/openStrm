@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -25,12 +25,16 @@ import { api, type HdhiveResourceItem, type HdhiveTmdbItem } from "@/lib/api";
 import { useShareDetail } from "@/hooks/use-share-detail";
 import { FEATURES } from "@/lib/features";
 import { PageCrumbs } from "@/components/page-crumbs";
+import { useModKey } from "@/hooks/use-mod-key";
 
 // 两个弹框只在用到时才加载：它们（连同转存 / 目录选择弹框）不该进所有页面共享的首屏包，登录页也得为它们买单
 const ShareDetailDialog = dynamic(() => import("@/components/ShareDetailDialog").then((m) => m.ShareDetailDialog), {
   ssr: false,
 });
 const HdhiveSearchDialog = dynamic(() => import("@/components/HdhiveSearchDialog").then((m) => m.HdhiveSearchDialog), {
+  ssr: false,
+});
+const CommandPalette = dynamic(() => import("@/components/command-palette").then((m) => m.CommandPalette), {
   ssr: false,
 });
 
@@ -76,6 +80,27 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   const [hdhiveError, setHdhiveError] = useState<string | null>(null);
   // 连续搜索时只认最后一次的结果，慢的旧响应不能盖掉新的
   const hdhiveSeqRef = useRef(0);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const modKey = useModKey();
+
+  // ⌘K / Ctrl+K 开命令面板。这个 effect 必须待在下面那个提前 return 前面，不然 hooks 顺序会变
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "k" || !(e.metaKey || e.ctrlKey)) return;
+      // 面板自己开着时再按一次是关掉
+      if (paletteOpen) {
+        e.preventDefault();
+        setPaletteOpen(false);
+        return;
+      }
+      // 别的弹框开着就不抢：两层 Radix Dialog 的焦点陷阱会打架
+      if (document.querySelector('[data-slot="dialog-content"],[data-slot="alert-dialog-content"]')) return;
+      e.preventDefault();
+      setPaletteOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [paletteOpen]);
 
   // 登录页和强制改密码页都不显示导航等
   if (pathname === "/login" || pathname === "/change-password") {
@@ -212,7 +237,19 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
                 </Button>
               </div>
             )}
-            <div className="flex items-center gap-0.5">
+            <div className="flex items-center gap-1">
+              {/* 命令面板的入口。手机没有 ⌘K，这个按钮是唯一的路 */}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 px-2 text-muted-foreground"
+                onClick={() => setPaletteOpen(true)}
+                aria-label="命令面板"
+                title="命令面板"
+              >
+                <Search className="size-4" />
+                <kbd className="hidden font-mono text-[10px] sm:inline">{modKey}K</kbd>
+              </Button>
               <ThemeToggle />
               <UserMenu onLogout={logout} />
             </div>
@@ -244,6 +281,12 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
           </div>
         </DialogContent>
       </Dialog>
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        onOpenShare={() => setShareBoxOpen(true)}
+        onLogout={logout}
+      />
       <ShareDetailDialog {...share.dialogProps} />
       {FEATURES.hdhiveSearch && (
         <HdhiveSearchDialog

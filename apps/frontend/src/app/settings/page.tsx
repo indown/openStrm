@@ -16,6 +16,8 @@ import { Settings as SettingsIcon } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { FormSkeleton } from "@/components/loading";
 import { api } from "@/lib/api";
+import { downloadBackupWithToast } from "@/lib/backup";
+import { useModKey } from "@/hooks/use-mod-key";
 import { apiErrorMessage } from "@/lib/axios";
 import type { AppSettings } from "@openstrm/shared";
 import { OrganizeSection } from "./components/OrganizeSection";
@@ -81,12 +83,7 @@ export default function SettingsPage() {
   const [openlistAccounts, setOpenlistAccounts] = useState<string[]>([]);
   /** 上次从服务器读到（或刚存成功）的那份，用来算改了几处 */
   const [baseline, setBaseline] = useState<Settings | null>(null);
-  /** 保存条上那个快捷键提示。取 navigator 要等挂载后，否则静态导出时服务端没有它 */
-  const [modKey, setModKey] = useState("Ctrl");
-
-  useEffect(() => {
-    if (/Mac|iPhone|iPad|iPod/.test(navigator.userAgent)) setModKey("⌘");
-  }, []);
+  const modKey = useModKey();
 
   useEffect(() => {
     api.settings.get()
@@ -170,23 +167,10 @@ export default function SettingsPage() {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [changes]);
 
-  // 备份接口要带登录 token，普通 <a download> 带不上，只能拉成 blob 再触发下载
-  const downloadBackup = async () => {
+  const onBackup = async () => {
     setBackingUp(true);
-    try {
-      const { blob, filename } = await api.system.backup();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      a.click();
-      // 别同步撤销：Firefox / Safari 会在下载真正开始前就把 URL 收回，下载直接中断
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch {
-      toast.error("下载备份失败");
-    } finally {
-      setBackingUp(false);
-    }
+    await downloadBackupWithToast();
+    setBackingUp(false);
   };
 
   const description = "配置全局选项与 Emby 通知";
@@ -524,7 +508,7 @@ export default function SettingsPage() {
         <OrganizeSection value={data.organize ?? {}} onChange={(organize) => setData({ ...data, organize })} />
 
         <div className="flex flex-wrap items-center gap-3">
-          <Button variant="outline" disabled={backingUp} onClick={downloadBackup}>
+          <Button variant="outline" disabled={backingUp} onClick={onBackup}>
             {backingUp ? "打包中..." : "下载备份"}
           </Button>
           <span className="text-xs text-muted-foreground">
