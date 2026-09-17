@@ -139,16 +139,20 @@ export function useStrmBrowser() {
     void load();
   }, [load]);
 
-  const runSearch = useCallback(async () => {
-    const q = query.trim();
+  /** term 省略时搜输入框里那个词；命令面板交接过来时直接把词传进来，不用等 setQuery 生效 */
+  const runSearch = useCallback(async (term?: string) => {
+    const q = (term ?? query).trim();
     if (!q || !taskId) return;
     const seq = ++searchSeqRef.current;
     setSearching(true);
     try {
       const res = await api.strm.search(taskId, q);
       if (seq !== searchSeqRef.current) return;
-      setResults(res.hits);
-      setTruncated(res.truncated);
+      // 响应里没有 hits（代理返了别的东西、响应被截断）时也要活着：
+      // 直接塞进去会让筛选那一步在 undefined 上 .filter，整页掉进错误边界，
+      // 而这本来只该是一句"没搜到"
+      setResults(Array.isArray(res.hits) ? res.hits : []);
+      setTruncated(res.truncated === true);
       setSearchTerm(q);
       setMode("search");
       setSelected(new Set());
@@ -159,6 +163,19 @@ export function useStrmBrowser() {
       if (seq === searchSeqRef.current) setSearching(false);
     }
   }, [query, taskId]);
+
+  // 命令面板用 /strm?taskId=…&q=… 交接过来：进来就直接搜，然后把 q 从地址里抹掉，
+  // 免得后退 / 刷新又搜一遍。抹掉之后这个 effect 自己就停了
+  const seedQuery = params.get("q") ?? "";
+  useEffect(() => {
+    if (!seedQuery || !taskId) return;
+    setQuery(seedQuery);
+    void runSearch(seedQuery);
+    const sp = new URLSearchParams();
+    sp.set("taskId", taskId);
+    if (path) sp.set("path", path);
+    router.replace(`/strm?${sp.toString()}`);
+  }, [seedQuery, taskId, path, router, runSearch]);
 
   const exitSearch = useCallback(() => {
     searchSeqRef.current++;

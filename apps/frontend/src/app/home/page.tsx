@@ -52,7 +52,8 @@ import { StatusBadge } from "@/components/status-badge";
 import { EmptyState } from "@/components/empty-state";
 import { TableSkeleton } from "@/components/loading";
 import { RUN_STATUS } from "@/lib/status";
-import { api, type StartTaskResult, type TaskRow } from "@/lib/api";
+import { api, type TaskRow } from "@/lib/api";
+import { startTaskWithToast } from "@/lib/task-start";
 import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 import { AddTaskDialog } from "./components/AddTaskDialog";
 
@@ -81,14 +82,6 @@ function relativeFuture(iso: string): string {
 
 function fmtTime(value: number | string): string {
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
-}
-
-/** 后端 startTask 的 message 是固定的英文句式，界面上说成人话 */
-function describeStart(res: StartTaskResult): string {
-  const m = /^(\d+) files to download$/.exec(res.message);
-  if (m) return `开始处理 ${m[1]} 个文件`;
-  if (res.message === "no files to download") return "本地已是最新，没有需要处理的文件";
-  return res.message;
 }
 
 /** 上次执行的一句话摘要 */
@@ -252,22 +245,11 @@ function HomeContent() {
   const startTask = useCallback(async (id: string) => {
     setStartingTasks((prev) => new Set(prev).add(id));
     try {
-      const res = await api.tasks.start(id);
-      toast.success(describeStart(res));
-      if (res.warning) toast.warning(res.warning);
-      // 只有在 API 成功返回后才更新状态为 processing；同时作废在途的列表响应，
-      // 免得启动前发出的轮询把它改回 pending。之后的轮询会拿到真实状态
-      listSeqRef.current++;
-      setData((prev) => prev.map((task) => (task.id === id ? { ...task, status: "processing" as const } : task)));
-    } catch (error: unknown) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ECONNABORTED") {
-        toast.error("启动超时：读取网盘目录太久，请稍后到历史页看结果");
-      } else if (error && typeof error === "object" && "response" in error) {
-        const { message, details } = apiErrorBody(error);
-        const text = message || "任务启动失败";
-        toast.error(details ? `${text}：${details}` : text);
-      } else {
-        toast.error("任务启动失败");
+      // 提示都在 startTaskWithToast 里；这里只管把起来了的那一行乐观标成执行中
+      if (await startTaskWithToast(id)) {
+        // 同时作废在途的列表响应，免得启动前发出的轮询把它改回 pending。之后的轮询会拿到真实状态
+        listSeqRef.current++;
+        setData((prev) => prev.map((task) => (task.id === id ? { ...task, status: "processing" as const } : task)));
       }
     } finally {
       setStartingTasks((prev) => {
