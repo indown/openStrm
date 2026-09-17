@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -267,18 +268,18 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
             <DialogTitle>查看分享</DialogTitle>
             <DialogDescription>粘贴分享链接，看内容并转存到网盘</DialogDescription>
           </DialogHeader>
-          <div className="flex items-center gap-2">
-            <Input
+          <InputGroup>
+            <InputGroupInput
               autoFocus
               placeholder="https://115.com/s/... 或 https://pan.quark.cn/s/..."
               value={share.link}
               onChange={(e) => share.setLink(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && submitShareFromDialog()}
             />
-            <Button onClick={submitShareFromDialog} disabled={share.loading || !share.link.trim()}>
+            <InputGroupButton onClick={submitShareFromDialog} disabled={share.loading || !share.link.trim()}>
               {share.loading ? "加载中..." : "查看"}
-            </Button>
-          </div>
+            </InputGroupButton>
+          </InputGroup>
         </DialogContent>
       </Dialog>
       <CommandPalette

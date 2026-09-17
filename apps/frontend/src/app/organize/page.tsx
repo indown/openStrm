@@ -7,7 +7,7 @@ import { Bookmark, FolderOpen, FolderTree, History, Loader2, Search, X } from "l
 import { toast } from "sonner";
 import type { OrganizeRun } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PageHeader } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
@@ -214,8 +214,8 @@ function OrganizeContent() {
           </div>
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground">范围（任务目录里的目录，可以多个；不填就是整个任务）</label>
-            <div className="flex items-center gap-2">
-              <Input
+            <InputGroup>
+              <InputGroupInput
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -227,10 +227,10 @@ function OrganizeContent() {
                 placeholder={task ? `相对 /${origin} 的路径，回车添加` : ""}
                 disabled={!task}
               />
-              <Button type="button" variant="outline" size="icon" onClick={() => setBrowsing(true)} disabled={!task} title="从任务目录里选（可以多选）">
-                <FolderOpen className="size-4" />
-              </Button>
-            </div>
+              <InputGroupButton onClick={() => setBrowsing(true)} disabled={!task} title="从任务目录里选（可以多选）">
+                <FolderOpen />
+              </InputGroupButton>
+            </InputGroup>
             {scopes.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5">
                 {scopes.map((s) => (

@@ -241,7 +241,7 @@ export default function SettingsPage() {
           <h2 className="text-base font-medium">下载限流配置</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>链接获取每秒请求数 (linkMaxPerSecond)</Label>
+              <Label>链接获取每秒请求数</Label>
               <Input
                 type="number"
                 min="1"
@@ -263,7 +263,7 @@ export default function SettingsPage() {
               </p>
             </div>
             <div className="space-y-2">
-              <Label>链接获取并发数 (linkMaxConcurrent)</Label>
+              <Label>链接获取并发数</Label>
               <Input
                 type="number"
                 min="1"
@@ -287,7 +287,7 @@ export default function SettingsPage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>文件下载并发数 (downloadMaxConcurrent)</Label>
+              <Label>文件下载并发数</Label>
               <Input
                 type="number"
                 min="1"

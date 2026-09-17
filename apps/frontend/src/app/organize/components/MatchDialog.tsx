@@ -5,8 +5,8 @@ import Image from "next/image";
 import { Film, Loader2, Search, Tv } from "lucide-react";
 import { toast } from "sonner";
 import type { OrganizeCandidate, OrganizeMediaType, OrganizeUnit } from "@openstrm/shared";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
@@ -162,18 +162,18 @@ export function MatchDialog({
               </div>
               <Input className="h-8 w-24 text-xs" value={year} onChange={(e) => setYear(e.target.value)} placeholder="年份" inputMode="numeric" maxLength={4} />
             </div>
-            <div className="flex items-center gap-2">
-              <Input
+            <InputGroup>
+              <InputGroupInput
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && void search()}
                 placeholder="片名（中文或原名），或 TMDB 编号 / 链接"
               />
-              <Button onClick={() => void search()} disabled={searching}>
-                {searching ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
+              <InputGroupButton onClick={() => void search()} disabled={searching}>
+                {searching ? <Loader2 className="animate-spin" /> : <Search />}
                 搜索
-              </Button>
-            </div>
+              </InputGroupButton>
+            </InputGroup>
             <p className="text-xs text-muted-foreground">直接填编号（如 693134）或贴 TMDB 链接就按编号查；片名搜不到时限定类型、年份更准。</p>
           </div>
           {picking && <div className="text-xs text-muted-foreground">正在按新的匹配重新规划…</div>}

@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
+import { TagInput } from "@/components/ui/tag-input";
 import { Textarea } from "@/components/ui/textarea";
 import { Search, Film, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
@@ -38,18 +40,10 @@ interface AddToLibraryDialogProps {
 
 export type AddResponse = LibraryAddResponse;
 
-function splitTags(raw: string): string[] {
-  return raw
-    .split(/[,，]/)
-    .map((t) => t.trim())
-    .filter(Boolean)
-    .filter((v, i, arr) => arr.indexOf(v) === i);
-}
-
 export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: AddToLibraryDialogProps) {
   const [title, setTitle] = useState("");
   const [coverUrl, setCoverUrl] = useState("");
-  const [tagsInput, setTagsInput] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -65,7 +59,7 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
     if (!open) return;
     setTitle(initial?.title ?? "");
     setCoverUrl(initial?.coverUrl ?? "");
-    setTagsInput((initial?.tags ?? []).join(", "));
+    setTags(initial?.tags ?? []);
     setNotes(initial?.notes ?? "");
     setTmdbQuery(initial?.title ?? "");
     setTmdbResults([]);
@@ -136,7 +130,7 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
         shareUrl: initial.shareUrl,
         title: title.trim(),
         coverUrl: coverUrl.trim(),
-        tags: splitTags(tagsInput),
+        tags,
         notes: notes.trim(),
       };
       if (isEdit && initial.id) {
@@ -176,19 +170,18 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
           {tmdbEnabled && (
             <div className="space-y-2 rounded-md border p-3 bg-muted/30">
               <div className="text-sm font-medium">从 TMDB 搜索</div>
-              <div className="flex items-center gap-2">
-                <Input
+              <InputGroup className="h-8">
+                <InputGroupInput
                   placeholder="影片名称"
                   value={tmdbQuery}
                   onChange={(e) => setTmdbQuery(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && handleTmdbSearch()}
-                  className="h-8"
                 />
-                <Button size="sm" onClick={handleTmdbSearch} disabled={tmdbLoading}>
-                  <Search className="h-4 w-4 mr-1" />
+                <InputGroupButton onClick={handleTmdbSearch} disabled={tmdbLoading}>
+                  <Search />
                   {tmdbLoading ? "搜索中..." : "搜索"}
-                </Button>
-              </div>
+                </InputGroupButton>
+              </InputGroup>
               {tmdbResults.length > 0 && (
                 <div className="grid grid-cols-5 gap-2">
                   {tmdbResults.slice(0, 10).map((item) => (
@@ -238,11 +231,7 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
 
           <div className="space-y-1">
             <label className="text-sm font-medium">标签</label>
-            <Input
-              value={tagsInput}
-              onChange={(e) => setTagsInput(e.target.value)}
-              placeholder="用逗号分隔，如：动作, 2024"
-            />
+            <TagInput value={tags} onChange={setTags} placeholder="例如：动作，回车落一个" />
           </div>
 
           <div className="space-y-1">

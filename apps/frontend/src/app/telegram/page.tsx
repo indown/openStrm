@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { SwitchRow } from "@/components/switch-row";
 import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { Label } from "@/components/ui/label";
 import {
   AlertDialog,
@@ -263,18 +264,18 @@ export default function TelegramPage() {
               </Badge>
             ))}
           </div>
-          <div className="flex items-center gap-2 max-w-sm">
-            <Input
+          <InputGroup className="max-w-sm">
+            <InputGroupInput
               value={newUserId}
               onChange={(e) => setNewUserId(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && addUser()}
               placeholder="用户 id"
             />
-            <Button variant="outline" onClick={addUser} disabled={busy === "add-user"}>
-              <UserPlus className="h-4 w-4" />
+            <InputGroupButton onClick={addUser} disabled={busy === "add-user"}>
+              <UserPlus />
               添加
-            </Button>
-          </div>
+            </InputGroupButton>
+          </InputGroup>
         </section>
 
         {/* ---------------- 权限 ---------------- */}
