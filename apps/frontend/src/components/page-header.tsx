@@ -23,7 +23,10 @@ export function PageHeader({ title, description, icon: Icon, actions, className,
           {/* 允许在任意位置断行：日志页把网盘路径当标题，截断就看不全了 */}
           <span className="min-w-0 [overflow-wrap:anywhere]">{title}</span>
         </h1>
-        {description && <p className="line-clamp-2 text-sm text-muted-foreground sm:line-clamp-none">{description}</p>}
+        {/* 说明收在 3xl 以内：容器有 88rem 宽，一句话摊成一行读起来很累 */}
+        {description && (
+          <p className="line-clamp-2 max-w-3xl text-sm text-muted-foreground sm:line-clamp-none">{description}</p>
+        )}
         {children}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}

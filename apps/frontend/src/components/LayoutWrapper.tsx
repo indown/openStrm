@@ -217,8 +217,10 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
               <UserMenu onLogout={logout} />
             </div>
           </header>
-          {/* 所有页面共用这一个容器；表单类页面在自己内部再收窄到 max-w-3xl */}
-          <div className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6">{children}</div>
+          {/* 所有页面共用这一个容器；表单类页面在自己内部再收窄到 max-w-3xl。
+              宽度给到 88rem 是为了表格：strm 管理、整理、云下载这些页的主要内容是长路径，
+              72rem 的时候 1920 屏上两侧各空 300px，而路径列在拼命折行 */}
+          <div className="mx-auto w-full max-w-[88rem] flex-1 px-4 py-6 sm:px-6">{children}</div>
         </SidebarInset>
       </SidebarProvider>
       {/* 手机上的分享链接输入：靠上摆，免得软键盘弹起来把居中的弹框顶没了 */}
