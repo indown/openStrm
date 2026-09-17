@@ -23,8 +23,21 @@ import { apiErrorMessage } from "@/lib/axios";
 import type { AppSettings } from "@openstrm/shared";
 import { OrganizeSection } from "./components/OrganizeSection";
 import { UpdateSection } from "./components/UpdateSection";
+import { SectionNav, type Section } from "./components/SectionNav";
 
 type Settings = AppSettings;
+
+/** 右侧导航的顺序就是页面顺序；id 对应各 section 上的锚点 */
+const SECTIONS: Section[] = [
+  { id: "update", title: "更新" },
+  { id: "basic", title: "基础设置" },
+  { id: "throttle", title: "下载限流" },
+  { id: "emby", title: "Emby" },
+  { id: "tmdb", title: "TMDB" },
+  { id: "hdhive", title: "HDHive" },
+  { id: "openlist-copy", title: "复制到 OpenList" },
+  { id: "organize", title: "整理与命名" },
+];
 
 /** 扩展名落一个标签时规范化：去空白、补点号、转小写。空的丢掉 */
 function normalizeExtension(raw: string): string | null {
@@ -184,10 +197,11 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6">
       <PageHeader icon={SettingsIcon} title="设置" description={description} />
-      <div className="max-w-3xl space-y-6">
+      <div className="flex gap-8">
+        <div className="min-w-0 max-w-3xl flex-1 space-y-6">
         <UpdateSection value={data.update ?? {}} onChange={(update) => setData({ ...data, update })} />
 
-        <section className="space-y-4 rounded-xl border bg-card p-6">
+        <section id="basic" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
           <h2 className="text-base font-medium">基础设置</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -237,7 +251,7 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        <section className="space-y-4 rounded-xl border bg-card p-6">
+        <section id="throttle" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
           <h2 className="text-base font-medium">下载限流配置</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -311,7 +325,7 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        <section className="space-y-4 rounded-xl border bg-card p-6">
+        <section id="emby" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
           <h2 className="text-base font-medium">Emby</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -355,7 +369,7 @@ export default function SettingsPage() {
           />
         </section>
 
-        <section className="space-y-4 rounded-xl border bg-card p-6">
+        <section id="tmdb" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
           <h2 className="text-base font-medium">TMDB</h2>
           <p className="text-sm text-muted-foreground">
             配置后，在影库「加入影库」对话框中可通过 TMDB 搜索自动填充标题与封面。
@@ -391,7 +405,7 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        <section className="space-y-4 rounded-xl border bg-card p-6">
+        <section id="hdhive" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
           <h2 className="text-base font-medium">HDHive OpenAPI</h2>
           <p className="text-sm text-muted-foreground">
             配置后，可在顶部搜索框搜索影视并查询 HDHive 的可用资源（基于 TMDB ID）。
@@ -427,7 +441,7 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        <section className="space-y-4 rounded-xl border bg-card p-6">
+        <section id="openlist-copy" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
           <h2 className="text-base font-medium">复制到 OpenList</h2>
           <p className="text-sm text-muted-foreground">
             三项都配好后，「云下载」页添加任务（下载到 115 默认目录）时可以勾选
@@ -526,6 +540,8 @@ export default function SettingsPage() {
             </div>
           </div>
         )}
+        </div>
+        <SectionNav sections={SECTIONS} />
       </div>
     </div>
   );

@@ -94,7 +94,7 @@ export function OrganizeSection({ value, onChange }: Props) {
   }, [previewKey]);
 
   return (
-    <section className="space-y-4 rounded-xl border bg-card p-6">
+    <section id="organize" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
       <h2 className="text-base font-medium">整理与规范化命名</h2>
       <p className="text-sm text-muted-foreground">
         「整理」页按 TMDB 识别网盘里的文件，套下面的模板在网盘上改名 / 归位，本地 strm 跟着走。模板变量：
