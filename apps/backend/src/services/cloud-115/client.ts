@@ -1,4 +1,5 @@
 // 115 export-dir end-to-end implementation using real 115 APIs.
+import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 import axios, { type AxiosRequestConfig } from "axios";
 import { encrypt, decrypt } from "./crypto.js";
 import { LRUCache } from "lru-cache";
@@ -96,6 +97,8 @@ interface ExportDirParseOptions {
   checkIntervalMs?: number;
   userAgent?: string;
   accountInfo: AccountInfo;
+  /** 中止：提交、轮询、下载、解析每一步都认它 */
+  signal?: AbortSignal;
   /** 调用方一直在传的两个参数，这条链路其实用不上 */
   targetPid?: number;
   deleteAfter?: boolean;
@@ -120,6 +123,7 @@ export async function exportDirParse(options: ExportDirParseOptions) {
     checkIntervalMs = 1000, // polling interval
     userAgent = defaultUA(), // optional: override user-agent; some endpoints validate UA
     accountInfo, // required: account information
+    signal,
   } = options;
 
   if (!accountInfo?.cookie) throw new Error("accountInfo.cookie is required");
@@ -142,7 +146,7 @@ export async function exportDirParse(options: ExportDirParseOptions) {
         target,
         layer_limit: layerLimit > 0 ? layerLimit : undefined,
       },
-      { userAgent, accountInfo }
+      { userAgent, accountInfo, signal }
     );
     const export_id = ensureOk(exportResp)?.data?.export_id;
     if (!export_id) throw new Error("Failed to get export_id");
@@ -153,6 +157,7 @@ export async function exportDirParse(options: ExportDirParseOptions) {
       timeoutMs,
       checkIntervalMs,
       accountInfo,
+      signal,
     });
     pickcode = result.pick_code;
   } else if (typeof exportId === "string") {
@@ -161,16 +166,18 @@ export async function exportDirParse(options: ExportDirParseOptions) {
   if (!pickcode) throw new Error("Failed to get pick_code");
 
   // 3) Resolve download URL (try web first, then app as fallback)
-  const url = await getDownloadUrlWeb(pickcode, { userAgent, accountInfo });
+  const url = await getDownloadUrlWeb(pickcode, { userAgent, accountInfo, signal });
   
   if (!url) throw new Error("Failed to resolve download URL");
 
   // 4) Download and parse
   const fileIdForDelete = result && result.file_id;
   try {
-    const stream = await openFileStream(url, { userAgent });
+    const stream = await openFileStream(url, { userAgent, signal });
     const tree = new TreeBuilder();
     for await (const path of parseExportDirAsPathIter(stream)) {
+      // 导出文件几十 MB，解析也要一会儿：取消了就别解析完
+      signal?.throwIfAborted();
       // 导出文件末尾的空行会被解析器折进最后一条路径，所以每段都要去掉首尾空白（含换行）
       tree.add(path.split("/").map((part) => part.trim()).filter(Boolean));
     }
@@ -377,7 +384,7 @@ export async function listDirEntries(
 // POST https://proapi.115.com/android/2.0/ufile/export_dir
 async function fsExportDir(
   payload: Record<string, string | number | undefined>,
-  { userAgent, accountInfo }: RequestCtx,
+  { userAgent, accountInfo, signal }: RequestCtx,
 ) {
   const url = "https://proapi.115.com/android/2.0/ufile/export_dir";
   const form = new URLSearchParams();
@@ -391,11 +398,12 @@ async function fsExportDir(
     userAgent,
     useCommonHeaders: true,
     accountInfo,
+    signal,
   });
 }
 
 // GET https://webapi.115.com/files/export_dir?export_id=...
-async function fsExportDirStatus(exportId: string, { userAgent, accountInfo }: RequestCtx) {
+async function fsExportDirStatus(exportId: string, { userAgent, accountInfo, signal }: RequestCtx) {
   const url =
     "https://webapi.115.com/files/export_dir?export_id=" +
     encodeURIComponent(exportId);
@@ -404,16 +412,19 @@ async function fsExportDirStatus(exportId: string, { userAgent, accountInfo }: R
     userAgent,
     useCommonHeaders: true,
     accountInfo,
+    signal,
   });
 }
 
 async function exportDirResult(
   exportId: string,
-  { userAgent, timeoutMs, checkIntervalMs, accountInfo }: RequestCtx & { timeoutMs: number; checkIntervalMs: number },
+  { userAgent, timeoutMs, checkIntervalMs, accountInfo, signal }: RequestCtx & { timeoutMs: number; checkIntervalMs: number },
 ): Promise<ExportDirResult> {
   const deadline = isFinite(timeoutMs) ? Date.now() + timeoutMs : Infinity;
   while (true) {
-    const resp = await fsExportDirStatus(exportId, { userAgent, accountInfo });
+    // 取消之后别再一秒一次地问下去：导出最长要等五分钟
+    signal?.throwIfAborted();
+    const resp = await fsExportDirStatus(exportId, { userAgent, accountInfo, signal });
     
     // 检查响应是否有效
     if (resp && resp.data) {
@@ -425,7 +436,7 @@ async function exportDirResult(
     
     if (Date.now() >= deadline)
       throw new Error(`Timeout waiting export result: ${exportId}`);
-    if (checkIntervalMs > 0) await sleep(checkIntervalMs);
+    if (checkIntervalMs > 0) await sleep(checkIntervalMs, signal);
   }
 }
 export async function request115<T = unknown>(
@@ -676,7 +687,7 @@ function commonHeaders({ cookie, userAgent }: { cookie: string; userAgent?: stri
 
 // Fetch the download URL and return a ReadableStream of bytes
 // Use axios to match downloadOrCreateStrm behavior and handle 302
-async function openFileStream(url: string, { userAgent }: { userAgent?: string }) {
+async function openFileStream(url: string, { userAgent, signal }: { userAgent?: string; signal?: AbortSignal }) {
   
   const headers = {
     "User-Agent": userAgent,
@@ -687,6 +698,7 @@ async function openFileStream(url: string, { userAgent }: { userAgent?: string }
     headers,
     responseType: 'stream',
     timeout: DEFAULT_TIMEOUT_MS,
+    signal,
   });
 
   const nodeStream = res.data; // Node.js Readable
@@ -787,8 +799,9 @@ function escapeName(s: string) {
   return s.replaceAll("/", "\\/");
 }
 
-export function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+/** 可中断的等待：掐了立刻醒并抛 AbortError，不用把一整轮轮询等完 */
+export function sleep(ms: number, signal?: AbortSignal) {
+  return setTimeoutPromise(ms, undefined, { signal });
 }
 
 function defaultUA() {

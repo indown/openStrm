@@ -12,6 +12,7 @@
 import type { Dirent } from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { Observable, Subject, throttle } from "rxjs";
 import type {
   AppSettings,
   StrmDeleteResult,
@@ -28,12 +29,16 @@ import type {
   StrmScanResult,
   StrmSearchHit,
   StrmSearchResult,
+  StrmVerifyEvent,
+  StrmVerifyProgress,
   StrmVerifyResult,
   TaskDefinition,
 } from "@openstrm/shared";
 import { listTasks } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { mapLimit } from "../../lib/async.js";
+import { isAbortError } from "../../lib/errors.js";
+import { forEachLimit, unrefTimer } from "../../lib/rx.js";
 import { isDirectoryEntry, pathExists, readTextCapped, removeEmptyParents, walkTree } from "../../lib/fs.js";
 import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
@@ -482,6 +487,7 @@ async function collectStrm(
   mp: ManagedPath,
   foreign: string[],
   max: number,
+  signal?: AbortSignal,
 ): Promise<{ rels: string[]; truncated: boolean }> {
   let st;
   try {
@@ -497,6 +503,8 @@ async function collectStrm(
   const rels: string[] = [];
   let seen = 0;
   for await (const e of walkTree(mp.full, { skipDir: skipDirOf(foreignUnder(foreign, mp.rel)) })) {
+    // 冷盘 / 网络盘上这一趟能走几分钟，取消了就别走完
+    signal?.throwIfAborted();
     if (++seen > STRM_LIMITS.WALK_ENTRIES) return { rels, truncated: true };
     if (e.isDir || extOf(e.name) !== ".strm") continue;
     rels.push(joinRel(mp.rel, e.rel));
@@ -671,11 +679,16 @@ type VerifyItem = { path: string; remotePath: string; name: string };
  * 和逐目录的一点差别：子树清单里只有文件（和没有文件的顶层空目录），
  * 所以目录还在、里面一个文件都没有的，这里报的是 dir-missing 而不是 file-missing——strm 一样是死的，只是措辞粗一点。
  */
-async function verifyBySubtree(provider: DriveProvider, dirs: Array<[string, VerifyItem[]]>, result: StrmVerifyResult): Promise<void> {
+async function verifyBySubtree(
+  provider: DriveProvider,
+  dirs: Array<[string, VerifyItem[]]>,
+  result: StrmVerifyResult,
+  signal?: AbortSignal,
+): Promise<void> {
   const root = commonDir(dirs.map(([dir]) => dir));
   let listed: string[];
   try {
-    listed = await provider.listSubtree(root);
+    listed = await provider.listSubtree(root, { signal });
   } catch (err) {
     if (err instanceof RemoteDirNotFoundError) {
       // 共同上级都没了，底下的自然全没
@@ -684,6 +697,8 @@ async function verifyBySubtree(provider: DriveProvider, dirs: Array<[string, Ver
       }
       return;
     }
+    // 自己掐的不算这个目录查失败：记成 errors 的话，取消掉的一轮会以「缺失 0」收场
+    if (isAbortError(err)) throw err;
     const msg = errMsg(err);
     // 封控 / cookie 失效：和逐目录那条一样整体中止
     if (provider.classifyError(err)) throw upstreamError(msg);
@@ -708,19 +723,78 @@ async function verifyBySubtree(provider: DriveProvider, dirs: Array<[string, Ver
   }
 }
 
-export async function verify(task: TaskDefinition, provider: DriveProvider, rel: string): Promise<StrmVerifyResult> {
+export interface VerifyOptions {
+  /** 客户端断开 / 主动取消：不再派新的活，进行中的网盘请求也跟着掐 */
+  signal?: AbortSignal;
+  /** 每前进一步报一次；节流交给上面的 verify$ */
+  onProgress?: (progress: StrmVerifyProgress) => void;
+}
+
+/**
+ * 校验的流式版：进度和结果一路推出去，退订就中止。
+ *
+ * 一次最多两万个 strm、再到网盘逐个目录确认，以前是一个干挂着的 POST：
+ * 界面只有一个转圈、中途不能取消，反代 / Cloudflare 的空闲超时一掐整轮白跑
+ * （后端还什么都不知道，照样在打网盘）。现在按 SSE 推，连接上一直有数据，
+ * 关掉弹框就退订、活儿立刻停。
+ *
+ * 进度按时间节流：读两万个 strm 会产生两万条，界面只要看得到在动。
+ * 每个阶段的第一条立刻发（leading），不然弹框开头有 250ms 是空的。
+ */
+export function verify$(
+  task: TaskDefinition,
+  provider: DriveProvider,
+  rel: string,
+  progressMs = 250,
+): Observable<StrmVerifyEvent> {
+  return new Observable<StrmVerifyEvent>((subscriber) => {
+    const abort = new AbortController();
+    const progress$ = new Subject<StrmVerifyProgress>();
+    const sub = progress$
+      .pipe(throttle(() => unrefTimer(progressMs), { leading: true, trailing: true }))
+      .subscribe((progress) => subscriber.next({ type: "progress", progress }));
+    verify(task, provider, rel, { signal: abort.signal, onProgress: (p) => progress$.next(p) }).then(
+      (result) => {
+        subscriber.next({ type: "done", result });
+        subscriber.complete();
+      },
+      (err: unknown) => subscriber.error(err),
+    );
+    return () => {
+      abort.abort();
+      sub.unsubscribe();
+      progress$.complete();
+    };
+  });
+}
+
+export async function verify(
+  task: TaskDefinition,
+  provider: DriveProvider,
+  rel: string,
+  opts: VerifyOptions = {},
+): Promise<StrmVerifyResult> {
+  const { signal } = opts;
+  const report = (phase: StrmVerifyProgress["phase"], done: number, total: number, message: string) =>
+    opts.onProgress?.({ phase, done, total, message });
+  /** 没人听进度就别逐条构造对象和拼字符串（阻塞版那条路就没人听） */
+  const ticker = (phase: StrmVerifyProgress["phase"], what: string) =>
+    opts.onProgress ? (done: number, total: number) => report(phase, done, total, `${what} ${done}/${total}`) : undefined;
+  signal?.throwIfAborted();
+  report("collect", 0, 0, "正在收集本地 strm…");
   const mp = await resolveManagedPath(task, rel);
   const tasks = listTasks();
   const foreign = nestedForeignRoots(task, tasks);
   const siblings = sameRootSiblings(task, tasks);
-  const { rels, truncated } = await collectStrm(mp, foreign, STRM_LIMITS.VERIFY_FILES);
+  const { rels, truncated } = await collectStrm(mp, foreign, STRM_LIMITS.VERIFY_FILES, signal);
   if (truncated || rels.length > STRM_LIMITS.VERIFY_FILES) {
     throw new HttpError(400, `范围太大（超过 ${STRM_LIMITS.VERIFY_FILES} 个 strm），请选一个更小的目录分批校验`);
   }
 
   const result: StrmVerifyResult = { checked: 0, dirs: 0, missing: [], unparsable: [], errors: [], note: provider.notes?.verify ?? "" };
   const groups = new Map<string, VerifyItem[]>();
-  await mapLimit(rels, 16, async (r) => {
+  report("read", 0, rels.length, `读取 ${rels.length} 个 strm…`);
+  await forEachLimit(rels, 16, async (r) => {
     const full = path.join(mp.root, ...r.split("/"));
     let content: string | null;
     try {
@@ -747,7 +821,8 @@ export async function verify(task: TaskDefinition, provider: DriveProvider, rel:
     const list = groups.get(dir);
     if (list) list.push(item);
     else groups.set(dir, [item]);
-  });
+  }, { signal, onDone: ticker("read", "读取") });
+  signal?.throwIfAborted();
   result.dirs = groups.size;
 
   // 这次校验的范围对应的网盘目录；内容指向它之外的（任务改过 originPath 的老 strm）子树那条路盖不到
@@ -768,26 +843,35 @@ export async function verify(task: TaskDefinition, provider: DriveProvider, rel:
         "多半是任务改过原路径，先用「修正内容」把这些 strm 指回现在的路径再校验",
     );
   }
-  if (byTree.length > 0) await verifyBySubtree(provider, byTree, result);
+  if (byTree.length > 0) {
+    // total 0 = 不确定态：拉整棵子树是一趟不给中间进度的活儿，别让进度条冻在 0% 上装样子
+    report("remote", 0, 0, `读取网盘目录树（覆盖 ${byTree.length} 个目录）…`);
+    await verifyBySubtree(provider, byTree, result, signal);
+    signal?.throwIfAborted();
+  }
 
-  await mapLimit(oneByOne, 4, async ([dir, items]) => {
+  report("remote", 0, oneByOne.length, oneByOne.length > 0 ? `到网盘确认 ${oneByOne.length} 个目录…` : "到网盘确认…");
+  await forEachLimit(oneByOne, 4, async ([dir, items]) => {
     try {
-      const node = await provider.resolvePath(dir);
+      const node = await provider.resolvePath(dir, signal);
       if (!node || !node.isDir) {
         for (const it of items) result.missing.push({ path: it.path, remotePath: it.remotePath, reason: "dir-missing" });
         return;
       }
-      const names = new Set((await provider.listDir(node.id)).map((e) => e.name.trim()));
+      const names = new Set((await provider.listDir(node.id, signal)).map((e) => e.name.trim()));
       for (const it of items) {
         if (!names.has(it.name.trim())) result.missing.push({ path: it.path, remotePath: it.remotePath, reason: "file-missing" });
       }
     } catch (err) {
+      // 自己掐的不算这个目录查失败，整体中止
+      if (isAbortError(err)) throw err;
       const msg = errMsg(err);
       // 封控 / cookie 失效：再问下去只会越问越糟，整体中止
       if (provider.classifyError(err)) throw upstreamError(msg);
       result.errors.push({ remoteDir: dir, message: msg });
     }
-  });
+  }, { signal, onDone: ticker("remote", "到网盘确认") });
+  signal?.throwIfAborted();
   result.missing.sort((a, b) => a.path.localeCompare(b.path));
   result.unparsable.sort((a, b) => a.path.localeCompare(b.path));
   const how = byTree.length > 0 ? `子树 ${byTree.length} + 逐个 ${oneByOne.length}` : "逐个";

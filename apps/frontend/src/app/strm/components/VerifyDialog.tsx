@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { AlertCircle, CheckCircle2, Loader2, ShieldCheck, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AlertCircle, CheckCircle2, ShieldCheck, Trash2, XCircle } from "lucide-react";
 import { toast } from "sonner";
-import type { StrmVerifyResult } from "@openstrm/shared";
+import type { StrmVerifyProgress, StrmVerifyResult } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/empty-state";
-import { Spinner } from "@/components/loading";
+import { ProgressBar } from "@/components/progress-bar";
 import { StatusBadge } from "@/components/status-badge";
 import { api } from "@/lib/api";
 import { PARSE_REASON_LABEL, baseName, strmErrorMessage, type RequestDelete } from "@/lib/strm";
@@ -25,6 +25,12 @@ type Missing = StrmVerifyResult["missing"][number];
 
 /** 缺失项可能上千，列表只铺这么多行（「删除全部缺失」删的还是全部） */
 const LIST_CAP = 300;
+
+const PHASE_LABEL: Record<StrmVerifyProgress["phase"], string> = {
+  collect: "收集本地 strm",
+  read: "读取 strm",
+  remote: "到网盘确认",
+};
 
 type Props = {
   /** 要校验的目录或文件；null = 关着 */
@@ -43,6 +49,14 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
   const [missing, setMissing] = useState<Missing[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
+  const [progress, setProgress] = useState<StrmVerifyProgress | null>(null);
+  /** 在跑的那一轮：关弹框、离开页面、点「停止」都靠它掐断，后端那边跟着停 */
+  const abortRef = useRef<AbortController | null>(null);
+
+  const cancel = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -50,24 +64,61 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
     setResult(null);
     setMissing([]);
     setError(null);
+    setProgress(null);
   }, [open, target]);
+
+  // 弹框关掉 / 组件卸载：别把校验留在后台接着打网盘
+  useEffect(() => {
+    if (!open) cancel();
+  }, [open]);
+  useEffect(() => cancel, []);
 
   const start = async () => {
     if (target == null) return;
+    cancel();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setPhase("running");
     setError(null);
+    setProgress(null);
+    // 收在一个对象里：闭包里赋值的局部变量，类型收窄会跟着乱
+    const outcome: { result?: StrmVerifyResult; error?: string } = {};
     try {
-      const res = await api.strm.verify(taskId, target);
+      await api.strm.verifyStream(taskId, target, {
+        signal: controller.signal,
+        onEvent: (event) => {
+          if (event.type === "progress") setProgress(event.progress);
+          else if (event.type === "done") outcome.result = event.result;
+          else outcome.error = event.message;
+        },
+      });
+    } catch (err) {
+      // 自己点的「停止」不算失败
+      if (controller.signal.aborted) return;
+      outcome.error = strmErrorMessage(err, "校验失败");
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
+    }
+    if (controller.signal.aborted) return;
+    if (outcome.result) {
+      const res = outcome.result;
       setResult(res);
       setMissing(res.missing);
       setPhase("done");
       toast.success(res.missing.length > 0 ? `校验完成：${res.missing.length} 个缺失` : "校验完成：全部存在");
-    } catch (err) {
-      const msg = strmErrorMessage(err, "校验失败");
-      setError(msg);
-      setPhase("error");
-      toast.error(msg);
+      return;
     }
+    // 流断在半路却没有结论：多半是反代掐了连接
+    const msg = outcome.error ?? "校验没有给出结论，连接可能被中断了，请重试";
+    setError(msg);
+    setPhase("error");
+    toast.error(msg);
+  };
+
+  const stop = () => {
+    cancel();
+    setPhase("idle");
+    setProgress(null);
   };
 
   const removeMissing = async (paths: string[]) => {
@@ -86,6 +137,7 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
   const running = phase === "running";
 
   return (
+    // 跑着的时候 Esc / 点外面不关：一轮大目录校验要几分钟，手滑关掉就白跑了，要停得按「停止校验」
     <Dialog open={open} onOpenChange={(o) => !running && onOpenChange(o)}>
       <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
         <DialogHeader>
@@ -95,10 +147,26 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
           {phase === "idle" && (
             <p className="text-sm text-muted-foreground">
-              会到网盘确认 strm 指向的文件还在不在。目录少时逐个目录问，目录多时改成一次读取整棵目录树再比对，大库可能要几分钟。
+              会到网盘确认 strm 指向的文件还在不在。目录少时逐个目录问，目录多时改成一次读取整棵目录树再比对，大库可能要几分钟——过程中有进度，随时可以停。
             </p>
           )}
-          {running && <Spinner label="正在向网盘逐个确认，请不要关闭页面…" />}
+          {running && (
+            <div className="space-y-2 py-2">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span>{progress ? PHASE_LABEL[progress.phase] : "准备中"}</span>
+                <span className="tabular-nums text-muted-foreground">
+                  {progress && progress.total > 0 ? `${progress.done} / ${progress.total}` : "…"}
+                </span>
+              </div>
+              <ProgressBar
+                percent={progress && progress.total > 0 ? (progress.done / progress.total) * 100 : 0}
+                indeterminate={!progress || progress.total === 0}
+                running
+                size="md"
+              />
+              <p className="text-xs text-muted-foreground">{progress?.message ?? "正在准备…"}</p>
+            </div>
+          )}
           {phase === "error" && (
             <Alert variant="destructive">
               <AlertCircle />
@@ -199,10 +267,14 @@ export function VerifyDialog({ target, onOpenChange, taskId, onDelete }: Props) 
                 {phase === "error" ? "重试" : "开始校验"}
               </Button>
             </>
+          ) : running ? (
+            <Button variant="outline" onClick={stop}>
+              <XCircle className="size-4" />
+              停止校验
+            </Button>
           ) : (
-            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={running}>
-              {running ? <Loader2 className="size-4 animate-spin" /> : null}
-              {running ? "校验中…" : "关闭"}
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              关闭
             </Button>
           )}
         </DialogFooter>

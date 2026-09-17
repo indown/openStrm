@@ -5,6 +5,7 @@
  * 错误体固定为 `{ message, ...extra }`，用 apiErrorMessage() 取文案。
  */
 import axiosInstance from "./axios";
+import { streamSse } from "./sse";
 import type {
   AccountInfo,
   AppSettings,
@@ -34,6 +35,7 @@ import type {
   StrmRewriteResult,
   StrmScanResult,
   StrmSearchResult,
+  StrmVerifyEvent,
   StrmVerifyResult,
   TaskDefinition,
   TaskExecutionHistory,
@@ -598,9 +600,15 @@ export const api = {
     /** 扫描一个目录（"" 是整个任务），大目录要一两分钟 */
     scan: (taskId: string, path = "") =>
       data(axiosInstance.post<StrmScanResult>("/api/strm/scan", { taskId, path }, { timeout: 120_000 })),
-    /** 到网盘确认文件还在不在：目录多的时候后端改成拉一次整棵目录树，和「重新生成」一样最长可能等五分钟 */
+    /** 到网盘确认单个文件还在不在；整目录用下面的 verifyStream，别把请求干挂着 */
     verify: (taskId: string, path = "") =>
       data(axiosInstance.post<StrmVerifyResult>("/api/strm/verify", { taskId, path }, { timeout: 330_000 })),
+    /**
+     * 校验整个目录：走事件流，进度一路推，最后一条是结果。
+     * signal 一掐连接就断，后端那一轮校验跟着停（不再接着打网盘）。
+     */
+    verifyStream: (taskId: string, path: string, opts: { signal?: AbortSignal; onEvent: (event: StrmVerifyEvent) => void }) =>
+      streamSse<StrmVerifyEvent>("/api/strm/verify/stream", { taskId, path }, opts),
     /** 读 115 目录再生成，最长五分钟；根目录 400、任务同步中 409、115 目录没了 404 */
     regenerate: (taskId: string, path: string, mode: StrmRegenerateMode) =>
       data(axiosInstance.post<StrmRegenerateResult>("/api/strm/regenerate", { taskId, path, mode }, { timeout: 330_000 })),

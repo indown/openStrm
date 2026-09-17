@@ -261,6 +261,8 @@ export class Cloud115Provider implements DriveProvider {
       timeoutMs: 300000,
       checkIntervalMs: 1000,
       accountInfo: this.account,
+      // 导出要等、下载要等、解析还要等：取消的时候这三步都得停，别再替一个没人要的结果打 115
+      signal: opts?.signal,
     });
     const tree = buildTree(raw);
     const dir = findExportedDir(tree, path);

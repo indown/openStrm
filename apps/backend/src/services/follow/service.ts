@@ -30,6 +30,7 @@ import {
 } from "../../db/repositories/share-follows.js";
 import { HttpError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
+import { createPollingLoop } from "../../lib/polling.js";
 import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, KIND_LABEL, parseShareRef, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession, ShareUpdateSignal, DriveKind } from "../drive/types.js";
@@ -587,60 +588,31 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
 
 /* ------------------------------- 循环 ------------------------------- */
 
-let running = false;
-let timer: NodeJS.Timeout | null = null;
-let ticking: Promise<void> | null = null;
 let lastTickAt: number | null = null;
-let lastError: string | null = null;
+
+const loop = createPollingLoop({
+  name: "追更循环",
+  log,
+  intervalMs: FOLLOW.TICK_MS,
+  tick: tickFollows,
+  // 订阅全关了就收工；再开一条时 startFollowWatcher 会重新起
+  shouldContinue: () => countEnabledShareFollows() > 0,
+  doneMessage: "没有开着的追更订阅，循环停止",
+});
 
 export function getFollowWatcherStatus(): FollowWatcherStatus {
-  return { running, lastTickAt, lastError, checking: [...checking] };
+  return { running: loop.running, lastTickAt, lastError: loop.lastError, checking: [...checking] };
 }
 
 /** 有开着的订阅就起循环；已在跑或一条都没开都不动 */
 export function startFollowWatcher(): void {
-  if (running || countEnabledShareFollows() === 0) return;
-  running = true;
+  if (loop.running || countEnabledShareFollows() === 0) return;
   log.info("追更循环启动");
-  schedule(0);
+  loop.start();
 }
 
 export async function stopFollowWatcher(): Promise<void> {
-  running = false;
-  if (timer) clearTimeout(timer);
-  timer = null;
-  await ticking;
-}
-
-function schedule(ms: number): void {
-  timer = setTimeout(() => {
-    timer = null;
-    void runTick();
-  }, ms);
-  timer.unref?.();
-}
-
-async function runTick(): Promise<void> {
-  if (!running) return;
-  ticking = tickFollows()
-    .then(() => {
-      lastError = null;
-    })
-    .catch((err) => {
-      lastError = errMsg(err);
-      log.warn({ err }, "追更循环这一轮失败");
-    })
-    .finally(() => {
-      ticking = null;
-    });
-  await ticking;
-  if (!running) return;
-  if (countEnabledShareFollows() === 0) {
-    running = false;
-    log.info("没有开着的追更订阅，循环停止");
-    return;
-  }
-  schedule(FOLLOW.TICK_MS);
+  await loop.stop();
 }
 
 /**
@@ -690,5 +662,5 @@ export async function __test_resetFollows(): Promise<void> {
   checking.clear();
   signalSkips.clear();
   lastTickAt = null;
-  lastError = null;
+  loop.noteError(null);
 }

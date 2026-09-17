@@ -42,31 +42,49 @@ axiosInstance.interceptors.request.use(
   }
 );
 
+/**
+ * 会话失效 / 必须改密码时的跳转。
+ *
+ * 抽出来是因为事件流那条路走的是 fetch（EventSource 和 axios 都带不了它要的头），
+ * 拦截器管不着：不共用的话，流式接口撞上 401 只会显示一句「失败」，
+ * 失效的 token 还留在 localStorage 里，人一直点重试也没人告诉他该重新登录。
+ */
+export function handleAuthFailure(status: number, data: unknown, url = ""): void {
+  if (typeof window === 'undefined') return;
+  const code = (data as { code?: string } | null)?.code;
+  // 登录接口自己的 401（密码错）不是会话失效：跳转会把整页刷掉，表单和 429 的退避提示都没了
+  const isLoginCall = url.endsWith('/api/auth/login');
+  if (status === 401 && !isLoginCall) {
+    clearToken();
+    // 跳登录页并记住当前位置，登录后回来；已经在登录页就不用再跳
+    if (window.location.pathname !== '/login') {
+      const here = window.location.pathname + window.location.search;
+      window.location.href = here && here !== '/' ? `/login?next=${encodeURIComponent(here)}` : '/login';
+    }
+  }
+  // 默认密码没改之前，后端会挡下改密码以外的全部接口。
+  // 在这里兜住，任何页面误入都会被拉回改密码页。
+  if (status === 403 && code === 'PASSWORD_CHANGE_REQUIRED' && window.location.pathname !== '/change-password') {
+    window.location.href = '/change-password?required=1';
+  }
+}
+
+/**
+ * 把一条 fetch 的失败包成 axios 那种形状，好让 apiErrorBody / apiErrorMessage 一视同仁。
+ * 页面上到处在用它们取后端的 `{ message }`，不包的话流式接口的错只剩一句兜底文案。
+ */
+export function asApiError(status: number, data: unknown, fallback: string): Error {
+  const body = data as { message?: string } | null;
+  const err = new Error(body?.message || fallback) as Error & { response: { status: number; data: unknown } };
+  err.response = { status, data };
+  return err;
+}
+
 // 响应拦截器：处理401错误
 axiosInstance.interceptors.response.use(
   (response) => response,
   (error) => {
-    // 登录接口自己的 401（密码错）不是会话失效：跳转会把整页刷掉，表单和 429 的退避提示都没了
-    const isLoginCall = String(error.config?.url ?? "").endsWith("/api/auth/login");
-    if (error.response?.status === 401 && !isLoginCall) {
-      // 清除无效token
-      clearToken();
-      // 跳登录页并记住当前位置，登录后回来；已经在登录页就不用再跳
-      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-        const here = window.location.pathname + window.location.search;
-        window.location.href = here && here !== '/' ? `/login?next=${encodeURIComponent(here)}` : '/login';
-      }
-    }
-    // 默认密码没改之前，后端会挡下改密码以外的全部接口。
-    // 在这里兜住，任何页面误入都会被拉回改密码页。
-    if (
-      error.response?.status === 403 &&
-      error.response?.data?.code === 'PASSWORD_CHANGE_REQUIRED' &&
-      typeof window !== 'undefined' &&
-      window.location.pathname !== '/change-password'
-    ) {
-      window.location.href = '/change-password?required=1';
-    }
+    handleAuthFailure(error.response?.status, error.response?.data, String(error.config?.url ?? ""));
     return Promise.reject(error);
   }
 );

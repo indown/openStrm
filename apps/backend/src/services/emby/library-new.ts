@@ -16,6 +16,7 @@ import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
 import { DEFAULT_TIMEOUT_MS } from "../../lib/http.js";
 import { moduleLogger } from "../../lib/logger.js";
+import { createPollingLoop } from "../../lib/polling.js";
 import { notify, notifyPrefs, type EmbyNewGroup, type NotifyEvent } from "../telegram/notify.js";
 
 const log = moduleLogger("emby-new");
@@ -112,6 +113,14 @@ export function groupEmbyNewItems(items: EmbyNewItem[]): EmbyNewGroup[] {
 
 /** 跑一轮。导出为函数是为了测试直接触发，不用等两分钟 */
 export async function tickEmbyNew(): Promise<void> {
+  try {
+    await runRound();
+  } finally {
+    lastTickAt = Date.now();
+  }
+}
+
+async function runRound(): Promise<void> {
   // 开关关着连 Emby 都不问；游标会停在关掉那一刻，重新打开时把中间的入库补报一次
   if (!notifyPrefs(readAppSettings()).embyNew) return;
   const items = await deps.fetch(FETCH_LIMIT);
@@ -144,72 +153,35 @@ export async function tickEmbyNew(): Promise<void> {
 
 /* ------------------------------- 循环 ------------------------------- */
 
-let running = false;
-let timer: NodeJS.Timeout | null = null;
-let nudgeTimer: NodeJS.Timeout | null = null;
-let ticking: Promise<void> | null = null;
 let lastTickAt: number | null = null;
-let lastError: string | null = null;
+
+const loop = createPollingLoop({
+  name: "Emby 入库检查",
+  log,
+  intervalMs: POLL_MS,
+  // 起得早一点：启动后先把游标定好，之后的入库才有对照
+  firstDelayMs: 5_000,
+  tick: tickEmbyNew,
+});
 
 export function getEmbyNewWatcherStatus(): { running: boolean; lastTickAt: number | null; lastError: string | null } {
-  return { running, lastTickAt, lastError };
+  return { running: loop.running, lastTickAt, lastError: loop.lastError };
 }
 
 export function startEmbyNewWatcher(): void {
-  if (running) return;
-  running = true;
-  // 起得早一点：启动后先把游标定好，之后的入库才有对照
-  schedule(5_000);
+  loop.start();
 }
 
 export async function stopEmbyNewWatcher(): Promise<void> {
-  running = false;
-  if (timer) clearTimeout(timer);
-  if (nudgeTimer) clearTimeout(nudgeTimer);
-  timer = null;
-  nudgeTimer = null;
-  await ticking;
+  await loop.stop();
 }
 
-/** refreshEmbyNow 成功后调：30 秒后插一轮加急，入库延迟从最多 2 分钟压到半分钟 */
+/**
+ * refreshEmbyNow 成功后调：30 秒后插一轮加急，入库延迟从最多 2 分钟压到半分钟。
+ * 这半分钟里再来几次只算一次；撞上正在跑的那一轮就跳过（exhaustMap 管着）。
+ */
 export function nudgeEmbyNewWatch(): void {
-  if (!running || nudgeTimer) return;
-  nudgeTimer = setTimeout(() => {
-    nudgeTimer = null;
-    void runTick(false);
-  }, NUDGE_MS);
-  nudgeTimer.unref?.();
-}
-
-function schedule(ms: number): void {
-  timer = setTimeout(() => {
-    timer = null;
-    void runTick(true);
-  }, ms);
-  timer.unref?.();
-}
-
-async function runTick(reschedule: boolean): Promise<void> {
-  if (!running) return;
-  if (ticking) {
-    // 加急和例行撞上了：跳过这一发
-    if (reschedule) schedule(POLL_MS);
-    return;
-  }
-  ticking = tickEmbyNew()
-    .then(() => {
-      lastError = null;
-    })
-    .catch((err) => {
-      lastError = err instanceof Error ? err.message : String(err);
-      log.warn({ err }, "Emby 入库检查这一轮失败");
-    })
-    .finally(() => {
-      lastTickAt = Date.now();
-      ticking = null;
-    });
-  await ticking;
-  if (running && reschedule) schedule(POLL_MS);
+  loop.nudge(NUDGE_MS);
 }
 
 /** 仅供测试：停循环、清游标 */
@@ -217,5 +189,5 @@ export async function __test_resetEmbyNew(): Promise<void> {
   await stopEmbyNewWatcher();
   writeKv(KEY.embyNewCursor, null);
   lastTickAt = null;
-  lastError = null;
+  loop.noteError(null);
 }

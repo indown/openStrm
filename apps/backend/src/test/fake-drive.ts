@@ -329,6 +329,11 @@ export interface FakeDriveOptions {
   notes?: { verify?: string };
 }
 
+/**
+ * 注意：读操作的签名要和 DriveProvider 一样带上 signal 并当场 throwIfAborted。
+ * 少写一个参数 tsc 也不会响（结构化类型允许更窄的签名），但「取消传不下去」这类问题就永远测不出来——
+ * 115 的 listSubtree 就这么把 signal 漏在了导出目录树那一步。
+ */
 export class FakeDrive implements DriveProvider {
   readonly tree: FakeTree;
   readonly rootId = "0";
@@ -371,15 +376,17 @@ export class FakeDrive implements DriveProvider {
     if (this.failWith) throw this.failWith;
   }
 
-  async resolvePath(path: string): Promise<DriveNode | null> {
+  async resolvePath(path: string, signal?: AbortSignal): Promise<DriveNode | null> {
     this.calls.resolvePath++;
+    signal?.throwIfAborted();
     await this.guard("resolvePath", path);
     const node = this.tree.get(path);
     return node ? { id: node.id, isDir: node.isDir } : null;
   }
 
-  async listDir(id: string): Promise<DriveEntry[]> {
+  async listDir(id: string, signal?: AbortSignal): Promise<DriveEntry[]> {
     this.calls.listDir++;
+    signal?.throwIfAborted();
     await this.guard("listDir", id);
     const dir = this.tree.pathOf(id);
     if (dir === null) return [];
@@ -403,16 +410,18 @@ export class FakeDrive implements DriveProvider {
     return root;
   }
 
-  async listSubtree(path: string, opts?: { id?: string }): Promise<string[]> {
+  async listSubtree(path: string, opts?: { id?: string; signal?: AbortSignal }): Promise<string[]> {
     this.calls.listSubtree++;
+    opts?.signal?.throwIfAborted();
     await this.guard("listSubtree", opts?.id ?? path);
     const root = this.rootPath(path, opts?.id);
     // 段里的空格照原样带出来（真网盘列目录给的就是原名），别用会 trim 的 splitPath
     return syncViewFromPaths(this.tree.descendants(root).map(({ path: p }) => p.slice(root === "/" ? 0 : root.length).split("/").filter(Boolean)));
   }
 
-  async walkSubtree(path: string, opts?: { id?: string }): Promise<SubtreeEntry[]> {
+  async walkSubtree(path: string, opts?: { id?: string; signal?: AbortSignal }): Promise<SubtreeEntry[]> {
     this.calls.walkSubtree++;
+    opts?.signal?.throwIfAborted();
     await this.guard("walkSubtree", opts?.id ?? path);
     const root = this.rootPath(path, opts?.id);
     return this.tree.descendants(root).map(({ path: p, node }) => ({

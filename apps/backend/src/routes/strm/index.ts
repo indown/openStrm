@@ -1,11 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { TaskDefinition } from "@openstrm/shared";
+import type { StrmVerifyEvent, TaskDefinition } from "@openstrm/shared";
 import { getTask } from "../../db/repositories/tasks.js";
 import { HttpError } from "../../lib/http-error.js";
+import { messageOf } from "../../lib/errors.js";
+import { openSse } from "../../lib/sse.js";
 import { parse } from "../../lib/validate.js";
 import { providerForTask } from "../../services/drive/registry.js";
-import { deletePaths, listDir, readStrm, regenerate, rewrite, scan, search, STRM_LIMITS, verify } from "../../services/strm/manage.js";
+import { deletePaths, listDir, readStrm, regenerate, rewrite, scan, search, STRM_LIMITS, verify, verify$ } from "../../services/strm/manage.js";
 
 /**
  * strm 管理：按同步任务浏览 / 检查 / 删除 / 修正 / 重建本地 strm。
@@ -76,11 +78,38 @@ export default async function (fastify: FastifyInstance) {
     return regenerate(task, provider, body.path, { mode: body.mode });
   });
 
-  /** 逐个目录到网盘确认；范围太大回 400 */
+  /** 逐个目录到网盘确认；范围太大回 400。单个文件用这个就够，整目录走下面的流式版 */
   fastify.post("/api/strm/verify", auth, async (request) => {
     const body = parse(verifyBody, request.body);
     const task = loadTask(body.taskId);
     const provider = providerForTask(task);
     return verify(task, provider, body.path);
+  });
+
+  /**
+   * 校验的流式版（SSE）：进度一路推，最后一条是结果。
+   *
+   * 一个大目录要读上万个 strm、再到网盘逐个目录确认，挂成一个长 POST 有两个毛病：
+   * 界面只有一个转圈、中途不能取消；反代 / Cloudflare 的空闲超时一掐整轮白跑，
+   * 后端还蒙在鼓里照样打网盘。这里连接上一直有数据，客户端一断就退订、活儿立刻停。
+   *
+   * 出错也走事件（type: "error"）而不是非 200：响应头早就发出去了，改不了状态码，
+   * 何况 Cloudflare 见到 5xx 会把响应体换成它自己的错误页。
+   */
+  fastify.post("/api/strm/verify/stream", auth, async (request, reply) => {
+    const body = parse(verifyBody, request.body);
+    const task = loadTask(body.taskId);
+    const provider = providerForTask(task);
+    const sse = openSse(reply);
+    const subscription = verify$(task, provider, body.path).subscribe({
+      next: (event) => sse.send(event),
+      error: (err: unknown) => {
+        sse.send({ type: "error", message: messageOf(err) } satisfies StrmVerifyEvent);
+        sse.close();
+      },
+      complete: () => sse.close(),
+    });
+    // 关掉弹框 / 刷新页面：退订，正在跑的校验跟着停
+    sse.signal.addEventListener("abort", () => subscription.unsubscribe(), { once: true });
   });
 }

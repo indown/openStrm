@@ -140,6 +140,42 @@ export async function searchMovie(
   });
 }
 
+/* ------------------------------- 失败分类 ------------------------------- */
+
+/**
+ * 值得再试一次的 TMDB 失败：429（一批条目一起刮削很容易撞上）、5xx，
+ * 以及压根没拿到响应的（超时、断网）。401（key 不对）和 404 换多少次都一样，别浪费配额。
+ */
+export function tmdbRetryable(err: unknown): boolean {
+  if (!axios.isAxiosError(err) || axios.isCancel(err)) return false;
+  const status = err.response?.status;
+  if (status === undefined) return true;
+  return status === 429 || status >= 500;
+}
+
+/** Retry-After 最多听到这么久；再长就不如早点记失败让人手动重刮，别把串行的刮削队列堵死 */
+const RETRY_AFTER_CAP_MS = 2 * 60_000;
+
+/**
+ * 429 带的 Retry-After 换成毫秒；没有或读不懂返回 null，由调用方按自己的退避来。
+ *
+ * 太长的**截断**而不是丢掉：丢掉的话调用方会按自己那套一两秒就重试，正好撞在人家
+ * 明说的冷却期里，几次之后条目就记成 failed 了——这正是这条链路要避免的结果。
+ * 两种合法写法都认：秒数，和 HTTP-date（注意后者自带逗号，不能当成重复头去切）。
+ */
+export function tmdbRetryAfterMs(err: unknown): number | null {
+  if (!axios.isAxiosError(err)) return null;
+  const header = err.response?.headers?.["retry-after"] as unknown;
+  const raw = (Array.isArray(header) ? header[0] : header)?.toString().trim();
+  if (!raw) return null;
+  // Node 会把重复的同名头用逗号拼起来；只有在它确实是数字打头时才按列表取第一个
+  const first = /^\d+(\.\d+)?\s*(,|$)/.test(raw) ? raw.split(",")[0].trim() : raw;
+  const sec = Number(first);
+  const ms = Number.isFinite(sec) ? sec * 1000 : Date.parse(first) - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return Math.min(Math.ceil(ms), RETRY_AFTER_CAP_MS);
+}
+
 /* ------------------------------- 详情（整理用） ------------------------------- */
 
 const MIN_INTERVAL_MS = 250;

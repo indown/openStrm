@@ -117,6 +117,25 @@ export interface StrmVerifyResult {
   note: string;
 }
 
+/**
+ * 校验的进度。校验一个大目录要读上万个 strm、再到网盘逐个目录确认，
+ * 整个过程按 SSE 推给界面（POST /api/strm/verify/stream），不再让请求干挂着。
+ */
+export interface StrmVerifyProgress {
+  /** collect = 收集本地 strm；read = 读 strm 解析出网盘路径；remote = 到网盘确认 */
+  phase: "collect" | "read" | "remote";
+  done: number;
+  /** 0 = 还不知道总数（collect 阶段） */
+  total: number;
+  message: string;
+}
+
+/** 校验流上的一条事件；done 带最终结果，error 带没能完成的原因 */
+export type StrmVerifyEvent =
+  | { type: "progress"; progress: StrmVerifyProgress }
+  | { type: "done"; result: StrmVerifyResult }
+  | { type: "error"; message: string };
+
 export interface StrmDeleteResult {
   deleted: number;
   failed: Array<{ path: string; message: string }>;

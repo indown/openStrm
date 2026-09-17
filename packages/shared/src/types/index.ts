@@ -81,5 +81,7 @@ export type {
   StrmRegenerateMode,
   StrmRegenerateResult,
   StrmVerifyResult,
+  StrmVerifyProgress,
+  StrmVerifyEvent,
   StrmDeleteResult,
 } from "./strm.js";

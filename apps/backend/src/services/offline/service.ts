@@ -20,7 +20,9 @@ import { readAppSettings } from "../../db/repositories/settings.js";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
 import { HttpError, upstreamError } from "../../lib/http-error.js";
+import { messageOf } from "../../lib/errors.js";
 import { moduleLogger } from "../../lib/logger.js";
+import { createPollingLoop } from "../../lib/polling.js";
 import { Cloud115Error, fsDirGetId, type AccountInfo } from "../cloud-115/client.js";
 import {
   MAX_URLS_PER_ADD,
@@ -490,65 +492,36 @@ export async function getOfflineDownPaths(accountName: string | undefined): Prom
 
 /* ------------------------------- 回执循环 ------------------------------- */
 
-let running = false;
-let timer: NodeJS.Timeout | null = null;
-let ticking: Promise<void> | null = null;
 let lastTickAt: number | null = null;
-let lastError: string | null = null;
+
+const loop = createPollingLoop({
+  name: "云下载回执循环",
+  log,
+  intervalMs: POLL_MS,
+  tick: tickFollowups,
+  // 待办全兑现了就收工，不白打 115 的接口；再有新任务时 startOfflineWatcher 会重新起
+  shouldContinue: hasPending,
+  doneMessage: "云下载回执已全部兑现，循环停止",
+});
 
 export function getOfflineWatcherStatus(): OfflineWatcherStatus {
   return {
-    running,
+    running: loop.running,
     pending: listFollowups().filter((f) => f.status === "pending").length,
     lastTickAt,
-    lastError,
+    lastError: loop.lastError,
   };
 }
 
 /** 有待办就起循环；已在跑或没待办都不动 */
 export function startOfflineWatcher(): void {
-  if (running || !hasPending()) return;
-  running = true;
+  if (loop.running || !hasPending()) return;
   log.info("云下载回执循环启动");
-  schedule(0);
+  loop.start();
 }
 
 export async function stopOfflineWatcher(): Promise<void> {
-  running = false;
-  if (timer) clearTimeout(timer);
-  timer = null;
-  await ticking;
-}
-
-function schedule(ms: number): void {
-  timer = setTimeout(() => {
-    timer = null;
-    void runTick();
-  }, ms);
-  timer.unref?.();
-}
-
-async function runTick(): Promise<void> {
-  if (!running) return;
-  ticking = tickFollowups()
-    .then(() => {
-      lastError = null;
-    })
-    .catch((err) => {
-      lastError = err instanceof Error ? err.message : String(err);
-      log.warn({ err }, "云下载回执循环这一轮失败");
-    })
-    .finally(() => {
-      ticking = null;
-    });
-  await ticking;
-  if (!running) return;
-  if (!hasPending()) {
-    running = false;
-    log.info("云下载回执已全部兑现，循环停止");
-    return;
-  }
-  schedule(POLL_MS);
+  await loop.stop();
 }
 
 function finish(f: OfflineFollowup, status: "done" | "failed", detail: string): void {
@@ -604,8 +577,9 @@ export async function tickFollowups(): Promise<void> {
         if (res.tasks.length === 0 || page >= res.pageCount) break;
       }
     } catch (err) {
-      // 这一轮列表拿不到（风控、断网）：什么都不改，下轮再来
-      lastError = err instanceof Error ? err.message : String(err);
+      // 这一轮列表拿不到（风控、断网）：什么都不改，下轮再来。
+      // 记在循环状态里而不是抛出去：其余账号还要接着对，整轮不算失败
+      loop.noteError(messageOf(err));
       log.warn({ err }, `读取账号 ${accountName} 的云下载列表失败，回执下轮再对`);
       continue;
     }
@@ -675,7 +649,7 @@ async function submitOpenlistCopy(f: OfflineFollowup, t: OfflineTask): Promise<v
   try {
     cfg = resolveOpenlistCopyConfig();
   } catch (err) {
-    finish(f, "failed", err instanceof Error ? err.message : String(err));
+    finish(f, "failed", messageOf(err));
     return;
   }
   const name = t.resultName || t.name;
@@ -708,7 +682,7 @@ async function submitOpenlistCopy(f: OfflineFollowup, t: OfflineTask): Promise<v
     f.detail = "已提交 OpenList 复制";
     log.info(`云下载完成：${name} → 已提交 OpenList 复制到 ${dstDir}`);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = messageOf(err);
     f.attempts += 1;
     if (f.attempts >= MAX_ATTEMPTS) finish(f, "failed", `提交 OpenList 复制失败：${msg}`);
     else f.detail = `提交 OpenList 复制失败，稍后重试（${f.attempts}/${MAX_ATTEMPTS}）：${msg}`;
@@ -726,7 +700,7 @@ async function pollOpenlistCopies(items: OfflineFollowup[]): Promise<void> {
   try {
     cfg = resolveOpenlistCopyConfig();
   } catch (err) {
-    for (const f of items) finish(f, "failed", err instanceof Error ? err.message : String(err));
+    for (const f of items) finish(f, "failed", messageOf(err));
     return;
   }
   let tasks: { undone: OpenlistTaskInfo[]; done: OpenlistTaskInfo[] };
@@ -734,7 +708,7 @@ async function pollOpenlistCopies(items: OfflineFollowup[]): Promise<void> {
     tasks = await deps.openlist.copyTasks(cfg);
   } catch (err) {
     // 这一轮任务列表拿不到（OpenList 重启中、断网）：什么都不改，下轮再来
-    lastError = err instanceof Error ? err.message : String(err);
+    loop.noteError(messageOf(err));
     log.warn({ err }, "读取 OpenList 复制任务列表失败，回执下轮再对");
     return;
   }
@@ -806,5 +780,5 @@ export async function __test_resetOffline(): Promise<void> {
   await stopOfflineWatcher();
   writeKv(FOLLOWUP_KEY, []);
   lastTickAt = null;
-  lastError = null;
+  loop.noteError(null);
 }
