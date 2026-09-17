@@ -20,9 +20,10 @@ function useActiveSection(sections: Section[]): string {
     const io = new IntersectionObserver(
       (entries) => {
         for (const e of entries) visible.set(e.target.id, e.isIntersecting);
-        // 按页面顺序取第一个还在带子里的；一个都不在就保持原样（滚到最底部时会这样）
-        const first = sections.find((s) => visible.get(s.id));
-        if (first) setActive(first.id);
+        // 带子里常常同时有上一节的尾巴和下一节的开头，取**最后**一个：
+        // 那是标题刚过顶栏、正在读的那一节；取第一个的话会一直慢半拍指着上一节
+        const current = [...sections].reverse().find((s) => visible.get(s.id));
+        if (current) setActive(current.id);
       },
       { rootMargin: "-72px 0px -70% 0px" },
     );

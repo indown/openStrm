@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import type { TaskExecutionSummary } from "@openstrm/shared";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -666,7 +666,7 @@ function HomeContent() {
           <AlertDialogFooter className="gap-2">
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
-              className={buttonVariants({ variant: "destructive" })}
+              variant="destructive"
               onClick={(e) => {
                 e.preventDefault();
                 if (deleteTarget) void deleteTask(deleteTarget);
@@ -694,7 +694,7 @@ function HomeContent() {
           <AlertDialogFooter className="gap-2">
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
-              className={buttonVariants({ variant: "destructive" })}
+              variant="destructive"
               onClick={(e) => {
                 e.preventDefault();
                 if (clearTarget) void clearDirectory(clearTarget);

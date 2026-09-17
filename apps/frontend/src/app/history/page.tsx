@@ -15,7 +15,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { buttonVariants } from "@/components/ui/button";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge, TONE_CLASS } from "@/components/status-badge";
 import { EmptyState } from "@/components/empty-state";
@@ -154,7 +153,12 @@ function TaskHistoryContent() {
               {refreshing ? "刷新中..." : "刷新"}
             </Button>
             {!taskId && (
-              <Button onClick={() => setClearDialogOpen(true)} variant="outline" disabled={history.length === 0}>
+              <Button
+                onClick={() => setClearDialogOpen(true)}
+                variant="ghost"
+                className="text-destructive hover:text-destructive"
+                disabled={history.length === 0}
+              >
                 <Trash className="size-4" />
                 删除所有历史
               </Button>
@@ -301,7 +305,7 @@ function TaskHistoryContent() {
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
-              className={buttonVariants({ variant: "destructive" })}
+              variant="destructive"
               onClick={() => {
                 if (deleteTarget) void deleteHistory(deleteTarget.id);
               }}
@@ -322,7 +326,7 @@ function TaskHistoryContent() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction className={buttonVariants({ variant: "destructive" })} onClick={() => void deleteAllHistory()}>
+            <AlertDialogAction variant="destructive" onClick={() => void deleteAllHistory()}>
               全部删除
             </AlertDialogAction>
           </AlertDialogFooter>

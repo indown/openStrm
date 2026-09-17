@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { TagInput } from "@/components/ui/tag-input";
+import { SecretInput } from "@/components/ui/secret-input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { SwitchRow } from "@/components/switch-row";
@@ -93,18 +94,21 @@ export default function SettingsPage() {
   const [baseline, setBaseline] = useState<Settings | null>(null);
   const modKey = useModKey();
 
+  /** 读一次设置并把它当作新的基准。保存成功后也走这里：密钥的掩码只有服务端给得出来 */
+  const adopt = useCallback((settings: Settings) => {
+    setData(settings);
+    const strmExt = settings.strmExtensions ?? [];
+    const downloadExt = settings.downloadExtensions ?? [];
+    const mountPath = settings.mediaMountPath ?? [];
+    setStrmExtensions(strmExt);
+    setDownloadExtensions(downloadExt);
+    setMediaMountPath(mountPath);
+    setBaseline(buildPayload(settings, strmExt, downloadExt, mountPath));
+  }, []);
+
   useEffect(() => {
     api.settings.get()
-      .then((settings) => {
-        setData(settings);
-        const strmExt = settings.strmExtensions ?? [];
-        const downloadExt = settings.downloadExtensions ?? [];
-        const mountPath = settings.mediaMountPath ?? [];
-        setStrmExtensions(strmExt);
-        setDownloadExtensions(downloadExt);
-        setMediaMountPath(mountPath);
-        setBaseline(buildPayload(settings, strmExt, downloadExt, mountPath));
-      })
+      .then(adopt)
       .catch((err) => toast.error(apiErrorMessage(err, "加载设置失败")))
       .finally(() => setLoading(false));
     // 「复制到 OpenList」里的账号下拉；拉不到就只剩空提示，不拦别的设置
@@ -112,7 +116,7 @@ export default function SettingsPage() {
       .list()
       .then((rows) => setOpenlistAccounts(rows.filter((a) => a.accountType === "openlist").map((a) => a.name)))
       .catch(() => {});
-  }, []);
+  }, [adopt]);
 
   const payload = useMemo(
     () => buildPayload(data, strmExtensions, downloadExtensions, mediaMountPath),
@@ -124,8 +128,14 @@ export default function SettingsPage() {
     setSaving(true);
     try {
       await api.settings.patch(payload);
-      setData((prev) => ({ ...prev, ...payload }));
-      setBaseline(payload);
+      // 重读一次而不是拿刚发出去的当基准：密钥存进去之后服务端只回掩码，
+      // 拿本地那份明文当基准的话，输入框会把刚打的密钥当成"已保存的掩码"明文摆出来
+      try {
+        adopt(await api.settings.get());
+      } catch {
+        setData((prev) => ({ ...prev, ...payload }));
+        setBaseline(payload);
+      }
       toast.success("保存成功");
     } catch (error: unknown) {
       if (error && typeof error === 'object' && 'response' in error) {
@@ -144,7 +154,7 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [payload]);
+  }, [payload, adopt]);
 
   /** 放弃：把三个文本框和 data 都退回基准那一份 */
   const onRevert = () => {
@@ -174,6 +184,14 @@ export default function SettingsPage() {
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [changes]);
+
+  // 带 #hash 进来时（侧栏的更新角标、分区导航的链接）得等这页真渲染出来才跳得动：
+  // 加载期间这里是骨架屏，浏览器自己那次跳转找不到目标，于是停在顶部
+  useEffect(() => {
+    if (loading) return;
+    const id = decodeURIComponent(window.location.hash.slice(1));
+    if (id) document.getElementById(id)?.scrollIntoView();
+  }, [loading]);
 
   const onBackup = async () => {
     setBackingUp(true);
@@ -343,17 +361,13 @@ export default function SettingsPage() {
             </div>
             <div className="space-y-2">
               <Label>Emby API Key</Label>
-              <Input
+              <SecretInput
                 value={data.emby?.apiKey || ""}
-                onChange={(e) =>
-                  setData({
-                    ...data,
-                    emby: { ...(data.emby || {}), apiKey: e.target.value },
-                  })
-                }
+                masked={baseline?.emby?.apiKey}
+                onChange={(v) => setData({ ...data, emby: { ...(data.emby || {}), apiKey: v } })}
                 placeholder="xxxxxxxxxxxxxxxx"
               />
-              <p className="text-xs text-muted-foreground">已保存的密钥只显示末 4 位；改动即替换，清空即删除</p>
+              <p className="text-xs text-muted-foreground">改动即替换，清空即删除</p>
             </div>
           </div>
           <SwitchRow
@@ -377,17 +391,13 @@ export default function SettingsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>TMDB API Key (v4 Bearer Token)</Label>
-              <Input
+              <SecretInput
                 value={data.tmdb?.apiKey || ""}
-                onChange={(e) =>
-                  setData({
-                    ...data,
-                    tmdb: { ...(data.tmdb || {}), apiKey: e.target.value },
-                  })
-                }
+                masked={baseline?.tmdb?.apiKey}
+                onChange={(v) => setData({ ...data, tmdb: { ...(data.tmdb || {}), apiKey: v } })}
                 placeholder="eyJhbGciOiJIUzI1NiJ9..."
               />
-              <p className="text-xs text-muted-foreground">已保存的密钥只显示末 4 位；改动即替换，清空即删除</p>
+              <p className="text-xs text-muted-foreground">改动即替换，清空即删除</p>
             </div>
             <div className="space-y-2">
               <Label>默认语言</Label>
@@ -413,17 +423,13 @@ export default function SettingsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>HDHive API Key (X-API-Key)</Label>
-              <Input
+              <SecretInput
                 value={data.hdhive?.apiKey || ""}
-                onChange={(e) =>
-                  setData({
-                    ...data,
-                    hdhive: { ...(data.hdhive || {}), apiKey: e.target.value },
-                  })
-                }
+                masked={baseline?.hdhive?.apiKey}
+                onChange={(v) => setData({ ...data, hdhive: { ...(data.hdhive || {}), apiKey: v } })}
                 placeholder="个人 API Key 或应用 Secret"
               />
-              <p className="text-xs text-muted-foreground">已保存的密钥只显示末 4 位；改动即替换，清空即删除</p>
+              <p className="text-xs text-muted-foreground">改动即替换，清空即删除</p>
             </div>
             <div className="space-y-2">
               <Label>Base URL (可选)</Label>

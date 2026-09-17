@@ -27,6 +27,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { SecretInput } from "@/components/ui/secret-input";
 import {
   Select,
   SelectContent,
@@ -211,7 +212,14 @@ export function AddAccountDialog({ account, trigger, onSuccess, open: openProp, 
                     <FormItem>
                       <FormLabel>Cookie</FormLabel>
                       <FormControl>
-                        <Input placeholder="输入 115 网盘的 Cookie" {...field} />
+                        <SecretInput
+                          placeholder="输入 115 网盘的 Cookie"
+                          value={field.value ?? ""}
+                          onChange={field.onChange}
+                          onBlur={field.onBlur}
+                          name={field.name}
+                          masked={account?.cookie}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -236,7 +244,14 @@ export function AddAccountDialog({ account, trigger, onSuccess, open: openProp, 
                     <FormItem>
                       <FormLabel>Cookie</FormLabel>
                       <FormControl>
-                        <Input placeholder="输入夸克网盘的 Cookie" {...field} />
+                        <SecretInput
+                          placeholder="输入夸克网盘的 Cookie"
+                          value={field.value ?? ""}
+                          onChange={field.onChange}
+                          onBlur={field.onBlur}
+                          name={field.name}
+                          masked={account?.cookie}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -275,7 +290,14 @@ export function AddAccountDialog({ account, trigger, onSuccess, open: openProp, 
                     <FormItem>
                       <FormLabel>密码</FormLabel>
                       <FormControl>
-                        <Input type="password" placeholder="输入密码" {...field} />
+                        <SecretInput
+                          placeholder="输入密码"
+                          value={field.value ?? ""}
+                          onChange={field.onChange}
+                          onBlur={field.onBlur}
+                          name={field.name}
+                          masked={account?.password}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>

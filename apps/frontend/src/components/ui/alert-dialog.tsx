@@ -5,6 +5,7 @@ import * as AlertDialogPrimitive from "@radix-ui/react-alert-dialog"
 
 import { cn } from "@/lib/utils"
 import { buttonVariants } from "@/components/ui/button"
+import type { VariantProps } from "class-variance-authority"
 // 和普通弹框共用三档宽度；确认框默认是最窄的那档
 import { DIALOG_SIZE, type DialogSize } from "@/components/ui/dialog"
 
@@ -124,11 +125,15 @@ function AlertDialogDescription({
 
 function AlertDialogAction({
   className,
+  variant,
   ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Action>) {
+}: React.ComponentProps<typeof AlertDialogPrimitive.Action> &
+  Pick<VariantProps<typeof buttonVariants>, "variant">) {
+  // 确认框的主按钮多半是不可逆操作。以前每个调用点自己拼
+  // className={buttonVariants({ variant: "destructive" })}，七处抄了七遍
   return (
     <AlertDialogPrimitive.Action
-      className={cn(buttonVariants(), className)}
+      className={cn(buttonVariants({ variant }), className)}
       {...props}
     />
   )

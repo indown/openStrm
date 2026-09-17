@@ -1,7 +1,7 @@
 "use client";
 import { DataTable } from "@/components/data-table";
 import { AddAccountDialog } from "./components/AddAccountDialog";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
@@ -265,7 +265,7 @@ export default function AccountPage() {
           <AlertDialogFooter className="gap-2">
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
-              className={buttonVariants({ variant: "destructive" })}
+              variant="destructive"
               onClick={() => {
                 if (deleteTarget) void handleDelete(deleteTarget.name);
               }}

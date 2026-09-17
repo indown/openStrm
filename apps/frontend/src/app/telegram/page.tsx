@@ -8,7 +8,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { FormSkeleton } from "@/components/loading";
 import type { TelegramNotifySettings } from "@openstrm/shared";
 import { Badge } from "@/components/ui/badge";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { SwitchRow } from "@/components/switch-row";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
@@ -351,7 +351,7 @@ export default function TelegramPage() {
             <AlertDialogFooter>
               <AlertDialogCancel>取消</AlertDialogCancel>
               <AlertDialogAction
-                className={buttonVariants({ variant: "destructive" })}
+                variant="destructive"
                 onClick={() => {
                   setRemoveOpen(false);
                   void run("remove", () => api.telegram.remove(), "已清除");

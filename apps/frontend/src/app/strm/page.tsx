@@ -23,7 +23,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -715,7 +715,7 @@ function DeleteStrmDialog({
         <AlertDialogFooter className="gap-2">
           <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
           <AlertDialogAction
-            className={buttonVariants({ variant: "destructive" })}
+            variant="destructive"
             onClick={(e) => {
               e.preventDefault();
               onConfirm();
