@@ -86,7 +86,9 @@
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
+  /* 主操作的实心色。浅色下不能直接用 --brand：0.6 的亮度配白字只有 3.53:1，AA 正文要 4.5，
+     压到 0.52 是 4.83:1。改 --brand 的色相时这里要一起改 */
+  --primary: oklch(0.52 0.13 220);
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.97 0.005 245);
   --secondary-foreground: oklch(0.205 0 0);
@@ -108,7 +110,7 @@
   --sidebar-accent: oklch(0.97 0.005 245);
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.92 0.006 245);
-  /* 品牌色取 logo 里那个 S 的青蓝。只做点缀：侧栏选中态、链接、进度条、焦点环；主按钮仍是黑白 */
+  /* 品牌色取 logo 里那个 S 的青蓝：侧栏选中态、链接、进度条、焦点环，以及实心的主操作（见 --primary） */
   --brand: oklch(0.6 0.13 220);
   --brand-foreground: oklch(0.985 0 0);
   /* 状态语义色，StatusBadge / 进度条用。页面里不要再手写 bg-green-100 这类调色板色，暗色下会花 */
@@ -128,8 +130,9 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0.014 250);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  /* 暗色下 --brand 已经够亮，配近黑的字是 9.33:1，直接用 */
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-foreground);
   --secondary: oklch(0.27 0.014 250);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.27 0.014 250);
