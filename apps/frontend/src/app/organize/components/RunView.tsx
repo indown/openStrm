@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Ban, ChevronDown, ChevronRight, Film, Loader2, Play, RefreshCw, RotateCw, Search, Square, Trash2, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 import type { OrganizeConflictChoice, OrganizeConflictResolution, OrganizeItem, OrganizeRun, OrganizeRunDetail, OrganizeRunStatus, OrganizeUnit, OrganizeUnitPatch } from "@openstrm/shared";
@@ -15,6 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { PosterBackdrop } from "@/components/poster-backdrop";
 import { StatusBadge } from "@/components/status-badge";
 import { ProgressBar } from "@/components/progress-bar";
 import { EmptyState } from "@/components/empty-state";
@@ -32,6 +33,9 @@ import { UnitList } from "./UnitList";
 import { POLL_MS, plannedText, toastRunError } from "./helpers";
 
 /** 执行 / 撤销中每隔几次 summary 拉一次完整详情：单元卡上的数字、展开着的文件表跟着变 */
+/** 背景里最多铺这么多张海报，一屏也放不下更多 */
+const BACKDROP_TILES = 24;
+
 const FULL_EVERY = 5;
 
 export function RunView({
@@ -122,6 +126,19 @@ export function RunView({
   }, [detail, onLoaded]);
 
   const status = detail?.run.status;
+
+  /** 铺在后面的海报：这次识别出来的，按作品去重。要在早返回之前算，hook 的顺序不能变 */
+  const backdropPosters = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          (detail?.units ?? [])
+            .filter((u) => u.match?.posterUrl)
+            .map((u) => [u.match?.tmdbId ?? u.key, { key: u.key, url: u.match?.posterUrl ?? "" }] as const),
+        ).values(),
+      ).slice(0, BACKDROP_TILES),
+    [detail],
+  );
   useEffect(() => {
     if (!status || !isBusyStatus(status)) return;
     let tick = 0;
@@ -295,6 +312,8 @@ export function RunView({
 
   return (
     <div className="space-y-4">
+      {/* 这次识别出来的海报铺在后面。执行 / 撤销一开始就淡出——那时候该动的是进度条 */}
+      <PosterBackdrop mode="stream" posters={backdropPosters} muted={isBusyStatus(run.status)} />
       <section className="space-y-3 rounded-xl border bg-card p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">

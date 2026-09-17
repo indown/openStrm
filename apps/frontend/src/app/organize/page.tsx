@@ -168,7 +168,9 @@ function OrganizeContent() {
   };
 
   return (
-    <div className="space-y-6">
+    // relative z-0：RunView 里的海报背景挂在这层里面（自己是 -z-10）。用 z-0 不用 z-10，
+    // 这样侧栏（fixed z-10）和顶栏（sticky z-20）还盖在它上面
+    <div className="relative z-0 space-y-6">
       <PageHeader
         icon={FolderTree}
         title="整理"

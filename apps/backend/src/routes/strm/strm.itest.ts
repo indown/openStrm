@@ -10,6 +10,9 @@ import { after, before, test } from "node:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import type {
   AccountInfo,
+  AppSettings,
+  OrganizeUnit,
+  StrmPosterResult,
   StrmDeleteResult,
   StrmFileInfo,
   StrmListResult,
@@ -28,6 +31,8 @@ import { DEFAULT_AUTH } from "../../db/defaults.js";
 import { writeAuthPassword } from "../../db/repositories/auth.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
+import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
+import { deleteRun, insertRun, replaceUnits, writeTmdbCache } from "../../db/repositories/organize.js";
 import { DATA_DIR } from "../../paths.js";
 import { releaseTaskStart, reserveTaskStart } from "../../services/task/registry.js";
 import { setDriveProviderFactory } from "../../services/drive/registry.js";
@@ -37,30 +42,43 @@ import type { DriveEntry } from "../../services/drive/types.js";
 
 let app: FastifyInstance;
 let auth: Record<string, string>;
-let baseline: { tasks: TaskDefinition[]; accounts: AccountInfo[] };
+let baseline: { tasks: TaskDefinition[]; accounts: AccountInfo[]; settings: AppSettings };
 
 const acc115: AccountInfo = { accountType: "115", name: "acc", cookie: "c" };
 const accOl: AccountInfo = { accountType: "openlist", name: "ol", account: "u", password: "p", url: "http://x" };
 const t115: TaskDefinition = { id: "r-main", account: "acc", accountType: "115", originPath: "tv", targetPath: "strm-itest/tv", strmPrefix: "/mnt/pan" };
 const tOl: TaskDefinition = { id: "r-ol", account: "ol", accountType: "openlist", originPath: "x", targetPath: "strm-itest/ol", strmPrefix: "/mnt/ol" };
+/** 海报用例自己的一棵树：混在 r-main 里会改变前面那些用例的条目数 */
+const tPoster: TaskDefinition = { id: "r-poster", account: "acc", accountType: "115", originPath: "posters", targetPath: "strm-itest/poster", strmPrefix: "/mnt/pan" };
 
 const ROOT = path.join(DATA_DIR, "strm-itest", "tv");
+const POSTER_ROOT = path.join(DATA_DIR, "strm-itest", "poster");
 const drives = new Map<string, FakeDrive>();
-const write = (rel: string, content: string) => {
-  const p = path.join(ROOT, ...rel.split("/"));
+const writeUnder = (root: string, rel: string, content: string) => {
+  const p = path.join(root, ...rel.split("/"));
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, content);
 };
+const write = (rel: string, content: string) => writeUnder(ROOT, rel, content);
+const writePoster = (rel: string, content: string) => writeUnder(POSTER_ROOT, rel, content);
 
 before(async () => {
-  baseline = { tasks: listTasks(), accounts: listAccounts() };
-  replaceTasks([t115, tOl]);
+  baseline = { tasks: listTasks(), accounts: listAccounts(), settings: readAppSettings() };
+  // 海报那几级回退不许联网：apiKey 空的话缓存没命中就直接放弃
+  replaceAppSettings({ ...baseline.settings, tmdb: { apiKey: "", language: "zh-CN" } });
+  replaceTasks([t115, tOl, tPoster]);
   replaceAccounts([acc115, accOl]);
   await writeAuthPassword("strm-itest-pw");
   fs.rmSync(path.join(DATA_DIR, "strm-itest"), { recursive: true, force: true });
   write("Show/Season 1/ep1.strm", "/mnt/pan/tv/Show/Season 1/ep1.mkv");
   write("Show/Season 1/ep2.strm", "/old/tv/Show/Season 1/ep2.mkv");
   write("Show/x.part", "");
+  // 海报用的四个目录：本地图片 / 目录名里的 id 标签 / 只有整理记录认得 / 什么线索都没有
+  writePoster("Local Show/poster.jpg", "fake-jpeg-bytes");
+  writePoster("Local Show/Season 1/ep1.strm", "/mnt/pan/posters/Local Show/Season 1/ep1.mkv");
+  writePoster("Tagged Show (2024) [tmdbid=77]/Season 1/ep1.strm", "/mnt/pan/posters/Tagged Show (2024) [tmdbid=77]/Season 1/ep1.mkv");
+  writePoster("Organized Show/Season 1/ep1.strm", "/mnt/pan/posters/Organized Show/Season 1/ep1.mkv");
+  writePoster("Plain Show/ep1.strm", "/mnt/pan/posters/Plain Show/ep1.mkv");
 
   // 115 账号的网盘：tv/Show/Season 1 下有 ep1 和 ep3；OpenList 账号的网盘是空的
   const d115 = new FakeDrive("115", acc115);
@@ -83,6 +101,7 @@ after(async () => {
   setDriveProviderFactory(null);
   replaceTasks(baseline.tasks);
   replaceAccounts(baseline.accounts);
+  replaceAppSettings(baseline.settings);
   fs.rmSync(path.join(DATA_DIR, "strm-itest"), { recursive: true, force: true });
   await writeAuthPassword(DEFAULT_AUTH.password);
 });
@@ -298,4 +317,82 @@ test("流式校验走真的 HTTP：进度和结论都推得出去", async () => 
   assert.ok(events.length >= 2, `至少该有进度和结论两条，实际 ${events.length} 条`);
   assert.equal(events[0]?.type, "progress");
   assert.equal(events.at(-1)?.type, "done");
+});
+
+test("海报：本地图片 / 目录名 id 标签 / 整理记录三级都能拿到", async () => {
+  writeTmdbCache("details:tv:77:zh-CN", { posterUrl: "https://image.tmdb.org/t/p/w500/tag.jpg", title: "带标签的剧", year: "2024" });
+  const unit: OrganizeUnit = {
+    runId: "run-poster",
+    key: "u1",
+    rootPath: "Organized Show",
+    rawName: "Organized Show",
+    parsedTitle: "Organized Show",
+    parsedYear: "",
+    match: {
+      mediaType: "tv",
+      tmdbId: 99,
+      title: "整理过的剧",
+      originalTitle: "Organized Show",
+      year: "2023",
+      posterUrl: "https://image.tmdb.org/t/p/w500/run.jpg",
+      confidence: "high",
+      reason: "测试",
+    },
+    seasonOverride: null,
+    episodeOffset: 0,
+    dstRoot: "Organized Show",
+    selected: true,
+    remember: false,
+    fileCount: 1,
+    videoCount: 1,
+    referencedBy: 0,
+    notes: [],
+    excluded: [],
+    resolutions: {},
+  };
+  insertRun({ id: "run-poster", taskId: "r-poster", accountName: "acc", scopePath: "", scopePaths: [], mode: "manual", trigger: "manual" });
+  replaceUnits("run-poster", [unit]);
+  try {
+    const res = await post("/api/strm/posters", {
+      taskId: "r-poster",
+      paths: ["Local Show", "Tagged Show (2024) [tmdbid=77]", "Organized Show", "Plain Show"],
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    const { posters } = res.json<StrmPosterResult>();
+
+    assert.deepEqual(posters["Local Show"], { source: "local", url: "Local Show/poster.jpg" });
+    assert.equal(posters["Tagged Show (2024) [tmdbid=77]"]?.source, "tmdb");
+    assert.equal(posters["Tagged Show (2024) [tmdbid=77]"]?.url, "https://image.tmdb.org/t/p/w500/tag.jpg");
+    assert.equal(posters["Organized Show"]?.source, "run");
+    assert.equal(posters["Organized Show"]?.url, "https://image.tmdb.org/t/p/w500/run.jpg");
+    assert.equal(posters["Plain Show"], undefined, "什么线索都没有的目录不该出现在结果里");
+  } finally {
+    deleteRun("run-poster");
+  }
+});
+
+test("海报接口的入参和越界", async () => {
+  assert.equal((await app.inject({ method: "POST", url: "/api/strm/posters", payload: { taskId: "r-poster", paths: ["x"] } })).statusCode, 401);
+  assert.equal((await post("/api/strm/posters", { taskId: "r-poster", paths: [] })).statusCode, 400, "paths 空");
+  assert.equal((await post("/api/strm/posters", { taskId: "nope", paths: ["x"] })).statusCode, 404);
+  // 越界的路径不报错，只是这个目录没海报——背景图不该把整页拖挂
+  assert.deepEqual((await post("/api/strm/posters", { taskId: "r-poster", paths: ["../../etc"] })).json<StrmPosterResult>().posters, {});
+});
+
+test("本地图片：带上 Content-Type 和 ETag，只放行图片", async () => {
+  const url = `/api/strm/image?${q({ taskId: "r-poster", path: "Local Show/poster.jpg" })}`;
+  const res = await get(url);
+  assert.equal(res.statusCode, 200, res.body);
+  assert.equal(res.headers["content-type"], "image/jpeg");
+  assert.equal(res.body, "fake-jpeg-bytes");
+  const etag = String(res.headers.etag);
+  assert.ok(etag, "要给 ETag");
+
+  const again = await app.inject({ method: "GET", url, headers: { ...auth, "if-none-match": etag } });
+  assert.equal(again.statusCode, 304, "没变就回 304");
+
+  assert.equal((await get(`/api/strm/image?${q({ taskId: "r-main", path: "Show/Season 1/ep1.strm" })}`)).statusCode, 400, "不是图片");
+  assert.equal((await get(`/api/strm/image?${q({ taskId: "r-poster", path: "Local Show/nope.jpg" })}`)).statusCode, 404);
+  assert.equal((await get(`/api/strm/image?${q({ taskId: "r-poster", path: "../../secret.png" })}`)).statusCode, 400, "越界");
+  assert.equal((await app.inject({ method: "GET", url })).statusCode, 401);
 });

@@ -220,6 +220,31 @@
     mask-image: radial-gradient(ellipse 65% 65% at 50% 50%, #000 25%, transparent 100%);
   }
 
+  /* strm / 整理页的海报背景（components/poster-backdrop.tsx）：一面 3D 倾斜的海报墙。
+     压暗压糊到只剩色块——页面上最饱和的东西必须还是状态徽章，不能被一张电影海报压过去。
+     透视和遮罩放这里，几何（倾角、列深、速度）在组件里，那些要跟着视口算 */
+  .poster-backdrop {
+    --pb-opacity: 0.22;
+    /* 单作品是一张大图糊开的一片色，没有瓦片的边缘做对比，同样的分量要给得更足 */
+    --pb-single-opacity: 0.38;
+    --pb-single-blur: 16px;
+    /* 透视收近，收敛更急、纵深更明显（和参考实现同一档）。
+       墙的尺寸有上限、整面还往后推了一段，所以近处的列不会逼到相机跟前被放大到爆 */
+    perspective: 1200px;
+    /* 视点往近端（右上）挪一点：远端在屏幕上摊得更开，左上角那个最远的角才不会露出墙外的底色 */
+    perspective-origin: 60% 42%;
+    /* 铺满大半个屏，四周渐隐；热点偏右上，让开左边的标题和说明文字 */
+    --pb-mask: radial-gradient(ellipse 105% 105% at 60% 8%, #000 28%, transparent 92%);
+    -webkit-mask-image: var(--pb-mask);
+    mask-image: var(--pb-mask);
+  }
+  :root:not(.dark) .poster-backdrop {
+    /* 浅色底上彩色海报更跳：同样的分量要更淡、更糊 */
+    --pb-opacity: 0.14;
+    --pb-single-opacity: 0.16;
+    --pb-single-blur: 20px;
+  }
+
   /* ---------- 「正在跑」的动态。这一组全部在文件末尾的 reduced-motion 块里统一静音 ---------- */
 
   /* 进度条上循环扫过的一道高光。只有任务真的在跑时才加，停了就是一条静态的条 */

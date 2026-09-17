@@ -84,4 +84,7 @@ export type {
   StrmVerifyProgress,
   StrmVerifyEvent,
   StrmDeleteResult,
+  StrmPosterSource,
+  StrmPoster,
+  StrmPosterResult,
 } from "./strm.js";

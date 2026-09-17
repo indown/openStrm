@@ -1,3 +1,4 @@
+import { createReadStream } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { StrmVerifyEvent, TaskDefinition } from "@openstrm/shared";
@@ -8,6 +9,7 @@ import { openSse } from "../../lib/sse.js";
 import { parse } from "../../lib/validate.js";
 import { providerForTask } from "../../services/drive/registry.js";
 import { deletePaths, listDir, readStrm, regenerate, rewrite, scan, search, STRM_LIMITS, verify, verify$ } from "../../services/strm/manage.js";
+import { POSTER_LIMITS, resolvePosters, statImage } from "../../services/strm/poster.js";
 
 /**
  * strm 管理：按同步任务浏览 / 检查 / 删除 / 修正 / 重建本地 strm。
@@ -29,6 +31,10 @@ const scanBody = z.object({ taskId, path: optionalPath });
 const rewriteBody = z.object({ taskId, path: optionalPath, dryRun: z.boolean().default(false) });
 const regenerateBody = z.object({ taskId, path: requiredPath, mode: z.enum(["fill", "rebuild"]).default("fill") });
 const verifyBody = z.object({ taskId, path: optionalPath });
+const postersBody = z.object({
+  taskId,
+  paths: z.array(z.string().max(4096)).min(1, "paths is required").max(POSTER_LIMITS.PATHS),
+});
 
 function loadTask(id: string): TaskDefinition {
   const task = getTask(id);
@@ -47,6 +53,26 @@ export default async function (fastify: FastifyInstance) {
   fastify.get("/api/strm/file", auth, async (request) => {
     const q = parse(fileQuery, request.query, "query");
     return readStrm(loadTask(q.taskId), q.path);
+  });
+
+  /** 背景海报：一批目录各拿一张，拿不到的不在结果里。纯装饰，任何一步失败都只是没有海报 */
+  fastify.post("/api/strm/posters", auth, async (request) => {
+    const body = parse(postersBody, request.body);
+    return { posters: await resolvePosters(loadTask(body.taskId), body.paths) };
+  });
+
+  /** 本地图片（海报用）。<img> 带不了 Authorization 头，前端是取 blob 再显示的 */
+  fastify.get("/api/strm/image", auth, async (request, reply) => {
+    const q = parse(fileQuery, request.query, "query");
+    const img = await statImage(loadTask(q.taskId), q.path);
+    const etag = `"${img.size.toString(36)}-${Math.floor(img.mtimeMs).toString(36)}"`;
+    if (request.headers["if-none-match"] === etag) return reply.code(304).send();
+    return reply
+      .header("Content-Type", img.contentType)
+      .header("Content-Length", img.size)
+      .header("Cache-Control", "private, max-age=86400")
+      .header("ETag", etag)
+      .send(createReadStream(img.full));
   });
 
   fastify.get("/api/strm/search", auth, async (request) => {

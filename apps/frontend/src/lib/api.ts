@@ -30,6 +30,7 @@ import type {
   StrmDeleteResult,
   StrmFileInfo,
   StrmListResult,
+  StrmPosterResult,
   StrmRegenerateMode,
   StrmRegenerateResult,
   StrmRewriteResult,
@@ -614,6 +615,12 @@ export const api = {
       data(axiosInstance.post<StrmRegenerateResult>("/api/strm/regenerate", { taskId, path, mode }, { timeout: 330_000 })),
     rewrite: (taskId: string, path: string, dryRun: boolean) =>
       data(axiosInstance.post<StrmRewriteResult>("/api/strm/rewrite", { taskId, path, dryRun }, { timeout: 120_000 })),
+    /** 背景海报：一批目录各拿一张，拿不到的不在结果里 */
+    posters: (taskId: string, paths: string[]) =>
+      data(axiosInstance.post<StrmPosterResult>("/api/strm/posters", { taskId, paths })),
+    /** 本地图片。<img> 带不了 Authorization 头，所以取 blob 再用 object URL 显示 */
+    image: (taskId: string, path: string) =>
+      data(axiosInstance.get<Blob>("/api/strm/image", { params: { taskId, path }, responseType: "blob" })),
   },
 
   directory: {

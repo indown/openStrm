@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ChevronDown,
@@ -48,6 +48,8 @@ import {
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { EmptyState } from "@/components/empty-state";
+import { PosterBackdrop } from "@/components/poster-backdrop";
+import { useDirPosters } from "@/hooks/use-dir-posters";
 import { Spinner, TableSkeleton } from "@/components/loading";
 import { fmtTime, formatSize } from "@/lib/format";
 import { KIND_META, parentOf } from "@/lib/strm";
@@ -59,6 +61,9 @@ import { RegenerateDialog } from "./components/RegenerateDialog";
 import { RewriteDialog } from "./components/RewriteDialog";
 
 const DESCRIPTION = "浏览任务生成的本地 strm 目录，体检、校验、修正或重新生成";
+
+/** 目录条目多过这个数就不铺海报背景：几千行的表格滚起来，背景那层的合成开销不划算 */
+const BACKDROP_MAX_ENTRIES = 300;
 
 /** 从下拉菜单里打开确认弹框要等菜单先关掉，否则菜单还回焦点时会把弹框顶掉 */
 const afterMenuClosed = (fn: () => void) => setTimeout(fn, 0);
@@ -124,6 +129,27 @@ function StrmContent() {
 
   const task = b.task;
   const syncing = task?.status === "processing";
+
+  /* ---- 海报背景。纯装饰：任务在跑或在搜索时淡出，把「在动」让给进度条 ---- */
+  const dirNames = useMemo(() => b.entries.filter((e) => e.isDir).map((e) => e.name), [b.entries]);
+  const backdrop = useDirPosters({
+    taskId: b.taskId,
+    path: b.path,
+    dirs: dirNames,
+    enabled: Boolean(b.taskId) && b.entries.length <= BACKDROP_MAX_ENTRIES,
+  });
+  const recognized = backdrop.mode === "stream" ? backdrop.posters.length : 0;
+  const unrecognized = backdrop.mode === "stream" ? Math.max(0, dirNames.length - recognized) : 0;
+  const fileCounts = useMemo(() => {
+    let strm = 0;
+    let other = 0;
+    for (const e of b.entries) {
+      if (e.isDir) continue;
+      if (e.kind === "strm") strm++;
+      else other++;
+    }
+    return { strm, other };
+  }, [b.entries]);
   const tasksReady = b.tasks !== null;
   const q = b.query.trim();
 
@@ -229,7 +255,8 @@ function StrmContent() {
             <StrmCard key={row.path} {...rowProps(row)} />
           ))}
         </div>
-        <div className="hidden overflow-hidden rounded-xl border bg-card md:block">
+        {/* 半透明 + 毛玻璃：海报墙要从表格后面透出来，又不能影响文件名的可读性 */}
+        <div className="hidden overflow-hidden rounded-xl border bg-card/60 backdrop-blur-sm md:block">
           <Table>
             <TableHeader>
               <TableRow>
@@ -255,7 +282,11 @@ function StrmContent() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="relative z-0 space-y-6">
+      {/* 海报背景。挂在这层 relative z-0 里面、自己是 -z-10：
+          既在内容列的 bg-muted/50 之上（不会被那层底色盖掉），又在面板和文字之下；
+          根节点是 z-0 而不是 z-10，是为了让侧栏（fixed z-10）和顶栏（sticky z-20）盖在它上面 */}
+      <PosterBackdrop mode={backdrop.mode} posters={backdrop.posters} muted={syncing || b.mode === "search"} />
       <PageHeader
         icon={Files}
         title="strm 管理"
@@ -307,6 +338,27 @@ function StrmContent() {
               <StatusBadge tone="info" pulse>
                 同步中
               </StatusBadge>
+            )}
+            {/* 这一行是海报背景的「说明文字」：背景只给气氛，认出了多少、还剩几个没认出来在这里说清楚 */}
+            {b.mode === "browse" && dirNames.length > 0 && recognized > 0 && (
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {dirNames.length} 个目录 · {recognized} 已识别
+              </span>
+            )}
+            {b.mode === "browse" && recognized > 0 && unrecognized > 0 && (
+              <Link
+                href={`/organize?${new URLSearchParams({ task: b.taskId, ...(b.path ? { path: b.path } : {}) })}`}
+                title={`去整理 ${b.path ? `/${b.path}` : "这个任务"}`}
+              >
+                <StatusBadge tone="warning" className="tabular-nums hover:opacity-80">
+                  {unrecognized} 个没认出来
+                </StatusBadge>
+              </Link>
+            )}
+            {b.mode === "browse" && fileCounts.strm > 0 && (
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {fileCounts.strm} 个 strm{fileCounts.other > 0 ? ` · ${fileCounts.other} 个其它` : ""}
+              </span>
             )}
           </div>
         )}

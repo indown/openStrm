@@ -140,3 +140,25 @@ export interface StrmDeleteResult {
   deleted: number;
   failed: Array<{ path: string; message: string }>;
 }
+
+/**
+ * 一个目录的海报。按四级回退拿：
+ *   local 目录里现成的图片（默认 downloadExtensions 带 .jpg/.png，随片下载过来的）
+ *   tmdb  目录名里的 id 标签或本地 nfo 给出 tmdbId，再查 TMDB 缓存
+ *   run   这个任务整理过的记录里存着的识别结果
+ */
+export type StrmPosterSource = "local" | "tmdb" | "run";
+
+export interface StrmPoster {
+  source: StrmPosterSource;
+  /** local 是相对任务根的图片路径（要走 /api/strm/image 取），其余是图片外链 */
+  url: string;
+  title?: string;
+  year?: string;
+  tmdbId?: number;
+}
+
+export interface StrmPosterResult {
+  /** 键是请求里给的目录路径；没拿到海报的目录不出现 */
+  posters: Record<string, StrmPoster>;
+}
