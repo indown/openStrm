@@ -148,12 +148,16 @@ function CommandItem({
   )
 }
 
-/** 右侧那截灰色提示：快捷键，或者"去哪一页" */
+/**
+ * 右侧那截灰色提示：快捷键、账号名，或者"去哪一页"。
+ * shrink-0 + nowrap 不能少：窄屏上它会被挤成两行，行高跟着参差，
+ * 该让位的是左边那个带 truncate 的标题
+ */
 function CommandShortcut({ className, ...props }: React.ComponentProps<"span">) {
   return (
     <span
       data-slot="command-shortcut"
-      className={cn("text-muted-foreground ml-auto text-xs tracking-widest", className)}
+      className={cn("text-muted-foreground ml-auto shrink-0 text-xs tracking-widest whitespace-nowrap", className)}
       {...props}
     />
   )
