@@ -29,6 +29,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import {
   Select,
   SelectContent,
@@ -38,6 +39,7 @@ import {
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
+import { fmtWhen } from "@/lib/format";
 import { DirectoryTreeDialog } from "./DirectoryTreeDialog";
 import { LocalDirectoryTreeDialog } from "./LocalDirectoryTreeDialog";
 
@@ -162,6 +164,40 @@ function SwitchRow({
 }
 
 /**
+ * 边打边试算 cron 接下来几次什么时候跑，节奏和整理页的模板试算一样（防抖 400ms）。
+ *
+ * 算在后端：调度用的是服务器的解析器和时区，浏览器自己算出来的时间可能根本不是它真会跑的时间。
+ * 表达式还没打完时后端回 400，这里当"暂时没有结果"处理，不往上抛。
+ */
+function useCronPreview(expression: string): { next: string[]; error: string } {
+  const [state, setState] = React.useState<{ next: string[]; error: string }>({ next: [], error: "" });
+  React.useEffect(() => {
+    const expr = expression.trim();
+    if (!expr) {
+      setState({ next: [], error: "" });
+      return;
+    }
+    let alive = true;
+    const timer = setTimeout(() => {
+      api.tasks
+        .cronPreview(expr)
+        .then((res) => {
+          // 响应里没有 next 就当没结果：渲染那头直接 .length 会把整个弹框掀掉
+          if (alive) setState({ next: Array.isArray(res.next) ? res.next : [], error: "" });
+        })
+        .catch((err) => {
+          if (alive) setState({ next: [], error: apiErrorMessage(err, "算不出下次执行时间") });
+        });
+    }, 400);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [expression]);
+  return state;
+}
+
+/**
  * 路径编码只对 http(s) 前缀有意义：strm 内容是 URL 时空格、# 之类才是问题（开不开 302 都一样，代理那头会解码）。
  * 前缀是本地挂载路径时 strm 是文件路径，编码了反而对不上文件。
  */
@@ -214,6 +250,8 @@ export function AddTaskDialog({
   const originPath = useWatch({ control: form.control, name: "originPath" }) ?? "";
   const strmPrefix = useWatch({ control: form.control, name: "strmPrefix" }) ?? "";
   const enable302 = useWatch({ control: form.control, name: "enable302" }) ?? false;
+  const cronExpression = useWatch({ control: form.control, name: "cronExpression" }) ?? "";
+  const cronPreview = useCronPreview(cronExpression);
 
   const accountType = accounts.find((acc) => acc.name === account)?.accountType ?? "";
   const is115Account = accountType === "115";
@@ -349,22 +387,16 @@ export function AddTaskDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>远程路径</FormLabel>
-                  <div className="flex items-center gap-2">
+                  <InputGroup>
                     <FormControl>
-                      <Input {...field} placeholder="例如：tv 或 kuake/tv" className="flex-1" />
+                      <InputGroupInput {...field} placeholder="例如：tv 或 kuake/tv" />
                     </FormControl>
                     {canBrowseRemote && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        onClick={() => setDirectoryDialogOpen(true)}
-                        title="浏览远程目录"
-                      >
-                        <FolderOpen className="w-4 h-4" />
-                      </Button>
+                      <InputGroupButton onClick={() => setDirectoryDialogOpen(true)} title="浏览远程目录">
+                        <FolderOpen />
+                      </InputGroupButton>
                     )}
-                  </div>
+                  </InputGroup>
                   <FormDescription className="text-xs">网盘（或 OpenList）里要同步的目录，从根目录算起，不用带开头的斜杠。</FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -377,20 +409,14 @@ export function AddTaskDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>本地路径</FormLabel>
-                  <div className="flex items-center gap-2">
+                  <InputGroup>
                     <FormControl>
-                      <Input {...field} placeholder="例如：tv" className="flex-1" />
+                      <InputGroupInput {...field} placeholder="例如：tv" />
                     </FormControl>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      onClick={() => setLocalDirectoryDialogOpen(true)}
-                      title="浏览本地目录"
-                    >
-                      <FolderOpen className="w-4 h-4" />
-                    </Button>
-                  </div>
+                    <InputGroupButton onClick={() => setLocalDirectoryDialogOpen(true)} title="浏览本地目录">
+                      <FolderOpen />
+                    </InputGroupButton>
+                  </InputGroup>
                   <FormDescription className="text-xs">
                     相对数据目录（DATA_DIR）的路径，strm 会按远程目录的结构生成到这里；媒体库扫这个目录。
                   </FormDescription>
@@ -405,14 +431,14 @@ export function AddTaskDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Strm 前缀</FormLabel>
-                  <div className="flex items-center gap-1">
+                  <InputGroup>
                     <FormControl>
-                      <Input {...field} placeholder="例如：/mnt/115 或 /CloudNAS/115（rclone、CloudDrive2 的挂载路径）" className="flex-1" />
+                      <InputGroupInput {...field} placeholder="例如：/mnt/115 或 /CloudNAS/115（rclone、CloudDrive2 的挂载路径）" />
                     </FormControl>
                     {appendAccount && account && (
-                      <Input value={`/${account}`} disabled className="w-[120px] bg-muted font-medium shrink-0" title="开启 302 后自动拼上账号名" />
+                      <InputGroupAddon title="开启 302 后自动拼上账号名">/{account}</InputGroupAddon>
                     )}
-                  </div>
+                  </InputGroup>
                   <FormDescription className="text-xs">
                     写进 strm 文件的地址前缀，一般填 rclone 或 CloudDrive2 把网盘挂到本机的路径，Emby 要能读到。
                     {preview && (
@@ -481,6 +507,16 @@ export function AddTaskDialog({
                     <FormDescription className="text-xs">
                       标准 cron 表达式，按服务器时区。不定时的任务只在手动点开始、或从分享转存时触发。
                     </FormDescription>
+                    {/* 试算：填完立刻看到它真会在什么时候跑，不用存下来再去任务列表确认 */}
+                    {cronPreview.next.length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        接下来：{cronPreview.next.map((iso) => fmtWhen(new Date(iso).getTime())).join("、")}
+                      </p>
+                    )}
+                    {/* 只在"看起来已经打完"时才报错，否则每敲一个字符都红一下 */}
+                    {cronPreview.error && CRON_SHAPE.test(value.trim()) && (
+                      <p className="text-xs text-destructive">{cronPreview.error}</p>
+                    )}
                     <FormMessage />
                   </FormItem>
                 );

@@ -14,6 +14,7 @@ import { registerErrorHandling } from "../plugins/error-handler.js";
 import { authPlugin } from "../plugins/auth.js";
 import { cronPlugin } from "../plugins/cron.js";
 import taskRoute from "./task/index.js";
+import taskCronRoute from "./task/cron.js";
 import accountRoute from "./account/index.js";
 import settingsRoute from "./settings/index.js";
 import { DEFAULT_AUTH } from "../db/defaults.js";
@@ -40,6 +41,7 @@ before(async () => {
   await app.register(authPlugin);
   await app.register(cronPlugin);
   await app.register(taskRoute);
+  await app.register(taskCronRoute);
   await app.register(accountRoute);
   await app.register(settingsRoute);
   await app.ready();
@@ -159,6 +161,34 @@ test("POST/PUT /api/task：cron 表达式不合法 → 400，不会被存进库"
   assert.equal(bad.statusCode, 400);
   assert.equal(listTasks()[0]?.cronExpression, undefined, "PUT 校验失败不能改掉库里的值");
   await call("DELETE", `/api/task?id=${created.json().id}`);
+});
+
+test("POST /api/task/cron/preview：试算下几次执行；不合法的表达式 400 并说明原因", async () => {
+  const ok = await call("POST", "/api/task/cron/preview", { expression: "0 3 * * *" });
+  assert.equal(ok.statusCode, 200, ok.body);
+  const { next } = ok.json<{ next: string[] }>();
+  assert.equal(next.length, 3, "给前三次");
+  // 每一次都在将来，而且严格递增——这是这个接口唯一要保证的事
+  let prev = Date.now();
+  for (const iso of next) {
+    const t = new Date(iso).getTime();
+    assert.ok(t > prev, `${iso} 应该晚于上一个`);
+    prev = t;
+  }
+  // 和调度用的是同一个解析器：每天 03:00 应当都落在 3 点整
+  for (const iso of next) assert.match(iso, /T03:00:00/, `${iso} 应该是 03:00`);
+
+  // 形状对但字段越界：这正是前端那条 5 段正则拦不住、以前要等保存才发现的情况
+  const bad = await call("POST", "/api/task/cron/preview", { expression: "99 3 * * *" });
+  assert.equal(bad.statusCode, 400, bad.body);
+  assert.match(bad.json<{ message: string }>().message, /不合法/);
+
+  assert.equal((await call("POST", "/api/task/cron/preview", { expression: "  " })).statusCode, 400, "空表达式");
+  assert.equal(
+    (await app.inject({ method: "POST", url: "/api/task/cron/preview", payload: { expression: "0 3 * * *" } })).statusCode,
+    401,
+    "不带令牌",
+  );
 });
 
 test("POST/PUT /api/task：strmPrefix 去掉首尾空白和尾斜杠再入库", async () => {

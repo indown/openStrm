@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Input } from "@/components/ui/input";
+import { TagInput } from "@/components/ui/tag-input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { SwitchRow } from "@/components/switch-row";
@@ -25,14 +26,11 @@ import { UpdateSection } from "./components/UpdateSection";
 
 type Settings = AppSettings;
 
-/** 逗号分隔的扩展名 → 规范化数组：去空白、补点号、转小写 */
-function parseExtensions(input: string): string[] {
-  return input
-    .split(",")
-    .map((ext) => ext.trim())
-    .filter((ext) => ext.length > 0)
-    .map((ext) => (ext.startsWith(".") ? ext : `.${ext}`))
-    .map((ext) => ext.toLowerCase());
+/** 扩展名落一个标签时规范化：去空白、补点号、转小写。空的丢掉 */
+function normalizeExtension(raw: string): string | null {
+  const v = raw.trim().toLowerCase();
+  if (!v) return null;
+  return v.startsWith(".") ? v : `.${v}`;
 }
 
 /**
@@ -40,15 +38,12 @@ function parseExtensions(input: string): string[] {
  * Telegram / 生活事件监控那些由别的页面写的设置不会被这里加载时的快照覆盖掉。
  * 脏状态和保存共用它，比的和存的才是同一个东西。
  */
-function buildPayload(data: Settings, strmExt: string, downloadExt: string, mountPath: string): Settings {
+function buildPayload(data: Settings, strmExt: string[], downloadExt: string[], mountPath: string[]): Settings {
   return {
     "user-agent": data["user-agent"],
-    strmExtensions: parseExtensions(strmExt),
-    downloadExtensions: parseExtensions(downloadExt),
-    mediaMountPath: mountPath
-      .split(",")
-      .map((p) => p.trim())
-      .filter((p) => p.length > 0),
+    strmExtensions: strmExt,
+    downloadExtensions: downloadExt,
+    mediaMountPath: mountPath,
     emby: data.emby,
     download: data.download,
     tmdb: data.tmdb,
@@ -76,9 +71,9 @@ export default function SettingsPage() {
   const [data, setData] = useState<Settings>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [strmExtensionsInput, setStrmExtensionsInput] = useState("");
-  const [downloadExtensionsInput, setDownloadExtensionsInput] = useState("");
-  const [mediaMountPathInput, setMediaMountPathInput] = useState("");
+  const [strmExtensions, setStrmExtensions] = useState<string[]>([]);
+  const [downloadExtensions, setDownloadExtensions] = useState<string[]>([]);
+  const [mediaMountPath, setMediaMountPath] = useState<string[]>([]);
   const [backingUp, setBackingUp] = useState(false);
   const [openlistAccounts, setOpenlistAccounts] = useState<string[]>([]);
   /** 上次从服务器读到（或刚存成功）的那份，用来算改了几处 */
@@ -89,12 +84,12 @@ export default function SettingsPage() {
     api.settings.get()
       .then((settings) => {
         setData(settings);
-        const strmExt = (settings.strmExtensions || []).join(", ");
-        const downloadExt = (settings.downloadExtensions || []).join(", ");
-        const mountPath = (settings.mediaMountPath || []).join(", ");
-        setStrmExtensionsInput(strmExt);
-        setDownloadExtensionsInput(downloadExt);
-        setMediaMountPathInput(mountPath);
+        const strmExt = settings.strmExtensions ?? [];
+        const downloadExt = settings.downloadExtensions ?? [];
+        const mountPath = settings.mediaMountPath ?? [];
+        setStrmExtensions(strmExt);
+        setDownloadExtensions(downloadExt);
+        setMediaMountPath(mountPath);
         setBaseline(buildPayload(settings, strmExt, downloadExt, mountPath));
       })
       .catch((err) => toast.error(apiErrorMessage(err, "加载设置失败")))
@@ -107,8 +102,8 @@ export default function SettingsPage() {
   }, []);
 
   const payload = useMemo(
-    () => buildPayload(data, strmExtensionsInput, downloadExtensionsInput, mediaMountPathInput),
-    [data, strmExtensionsInput, downloadExtensionsInput, mediaMountPathInput],
+    () => buildPayload(data, strmExtensions, downloadExtensions, mediaMountPath),
+    [data, strmExtensions, downloadExtensions, mediaMountPath],
   );
   const changes = baseline ? countChanges(baseline, payload) : 0;
 
@@ -142,9 +137,9 @@ export default function SettingsPage() {
   const onRevert = () => {
     if (!baseline) return;
     setData((prev) => ({ ...prev, ...baseline }));
-    setStrmExtensionsInput((baseline.strmExtensions || []).join(", "));
-    setDownloadExtensionsInput((baseline.downloadExtensions || []).join(", "));
-    setMediaMountPathInput((baseline.mediaMountPath || []).join(", "));
+    setStrmExtensions(baseline.strmExtensions ?? []);
+    setDownloadExtensions(baseline.downloadExtensions ?? []);
+    setMediaMountPath(baseline.mediaMountPath ?? []);
   };
 
   // ⌘S / Ctrl+S 保存。浏览器那个"保存网页"对这里没意义，脏着就接管
@@ -206,39 +201,37 @@ export default function SettingsPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Strm文件扩展名</Label>
-              <Input
-                value={strmExtensionsInput}
-                onChange={(e) => setStrmExtensionsInput(e.target.value)}
-                placeholder="请输入 例如：.mkv, .mp4, .mp3"
+              <Label>Strm 文件扩展名</Label>
+              <TagInput
+                value={strmExtensions}
+                onChange={setStrmExtensions}
+                normalize={normalizeExtension}
+                placeholder="例如：.mkv，回车落一个"
               />
-              <p className="text-xs text-muted-foreground">
-                用逗号分隔，自动添加点号前缀
-              </p>
+              <p className="text-xs text-muted-foreground">这些扩展名的文件会生成 strm</p>
             </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>下载文件扩展名</Label>
-              <Input
-                value={downloadExtensionsInput}
-                onChange={(e) => setDownloadExtensionsInput(e.target.value)}
-                placeholder="请输入 例如：.srt, .ass, .sub, .nfo"
+              <TagInput
+                value={downloadExtensions}
+                onChange={setDownloadExtensions}
+                normalize={normalizeExtension}
+                placeholder="例如：.srt，回车落一个"
               />
-              <p className="text-xs text-muted-foreground">
-                用逗号分隔，自动添加点号前缀
-              </p>
+              <p className="text-xs text-muted-foreground">这些扩展名的文件会真的下到本地（字幕、nfo、海报）</p>
             </div>
             <div className="space-y-2">
-              <Label>额外的媒体挂载路径 (mediaMountPath)</Label>
-              <Input
-                value={mediaMountPathInput}
-                onChange={(e) => setMediaMountPathInput(e.target.value)}
-                placeholder="/root/webdav/115, /mnt/media"
+              <Label>额外的媒体挂载路径</Label>
+              <TagInput
+                value={mediaMountPath}
+                onChange={setMediaMountPath}
+                placeholder="/root/webdav/115，回车落一个"
               />
               <p className="text-xs text-muted-foreground">
                 开了 302 的任务会自动把它的 strmPrefix 当作挂载路径，不用填在这里；
-                只填任务之外、也希望代理接管的前缀，多个用逗号分隔
+                只填任务之外、也希望代理接管的前缀
               </p>
             </div>
           </div>

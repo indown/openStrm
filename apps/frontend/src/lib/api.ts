@@ -447,6 +447,9 @@ export const api = {
         .get<{ taskId: string }>(`/api/taskLog/${encodeURIComponent(id)}`)
         .then(() => true)
         .catch(() => false),
+    /** 试算 cron 接下来几次什么时候跑。表达式不合法回 400，由调用方当"还没打完"处理 */
+    cronPreview: (expression: string) =>
+      data(axiosInstance.post<{ next: string[] }>("/api/task/cron/preview", { expression })),
   },
 
   accounts: {
