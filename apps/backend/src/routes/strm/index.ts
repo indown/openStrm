@@ -2,14 +2,14 @@ import { createReadStream } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { StrmVerifyEvent, TaskDefinition } from "@openstrm/shared";
-import { getTask } from "../../db/repositories/tasks.js";
+import { getTask, listTasks } from "../../db/repositories/tasks.js";
 import { HttpError } from "../../lib/http-error.js";
 import { messageOf } from "../../lib/errors.js";
 import { openSse } from "../../lib/sse.js";
 import { parse } from "../../lib/validate.js";
 import { providerForTask } from "../../services/drive/registry.js";
 import { deletePaths, listDir, readStrm, regenerate, rewrite, scan, search, STRM_LIMITS, verify, verify$ } from "../../services/strm/manage.js";
-import { POSTER_LIMITS, resolvePosters, statImage } from "../../services/strm/poster.js";
+import { POSTER_LIMITS, postersAcrossTasks, resolvePosters, statImage } from "../../services/strm/poster.js";
 
 /**
  * strm 管理：按同步任务浏览 / 检查 / 删除 / 修正 / 重建本地 strm。
@@ -34,6 +34,8 @@ const verifyBody = z.object({ taskId, path: optionalPath });
 const postersBody = z.object({
   taskId,
   paths: z.array(z.string().max(4096)).min(1, "paths is required").max(POSTER_LIMITS.PATHS),
+  /** 只用离线的几级、不去 TMDB 现查：只想数「认出来几个」的时候用 */
+  offline: z.boolean().default(false),
 });
 
 function loadTask(id: string): TaskDefinition {
@@ -55,11 +57,14 @@ export default async function (fastify: FastifyInstance) {
     return readStrm(loadTask(q.taskId), q.path);
   });
 
-  /** 背景海报：一批目录各拿一张，拿不到的不在结果里。纯装饰，任何一步失败都只是没有海报 */
+  /** 背景海报：一批目录各拿一张，拿不到的不在结果里；known 是有线索的目录。纯装饰，任何一步失败都只是没有海报 */
   fastify.post("/api/strm/posters", auth, async (request) => {
     const body = parse(postersBody, request.body);
-    return { posters: await resolvePosters(loadTask(body.taskId), body.paths) };
+    return resolvePosters(loadTask(body.taskId), body.paths, { offline: body.offline });
   });
+
+  /** 任务页背景：所有任务的本地目录里抽一批作品海报，新的在前。只用离线的几级，缺的后台补；结果在内存里留几分钟 */
+  fastify.get("/api/strm/posters/all", auth, async () => ({ posters: await postersAcrossTasks(listTasks()) }));
 
   /** 本地图片（海报用）。<img> 带不了 Authorization 头，前端是取 blob 再显示的 */
   fastify.get("/api/strm/image", auth, async (request, reply) => {

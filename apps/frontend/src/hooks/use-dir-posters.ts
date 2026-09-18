@@ -8,39 +8,37 @@
  *
  * 剧集和电影一视同仁，也不在乎深度：`剧名 (2024) [tmdbid=1]`、它的 `Season 01`、`Season 01/extras`
  * 进哪一层都是同一张。命名里没写 id 标签的库退一步：拿当前目录和它的父目录去碰运气。
+ *
+ * stream 态顺带数一下「子目录里有几个认出来了」（页头那句 N 个目录 · M 已识别）：这个手机上也要，
+ * 所以问接口不看屏幕宽窄，只有下载图片看——窄屏上墙不画。
  */
-import { useEffect, useRef, useState } from "react";
-import type { BackdropPoster } from "@/components/poster-backdrop";
+import { useEffect, useState } from "react";
+import type { StrmPosterResult } from "@openstrm/shared";
+import { useBackdropWide, type BackdropPoster } from "@/components/poster-backdrop";
 import { api } from "@/lib/api";
+import { NO_POSTERS, toBackdropPosters, type ShownPosters } from "@/lib/poster-images";
 
 /** 和后端 organize/identify.ts 的 RE_ID_TAG 同一条规则：Emby `[tmdbid=1]`、Jellyfin `[tmdbid-1]`、Plex `{tmdb-1}` */
 const ID_TAG = /[[{]\s*(?:tmdbid|tmdb)\s*[=-]\s*\d+\s*[\]}]/i;
 
 /** 一屏也放不下更多，多了只是白拉图 */
 const MAX_TILES = 24;
-/** 本地图片的 object URL 缓存上限，超了按先进先出释放 */
-const BLOB_CACHE_MAX = 60;
+/** 数线索时一批问多少个目录（后端一次最多 48 个） */
+const COUNT_CHUNK = 48;
 
 export interface DirBackdrop {
   mode: "stream" | "single";
   posters: BackdropPoster[];
+  /** stream 态：当前目录下有线索（海报 / id 标签 / nfo / 整理记录）的子目录个数；没开、没数完、single 态是 null */
+  recognized: number | null;
 }
 
-const EMPTY: DirBackdrop = { mode: "stream", posters: [] };
-
-/** 本地图片取过一次就留着：同一个目录来回进出不重拉 */
-const blobCache = new Map<string, string>();
-
-function rememberBlob(key: string, url: string): void {
-  blobCache.set(key, url);
-  while (blobCache.size > BLOB_CACHE_MAX) {
-    const oldest = blobCache.keys().next();
-    if (oldest.done) break;
-    const gone = blobCache.get(oldest.value);
-    blobCache.delete(oldest.value);
-    if (gone) URL.revokeObjectURL(gone);
-  }
+interface Shown {
+  mode: "stream" | "single";
+  set: ShownPosters;
 }
+
+const NOTHING: Shown = { mode: "stream", set: NO_POSTERS };
 
 /** 当前路径里最靠后的那个带 id 标签的段——进到作品里了就返回作品目录 */
 function workRootOf(path: string): string | null {
@@ -52,76 +50,86 @@ function workRootOf(path: string): string | null {
 }
 
 const parentOf = (path: string): string => path.split("/").filter(Boolean).slice(0, -1).join("/");
+const under = (path: string, name: string): string => (path ? `${path}/${name}` : name);
 
 function plan(path: string, dirs: string[]): { mode: "stream" | "single"; paths: string[] } {
   const work = workRootOf(path);
   if (work) return { mode: "single", paths: [work] };
-  if (dirs.length > 0) {
-    return { mode: "stream", paths: dirs.slice(0, MAX_TILES).map((d) => (path ? `${path}/${d}` : d)) };
-  }
+  if (dirs.length > 0) return { mode: "stream", paths: dirs.slice(0, MAX_TILES).map((d) => under(path, d)) };
   // 没有子目录又没有 id 标签：可能是命名里不写标签的库，拿自己和父目录试试
   const fallback = [path, parentOf(path)].filter((p, i, all) => p !== "" && all.indexOf(p) === i);
   return { mode: "single", paths: fallback };
 }
 
+/** 墙那一批已经问过前 MAX_TILES 个；剩下的子目录每 COUNT_CHUNK 个一批，只数线索、不联网。数不全就不给数 */
+async function countKnown(taskId: string, path: string, dirs: string[], first: StrmPosterResult, alive: () => boolean): Promise<number | null> {
+  const rest = dirs.slice(MAX_TILES).map((d) => under(path, d));
+  let known = first.known.length;
+  for (let i = 0; i < rest.length; i += COUNT_CHUNK) {
+    if (!alive()) return null;
+    try {
+      known += (await api.strm.posters(taskId, rest.slice(i, i + COUNT_CHUNK), { offline: true })).known.length;
+    } catch {
+      return null;
+    }
+  }
+  return known;
+}
+
 export function useDirPosters(opts: { taskId: string; path: string; dirs: string[]; enabled: boolean }): DirBackdrop {
   const { taskId, path, enabled } = opts;
-  const dirsKey = opts.dirs.join("\u0000");
-  const [state, setState] = useState<DirBackdrop>(EMPTY);
-  const seq = useRef(0);
+  const wide = useBackdropWide();
+  const dirsKey = JSON.stringify(opts.dirs);
+  const [shown, setShown] = useState<Shown>(NOTHING);
+  const [recognized, setRecognized] = useState<number | null>(null);
+
+  // 换下来的那一批解钉（新的一批这时候已经钉住了）；卸载时解钉最后一批
+  useEffect(() => () => shown.set.release(), [shown]);
 
   useEffect(() => {
-    const mine = ++seq.current;
     if (!enabled || !taskId) {
-      setState(EMPTY);
+      setShown(NOTHING);
+      setRecognized(null);
       return;
     }
-    const { mode, paths } = plan(path, dirsKey ? dirsKey.split("\u0000") : []);
+    const dirs = JSON.parse(dirsKey) as string[];
+    const { mode, paths } = plan(path, dirs);
     if (paths.length === 0) {
-      setState(EMPTY);
+      setShown(NOTHING);
+      setRecognized(null);
       return;
     }
-
+    let alive = true;
     void (async () => {
-      let found: Record<string, { source: string; url: string }>;
+      let first: StrmPosterResult;
       try {
-        found = (await api.strm.posters(taskId, paths)).posters;
+        first = await api.strm.posters(taskId, paths);
       } catch {
         // 背景图而已，拿不到就当没有
-        if (seq.current === mine) setState(EMPTY);
+        if (alive) {
+          setShown(NOTHING);
+          setRecognized(null);
+        }
         return;
       }
-      if (seq.current !== mine) return;
-
-      const out: BackdropPoster[] = [];
-      for (const p of paths) {
-        const hit = found[p];
-        if (!hit) continue;
-        if (hit.source !== "local") {
-          out.push({ key: p, url: hit.url });
-          continue;
-        }
-        const cacheKey = `${taskId}\u0000${hit.url}`;
-        const cached = blobCache.get(cacheKey);
-        if (cached) {
-          out.push({ key: p, url: cached });
-          continue;
-        }
-        try {
-          const blob = await api.strm.image(taskId, hit.url);
-          if (seq.current !== mine) return;
-          const url = URL.createObjectURL(blob);
-          rememberBlob(cacheKey, url);
-          out.push({ key: p, url });
-        } catch {
-          /* 这张读不到就少一张 */
-        }
+      if (!alive) return;
+      const items = paths.flatMap((p) => (Object.hasOwn(first.posters, p) ? [{ key: p, taskId, poster: first.posters[p] }] : []));
+      const [set, count] = await Promise.all([
+        wide ? toBackdropPosters(items, () => alive) : Promise.resolve(NO_POSTERS),
+        mode === "stream" ? countKnown(taskId, path, dirs, first, () => alive) : Promise.resolve(null),
+      ]);
+      if (!alive) {
+        set.release();
+        return;
       }
-      if (seq.current !== mine) return;
       // single 态只要第一张拿到就够
-      setState(out.length > 0 ? { mode, posters: mode === "single" ? out.slice(0, 1) : out } : EMPTY);
+      setShown({ mode, set: mode === "single" ? { ...set, posters: set.posters.slice(0, 1) } : set });
+      setRecognized(count);
     })();
-  }, [taskId, path, dirsKey, enabled]);
+    return () => {
+      alive = false;
+    };
+  }, [taskId, path, dirsKey, enabled, wide]);
 
-  return state;
+  return { mode: shown.mode, posters: shown.set.posters, recognized };
 }

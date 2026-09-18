@@ -122,12 +122,10 @@ export interface ManagedPath {
   rel: string;
 }
 
+/** 每一段原样保留：目录名前后带空格是合法的（网盘里常见），trim 掉就找不到了 */
 function normalizeRel(input: string): string {
   if (input.includes("\0")) throw new HttpError(400, "路径越出了任务目录");
-  const parts = input
-    .split("/")
-    .map((s) => s.trim())
-    .filter((s) => s !== "" && s !== ".");
+  const parts = input.split("/").filter((s) => s !== "" && s !== ".");
   if (parts.some((s) => s === "..")) throw new HttpError(400, "路径越出了任务目录");
   return parts.join("/");
 }

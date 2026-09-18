@@ -48,9 +48,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { PageHeader } from "@/components/page-header";
+import { PosterBackdrop } from "@/components/poster-backdrop";
 import { StatusBadge } from "@/components/status-badge";
 import { EmptyState } from "@/components/empty-state";
 import { TableSkeleton } from "@/components/loading";
+import { useAllPosters } from "@/hooks/use-all-posters";
 import { RUN_STATUS } from "@/lib/status";
 import { api, type TaskRow } from "@/lib/api";
 import { startTaskWithToast } from "@/lib/task-start";
@@ -221,6 +223,12 @@ function HomeContent() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [hasProcessing, fetchTasks]);
+
+  /* ---- 海报墙：整个 strm 库的作品。纯装饰：有任务在跑或在启动就淡出，把「在动」让给那一行 ---- */
+  // 任务表的指纹：增删任务、改本地目录才重拉，每 5 秒的状态轮询不会触发
+  const postersKey = loaded ? data.map((t) => `${t.id}\u0000${t.targetPath}`).join("\n") : "";
+  const wallPosters = useAllPosters(postersKey);
+  const wallMuted = hasProcessing || startingTasks.size > 0;
 
   // 有任务在跑或在启动的账户：同账户的任务互斥
   const busyAccounts = useMemo(() => {
@@ -603,7 +611,8 @@ function HomeContent() {
       <>
         {/* 手机：卡片；md 以上：表格。两份只是排版不同，数据和按钮逻辑都在上面共用 */}
         <div className="space-y-3 md:hidden">{states.map(renderCard)}</div>
-        <div className="hidden overflow-hidden rounded-xl border bg-card md:block">
+        {/* 半透明 + 毛玻璃：海报墙要从表格后面透出来，又不能影响读字（和 strm 页一样） */}
+        <div className="hidden overflow-hidden rounded-xl border bg-card/60 backdrop-blur-sm md:block">
           <Table>
             <TableHeader>
               <TableRow>
@@ -622,7 +631,10 @@ function HomeContent() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="relative z-0 space-y-6">
+      {/* 海报背景挂在这层 relative z-0 里面、自己是 -z-10：在内容列的底色之上、面板和文字之下，
+          侧栏（fixed z-10）和顶栏（sticky z-20）照样盖在它上面 */}
+      <PosterBackdrop mode="stream" posters={wallPosters} muted={wallMuted} />
       <PageHeader
         icon={ListChecks}
         title="任务管理"

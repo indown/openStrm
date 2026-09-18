@@ -87,4 +87,6 @@ export type {
   StrmPosterSource,
   StrmPoster,
   StrmPosterResult,
+  StrmPosterRef,
+  StrmAllPostersResult,
 } from "./strm.js";

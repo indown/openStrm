@@ -622,10 +622,18 @@ export function listMatches(accountName?: string): OrganizeMatchMemory[] {
 /* ------------------------------- TMDB 缓存 ------------------------------- */
 
 export function readTmdbCache<T>(key: string, maxAgeSec: number): T | null {
+  return peekTmdbCache<T>(key, maxAgeSec)?.value ?? null;
+}
+
+/**
+ * 和 readTmdbCache 一样，但分得清「没有这条 / 过期了」（返回 null）和「缓存着 null」（TMDB 说没有这个 id）：
+ * 后者不用再去问一遍
+ */
+export function peekTmdbCache<T>(key: string, maxAgeSec: number): { value: T | null } | null {
   const row = db.select().from(tmdbCache).where(eq(tmdbCache.key, key)).get();
   if (!row) return null;
   if (Math.floor(Date.now() / 1000) - row.fetchedAt > maxAgeSec) return null;
-  return parseJson<T | null>(row.value, null);
+  return { value: parseJson<T | null>(row.value, null) };
 }
 
 export function writeTmdbCache(key: string, value: unknown): void {

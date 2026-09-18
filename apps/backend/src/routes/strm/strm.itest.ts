@@ -7,11 +7,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { after, before, test } from "node:test";
+import axios from "axios";
 import Fastify, { type FastifyInstance } from "fastify";
 import type {
   AccountInfo,
   AppSettings,
   OrganizeUnit,
+  StrmAllPostersResult,
   StrmPosterResult,
   StrmDeleteResult,
   StrmFileInfo,
@@ -38,6 +40,7 @@ import { releaseTaskStart, reserveTaskStart } from "../../services/task/registry
 import { setDriveProviderFactory } from "../../services/drive/registry.js";
 import { FakeDrive } from "../../test/fake-drive.js";
 import { verify, verify$ } from "../../services/strm/manage.js";
+import { resetPostersAcrossTasks, settlePostersAcrossTasks } from "../../services/strm/poster.js";
 import type { DriveEntry } from "../../services/drive/types.js";
 
 let app: FastifyInstance;
@@ -332,18 +335,18 @@ test("流式校验走真的 HTTP：进度和结论都推得出去", async () => 
   assert.equal(events.at(-1)?.type, "done");
 });
 
-test("海报：本地图片 / 目录名 id 标签 / 整理记录三级都能拿到", async () => {
-  writeTmdbCache("details:tv:77:zh-CN", { posterUrl: "https://image.tmdb.org/t/p/w500/tag.jpg", title: "带标签的剧", year: "2024" });
-  const unit: OrganizeUnit = {
-    runId: "run-poster",
+/** 海报用例共用：一条整理记录，默认让 Organized Show 有 ④ 那一级的海报 */
+function organizedUnit(runId: string, dstRoot = "Organized Show", tmdbId = 99): OrganizeUnit {
+  return {
+    runId,
     key: "u1",
-    rootPath: "Organized Show",
-    rawName: "Organized Show",
-    parsedTitle: "Organized Show",
+    rootPath: dstRoot,
+    rawName: dstRoot,
+    parsedTitle: dstRoot,
     parsedYear: "",
     match: {
       mediaType: "tv",
-      tmdbId: 99,
+      tmdbId,
       title: "整理过的剧",
       originalTitle: "Organized Show",
       year: "2023",
@@ -353,7 +356,7 @@ test("海报：本地图片 / 目录名 id 标签 / 整理记录三级都能拿�
     },
     seasonOverride: null,
     episodeOffset: 0,
-    dstRoot: "Organized Show",
+    dstRoot,
     selected: true,
     remember: false,
     fileCount: 1,
@@ -363,8 +366,12 @@ test("海报：本地图片 / 目录名 id 标签 / 整理记录三级都能拿�
     excluded: [],
     resolutions: {},
   };
+}
+
+test("海报：本地图片 / 目录名 id 标签 / 整理记录三级都能拿到", async () => {
+  writeTmdbCache("details:tv:77:zh-CN", { posterUrl: "https://image.tmdb.org/t/p/w500/tag.jpg", title: "带标签的剧", year: "2024" });
   insertRun({ id: "run-poster", taskId: "r-poster", accountName: "acc", scopePath: "", scopePaths: [], mode: "manual", trigger: "manual" });
-  replaceUnits("run-poster", [unit]);
+  replaceUnits("run-poster", [organizedUnit("run-poster")]);
   try {
     const res = await post("/api/strm/posters", {
       taskId: "r-poster",
@@ -398,8 +405,95 @@ test("海报：本地图片 / 目录名 id 标签 / 整理记录三级都能拿�
     assert.equal(posters["Organized Show"]?.source, "run");
     assert.equal(posters["Organized Show"]?.url, "https://image.tmdb.org/t/p/w500/run.jpg");
     assert.equal(posters["Plain Show"], undefined, "什么线索都没有的目录不该出现在结果里");
+    assert.deepEqual(
+      [...res.json<StrmPosterResult>().known].sort(),
+      ["Local Show", "Named Movie (2025)", "Organized Show", "Suffixed Season", "Tagged Show (2024) [tmdbid=77]"].sort(),
+      "Thumbed Season / Plain Show 没有任何线索，不算认出来",
+    );
   } finally {
     deleteRun("run-poster");
+  }
+});
+
+/* ------------------------------- 海报：联网 ------------------------------- */
+
+type TmdbAnswer = { title?: string; name?: string; release_date?: string; first_air_date?: string; poster_path?: string } | null | Error;
+
+/**
+ * 在 axios 上截住 TMDB 的详情请求，一个都不出本机。answer 决定怎么回：对象是 200、null 是 404、Error 是连不上；
+ * 也可以返回一个一直不完成的 Promise，把请求拖住
+ */
+function fakeTmdb(answer: (kind: string, id: number) => TmdbAnswer | Promise<TmdbAnswer>) {
+  const asked: string[] = [];
+  const hook = axios.interceptors.request.use((config) => {
+    const m = /^https:\/\/api\.themoviedb\.org\/3\/(movie|tv)\/(\d+)$/.exec(config.url ?? "");
+    if (m) {
+      asked.push(`${m[1]}/${m[2]}`);
+      config.adapter = async (cfg) => {
+        const a = await answer(m[1], Number(m[2]));
+        if (a instanceof Error) throw a;
+        return { data: a ?? {}, status: a ? 200 : 404, statusText: a ? "OK" : "Not Found", headers: {}, config: cfg };
+      };
+    }
+    return config;
+  });
+  return { asked, stop: () => axios.interceptors.request.eject(hook) };
+}
+
+const useTmdbKey = (on: boolean) => replaceAppSettings({ ...readAppSettings(), tmdb: { apiKey: on ? "test-key" : "", language: "zh-CN" } });
+
+/** 一个只给这组用例用的库：墙上只有它，断言才能写成精确的 */
+function isolatedLibrary(id: string) {
+  const root = path.join(DATA_DIR, "strm-itest", id);
+  const task: TaskDefinition = { id, account: "acc", accountType: "115", originPath: id, targetPath: `strm-itest/${id}`, strmPrefix: "/mnt/pan" };
+  const put = (rel: string, content: string | Buffer = "x") => {
+    const p = path.join(root, ...rel.split("/"));
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  };
+  const cleanup = () => {
+    replaceTasks([t115, tOl, tPoster]);
+    resetPostersAcrossTasks();
+    fs.rmSync(root, { recursive: true, force: true });
+  };
+  return { root, task, put, cleanup };
+}
+
+test("海报：strm 页离线的几级全试过才联网，offline 不联网，404 也记住，连不上就不再一个个等", async () => {
+  const dirs = ["Net A (2020) [tmdbid=9001]", "Net B (2020) [tmdbid=9002]", "Net Run (2020) [tmdbid=9004]"];
+  const down = ["Down C (2020) [tmdbid=9005]", "Down D (2020) [tmdbid=9006]"];
+  for (const d of [...dirs, ...down]) writePoster(`${d}/x.strm`, `/mnt/pan/posters/${d}/x.mkv`);
+  insertRun({ id: "run-net", taskId: "r-poster", accountName: "acc", scopePath: "", scopePaths: [], mode: "manual", trigger: "manual" });
+  replaceUnits("run-net", [organizedUnit("run-net", dirs[2], 9004)]);
+  const tmdb = fakeTmdb((_kind, id) => {
+    if (id === 9001) return { title: "甲", release_date: "2020-01-01", poster_path: "/a.jpg" };
+    if (id >= 9005) return new Error("connect ETIMEDOUT");
+    return null;
+  });
+  useTmdbKey(true);
+  try {
+    const off = (await post("/api/strm/posters", { taskId: "r-poster", paths: dirs, offline: true })).json<StrmPosterResult>();
+    assert.deepEqual(tmdb.asked, [], "offline 一个都不问");
+    assert.deepEqual([...off.known].sort(), [...dirs].sort(), "带 id 标签就算认出来了，拿没拿到图不要紧");
+    assert.equal(off.posters[dirs[2]]?.source, "run", "整理记录和 id 标签说的是同一部：离线就有图");
+
+    const on = (await post("/api/strm/posters", { taskId: "r-poster", paths: dirs })).json<StrmPosterResult>();
+    assert.equal(on.posters[dirs[0]]?.url, "https://image.tmdb.org/t/p/w500/a.jpg");
+    assert.equal(on.posters[dirs[1]], undefined, "两种类型 TMDB 都说没有");
+    assert.equal(on.posters[dirs[2]]?.source, "run");
+    assert.deepEqual(tmdb.asked, ["movie/9001", "movie/9002", "tv/9002"], "没有子目录先当电影问，404 再问剧；有整理记录的不问");
+
+    tmdb.asked.length = 0;
+    await post("/api/strm/posters", { taskId: "r-poster", paths: dirs });
+    assert.deepEqual(tmdb.asked, [], "有图的、404 的都记在缓存里，不再问");
+
+    await post("/api/strm/posters", { taskId: "r-poster", paths: down });
+    assert.deepEqual(tmdb.asked, ["movie/9005"], "连不上：第一个失败就停，剩下的不再一个个等超时");
+  } finally {
+    tmdb.stop();
+    useTmdbKey(false);
+    deleteRun("run-net");
+    for (const d of [...dirs, ...down]) fs.rmSync(path.join(POSTER_ROOT, d), { recursive: true, force: true });
   }
 });
 
@@ -427,4 +521,285 @@ test("本地图片：带上 Content-Type 和 ETag，只放行图片", async () =
   assert.equal((await get(`/api/strm/image?${q({ taskId: "r-poster", path: "Local Show/nope.jpg" })}`)).statusCode, 404);
   assert.equal((await get(`/api/strm/image?${q({ taskId: "r-poster", path: "../../secret.png" })}`)).statusCode, 400, "越界");
   assert.equal((await app.inject({ method: "GET", url })).statusCode, 401);
+});
+
+test("全库海报：所有任务的作品目录按修改时间新的在前，季目录算到剧上，没线索的不出现", async () => {
+  resetPostersAcrossTasks();
+  writeTmdbCache("details:tv:77:zh-CN", { posterUrl: "https://image.tmdb.org/t/p/w500/tag.jpg", title: "带标签的剧", year: "2024" });
+  insertRun({ id: "run-wall", taskId: "r-poster", accountName: "acc", scopePath: "", scopePaths: [], mode: "manual", trigger: "manual" });
+  replaceUnits("run-wall", [organizedUnit("run-wall")]);
+  // 修改时间从新到旧；故意和名字的顺序错开
+  const newestFirst = ["Tagged Show (2024) [tmdbid=77]", "Organized Show", "Local Show", "Suffixed Season", "Named Movie (2025)"];
+  const now = Date.now() / 1000;
+  newestFirst.forEach((rel, i) => fs.utimesSync(path.join(POSTER_ROOT, rel), now - i * 60, now - i * 60));
+  try {
+    assert.equal((await app.inject({ method: "GET", url: "/api/strm/posters/all" })).statusCode, 401);
+    const res = await get("/api/strm/posters/all");
+    assert.equal(res.statusCode, 200, res.body);
+    const { posters } = res.json<StrmAllPostersResult>();
+    assert.deepEqual(
+      posters.map((p) => [p.taskId, p.path, p.source]),
+      [
+        // 目录名带 id 标签：名字就说明是一部作品，不用往里走
+        ["r-poster", "Tagged Show (2024) [tmdbid=77]", "tmdb"],
+        // 下面是季目录：作品就是这一层的剧
+        ["r-poster", "Organized Show", "run"],
+        ["r-poster", "Local Show", "local"],
+        ["r-poster", "Suffixed Season", "local"],
+        ["r-poster", "Named Movie (2025)", "local"],
+      ],
+      "Thumbed Season / Plain Show / r-main 的 Show 都没有线索，不该出现",
+    );
+    assert.equal(posters[2].url, "Local Show/poster.jpg", "local 的地址相对任务根，前端拿 taskId 去 /api/strm/image 取");
+  } finally {
+    deleteRun("run-wall");
+    resetPostersAcrossTasks();
+  }
+});
+
+test("全库海报：共用一个本地目录的任务只走一遍，嵌在里面的任务根归它自己的任务", async () => {
+  resetPostersAcrossTasks();
+  const twin: TaskDefinition = { ...tPoster, id: "r-poster-twin" };
+  const inner: TaskDefinition = { ...tPoster, id: "r-poster-inner", originPath: "posters/Local Show", targetPath: "strm-itest/poster/Local Show" };
+  replaceTasks([t115, tOl, tPoster, twin, inner]);
+  try {
+    const { posters } = (await get("/api/strm/posters/all")).json<StrmAllPostersResult>();
+    const paths = posters.map((p) => p.path);
+    assert.equal(paths.filter((p) => p === "Named Movie (2025)").length, 1, "同一个本地目录的两个任务只走一遍");
+    assert.ok(!paths.includes("Local Show"), "嵌在里面的任务根不算外层任务的作品目录");
+    const own = posters.filter((p) => p.taskId === "r-poster-inner");
+    assert.deepEqual(
+      own.map((p) => ({ path: p.path, source: p.source, url: p.url })),
+      [{ path: "", source: "local", url: "poster.jpg" }],
+      "它自己的任务去走：任务根就是那部作品",
+    );
+  } finally {
+    replaceTasks([t115, tOl, tPoster]);
+    resetPostersAcrossTasks();
+  }
+});
+
+test("全库海报：结果缓存几分钟，任务表变了就重算", async () => {
+  resetPostersAcrossTasks();
+  const first = (await get("/api/strm/posters/all")).json<StrmAllPostersResult>().posters;
+  writePoster("Fresh Movie/poster.jpg", "fake-jpeg-bytes");
+  try {
+    const cached = (await get("/api/strm/posters/all")).json<StrmAllPostersResult>().posters;
+    assert.deepEqual(cached, first, "任务表没变、没过期：给上次的结果，不重新走一遍");
+    replaceTasks([t115, tOl, tPoster, { ...tOl, id: "r-extra", targetPath: "strm-itest/extra" }]);
+    const fresh = (await get("/api/strm/posters/all")).json<StrmAllPostersResult>().posters;
+    assert.ok(
+      fresh.some((p) => p.path === "Fresh Movie"),
+      "任务表变了就重算",
+    );
+  } finally {
+    fs.rmSync(path.join(POSTER_ROOT, "Fresh Movie"), { recursive: true, force: true });
+    replaceTasks([t115, tOl, tPoster]);
+    resetPostersAcrossTasks();
+  }
+});
+
+test("全库海报：找作品目录的规则", async () => {
+  const lib = isolatedLibrary("r-walk");
+  const soloRoot = path.join(DATA_DIR, "strm-itest", "solo");
+  const solo: TaskDefinition = { id: "r-solo", account: "acc", accountType: "115", originPath: "solo", targetPath: "strm-itest/solo/Solo (2022) [tmdbid=9202]", strmPrefix: "/mnt/pan" };
+  // 分类目录里散放一个 strm：底下的作品不能跟着丢
+  lib.put("电影/Loose.strm");
+  lib.put("电影/Movie A (2020)/a.strm");
+  lib.put("电影/Movie A (2020)/poster.jpg", "img");
+  lib.put("电影/Movie B (2021) [tmdbid=9201]/b.strm");
+  // 合集封面：合集自己算一张，底下的作品照样找
+  lib.put("合集/cover.jpg", "img");
+  lib.put("合集/Movie C (2019)/c.strm");
+  lib.put("合集/Movie C (2019)/c.jpg", "img");
+  // # / @ 开头的不一定是系统目录：整理默认模板就能生成 `#活着 (2020) [tmdbid=…]`
+  lib.put("#活着 (2020) [tmdbid=9205]/x.strm");
+  lib.put("@追更/Show D/Season 1/d.strm");
+  lib.put("@追更/Show D/poster.jpg", "img");
+  // 真的系统目录、隐藏目录不进
+  lib.put("@eaDir/Junk (2000)/poster.jpg", "img");
+  lib.put("@eaDir/Junk (2000)/j.strm");
+  lib.put(".hidden/Hidden (2000)/poster.jpg", "img");
+  lib.put(".hidden/Hidden (2000)/h.strm");
+  // 季目录按整理那套规则认（Season.01 也算），剧里的花絮目录不是作品
+  lib.put("某剧/folder.jpg", "img");
+  lib.put("某剧/Season.01/e1.strm");
+  lib.put("某剧/Season.02/e2.strm");
+  lib.put("某剧/花絮/PV.strm");
+  lib.put("某剧/花絮/PV.jpg", "img");
+  // 名字撞上 Object 原型属性的目录
+  lib.put("constructor/c.strm");
+  // 名字末尾带空格
+  lib.put("Trailing /poster.jpg", "img");
+  lib.put("Trailing /t.strm");
+  // 任务根自己带 id 标签（只同步了一部作品）
+  writeUnder(path.join(soloRoot, "Solo (2022) [tmdbid=9202]"), "s.strm", "x");
+  writeTmdbCache("details:movie:9201:zh-CN", { posterUrl: "https://image.tmdb.org/t/p/w500/b.jpg", title: "B", year: "2021" });
+  writeTmdbCache("details:movie:9205:zh-CN", { posterUrl: "https://image.tmdb.org/t/p/w500/alive.jpg", title: "活着", year: "2020" });
+  writeTmdbCache("details:movie:9202:zh-CN", { posterUrl: "https://image.tmdb.org/t/p/w500/solo.jpg", title: "独", year: "2022" });
+  replaceTasks([lib.task, solo]);
+  resetPostersAcrossTasks();
+  try {
+    const { posters } = (await get("/api/strm/posters/all")).json<StrmAllPostersResult>();
+    assert.deepEqual(
+      posters.map((p) => `${p.taskId}:${p.path}`).sort(),
+      [
+        "r-solo:",
+        "r-walk:#活着 (2020) [tmdbid=9205]",
+        "r-walk:@追更/Show D",
+        "r-walk:Trailing ",
+        "r-walk:合集",
+        "r-walk:合集/Movie C (2019)",
+        "r-walk:某剧",
+        "r-walk:电影/Movie A (2020)",
+        "r-walk:电影/Movie B (2021) [tmdbid=9201]",
+      ].sort(),
+    );
+    assert.ok(
+      posters.every((p) => typeof p.url === "string" && p.url.length > 0),
+      "每一张都要有地址",
+    );
+    const trailing = posters.find((p) => p.path === "Trailing ");
+    assert.equal((await get(`/api/strm/image?${q({ taskId: "r-walk", path: trailing?.url ?? "" })}`)).statusCode, 200, "名字带空格的目录，图也取得到");
+    const res = (await post("/api/strm/posters", { taskId: "r-walk", paths: ["constructor", "某剧"] })).json<StrmPosterResult>();
+    assert.ok(!Object.hasOwn(res.posters, "constructor"), "原型属性名的目录不会冒出一条假海报");
+    assert.equal(res.posters["某剧"]?.url, "某剧/folder.jpg");
+  } finally {
+    lib.cleanup();
+    fs.rmSync(soloRoot, { recursive: true, force: true });
+  }
+});
+
+test("全库海报：本地图太大，离线有小图就换小图、本地那张留作后备；没有还是用它；比 /image 上限还大的当没有", async () => {
+  const lib = isolatedLibrary("r-big");
+  const withAlt = "Big Poster (2021) [tmdbid=9301]";
+  const huge = "Huge (2020) [tmdbid=9302]";
+  lib.put(`${withAlt}/x.strm`);
+  lib.put(`${withAlt}/poster.jpg`, Buffer.alloc(600 * 1024));
+  lib.put("Big Alone/x.strm");
+  lib.put("Big Alone/poster.jpg", Buffer.alloc(600 * 1024));
+  lib.put(`${huge}/x.strm`);
+  lib.put(`${huge}/poster.jpg`, "");
+  fs.truncateSync(path.join(lib.root, huge, "poster.jpg"), 17 * 1024 * 1024); // 稀疏文件，不真占盘
+  writeTmdbCache("details:movie:9301:zh-CN", { posterUrl: "https://image.tmdb.org/t/p/w500/small.jpg", title: "大图", year: "2021" });
+  writeTmdbCache("details:movie:9302:zh-CN", { posterUrl: "https://image.tmdb.org/t/p/w500/huge-alt.jpg", title: "巨图", year: "2020" });
+  replaceTasks([lib.task]);
+  resetPostersAcrossTasks();
+  try {
+    const { posters } = (await get("/api/strm/posters/all")).json<StrmAllPostersResult>();
+    const by = new Map(posters.map((p) => [p.path, p]));
+    assert.deepEqual(
+      { url: by.get(withAlt)?.url, fallback: by.get(withAlt)?.fallback },
+      { url: "https://image.tmdb.org/t/p/w500/small.jpg", fallback: `${withAlt}/poster.jpg` },
+    );
+    assert.deepEqual({ source: by.get("Big Alone")?.source, url: by.get("Big Alone")?.url, fallback: by.get("Big Alone")?.fallback }, { source: "local", url: "Big Alone/poster.jpg", fallback: undefined });
+    assert.equal(by.get(huge)?.url, "https://image.tmdb.org/t/p/w500/huge-alt.jpg", "比 16MB 还大：/image 不给，当没有");
+
+    const res = (await post("/api/strm/posters", { taskId: lib.task.id, paths: [withAlt, huge] })).json<StrmPosterResult>();
+    assert.equal(res.posters[withAlt]?.source, "local", "strm 页不按大小换");
+    assert.equal(res.posters[huge]?.source, "tmdb", "太大的在 strm 页一样当没有");
+  } finally {
+    lib.cleanup();
+  }
+});
+
+test("全库海报：共用本地目录的几个任务，整理记录合起来查，库类型说法不一就不当先验", async () => {
+  const lib = isolatedLibrary("r-shared");
+  const tvFirst: TaskDefinition = { ...lib.task, id: "r-shared-tv", organize: { libraryType: "tv" } };
+  const movies: TaskDefinition = { ...lib.task, id: "r-shared-movie", originPath: "r-shared-2", organize: { libraryType: "movie" } };
+  lib.put("NoTag Show/Season 1/y.strm");
+  lib.put("Film X (2015) [tmdbid=9401]/x.strm");
+  // 同一个编号在剧那边是另一部同年的作品：库类型听了排在前面的「剧」就会拿错
+  writeTmdbCache("details:tv:9401:zh-CN", { posterUrl: "https://image.tmdb.org/t/p/w500/tv-wrong.jpg", title: "同号的剧", year: "2015" });
+  writeTmdbCache("details:movie:9401:zh-CN", { posterUrl: "https://image.tmdb.org/t/p/w500/movie-right.jpg", title: "电影 X", year: "2015" });
+  insertRun({ id: "run-shared", taskId: "r-shared-movie", accountName: "acc", scopePath: "", scopePaths: [], mode: "manual", trigger: "manual" });
+  replaceUnits("run-shared", [organizedUnit("run-shared", "NoTag Show", 9402)]);
+  replaceTasks([tvFirst, movies]);
+  resetPostersAcrossTasks();
+  try {
+    const { posters } = (await get("/api/strm/posters/all")).json<StrmAllPostersResult>();
+    const by = new Map(posters.map((p) => [p.path, p]));
+    assert.equal(by.get("NoTag Show")?.url, "https://image.tmdb.org/t/p/w500/run.jpg", "另一个任务整理过的，也认");
+    assert.equal(by.get("Film X (2015) [tmdbid=9401]")?.url, "https://image.tmdb.org/t/p/w500/movie-right.jpg", "说法不一：按目录结构猜（没有季目录就是电影）");
+  } finally {
+    deleteRun("run-shared");
+    lib.cleanup();
+  }
+});
+
+test("全库海报：请求里不等 TMDB，后台补到了再换上；年份对不上换一种类型；问过的不再问", async () => {
+  const lib = isolatedLibrary("r-warm");
+  lib.put("Local One/a.strm");
+  lib.put("Local One/poster.jpg", "img");
+  lib.put("Slow (2021) [tmdbid=9101]/x.strm");
+  lib.put("Wrong Kind (2010) [tmdbid=9102]/x.strm");
+  lib.put("Nothing (2012) [tmdbid=9103]/x.strm");
+  let release = () => {};
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tmdb = fakeTmdb(async (kind, id) => {
+    if (id === 9101) {
+      await hold;
+      return { title: "慢", release_date: "2021-05-01", poster_path: "/slow.jpg" };
+    }
+    if (id === 9102) {
+      return kind === "movie"
+        ? { title: "同号的别的电影", release_date: "1999-01-01", poster_path: "/other.jpg" }
+        : { name: "对的剧", first_air_date: "2010-03-01", poster_path: "/right.jpg" };
+    }
+    return null;
+  });
+  replaceTasks([lib.task]);
+  useTmdbKey(true);
+  resetPostersAcrossTasks();
+  try {
+    const first = (await get("/api/strm/posters/all")).json<StrmAllPostersResult>().posters;
+    assert.deepEqual(
+      first.map((p) => p.path),
+      ["Local One"],
+      "离线有的先给，不等 TMDB（9101 这时候还拖着没回）",
+    );
+    release();
+    await settlePostersAcrossTasks();
+    const after = (await get("/api/strm/posters/all")).json<StrmAllPostersResult>().posters;
+    const by = new Map(after.map((p) => [p.path, p]));
+    assert.equal(by.get("Slow (2021) [tmdbid=9101]")?.url, "https://image.tmdb.org/t/p/w500/slow.jpg", "后台补到了，重算一遍换上");
+    assert.equal(by.get("Wrong Kind (2010) [tmdbid=9102]")?.url, "https://image.tmdb.org/t/p/w500/right.jpg", "年份对不上是另一部，换另一种类型");
+    assert.ok(!by.has("Nothing (2012) [tmdbid=9103]"));
+
+    const asked = tmdb.asked.length;
+    resetPostersAcrossTasks();
+    await get("/api/strm/posters/all");
+    await settlePostersAcrossTasks();
+    assert.equal(tmdb.asked.length, asked, "有图的、没图的都记在缓存里，重算也不再问");
+  } finally {
+    release();
+    tmdb.stop();
+    useTmdbKey(false);
+    lib.cleanup();
+  }
+});
+
+test("全库海报：TMDB 连不上就歇一阵，不是每次都去撞", async () => {
+  const lib = isolatedLibrary("r-down");
+  lib.put("Offline (2020) [tmdbid=9111]/x.strm");
+  const tmdb = fakeTmdb(() => new Error("connect ETIMEDOUT"));
+  replaceTasks([lib.task]);
+  useTmdbKey(true);
+  resetPostersAcrossTasks();
+  try {
+    await get("/api/strm/posters/all");
+    await settlePostersAcrossTasks();
+    assert.deepEqual(tmdb.asked, ["movie/9111"], "连不上：这个 id 问一次就停");
+    // 任务表变了当场重算，又有等联网的线索——但还在歇着
+    replaceTasks([lib.task, { ...tOl, id: "r-down-extra", targetPath: "strm-itest/down-extra" }]);
+    await get("/api/strm/posters/all");
+    await settlePostersAcrossTasks();
+    assert.deepEqual(tmdb.asked, ["movie/9111"], "歇着的时候不再去撞");
+  } finally {
+    tmdb.stop();
+    useTmdbKey(false);
+    lib.cleanup();
+  }
 });

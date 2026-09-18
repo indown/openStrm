@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * 海报背景：一面 3D 倾斜的海报墙，压暗压糊，铺在内容后面。
+ * 海报背景：一面 3D 倾斜的海报墙，压暗压糊，铺在内容后面。任务页（整个库）、strm 页（当前目录）、
+ * 整理页（这次识别出来的）各喂各的海报，墙是同一面。
  *
  *   stream  多个作品：若干列各自缓慢上下漂移，列在 Z 轴上深浅不一——越远越小、越糊、越暗
  *   single  已经进到某一部作品里：就这一张，倾斜、放大、糊掉，完全静止
@@ -21,7 +22,7 @@
  * 一张海报能被放大到几万像素宽。所以墙的尺寸按视口算、不用 scale() 放大（scale 连 Z 一起放大），
  * 倾角压在 10° / 14°：最坏情况的 Z 位移只有 perspective 的四分之一，放大倍率稳定在 0.7~1.4。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 export interface BackdropPoster {
   /** 稳定的键，一般是目录相对路径 */
@@ -58,6 +59,22 @@ const PLANE_Z = -120;
 /** 墙的尺寸上限：超宽屏上不设限的话，斜着的墙左右两端会伸到相机跟前 */
 const PLANE_MAX_W = 3600;
 const PLANE_MAX_H = 1800;
+
+/** 墙只在这个宽度以上出现：和页面从卡片换成表格是同一个断点（md），卡片列表后面不画，画了只会拖慢它 */
+const WIDE_QUERY = "(min-width: 768px)";
+
+/** 屏幕够不够宽、墙会不会出现。取海报的 hook 也看它：窄屏上墙不画，就别白拉几十张图 */
+export function useBackdropWide(): boolean {
+  const [wide, setWide] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia(WIDE_QUERY);
+    const sync = () => setWide(mql.matches);
+    sync();
+    mql.addEventListener("change", sync);
+    return () => mql.removeEventListener("change", sync);
+  }, []);
+  return wide;
+}
 
 /** 每列的深度、速度都按黄金分割取个稳定的伪随机——不能用 Math.random，重渲染要拿到同一面墙 */
 const pseudo = (i: number, seed: number): number => ((i * 0.6180339887 + seed) % 1) * 2 - 1;
@@ -96,14 +113,21 @@ function buildColumns(posters: BackdropPoster[], count: number, planeH: number):
 export function PosterBackdrop({ mode, posters, muted = false }: PosterBackdropProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const trackRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const colRefs = useRef<(HTMLDivElement | null)[]>([]);
+  /** 列在不在视口里：屏幕外的列不推——推一下，它那层模糊就得重算一遍 */
+  const onScreen = useRef<boolean[]>([]);
   const offsets = useRef<number[]>([]);
-  const [enabled, setEnabled] = useState(false);
+  const enabled = useBackdropWide();
   const [reduced, setReduced] = useState(false);
   const [viewport, setViewport] = useState({ w: 1440, h: 900 });
   /** 只铺内容列，不铺侧栏：量出内容列的左边和宽度，跟着侧栏展开 / 收起变 */
   const [box, setBox] = useState<{ left: number; width: number } | null>(null);
+  const shown = enabled && posters.length > 0;
 
-  useEffect(() => {
+  // 要等这一层真画出来才量得到：头一次渲染 enabled 还是 false、返回的是 null，挂载时 rootRef 是空的。
+  // 用 layout effect：量完再上屏，不然头一帧会先铺满整个窗口、再跳到内容列
+  useLayoutEffect(() => {
+    if (!shown) return;
     const host = rootRef.current?.parentElement?.closest("[data-slot=\"sidebar-inset\"]");
     if (!host) return;
     const measure = () => {
@@ -118,23 +142,18 @@ export function PosterBackdrop({ mode, posters, muted = false }: PosterBackdropP
       ro.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, []);
+  }, [shown]);
 
-  // 窄屏不渲染：手机上这两页是卡片列表，背景只会拖慢它
   useEffect(() => {
-    const wide = window.matchMedia("(min-width: 640px)");
     const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
     const sync = () => {
-      setEnabled(wide.matches);
       setReduced(motion.matches);
       setViewport({ w: window.innerWidth || 1440, h: window.innerHeight || 900 });
     };
     sync();
-    wide.addEventListener("change", sync);
     motion.addEventListener("change", sync);
     window.addEventListener("resize", sync);
     return () => {
-      wide.removeEventListener("change", sync);
       motion.removeEventListener("change", sync);
       window.removeEventListener("resize", sync);
     };
@@ -151,6 +170,16 @@ export function PosterBackdrop({ mode, posters, muted = false }: PosterBackdropP
 
   useEffect(() => {
     if (!running) return;
+    onScreen.current = columns.map(() => true);
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) onScreen.current[Number((e.target as HTMLElement).dataset.col)] = e.isIntersecting;
+    });
+    for (const el of colRefs.current) if (el) io.observe(el);
+    return () => io.disconnect();
+  }, [running, columns]);
+
+  useEffect(() => {
+    if (!running) return;
     const unit = TILE_H + GAP;
     if (offsets.current.length !== columns.length) {
       offsets.current = columns.map((_, c) => unit * ((c * 0.37) % 1));
@@ -162,6 +191,7 @@ export function PosterBackdrop({ mode, posters, muted = false }: PosterBackdropP
       const dt = Math.min(0.05, Math.max(0, ts - last) / 1000);
       last = ts;
       for (let c = 0; c < columns.length; c++) {
+        if (onScreen.current[c] === false) continue;
         const span = columns[c].items.length * unit;
         const next = ((((offsets.current[c] ?? 0) + columns[c].velocity * dt) % span) + span) % span;
         offsets.current[c] = next;
@@ -188,7 +218,7 @@ export function PosterBackdrop({ mode, posters, muted = false }: PosterBackdropP
     };
   }, [running, columns]);
 
-  if (!enabled || posters.length === 0) return null;
+  if (!shown) return null;
 
   return (
     <div
@@ -225,6 +255,10 @@ export function PosterBackdrop({ mode, posters, muted = false }: PosterBackdropP
           {columns.map((col, c) => (
             <div
               key={`col-${c}`}
+              ref={(el) => {
+                colRefs.current[c] = el;
+              }}
+              data-col={c}
               className="h-full overflow-hidden"
               style={{
                 width: TILE_W + GAP,

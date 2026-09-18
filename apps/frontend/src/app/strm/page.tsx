@@ -138,8 +138,9 @@ function StrmContent() {
     dirs: dirNames,
     enabled: Boolean(b.taskId) && b.entries.length <= BACKDROP_MAX_ENTRIES,
   });
-  const recognized = backdrop.mode === "stream" ? backdrop.posters.length : 0;
-  const unrecognized = backdrop.mode === "stream" ? Math.max(0, dirNames.length - recognized) : 0;
+  // 按「有没有线索」数，不按拿没拿到图：手机上不下载图，数也照样有；超过一屏的子目录也都数进去
+  const recognized = backdrop.recognized ?? 0;
+  const unrecognized = backdrop.recognized === null ? 0 : Math.max(0, dirNames.length - recognized);
   const fileCounts = useMemo(() => {
     let strm = 0;
     let other = 0;

@@ -157,9 +157,28 @@ export interface StrmPoster {
   title?: string;
   year?: string;
   tmdbId?: number;
+  /**
+   * 目录里其实有本地图，但太大，换成了这张外链小图（任务页那面墙才会换）：本地那张的路径留作后备，
+   * 浏览器连不上外链时退回去用它
+   */
+  fallback?: string;
 }
 
 export interface StrmPosterResult {
   /** 键是请求里给的目录路径；没拿到海报的目录不出现 */
   posters: Record<string, StrmPoster>;
+  /** 有线索的目录（本地图 / id 标签 / nfo / 整理记录），不管最后拿没拿到图；strm 页拿它数「认出来几个」 */
+  known: string[];
+}
+
+/** 全库抽出来的一张海报：带上它是哪个任务、哪个作品目录的（local 的图要拿 taskId 去取） */
+export interface StrmPosterRef extends StrmPoster {
+  taskId: string;
+  /** 作品目录，相对任务根 */
+  path: string;
+}
+
+export interface StrmAllPostersResult {
+  /** 修改时间新的作品在前；同一张图只出现一次 */
+  posters: StrmPosterRef[];
 }

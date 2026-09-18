@@ -223,7 +223,7 @@
     mask-image: radial-gradient(ellipse 65% 65% at 50% 50%, #000 25%, transparent 100%);
   }
 
-  /* strm / 整理页的海报背景（components/poster-backdrop.tsx）：一面 3D 倾斜的海报墙。
+  /* 任务 / strm / 整理页的海报背景（components/poster-backdrop.tsx）：一面 3D 倾斜的海报墙。
      压暗压糊到只剩色块——页面上最饱和的东西必须还是状态徽章，不能被一张电影海报压过去。
      透视和遮罩放这里，几何（倾角、列深、速度）在组件里，那些要跟着视口算 */
   .poster-backdrop {
