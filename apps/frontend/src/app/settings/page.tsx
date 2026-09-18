@@ -24,6 +24,7 @@ import { api } from "@/lib/api";
 import { downloadBackupWithToast } from "@/lib/backup";
 import { useModKey } from "@/hooks/use-mod-key";
 import { apiErrorMessage } from "@/lib/axios";
+import { FEATURES } from "@/lib/features";
 import type { AppSettings, OrganizeSettings, UpdateSettings } from "@openstrm/shared";
 import { OrganizeSection } from "./components/OrganizeSection";
 import { UpdateSection } from "./components/UpdateSection";
@@ -36,7 +37,7 @@ const SECTIONS: Section[] = [
   { id: "throttle", title: "下载限流" },
   { id: "emby", title: "Emby" },
   { id: "tmdb", title: "TMDB" },
-  { id: "hdhive", title: "HDHive" },
+  ...(FEATURES.hdhiveSearch ? [{ id: "hdhive", title: "HDHive" }] : []),
   { id: "openlist-copy", title: "复制到 OpenList" },
   { id: "organize", title: "整理与命名" },
 ];
@@ -83,7 +84,11 @@ const schema = z.object({
     downloadMaxConcurrent: count(1, 50),
   }),
   tmdb: z.object({ apiKey: z.string(), language: z.string() }),
-  hdhive: z.object({ apiKey: z.string(), baseUrl: httpUrl("填 http:// 或 https:// 开头的地址") }),
+  // 入口关着时这一节不显示，原样带回去就行：看不见的字段不能拦住保存（以前存进去的地址可能没带 http://）
+  hdhive: z.object({
+    apiKey: z.string(),
+    baseUrl: FEATURES.hdhiveSearch ? httpUrl("填 http:// 或 https:// 开头的地址") : z.string(),
+  }),
   openlistCopy: z.object({ account: z.string(), srcDir: z.string(), dstDir: z.string() }),
   organize: z.custom<OrganizeSettings>(),
   update: z.custom<UpdateSettings>(),
@@ -461,7 +466,7 @@ export default function SettingsPage() {
             <section id="tmdb" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
               <h2 className="text-base font-medium">TMDB</h2>
               <p className="text-sm text-muted-foreground">
-                配置后，在影库「加入影库」对话框中可通过 TMDB 搜索自动填充标题与封面。
+                「整理」按它识别影视，不配就整理不了；「strm 管理」页的海报墙在目录里没有现成图片时，也从这里补海报。
               </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <FormField
@@ -500,47 +505,49 @@ export default function SettingsPage() {
               </div>
             </section>
 
-            <section id="hdhive" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
-              <h2 className="text-base font-medium">HDHive OpenAPI</h2>
-              <p className="text-sm text-muted-foreground">
-                配置后，可在顶部搜索框搜索影视并查询 HDHive 的可用资源（基于 TMDB ID）。
-              </p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <FormField
-                  control={form.control}
-                  name="hdhive.apiKey"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>HDHive API Key (X-API-Key)</FormLabel>
-                      <FormControl>
-                        <SecretInput
-                          value={field.value}
-                          onChange={field.onChange}
-                          onBlur={field.onBlur}
-                          name={field.name}
-                          masked={saved?.hdhive?.apiKey}
-                          placeholder="个人 API Key 或应用 Secret"
-                        />
-                      </FormControl>
-                      <FormDescription className="text-xs">改动即替换，清空即删除</FormDescription>
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="hdhive.baseUrl"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Base URL (可选)</FormLabel>
-                      <FormControl>
-                        <Input placeholder="https://hdhive.com" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-            </section>
+            {FEATURES.hdhiveSearch && (
+              <section id="hdhive" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
+                <h2 className="text-base font-medium">HDHive OpenAPI</h2>
+                <p className="text-sm text-muted-foreground">
+                  配置后，可在顶部搜索框搜索影视并查询 HDHive 的可用资源（基于 TMDB ID）。
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <FormField
+                    control={form.control}
+                    name="hdhive.apiKey"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>HDHive API Key (X-API-Key)</FormLabel>
+                        <FormControl>
+                          <SecretInput
+                            value={field.value}
+                            onChange={field.onChange}
+                            onBlur={field.onBlur}
+                            name={field.name}
+                            masked={saved?.hdhive?.apiKey}
+                            placeholder="个人 API Key 或应用 Secret"
+                          />
+                        </FormControl>
+                        <FormDescription className="text-xs">改动即替换，清空即删除</FormDescription>
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="hdhive.baseUrl"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Base URL (可选)</FormLabel>
+                        <FormControl>
+                          <Input placeholder="https://hdhive.com" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              </section>
+            )}
 
             <section id="openlist-copy" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
               <h2 className="text-base font-medium">复制到 OpenList</h2>

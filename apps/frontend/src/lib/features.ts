@@ -5,6 +5,6 @@
 export const FEATURES: { libraryEntry: boolean; hdhiveSearch: boolean } = {
   /** 侧栏「影库」入口 */
   libraryEntry: false,
-  /** 顶栏「搜索影视资源（TMDB → HDHive）」入口 */
+  /** 顶栏「搜索影视资源（TMDB → HDHive）」入口，连同设置页的 HDHive 一节（只有这个入口用得到它） */
   hdhiveSearch: false,
 };
