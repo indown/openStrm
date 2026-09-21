@@ -34,6 +34,8 @@ export function driveErrorFacts(err: unknown): DriveErrorFacts {
   if (err instanceof OpenlistError) return { status: err.code, transport: err.transport, taskFailed: false, authCode: err.code === 401, api: true };
   if (err instanceof Cloud115Error) return { status: err.status, transport: false, taskFailed: false, authCode: false, api: true };
   if (err instanceof Cloud115ApiError) return { transport: false, taskFailed: false, authCode: err.errno === 990001, api: true };
+  // 115 分享接口的业务错误：也是接口回来的，cookie 失效那种要能按码 / 文案认成账号问题
+  if (err instanceof ShareApiError) return { transport: false, taskFailed: false, authCode: err.errno === 990001, api: true };
   if (err instanceof QuarkTaskError) return { transport: false, taskFailed: true, authCode: false, api: true };
   if (err instanceof QuarkError) return { status: err.status, transport: false, taskFailed: false, authCode: err.code === 31001 || err.code === 31004 || err.status === 401, api: true };
   if (axios.isAxiosError(err)) return { status: err.response?.status, transport: !err.response, taskFailed: false, authCode: false, api: !!err.response };
@@ -71,16 +73,18 @@ export function accountIssueOf(provider: Pick<DriveProvider, "classifyError"> | 
   return null;
 }
 
+/** 包成 HttpError 时原始错误挂在 cause 上：要按错误类型再判断的调用方（智能体工具的账号提示）还拿得到 */
 export function driveErrorToHttp(err: unknown, fallback: string): HttpError {
   if (err instanceof HttpError) return err;
-  if (err instanceof RemoteDirNotFoundError) return new HttpError(404, err.message);
-  if (err instanceof ShareGoneError) return upstreamError(`分享不可用：${err.message}`, { errno: err.code });
-  if (err instanceof ShareApiError) return upstreamError(`分享不可用：${err.message}`, { errno: err.errno });
-  if (err instanceof Cloud115Error) return upstreamError(err.message, { upstreamStatus: err.status });
-  if (err instanceof QuarkError) return upstreamError(err.message, { upstreamStatus: err.status, code: err.code });
-  if (err instanceof OpenlistError) return upstreamError(err.message, { upstreamStatus: err.code });
-  if (isAbortError(err)) return new HttpError(499, "已取消");
+  const cause = { cause: err };
+  if (err instanceof RemoteDirNotFoundError) return new HttpError(404, err.message, {}, cause);
+  if (err instanceof ShareGoneError) return upstreamError(`分享不可用：${err.message}`, { errno: err.code }, err);
+  if (err instanceof ShareApiError) return upstreamError(`分享不可用：${err.message}`, { errno: err.errno }, err);
+  if (err instanceof Cloud115Error) return upstreamError(err.message, { upstreamStatus: err.status }, err);
+  if (err instanceof QuarkError) return upstreamError(err.message, { upstreamStatus: err.status, code: err.code }, err);
+  if (err instanceof OpenlistError) return upstreamError(err.message, { upstreamStatus: err.code }, err);
+  if (isAbortError(err)) return new HttpError(499, "已取消", {}, cause);
   // 其余 PermanentError 是「网盘明确说没有」：文件不存在、目录不是目录
-  if (err instanceof PermanentError) return new HttpError(404, err.message);
-  return upstreamError(err instanceof Error && err.message ? err.message : fallback);
+  if (err instanceof PermanentError) return new HttpError(404, err.message, {}, cause);
+  return upstreamError(err instanceof Error && err.message ? err.message : fallback, {}, err);
 }

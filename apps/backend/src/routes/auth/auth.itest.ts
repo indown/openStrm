@@ -129,7 +129,8 @@ test("改密码接口自身不被拦截，且校验当前密码", async () => {
     currentPassword: "not-the-password",
     newPassword: NEW_PASSWORD,
   });
-  assert.equal(wrongCurrent.statusCode, 401, "改密码接口必须放行，否则用户被锁在门外");
+  // 放行到了处理函数（不是被默认密码守卫挡下的 403）；密码错回 400，不能是 401——前端会当成会话失效把人踢走
+  assert.equal(wrongCurrent.statusCode, 400, "改密码接口必须放行，否则用户被锁在门外");
 });
 
 test("新密码为默认值或过短都被拒绝", async () => {

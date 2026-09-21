@@ -16,7 +16,7 @@
  *   - status       -1 失败、0 等待、1 下载中、2 完成；status_text 是 115 给的中文说明
  *   - move         -1 表示下载完了但转存失败（一般是空间不足）
  */
-import { request115, type AccountInfo } from "./client.js";
+import { Cloud115ApiError, request115, type AccountInfo } from "./client.js";
 import { decrypt, encrypt } from "./crypto.js";
 import { parseJsonBigIntSafe } from "./life.js";
 
@@ -199,9 +199,12 @@ export function offlineErrorOf(resp: unknown): string | null {
   return r.error_msg || r.error || `errno=${r.errno ?? "?"}`;
 }
 
+/** 抛成接口错误（带 errno）：登录超时、风控这些账号问题才认得出来，智能体那边据此提示别再重试 */
 function ensureOk(resp: unknown, what: string): void {
   const err = offlineErrorOf(resp);
-  if (err) throw new Error(`115 ${what}失败：${err}`);
+  if (!err) return;
+  const errno = (resp as Envelope).errno;
+  throw new Cloud115ApiError(`115 ${what}失败：${err}`, typeof errno === "number" ? errno : undefined);
 }
 
 /* ------------------------------- 归一化 ------------------------------- */

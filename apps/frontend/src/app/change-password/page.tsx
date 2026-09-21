@@ -7,6 +7,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Form, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { AuthShell } from "@/components/auth-shell";
 import { apiErrorMessage, clearToken } from "@/lib/axios";
@@ -29,6 +30,17 @@ export default function ChangePasswordPage() {
   useEffect(() => {
     setRequired(new URLSearchParams(window.location.search).get("required") === "1");
   }, []);
+  // 智能体令牌不随改密码失效：有令牌时给个选项一并撤销（怀疑泄露来改密码，多半也想收回它们）。
+  // 强制改默认密码时不查：那时除了改密码别的接口都进不去，也不可能有令牌
+  const [agentTokens, setAgentTokens] = useState(0);
+  const [revokeTokens, setRevokeTokens] = useState(false);
+  useEffect(() => {
+    if (required !== false) return;
+    api.agent
+      .tokens()
+      .then((list) => setAgentTokens(list.length))
+      .catch(() => {});
+  }, [required]);
   const form = useForm<ChangePasswordForm>({
     defaultValues: { currentPassword: "", newPassword: "", confirmPassword: "" },
   });
@@ -41,9 +53,11 @@ export default function ChangePasswordPage() {
 
     setSubmitting(true);
     try {
-      await api.auth.changePassword(values.currentPassword, values.newPassword);
+      const res = await api.auth.changePassword(values.currentPassword, values.newPassword, { revokeAgentTokens: revokeTokens });
       // 旧 token 仍然有效，但让用户用新密码走一遍登录，省得以为没生效
-      toast.success("密码已修改，请用新密码登录");
+      toast.success(
+        res.revokedAgentTokens ? `密码已修改，${res.revokedAgentTokens} 个智能体令牌已撤销，请用新密码登录` : "密码已修改，请用新密码登录",
+      );
       clearToken();
       router.push("/login");
     } catch (err) {
@@ -110,6 +124,13 @@ export default function ChangePasswordPage() {
               </FormItem>
             )}
           />
+
+          {agentTokens > 0 && (
+            <label className="flex items-start gap-2 text-sm text-muted-foreground">
+              <Checkbox className="mt-0.5" checked={revokeTokens} onCheckedChange={(v) => setRevokeTokens(v === true)} />
+              <span>同时撤销全部 {agentTokens} 个智能体令牌。改密码不会让令牌失效，怀疑泄露的话一起收回，之后在设置里重新建。</span>
+            </label>
+          )}
 
           <Button type="submit" className="mt-2 w-full" disabled={submitting}>
             {submitting ? "提交中..." : "确认修改"}

@@ -28,6 +28,7 @@ import { FEATURES } from "@/lib/features";
 import type { AppSettings, OrganizeSettings, UpdateSettings } from "@openstrm/shared";
 import { OrganizeSection } from "./components/OrganizeSection";
 import { UpdateSection } from "./components/UpdateSection";
+import { AgentSection } from "./components/AgentSection";
 import { SectionNav, type Section } from "./components/SectionNav";
 
 /** 右侧导航的顺序就是页面顺序；id 对应各 section 上的锚点 */
@@ -40,6 +41,7 @@ const SECTIONS: Section[] = [
   ...(FEATURES.hdhiveSearch ? [{ id: "hdhive", title: "HDHive" }] : []),
   { id: "openlist-copy", title: "复制到 OpenList" },
   { id: "organize", title: "整理与命名" },
+  { id: "agent", title: "智能体接入" },
 ];
 
 /** 扩展名落一个标签时规范化：去空白、补点号、转小写。空的丢掉 */
@@ -92,6 +94,10 @@ const schema = z.object({
   openlistCopy: z.object({ account: z.string(), srcDir: z.string(), dstDir: z.string() }),
   organize: z.custom<OrganizeSettings>(),
   update: z.custom<UpdateSettings>(),
+  agent: z.object({
+    enabled: z.boolean(),
+    uiBaseUrl: httpUrl("填 http:// 或 https:// 开头的地址，比如 http://nas:3000"),
+  }),
 });
 
 type SettingsValues = z.infer<typeof schema>;
@@ -122,6 +128,7 @@ function fromSettings(s: AppSettings): SettingsValues {
     },
     organize: s.organize ?? {},
     update: s.update ?? {},
+    agent: { enabled: s.agent?.enabled === true, uiBaseUrl: s.agent?.uiBaseUrl ?? "" },
   };
 }
 
@@ -143,6 +150,7 @@ function toSettings(v: SettingsValues): AppSettings {
     openlistCopy: v.openlistCopy,
     organize: v.organize,
     update: v.update,
+    agent: v.agent,
   };
 }
 
@@ -622,6 +630,42 @@ export default function SettingsPage() {
               control={form.control}
               name="organize"
               render={({ field }) => <OrganizeSection value={field.value ?? {}} onChange={field.onChange} />}
+            />
+
+            <AgentSection
+              enabled={saved?.agent?.enabled === true}
+              fields={
+                <div className="space-y-4">
+                  <FormField
+                    control={form.control}
+                    name="agent.enabled"
+                    render={({ field }) => (
+                      <SwitchRow
+                        label="开启智能体接入"
+                        description="关着时 MCP 地址不对外，令牌也调不了接口"
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="agent.uiBaseUrl"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>管理界面地址（可选）</FormLabel>
+                        <FormControl>
+                          <Input placeholder="http://nas:3000" {...field} />
+                        </FormControl>
+                        <FormDescription className="text-xs">
+                          工具结果里「在 OpenStrm 里打开」的链接用这个地址拼，填你平时打开这个界面的地址；不填就不给链接
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              }
             />
 
             <div className="flex flex-wrap items-center gap-3">

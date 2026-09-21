@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { api, type HdhiveResourceItem, type HdhiveTmdbItem, type HdhiveUnlockResult } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
+import { copyToClipboard } from "@/lib/clipboard";
 import { toast } from "sonner";
 
 export type { HdhiveTmdbItem, HdhiveResourceItem, HdhiveUnlockResult } from "@/lib/api";
@@ -68,12 +69,8 @@ function is115(panType: string | null | undefined): boolean {
 }
 
 async function copyText(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast.success("已复制");
-  } catch {
-    toast.error("复制失败");
-  }
+  if (await copyToClipboard(text)) toast.success("已复制");
+  else toast.error("复制失败");
 }
 
 interface ResourceCardProps {

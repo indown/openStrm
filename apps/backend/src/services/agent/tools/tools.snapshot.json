@@ -1,0 +1,375 @@
+[
+  {
+    "name": "overview",
+    "scope": "read",
+    "toolset": null,
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "tasks_list",
+    "scope": "read",
+    "toolset": null,
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "job_status",
+    "scope": "read",
+    "toolset": null,
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "waitSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 45
+        }
+      },
+      "required": [
+        "jobId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "sync_start",
+    "scope": "run",
+    "toolset": "sync",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      },
+      "required": [
+        "task"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "sync_cancel",
+    "scope": "run",
+    "toolset": "sync",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      },
+      "required": [
+        "task"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "sync_status",
+    "scope": "read",
+    "toolset": "sync",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "executionId": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "waitSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 45
+        },
+        "detail": {
+          "type": "string",
+          "enum": [
+            "brief",
+            "full"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "sync_history",
+    "scope": "read",
+    "toolset": "sync",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "running",
+            "completed",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "drive_browse",
+    "scope": "read",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "account": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "share_inspect",
+    "scope": "read",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "link": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "dirId": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "cursor": {
+          "type": "string",
+          "maxLength": 500
+        }
+      },
+      "required": [
+        "link"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "share_save",
+    "scope": "write",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": false,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "link": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "subPath": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "itemIds": {
+          "minItems": 1,
+          "maxItems": 200,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "dirId": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "follow": {
+          "type": "boolean"
+        },
+        "followIntervalMinutes": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 10080
+        },
+        "organize": {
+          "type": "boolean"
+        },
+        "force": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "link",
+        "task"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "offline_add",
+    "scope": "write",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": false,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "urls": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "task": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "subPath": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      },
+      "required": [
+        "urls"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "offline_list",
+    "scope": "read",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+]

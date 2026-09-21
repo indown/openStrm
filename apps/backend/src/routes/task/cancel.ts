@@ -8,7 +8,7 @@ import { parse } from "../../lib/validate.js";
 const cancelSchema = z.object({ taskId: z.string().optional(), id: z.string().optional() });
 
 export default async function (fastify: FastifyInstance) {
-  fastify.post("/api/cancelTask", { preHandler: [fastify.authenticate] }, async (request) => {
+  fastify.post("/api/cancelTask", { preHandler: [fastify.authenticate], config: { agentScope: "run", agentToolset: "sync" } }, async (request) => {
     const body = parse(cancelSchema, request.body);
     const taskId = body.taskId || body.id;
     if (!taskId) throw new HttpError(400, "taskId is required");

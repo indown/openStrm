@@ -321,3 +321,54 @@ export const tmdbCache = sqliteTable("tmdb_cache", {
   value: text("value").notNull().default("{}"),
   fetchedAt: integer("fetched_at").notNull().default(0),
 });
+
+/**
+ * 智能体（MCP / REST）用的访问令牌。明文只在创建时给一次，这里只存 SHA-256：
+ * 令牌是 256 位随机数，没有字典可撞，每个请求都要校验，犯不上跑 KDF。
+ * 撤销就是删行；调用记录里留着令牌名，删了也查得到是谁干的。
+ */
+export const apiTokens = sqliteTable(
+  "api_tokens",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    /** manual = 设置页手建；以后 OAuth 发的令牌也放这张表 */
+    kind: text("kind").notNull().default("manual"),
+    tokenHash: text("token_hash").notNull(),
+    /** 明文的前几位，列表里认令牌用 */
+    prefix: text("prefix").notNull(),
+    scopes: text("scopes").notNull().default("[]"),
+    /** 工具集的 JSON 数组。选「全部」存的是当时的全部组：以后版本加的组不会自动给老令牌，要用户自己勾 */
+    toolsets: text("toolsets").notNull(),
+    createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+    expiresAt: integer("expires_at"),
+    lastUsedAt: integer("last_used_at"),
+    lastUsedIp: text("last_used_ip"),
+  },
+  (t) => ({
+    hashUniq: uniqueIndex("api_tokens_hash_uniq").on(t.tokenHash),
+  }),
+);
+
+/** 智能体的每次工具调用（和令牌直接调 REST）：设置页「最近调用」、事后查是谁干的 */
+export const agentAudit = sqliteTable(
+  "agent_audit",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    tokenId: text("token_id").notNull(),
+    tokenName: text("token_name").notNull().default(""),
+    /** 调用方的 IP：同一个令牌出现陌生 IP 就是泄露的信号 */
+    ip: text("ip").notNull().default(""),
+    tool: text("tool").notNull(),
+    /** 参数摘要：截断过，提取码抹掉了 */
+    args: text("args").notNull().default(""),
+    ok: integer("ok", { mode: "boolean" }).notNull().default(true),
+    error: text("error").notNull().default(""),
+    durationMs: integer("duration_ms").notNull().default(0),
+    at: integer("at").notNull().default(sql`(unixepoch())`),
+  },
+  (t) => ({
+    tokenIdx: index("agent_audit_token_idx").on(t.tokenId, t.at),
+    atIdx: index("agent_audit_at_idx").on(t.at),
+  }),
+);

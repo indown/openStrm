@@ -160,7 +160,7 @@ export async function getShareDirList(
   receiveCode: string,
   cid: number | string,
   opts?: { limit?: number; offset?: number; userAgent?: string }
-): Promise<{ list: ShareAttr[]; count: number }> {
+): Promise<{ list: ShareAttr[]; count: number; title?: string }> {
   const limit = opts?.limit ?? 32;
   const offset = opts?.offset ?? 0;
   const resp = await shareSnap(
@@ -174,7 +174,15 @@ export async function getShareDirList(
   const rawCount = raw.count ?? raw.data?.count;
   const list = rawList.map((item) => normalizeShareAttr(item as Record<string, unknown>));
   const count = typeof rawCount === "number" ? rawCount : list.length;
-  return { list, count };
+  const title = shareTitleOf((raw.data ?? raw) as Record<string, unknown>);
+  return { list, count, ...(title ? { title } : {}) };
+}
+
+/** snap 响应里的分享标题（shareinfo 里）；没有就 undefined，不拿分享码顶替 */
+export function shareTitleOf(data: Record<string, unknown>): string | undefined {
+  const info = (data.shareinfo ?? data.share_info) as Record<string, unknown> | undefined;
+  const title = info ? String(info.share_title ?? info.share_name ?? info.name ?? info.title ?? "").trim() : "";
+  return title || undefined;
 }
 
 /**

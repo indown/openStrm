@@ -85,6 +85,11 @@ export function forgetQuarkShareToken(account: AccountQuark, pwdId: string, pass
   stokenCache.delete(stokenKey(account, pwdId, passcode));
 }
 
+/** 只看缓存、不发请求：顺路要个分享标题时用 */
+export function peekQuarkShareToken(account: AccountQuark, pwdId: string, passcode: string): { stoken: string; title: string } | undefined {
+  return stokenCache.get(stokenKey(account, pwdId, passcode));
+}
+
 /** stoken 按账号 + pwd_id + 提取码缓存半小时（stoken 是拿哪个账号换的就只对它有效）；顺带拿到分享标题 */
 export async function quarkShareToken(
   account: AccountQuark,

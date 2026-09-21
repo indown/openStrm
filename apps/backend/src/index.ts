@@ -79,6 +79,10 @@ import { cancelAllRuns, collapseStaleReadyRuns, reconcileInterruptedRuns } from 
 import { startLifeMonitor, stopLifeMonitor } from "./services/life/monitor.js";
 import { flushEmbyRefresh } from "./services/media-server.js";
 
+// 智能体接入：令牌管理 + MCP 端点
+import agentRoute from "./routes/agent/index.js";
+import mcpRoute from "./routes/mcp/index.js";
+
 // System routes
 import clearDirectoryRoute from "./routes/system/clear-directory.js";
 import clearRateLimitersRoute from "./routes/system/clear-rate-limiters.js";
@@ -161,6 +165,10 @@ await app.register(lifeMonitorRoute);
 
 // 整理与规范化命名
 await app.register(organizeRoute);
+
+// 智能体接入
+await app.register(agentRoute);
+await app.register(mcpRoute);
 
 // System routes
 await app.register(clearDirectoryRoute);

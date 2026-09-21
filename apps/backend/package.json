@@ -27,6 +27,8 @@
     "@fastify/http-proxy": "^11.4.3",
     "@fastify/reply-from": "^12.6.1",
     "@fastify/static": "^10.1.3",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@openstrm/shared": "workspace:*",
     "axios": "^1.11.0",
     "better-sqlite3": "^12.4.0",
@@ -43,6 +45,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@modelcontextprotocol/client": "^2.0.0",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^24",
     "drizzle-kit": "^0.31.10",

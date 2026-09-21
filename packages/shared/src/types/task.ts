@@ -55,6 +55,13 @@ export interface TaskStopInfo {
   remaining: number;
 }
 
+/** 一个失败的文件：路径（相对任务目录）、人话说明、处理建议 */
+export interface FailedFileBrief {
+  file: string;
+  message: string;
+  advice?: string;
+}
+
 export interface TaskExecutionHistory {
   id: string;
   taskId: string;
@@ -74,6 +81,8 @@ export interface TaskExecutionHistory {
     /** 数量最多那一类的处理建议 */
     advice?: string;
     stopped?: TaskStopInfo;
+    /** 最后失败的那几个文件（新记录才有）：看详情不用把整份日志翻一遍 */
+    recentFailures?: FailedFileBrief[];
   };
   taskInfo: {
     account: string;

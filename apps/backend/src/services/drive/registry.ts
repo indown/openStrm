@@ -93,21 +93,30 @@ export interface ShareMatch {
 export function matchShareLink(text: string, opts: { account?: string; accounts?: AccountInfo[] } = {}): ShareMatch | null {
   const ref = parseShareRef(text);
   if (!ref) return null;
+  const provider = shareProviderForRef(ref, opts);
+  return provider ? { provider, ref } : null;
+}
+
+/** 已经认出是哪家的分享：在账号池里挑同类且有分享能力的第一个（指定了 account 就只看它）。挑账号的规则只在这一处 */
+export function shareProviderForRef(ref: ShareRef, opts: { account?: string; accounts?: AccountInfo[] } = {}): DriveProvider | null {
   const pool = (opts.accounts ?? listAccounts()).filter((a) => !opts.account || a.name === opts.account);
   for (const account of pool) {
     if (account.accountType !== ref.kind) continue;
     const provider = providerFor(account);
-    if (provider.share) return { provider, ref };
+    if (provider.share) return provider;
   }
   return null;
 }
 
 /** 同上，但没人认出就抛 400 */
+/** 认不出分享链接时的说法：界面、Telegram、智能体用同一句 */
+export const UNKNOWN_SHARE_LINK = "不认识这个分享链接，目前支持 115 和夸克网盘的分享";
+
 export function shareForLink(text: string, opts: { account?: string } = {}): ShareMatch {
   const hit = matchShareLink(text, opts);
   if (hit) return hit;
   const ref = parseShareRef(text);
-  if (!ref) throw new HttpError(400, "不认识这个分享链接，目前支持 115 和夸克网盘的分享");
+  if (!ref) throw new HttpError(400, UNKNOWN_SHARE_LINK);
   if (opts.account) throw new HttpError(400, `账号 ${opts.account} 打不开${KIND_LABEL[ref.kind]}的分享`);
   throw new HttpError(400, `这是${KIND_LABEL[ref.kind]}的分享，请先到「账户」页添加一个${KIND_LABEL[ref.kind]}账号`);
 }

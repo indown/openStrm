@@ -103,6 +103,24 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     return () => window.removeEventListener("keydown", onKey);
   }, [paletteOpen]);
 
+  // 智能体给的「在 OpenStrm 里打开」链接：任意页面带 ?share=<分享链接> 就弹出转存框。
+  // 加载完才把参数从地址栏摘掉（摘了刷新就不会再弹）：加载时撞上登录失效会跳登录页，记下的回跳地址里
+  // 得还带着它，重新登录回来照样弹。和 ⌘K 那个一样必须待在下面那个提前 return 前面
+  useEffect(() => {
+    if (pathname === "/login" || pathname === "/change-password") return;
+    const link = new URLSearchParams(window.location.search).get("share")?.trim();
+    if (!link) return;
+    void share.load(link, { openImmediately: true }).finally(() => {
+      const params = new URLSearchParams(window.location.search);
+      if (!params.has("share")) return;
+      params.delete("share");
+      const rest = params.toString();
+      window.history.replaceState(window.history.state, "", `${window.location.pathname}${rest ? `?${rest}` : ""}${window.location.hash}`);
+    });
+    // share.load 每次渲染都是新函数；这里只该在进页面时读一次地址
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
+
   // 登录页和强制改密码页都不显示导航等
   if (pathname === "/login" || pathname === "/change-password") {
     return <>{children}</>;

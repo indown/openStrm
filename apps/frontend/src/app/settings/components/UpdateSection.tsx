@@ -11,6 +11,7 @@ import { FieldHint } from "@/components/field-hint";
 import { api } from "@/lib/api";
 import { fmtWhen } from "@/lib/format";
 import { checkForUpdate } from "@/lib/update";
+import { copyToClipboard } from "@/lib/clipboard";
 
 const UPGRADE_CMD = "docker compose pull && docker compose up -d";
 
@@ -47,11 +48,10 @@ export function UpdateSection({ value, onChange }: { value: UpdateSettings; onCh
   };
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(UPGRADE_CMD);
+    if (await copyToClipboard(UPGRADE_CMD)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
+    } else {
       toast.error("复制失败，手动选中复制吧");
     }
   };

@@ -42,12 +42,12 @@ const restartSchema = z.object({ account: z.string().optional(), infoHash: z.str
  * 加任务给了 taskId 时账号跟任务走。
  */
 export default async function (fastify: FastifyInstance) {
-  fastify.get("/api/115/offline", { preHandler: [fastify.authenticate] }, async (request) => {
+  fastify.get("/api/115/offline", { preHandler: [fastify.authenticate], config: { agentScope: "read", agentToolset: "transfer" } }, async (request) => {
     const { account, page } = parse(listQuerySchema, request.query, "query");
     return listOfflineTasks(account, page);
   });
 
-  fastify.post("/api/115/offline", { preHandler: [fastify.authenticate] }, async (request) => {
+  fastify.post("/api/115/offline", { preHandler: [fastify.authenticate], config: { agentScope: "write", agentToolset: "transfer" } }, async (request) => {
     const body = parse(addSchema, request.body);
     return addOfflineTasks(body);
   });

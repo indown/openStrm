@@ -167,6 +167,8 @@ export class FakeShare implements ShareProvider {
   updateSignal: ShareUpdateSignal = "unknown";
   /** 列目录结果先过它一手：测试用来塞进树里表示不了的条目（比如名字带 /） */
   listHook: ((dirId: string, entries: ShareEntry[]) => ShareEntry[]) | null = null;
+  /** 列根目录第一页时顺带给标题（真的两家都给）；关掉测「列表里没有标题、再调 info」那条路 */
+  titleInList = true;
   readonly updates: ShareUpdates = {
     check: async (s: ShareSession) => {
       this.calls.updates++;
@@ -242,7 +244,8 @@ export class FakeShare implements ShareProvider {
     const start = page * this.pageSize;
     const entries = all.slice(start, start + this.pageSize);
     const hasMore = start + entries.length < all.length;
-    return { entries, next: hasMore ? String(page + 1) : undefined, total: all.length };
+    const title = this.titleInList && (dirId || "0") === "0" && !cursor ? { title: def.title } : {};
+    return { entries, next: hasMore ? String(page + 1) : undefined, total: all.length, ...title };
   }
 
   async resolvePath(s: ShareSession, path: string): Promise<ShareEntry | null> {

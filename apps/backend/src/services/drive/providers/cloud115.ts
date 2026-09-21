@@ -131,7 +131,7 @@ class Cloud115Share implements ShareProvider {
   async list(s: ShareSession, dirId: string, cursor?: string, opts?: { limit?: number }): Promise<ShareListPage> {
     const offset = Number(cursor ?? 0) || 0;
     const limit = Math.max(1, Math.min(opts?.limit ?? SHARE_PAGE, SHARE_PAGE));
-    let page: { list: ShareAttr[]; count: number };
+    let page: { list: ShareAttr[]; count: number; title?: string };
     try {
       page = await getShareDirList(this.account, s.ref.code, s.ref.password, dirId || "0", {
         limit,
@@ -143,7 +143,12 @@ class Cloud115Share implements ShareProvider {
     }
     const entries = page.list.map(toShareEntry);
     const end = offset + page.list.length;
-    return { entries, next: page.list.length > 0 && end < page.count ? String(end) : undefined, total: page.count };
+    return {
+      entries,
+      next: page.list.length > 0 && end < page.count ? String(end) : undefined,
+      total: page.count,
+      ...(page.title ? { title: page.title } : {}),
+    };
   }
 
   resolvePath(s: ShareSession, path: string, signal?: AbortSignal): Promise<ShareEntry | null> {

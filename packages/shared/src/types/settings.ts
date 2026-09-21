@@ -1,3 +1,4 @@
+import type { AgentSettings } from "./agent.js";
 import type { OrganizeSettings } from "./organize.js";
 
 /** 冷启动时从哪里开始拉变更：latest 只看启动之后的，all 把现有文件全当新增补齐，last 从上次停的游标继续 */
@@ -99,6 +100,8 @@ export type AppSettings = {
   organize?: OrganizeSettings;
   /** 检查更新 */
   update?: UpdateSettings;
+  /** 智能体接入：MCP 端点开关、生成跳转链接用的管理界面地址 */
+  agent?: AgentSettings;
 } & Record<string, unknown>;
 
 /**

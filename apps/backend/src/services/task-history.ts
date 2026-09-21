@@ -48,6 +48,16 @@ export function getAllTaskHistory(): TaskExecutionSummary[] {
   return repo.getAll();
 }
 
+/** 按任务 / 状态 / 起始时间取最近几条和总数（不带 logs） */
+export function queryTaskHistory(q: repo.HistoryQuery): { rows: TaskExecutionSummary[]; total: number } {
+  return repo.query(q);
+}
+
+/** 一次执行的摘要，不带 logs */
+export function getTaskExecutionSummary(executionId: string): TaskExecutionSummary | undefined {
+  return repo.getSummaryById(executionId);
+}
+
 /** taskId → 最近一次执行 */
 export function getLatestExecutions(): Map<string, TaskExecutionSummary> {
   return new Map(repo.getLatestPerTask().map((e) => [e.taskId, e]));

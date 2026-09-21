@@ -8,8 +8,12 @@ export class HttpError extends Error {
   readonly status: number;
   readonly extra: Record<string, unknown>;
 
-  constructor(status: number, message: string, extra: Record<string, unknown> = {}) {
-    super(message);
+  /**
+   * cause：被包起来的原始错误（网盘客户端抛的那种）。不进响应体，只给要按错误类型再判断的调用方用，
+   * 比如智能体工具要认出「这是账号失效」给出别再重试的提示。
+   */
+  constructor(status: number, message: string, extra: Record<string, unknown> = {}, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = "HttpError";
     this.status = status;
     this.extra = extra;
@@ -27,6 +31,6 @@ export class HttpError extends Error {
  */
 export const UPSTREAM_ERROR_STATUS = 500;
 
-export function upstreamError(message: string, extra: Record<string, unknown> = {}): HttpError {
-  return new HttpError(UPSTREAM_ERROR_STATUS, message, extra);
+export function upstreamError(message: string, extra: Record<string, unknown> = {}, cause?: unknown): HttpError {
+  return new HttpError(UPSTREAM_ERROR_STATUS, message, extra, cause === undefined ? undefined : { cause });
 }

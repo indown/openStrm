@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, max } from "drizzle-orm";
+import { and, count, desc, eq, gte, lt, max } from "drizzle-orm";
 import type { TaskExecutionHistory, TaskExecutionSummary } from "@openstrm/shared";
 import { db } from "../client.js";
 import { taskHistory } from "../schema.js";
@@ -160,6 +160,32 @@ export function getLatestPerTask(): TaskExecutionSummary[] {
     out.push(deserializeSummary(row));
   }
   return out;
+}
+
+/** 不带 logs 的一条 */
+export function getSummaryById(executionId: string): TaskExecutionSummary | undefined {
+  const row = db.select(summaryColumns).from(taskHistory).where(eq(taskHistory.id, executionId)).get();
+  return row ? deserializeSummary(row) : undefined;
+}
+
+export interface HistoryQuery {
+  taskId?: string;
+  status?: TaskExecutionHistory["status"];
+  /** 只要这个时间（ms）之后开始的 */
+  since?: number;
+  limit: number;
+}
+
+/** 按条件取最近几条（不带 logs）和符合条件的总数：不用把整张表读出来再在内存里筛 */
+export function query(q: HistoryQuery): { rows: TaskExecutionSummary[]; total: number } {
+  const where = and(
+    q.taskId ? eq(taskHistory.taskId, q.taskId) : undefined,
+    q.status ? eq(taskHistory.status, q.status) : undefined,
+    q.since !== undefined ? gte(taskHistory.startTime, q.since) : undefined,
+  );
+  const rows = db.select(summaryColumns).from(taskHistory).where(where).orderBy(desc(taskHistory.startTime)).limit(q.limit).all();
+  const total = db.select({ n: count() }).from(taskHistory).where(where).get()?.n ?? 0;
+  return { rows: rows.map(deserializeSummary), total };
 }
 
 export function getAll(): TaskExecutionSummary[] {

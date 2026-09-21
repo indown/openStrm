@@ -16,7 +16,7 @@ import { FAILURE_LABEL } from "../organize/failure-kinds.js";
 
 const log = moduleLogger("telegram");
 
-export type TaskTrigger = "manual" | "cron" | "telegram" | "share";
+export type TaskTrigger = "manual" | "cron" | "telegram" | "share" | "agent";
 
 export type NotifyEvent =
   | { type: "task-start"; task: TaskRef; total: number; trigger?: TaskTrigger }
@@ -118,6 +118,7 @@ const TRIGGER_LABEL: Record<TaskTrigger, string> = {
   cron: "定时",
   telegram: "Telegram",
   share: "转存",
+  agent: "智能体",
 };
 
 /* ------------------------------- 去重 ------------------------------- */

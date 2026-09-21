@@ -226,8 +226,8 @@ export function resolveAccount115(name?: string): Account115 {
 /** 115 的失败要原样说出来：cookie 失效、风控 405 和"列表本来就是空的"在界面上不能长一样 */
 function upstream(err: unknown, fallback: string): HttpError {
   if (err instanceof HttpError) return err;
-  if (err instanceof Cloud115Error) return upstreamError(err.message, { upstreamStatus: err.status });
-  return upstreamError(err instanceof Error && err.message ? err.message : fallback);
+  if (err instanceof Cloud115Error) return upstreamError(err.message, { upstreamStatus: err.status }, err);
+  return upstreamError(err instanceof Error && err.message ? err.message : fallback, {}, err);
 }
 
 /* ------------------------------- 复制到 OpenList ------------------------------- */

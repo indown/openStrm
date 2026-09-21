@@ -8,6 +8,12 @@ import axiosInstance from "./axios";
 import { streamSse } from "./sse";
 import type {
   AccountInfo,
+  AgentCall,
+  AgentInfo,
+  AgentScope,
+  AgentToken,
+  AgentTokenCreated,
+  AgentToolset,
   AppSettings,
   LifeMonitorSettings,
   MediaLibraryEntry,
@@ -63,6 +69,8 @@ export type TaskInput = Partial<Omit<TaskDefinition, "id">> & { strmType?: strin
 export type StartTaskResult = {
   message: string;
   taskId?: string;
+  /** 这次要处理的文件数；无事可做时没有 */
+  total?: number;
   extraFilesCount?: number;
   willDeleteExtraFiles?: boolean;
   /** 比如"远端为空，已跳过清理"这类不算失败但该让人知道的事 */
@@ -412,8 +420,8 @@ export const api = {
           { username, password },
         ),
       ),
-    changePassword: (currentPassword: string, newPassword: string) =>
-      data(axiosInstance.post<{ message: string }>("/api/auth/password", { currentPassword, newPassword })),
+    changePassword: (currentPassword: string, newPassword: string, opts: { revokeAgentTokens?: boolean } = {}) =>
+      data(axiosInstance.post<{ message: string; revokedAgentTokens?: number }>("/api/auth/password", { currentPassword, newPassword, ...opts })),
     logout: () => data(axiosInstance.post<{ message: string }>("/api/auth/logout")),
   },
 
@@ -519,6 +527,19 @@ export const api = {
 
   /** 整理与规范化命名：预览 / 执行 / 撤销都是后台作业，接口立刻返回，轮询 get 看进度 */
   /** 检查更新：GET 只读缓存（不联网），POST 才真去问 GitHub（用户自己按的，有节流） */
+  agent: {
+    info: () => data(axiosInstance.get<AgentInfo>("/api/agent/info")),
+    tokens: () => data(axiosInstance.get<AgentToken[]>("/api/agent/tokens")),
+    /** toolsets 给 null 是「眼下的全部」，后端存成明确的列表；签令牌要输当前密码 */
+    createToken: (input: { name: string; scopes: AgentScope[]; toolsets: AgentToolset[] | null; expiresInDays: number | null; currentPassword: string }) =>
+      data(axiosInstance.post<AgentTokenCreated>("/api/agent/tokens", input)),
+    updateToken: (id: string, patch: { name?: string; scopes?: AgentScope[]; toolsets?: AgentToolset[] | null }) =>
+      data(axiosInstance.patch<AgentToken>(`/api/agent/tokens/${encodeURIComponent(id)}`, patch)),
+    revokeToken: (id: string) => data(axiosInstance.delete<{ success: boolean }>(`/api/agent/tokens/${encodeURIComponent(id)}`)),
+    revokeAll: () => data(axiosInstance.delete<{ deleted: number }>("/api/agent/tokens")),
+    calls: (tokenId?: string, limit = 20) =>
+      data(axiosInstance.get<{ calls: AgentCall[] }>("/api/agent/calls", { params: { tokenId: tokenId || undefined, limit } })),
+  },
   update: {
     get: () => data(axiosInstance.get<UpdateStatus>("/api/update")),
     check: () => data(axiosInstance.post<UpdateStatus>("/api/update/check", undefined, { timeout: 20_000 })),

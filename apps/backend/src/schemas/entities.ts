@@ -194,4 +194,15 @@ export const settingsPatchSchema = z.looseObject({
     .optional(),
   organize: organizeSettingsSchema.optional(),
   update: z.looseObject({ enabled: z.boolean().optional(), includePrerelease: z.boolean().optional() }).optional(),
+  agent: z
+    .looseObject({
+      enabled: z.boolean().optional(),
+      uiBaseUrl: z
+        .string()
+        .trim()
+        .max(500)
+        .refine((v) => v === "" || /^https?:\/\/[^\s/]+/i.test(v), "管理界面地址要以 http:// 或 https:// 开头")
+        .optional(),
+    })
+    .optional(),
 }) satisfies z.ZodType<Partial<AppSettings>>;

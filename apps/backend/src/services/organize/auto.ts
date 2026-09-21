@@ -55,15 +55,21 @@ export interface AutoOrganizeInput {
   mode?: "review" | "auto";
 }
 
+/** 这次会按哪种方式自动整理：强制给了就按它，不给按任务的设置；没配 TMDB 一律 off（识别不了） */
+export function effectiveAutoMode(task: TaskDefinition, forced?: "review" | "auto", settings = readAppSettings()): "off" | "review" | "auto" {
+  const mode = forced ?? taskAutoMode(task, settings);
+  if (mode === "off" || !settings.tmdb?.apiKey?.trim()) return "off";
+  return mode;
+}
+
 export function maybeAutoOrganize(input: AutoOrganizeInput): void {
   // 重复文件目录是整理自己挪进去的暂存区，扫它只会空跑一轮
   const paths = input.paths.map((p) => p.replace(/^\/+|\/+$/g, "")).filter((p) => p && p !== DUPLICATES_DIR && !p.startsWith(`${DUPLICATES_DIR}/`));
   if (paths.length === 0) return;
   const settings = readAppSettings();
-  const mode = input.mode ?? taskAutoMode(input.task, settings);
-  if (mode === "off") return;
-  if (!settings.tmdb?.apiKey?.trim()) {
-    log.debug({ taskId: input.task.id }, "任务开了自动整理但没配 TMDB，跳过");
+  const mode = effectiveAutoMode(input.task, input.mode, settings);
+  if (mode === "off") {
+    if ((input.mode ?? taskAutoMode(input.task, settings)) !== "off") log.debug({ taskId: input.task.id }, "任务开了自动整理但没配 TMDB，跳过");
     return;
   }
   schedule(input.task.id, paths, input.trigger, mode, input.debounce ? deps.debounceMs : 0);

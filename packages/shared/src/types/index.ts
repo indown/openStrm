@@ -15,6 +15,7 @@ export type {
   TaskExecutionHistory,
   TaskExecutionSummary,
   TaskStopInfo,
+  FailedFileBrief,
 } from "./task.js";
 export type { MediaLibraryEntry, ScrapeStatus, MediaType } from "./media-library.js";
 export type {
@@ -66,6 +67,16 @@ export type {
   TaskOrganizeSettings,
 } from "./organize.js";
 export type { UpdateRelease, UpdateState, UpdateStatus } from "./update.js";
+export type {
+  AgentCall,
+  AgentInfo,
+  AgentScope,
+  AgentSettings,
+  AgentToken,
+  AgentTokenCreated,
+  AgentToolInfo,
+  AgentToolset,
+} from "./agent.js";
 export type {
   StrmEntryKind,
   StrmEntry,

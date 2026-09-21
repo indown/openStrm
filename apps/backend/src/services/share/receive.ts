@@ -33,7 +33,10 @@ export interface SaveSelectionOpts {
   mode: "sync" | "async";
   settings: AppSettings;
   signal?: AbortSignal;
-  /** 转存完顺手整理：不给就按任务的自动整理设置；true = 至少生成待确认清单（任务设了 auto 就直接执行） */
+  /**
+   * 转存完顺手整理：不给就按任务的自动整理设置；true = 至少生成待确认清单（任务设了 auto 就直接执行）；
+   * false = 这次不整理，任务设了自动整理也不管（智能体里用户说「只转存，别整理」时用）
+   */
   organize?: boolean;
 }
 
@@ -53,6 +56,11 @@ export function uniqueItems<T extends { id: string }>(items: T[]): T[] {
     out.push(item);
   }
   return out;
+}
+
+/** 「转存后整理」勾上时这次按哪种来：任务设了 auto 就直接执行，否则至少出一份待确认的清单；没勾就按任务设置（undefined） */
+export function forcedOrganizeMode(task: TaskDefinition, organize: boolean | undefined): "review" | "auto" | undefined {
+  return organize ? (task.organize?.mode === "auto" ? "auto" : "review") : undefined;
 }
 
 export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<SaveSelectionResult> {
@@ -93,12 +101,16 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
     const selectedItems: SelectedItem[] = items.map((i, idx) => ({ name: i.name, isDir: i.isDir, id: ids[idx] }));
     try {
       const { generatedCount, skippedCount, invalidNames } = await generateStrmForSelected({ task, provider, selectedItems, settings, subPath });
-      // 任务开了自动整理（或这次勾了「转存后整理」）：刚转存进来的这些条目交给整理，识别失败或没开都不影响这次转存
-      const forced = opts.organize ? (task.organize?.mode === "auto" ? "auto" : "review") : undefined;
-      maybeAutoOrganize({ task, paths: items.map((i) => (subPath ? `${subPath}/${i.name}` : i.name)), trigger: "share", mode: forced });
+      // 任务开了自动整理（或这次勾了「转存后整理」）：刚转存进来的这些条目交给整理，识别失败或没开都不影响这次转存。
+      // 明确给了 false 就这次不整理
+      if (opts.organize !== false) {
+        maybeAutoOrganize({ task, paths: items.map((i) => (subPath ? `${subPath}/${i.name}` : i.name)), trigger: "share", mode: forcedOrganizeMode(task, opts.organize) });
+      }
       return { mode: "sync", generatedCount, skippedCount, invalidNames };
     } catch (err) {
-      throw driveErrorToHttp(err, "生成 strm 失败");
+      // 走到这里时转存已经成功了，只是本地 strm 没生成好：标出来，调用方才知道别再转存一遍（网盘会再复制一份）
+      const http = driveErrorToHttp(err, "生成 strm 失败");
+      throw new HttpError(http.status, http.message, { ...http.extra, received: true }, { cause: http.cause ?? err });
     }
   }
 

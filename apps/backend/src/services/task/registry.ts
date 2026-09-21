@@ -5,7 +5,7 @@
  * 落库的执行历史由 services/task-history.ts 负责。
  */
 import type { Subject, Subscription } from "rxjs";
-import type { FileFailureAction, FileFailureKind, TaskStopInfo } from "@openstrm/shared";
+import type { FailedFileBrief, FileFailureAction, FileFailureKind, TaskStopInfo } from "@openstrm/shared";
 
 /**
  * 任务进度事件。SSE 原样推给页面，历史里也按行存同一种 JSON，页面用一套解析。
@@ -49,6 +49,12 @@ export interface RunningTask {
   subject: Subject<DownloadProgress>;
   subscription: Subscription;
   logs: string[];
+  /** 这一次执行在历史表里的 id：智能体拿它当句柄查进度和结果 */
+  executionId?: string;
+  /** 当前的计数：总数、已完成、失败、总进度（"42.10"）。runner 起跑后挂上 */
+  stats?: () => { total: number; finished: number; failed: number; percent: string };
+  /** 最后失败的几个文件（runner 边跑边记，旧的挤出去）：看详情不用解析整份日志 */
+  recentFailures?: FailedFileBrief[];
   /** 取消时的收尾（把执行历史标成 cancelled 等），由 runner 提供 */
   onCancel?: (reason: string) => void;
 }
@@ -64,6 +70,17 @@ export interface StartOutcome {
   status: number;
   message: string;
   details?: string;
+  /** 200 但无事可做：没起跑、也不留执行记录 */
+  idle?: boolean;
+  /** 无事可做时的提醒（远端为空、跳过了清理） */
+  warning?: string;
+}
+
+/** 每个任务最近一次启动的结果：无事可做的那次不进执行历史，查状态时靠它认出「最近一次是空跑」 */
+const lastStarts = new Map<string, StartOutcome & { at: number }>();
+
+export function getLastStartOutcome(id: string): (StartOutcome & { at: number }) | undefined {
+  return lastStarts.get(id);
 }
 
 export function getRunningTask(id: string): RunningTask | undefined {
@@ -92,6 +109,7 @@ export function reserveTaskStart(id: string): boolean {
 /** 启动阶段结束：放掉占位，把结果交给等在 waitForTaskStart 上的人（起来了的话此时 running 里已经有了） */
 export function releaseTaskStart(id: string, outcome?: StartOutcome): void {
   starting.delete(id);
+  if (outcome) lastStarts.set(id, { ...outcome, at: Date.now() });
   const waiters = startWaiters.get(id);
   if (!waiters) return;
   startWaiters.delete(id);

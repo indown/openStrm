@@ -9,7 +9,7 @@ import type { Dirent } from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { catchError, defer, EMPTY, finalize, from, merge, mergeMap, retry, Subject, Subscription, takeUntil, tap, throwError, timer } from "rxjs";
-import type { FileFailureKind, TaskDefinition, TaskStopInfo } from "@openstrm/shared";
+import type { FailedFileBrief, FileFailureKind, TaskDefinition, TaskStopInfo } from "@openstrm/shared";
 import { listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -56,6 +56,9 @@ export interface StartTaskResult {
 }
 
 const log = moduleLogger("task");
+
+/** 最后失败的文件留几个（运行中的状态和执行记录的摘要里） */
+const RECENT_FAILURES_KEPT = 20;
 
 const fail = (status: number, message: string, detail?: string, issue?: AccountIssue | null): StartTaskResult => ({
   status,
@@ -146,10 +149,13 @@ export async function startTask(taskId: string, opts: StartTaskOptions = {}): Pr
     const result = await launch(task, opts.trigger);
     if (result.status !== 200) recordFailedStart(task, result.body, opts.trigger);
     const details = typeof result.body.details === "string" ? result.body.details : undefined;
+    const warning = typeof result.body.warning === "string" ? result.body.warning : undefined;
     outcome = {
       status: result.status,
       message: typeof result.body.message === "string" ? result.body.message : outcome.message,
       ...(details ? { details } : {}),
+      ...(result.status === 200 && !result.body.executionId ? { idle: true } : {}),
+      ...(warning ? { warning } : {}),
     };
     return result;
   } catch (err) {
@@ -238,7 +244,7 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
     summary: { totalFiles: total, downloadedFiles: 0, deletedFiles: deleted },
   });
 
-  const running: RunningTask = { subject, subscription: new Subscription(), logs: [] };
+  const running: RunningTask = { subject, subscription: new Subscription(), logs: [], executionId: execution.id };
   registerRunningTask(id, running);
   void notify({ type: "task-start", task, total, trigger });
 
@@ -265,6 +271,9 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
   const finished = new Set<string>();
   const failedFiles: string[] = [];
   const overall = () => (total > 0 ? (sumPercent / total).toFixed(2) : "100.00");
+  running.stats = () => ({ total, finished: finished.size, failed: failedFiles.length, percent: overall() });
+  const recentFailures: FailedFileBrief[] = [];
+  running.recentFailures = recentFailures;
   const report = (p: { filePath?: string; percent?: number }, kind: "strm" | "download") => {
     const fp = p.filePath!;
     const pct = Math.min(100, Math.max(0, p.percent ?? 0));
@@ -295,6 +304,8 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
     // 写文件前就判定写不进去的（文件名过长）带 attempted=false：日志页标「没去碰文件系统」
     const attempted = (err as { attempted?: boolean } | null)?.attempted !== false;
     failedFiles.push(filePath);
+    recentFailures.push({ file: filePath, message: f.message, ...(f.advice ? { advice: f.advice } : {}) });
+    if (recentFailures.length > RECENT_FAILURES_KEPT) recentFailures.shift();
     failures[f.kind] = (failures[f.kind] ?? 0) + 1;
     adviceByKind[f.kind] ??= f.advice;
     pushLog({ filePath, kind, error: f.detail, reason: f.kind, message: f.message, advice: f.advice, ...(f.action ? { action: f.action } : {}), ...(attempted ? {} : { attempted: false }) });
@@ -337,7 +348,7 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
     subject.complete();
     completeTaskExecution(execution.id, status, {
       totalFiles: total, downloadedFiles: finished.size, failedFiles: failedFiles.length, errorMessage: message,
-      ...(failedFiles.length > 0 ? { failures } : {}), ...(advice ? { advice } : {}), ...(stopped ? { stopped } : {}),
+      ...(failedFiles.length > 0 ? { failures, recentFailures } : {}), ...(advice ? { advice } : {}), ...(stopped ? { stopped } : {}),
     });
     unregisterRunningTask(id);
   };
@@ -346,6 +357,7 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
     history.flush();
     completeTaskExecution(execution.id, "cancelled", {
       totalFiles: total, downloadedFiles: finished.size, failedFiles: failedFiles.length, errorMessage: reason,
+      ...(recentFailures.length > 0 ? { recentFailures } : {}),
     });
     void notify({
       type: "task-done", task, status: "cancelled", total, finished: finished.size, failed: failedFiles.length,
@@ -421,6 +433,9 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
     body: {
       message: `${total} files to download`,
       taskId: id,
+      executionId: execution.id,
+      // 结构化的个数：别从上面那句英文里抠
+      total,
       extraFilesCount: extraLocally.length,
       willDeleteExtraFiles: task.removeExtraFiles || false,
       warning,

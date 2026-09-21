@@ -111,11 +111,10 @@ export interface CommandDeps {
   listSubdirs(task: TaskDefinition, segments: string[]): Promise<string[]>;
 }
 
-/** 后端 startTask 的 message 是固定的英文句式，这里说成人话（和任务页保持一致） */
+/** 后端 startTask 的 message 是固定的英文句式，这里说成人话（和任务页保持一致）；个数用结构化的 total */
 function describeStart(body: Record<string, unknown>): string {
   const message = typeof body.message === "string" ? body.message : "";
-  const m = /^(\d+) files to download$/.exec(message);
-  if (m) return `开始处理 ${m[1]} 个文件`;
+  if (typeof body.total === "number") return `开始处理 ${body.total} 个文件`;
   if (message === "no files to download") return "本地已是最新，没有需要处理的文件";
   const details = typeof body.details === "string" && body.details ? `：${body.details}` : "";
   return `${message || "启动失败"}${details}`;

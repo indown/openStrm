@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 // next build 时 NODE_ENV 固定是 production；next dev 时是 development。
 // 生产构建输出纯静态站点，由后端进程直接托管（见 backend 的 static-site 插件）；
-// 开发时仍是 next dev + rewrites 把 /api 转给 4000 的后端。
+// 开发时仍是 next dev + rewrites 把 /api（还有智能体用的 /mcp）转给 4000 的后端。
 const isExport = process.env.NODE_ENV === "production";
 
 // 侧栏显示的版本号：release 工作流传 APP_VERSION（去掉 v 前缀的 git tag），本地构建退回 package.json 的版本。
@@ -26,7 +26,11 @@ const nextConfig: NextConfig = {
     : {
         async rewrites() {
           const backendUrl = process.env.BACKEND_URL || "http://localhost:4000";
-          return [{ source: "/api/:path*", destination: `${backendUrl}/api/:path*` }];
+          // /mcp：设置页给客户端的 MCP 地址是按页面地址拼的，开发时也得通
+          return [
+            { source: "/api/:path*", destination: `${backendUrl}/api/:path*` },
+            { source: "/mcp", destination: `${backendUrl}/mcp` },
+          ];
         },
       }),
 };

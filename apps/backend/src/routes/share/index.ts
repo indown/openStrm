@@ -12,6 +12,8 @@ import { scopeFromSelection } from "../../services/follow/diff.js";
 import { saveSelectionToTask } from "../../services/share/receive.js";
 import { normalizeSubPath } from "../../services/strm/naming.js";
 import { followOptionSchema } from "../../schemas/entities.js";
+import type { AgentScope } from "@openstrm/shared";
+import { requireAgentScope } from "../../services/agent/access.js";
 
 const itemSchema = z.object({
   id: z.string().min(1),
@@ -48,9 +50,25 @@ const bodySchema = z.looseObject({
   organize: z.boolean().optional(),
 });
 
+/**
+ * 令牌能用哪些动作、各要什么档位。按白名单放：以后加的动作默认不对令牌开放。
+ * download_url 不给：界面上都不用，给了只会被拿去用主人的账号刷直链
+ */
+const TOKEN_ACTION_SCOPE: Partial<Record<z.infer<typeof bodySchema>["action"], AgentScope>> = {
+  parse: "read",
+  info: "read",
+  list: "read",
+  receive: "write",
+};
+
 export default async function (fastify: FastifyInstance) {
-  fastify.post("/api/share", { preHandler: [fastify.authenticate] }, async (request) => {
+  fastify.post("/api/share", { preHandler: [fastify.authenticate], config: { agentScope: "read", agentToolset: "transfer" } }, async (request) => {
     const body = parse(bodySchema, request.body);
+    if (request.principal?.kind === "token") {
+      const scope = TOKEN_ACTION_SCOPE[body.action];
+      if (!scope) throw new HttpError(403, "这个动作不对令牌开放", { code: "TOKEN_NOT_ALLOWED" });
+      requireAgentScope(request, scope);
+    }
     const { provider, ref } = shareForLink(body.url, { account: body.account });
     const share = provider.share!;
     const base = { kind: ref.kind, account: provider.account.name };

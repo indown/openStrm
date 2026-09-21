@@ -2,10 +2,9 @@ import { toast } from "sonner";
 import { api, type StartTaskResult } from "@/lib/api";
 import { apiErrorBody } from "@/lib/axios";
 
-/** 后端 startTask 的 message 是固定的英文句式，界面上说成人话 */
+/** 后端 startTask 的 message 是固定的英文句式，界面上说成人话；个数用结构化的 total */
 export function describeStart(res: StartTaskResult): string {
-  const m = /^(\d+) files to download$/.exec(res.message);
-  if (m) return `开始处理 ${m[1]} 个文件`;
+  if (typeof res.total === "number") return `开始处理 ${res.total} 个文件`;
   if (res.message === "no files to download") return "本地已是最新，没有需要处理的文件";
   return res.message;
 }

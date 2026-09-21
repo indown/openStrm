@@ -31,6 +31,7 @@ import {
   type QuarkShareFile,
   quarkShareIncUpdate,
   forgetQuarkShareToken,
+  peekQuarkShareToken,
 } from "../../quark/share.js";
 import { QuarkSnapshotSource } from "../../life/sources/quark.js";
 import { listWholeShareDir, resolveSharePath } from "../share-walk.js";
@@ -159,7 +160,14 @@ class QuarkShare implements ShareProvider {
     }
     // 页是满的就再翻（_total 少算会把尾巴丢掉，追更会漏集）；有 _total 且它说还有也翻
     const more = r.list.length === QUARK_SHARE_PAGE_SIZE || (r.total !== undefined && r.list.length > 0 && page * QUARK_SHARE_PAGE_SIZE < r.total);
-    return { entries: r.list.map(toShareEntry), next: more ? String(page + 1) : undefined, total: r.total };
+    // 根目录第一页顺带给标题：open 时换 stoken 已经拿到并缓存了，看分享的人就不用再调一次 info（夸克的 info 和这一页是同一个请求）
+    const title = (dirId || "0") === "0" && page === 1 ? this.cachedTitle(s) : undefined;
+    return { entries: r.list.map(toShareEntry), next: more ? String(page + 1) : undefined, total: r.total, ...(title ? { title } : {}) };
+  }
+
+  /** open 时缓存下来的分享标题；缓存没了就不给（不为它再发请求） */
+  private cachedTitle(s: ShareSession): string | undefined {
+    return peekQuarkShareToken(this.account, s.ref.code, s.ref.password)?.title || undefined;
   }
 
   resolvePath(s: ShareSession, path: string, signal?: AbortSignal): Promise<ShareEntry | null> {

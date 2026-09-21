@@ -170,6 +170,8 @@ export interface ShareListPage {
   /** 没有就是列完了 */
   next?: string;
   total?: number;
+  /** 分享的标题：顺路拿得到才给（夸克在 stoken 里，115 在同一个响应里），拿不到的调用方再调 info */
+  title?: string;
 }
 
 export interface ShareProvider {

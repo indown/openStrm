@@ -49,6 +49,12 @@ axiosInstance.interceptors.request.use(
  * 拦截器管不着：不共用的话，流式接口撞上 401 只会显示一句「失败」，
  * 失效的 token 还留在 localStorage 里，人一直点重试也没人告诉他该重新登录。
  */
+/**
+ * 已经在跳登录页了：同一页上好几个请求先后撞上 401，回跳地址以第一个为准。后面回来的那些可能是页面已经改过地址
+ * （比如 ?share= 深链加载完摘掉了参数）之后才到的，再算一遍会把回跳地址改丢。跳转是整页刷新，这个标记跟着清零
+ */
+let redirectingToLogin = false;
+
 export function handleAuthFailure(status: number, data: unknown, url = ""): void {
   if (typeof window === 'undefined') return;
   const code = (data as { code?: string } | null)?.code;
@@ -57,7 +63,8 @@ export function handleAuthFailure(status: number, data: unknown, url = ""): void
   if (status === 401 && !isLoginCall) {
     clearToken();
     // 跳登录页并记住当前位置，登录后回来；已经在登录页就不用再跳
-    if (window.location.pathname !== '/login') {
+    if (window.location.pathname !== '/login' && !redirectingToLogin) {
+      redirectingToLogin = true;
       const here = window.location.pathname + window.location.search;
       window.location.href = here && here !== '/' ? `/login?next=${encodeURIComponent(here)}` : '/login';
     }

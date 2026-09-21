@@ -5,9 +5,11 @@
  * - life_events：按 115 的 update_time 留 30 天。游标早就越过它们，删了不会被重拉。
  * - path_cache：180 天没被任何目录列举刷新过的条目。它是 move/rename 找旧路径的唯一依据，
  *   删掉后对应文件的改名事件退化成"按新增处理"，旧 strm 由全量任务的 removeExtraFiles 兜底。
+ * - agent_audit：智能体的调用记录，30 天。
  */
 import { deleteLifeEventsBefore, deletePathCacheNotTouchedSince } from "../db/repositories/life.js";
 import { deleteFinishedRunsBefore, deleteTmdbCacheBefore } from "../db/repositories/organize.js";
+import { deleteAgentCallsBefore } from "../db/repositories/agent-audit.js";
 import { cleanupOldHistory } from "./task-history.js";
 import { moduleLogger } from "../lib/logger.js";
 
@@ -17,6 +19,7 @@ export const PATH_CACHE_RETENTION_S = 180 * DAY_S;
 /** 整理记录：30 天，且每个任务至少留最近 5 次（撤销要用） */
 export const ORGANIZE_RUN_RETENTION_S = 30 * DAY_S;
 export const TMDB_CACHE_RETENTION_S = 30 * DAY_S;
+export const AGENT_AUDIT_RETENTION_S = 30 * DAY_S;
 
 const log = moduleLogger("housekeeping");
 
@@ -26,7 +29,10 @@ export function runHousekeeping(now = Math.floor(Date.now() / 1000)): { lifeEven
   const pathCache = deletePathCacheNotTouchedSince(now - PATH_CACHE_RETENTION_S);
   const organizeRuns = deleteFinishedRunsBefore(now - ORGANIZE_RUN_RETENTION_S);
   const tmdbCache = deleteTmdbCacheBefore(now - TMDB_CACHE_RETENTION_S);
-  if (lifeEvents || pathCache || organizeRuns || tmdbCache) log.info({ lifeEvents, pathCache, organizeRuns, tmdbCache }, "清理过期记录");
+  const agentCalls = deleteAgentCallsBefore(now - AGENT_AUDIT_RETENTION_S);
+  if (lifeEvents || pathCache || organizeRuns || tmdbCache || agentCalls) {
+    log.info({ lifeEvents, pathCache, organizeRuns, tmdbCache, agentCalls }, "清理过期记录");
+  }
   return { lifeEvents, pathCache };
 }
 

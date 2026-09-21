@@ -23,7 +23,7 @@ export default async function (fastify: FastifyInstance) {
   const resyncCron = () => fastify.cron.syncFromConfig();
 
   /** 任务定义 + 运行态 + 上次执行 + 下次定时：列表页一次拿齐，不用每行再查历史 */
-  fastify.get("/api/task", { preHandler: [fastify.authenticate] }, async () => {
+  fastify.get("/api/task", { preHandler: [fastify.authenticate], config: { agentScope: "read" } }, async () => {
     const running = new Set(listRunningTaskIds());
     const latest = getLatestExecutions();
     const nextRuns = new Map(fastify.cron.listJobs().map((j) => [j.taskId, j.nextRun]));

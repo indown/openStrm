@@ -13,7 +13,7 @@ const bodySchema = z.object({ account: z.string().min(1, "account is required"),
  * 网盘那边的失败要说出来：以前一律返回空列表，cookie 失效和"目录本来就是空的"在界面上长得一模一样
  */
 export default async function (fastify: FastifyInstance) {
-  fastify.post("/api/directory/remote/list", { preHandler: [fastify.authenticate] }, async (request) => {
+  fastify.post("/api/directory/remote/list", { preHandler: [fastify.authenticate], config: { agentScope: "read", agentToolset: "transfer" } }, async (request) => {
     const { account, path } = parse(bodySchema, request.body);
 
     const accountInfo = getAccount(account);
