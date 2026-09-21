@@ -7,7 +7,11 @@
  *      不放行「和 Host 同名」的来源：本实例自己的页面不调 /mcp，而 DNS 重绑定时 Origin 和 Host
  *      正好都是攻击者的域名。命令行客户端和服务器对服务器的请求不带 Origin，不受影响
  *   3. 令牌不对 → 401 + WWW-Authenticate。必须在 SDK 之前：Open WebUI 探测鉴权方式时发的
- *      POST 不带 Accept、params 为空，交给 SDK 可能先报别的错，它就认不出这里要鉴权
+ *      POST 不带 Accept、params 为空，交给 SDK 可能先报别的错，它就认不出这里要鉴权。
+ *      认两种令牌：手建的 ostk_、网页客户端走 OAuth 拿到的 osat_。开了 OAuth、而且是从公网域名进来的，
+ *      401 带 resource_metadata，claude.ai、ChatGPT 据此找到授权服务器；局域网地址上照旧只说要令牌——
+ *      那边的客户端要是跟着元数据走，会因为资源地址（公网的 /mcp）对不上而失败，还不如直接说缺令牌。
+ *      回 401 的按来源限流：没登录的请求谁都能发
  *   4. 还在用默认密码 → 403，和 REST 一样：默认口令是公开的，这时拿着令牌也不代表有权限
  *   5. 超出限流 → 429（不记调用记录：被刷的时候不能每个请求都写一行库）
  * body 解析之后：老版协议能一次批好多条消息，按条数补扣配额；令牌看不到的工具调用先记一笔，再交给 SDK。
@@ -17,11 +21,16 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { isUsingDefaultPassword } from "../../db/repositories/auth.js";
 import { TOKEN_PREFIX } from "../../db/repositories/api-tokens.js";
+import { ACCESS_TOKEN_PREFIX } from "../../db/repositories/oauth.js";
 import { PASSWORD_CHANGE_REQUIRED, type Principal } from "../../plugins/auth.js";
 import { AGENT_CALLER_KEY, MCP_PATH, agentEnabled, verifyAgentToken } from "../../services/agent/access.js";
 import { recordToolCall, type AgentCaller } from "../../services/agent/calls.js";
-import { takeAgentQuota } from "../../services/agent/rate-limit.js";
+import { anonymousIpBucket, takeAgentQuota } from "../../services/agent/rate-limit.js";
+import { ipKey } from "../../lib/ip.js";
+import { isPublicHostRequest } from "../../plugins/public-host.js";
 import { isAgentTool, toolsFor } from "../../services/agent/tools/index.js";
+import { CHALLENGE_SCOPE, oauthConfig } from "../../services/oauth/config.js";
+import { verifyOAuthAccessToken } from "../../services/oauth/tokens.js";
 
 /** 带 Origin 的请求只认这些：本机、两家网页客户端的服务器（以防它们带上 Origin） */
 const ALLOWED_ORIGIN_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "claude.ai", "chatgpt.com"]);
@@ -54,13 +63,26 @@ async function guard(request: FastifyRequest, reply: FastifyReply) {
   if (origin && !originAllowed(origin)) {
     return reply.code(403).send({ message: "不接受这个来源的请求", code: "ORIGIN_NOT_ALLOWED" });
   }
-  const header = request.headers.authorization ?? "";
-  const bearer = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  const token = bearer.startsWith(TOKEN_PREFIX) ? verifyAgentToken(bearer, request.ip) : null;
+  // 认证方案名不分大小写（RFC 9110 §11.1）
+  const bearer = /^bearer\s+(.+)$/i.exec(request.headers.authorization ?? "")?.[1].trim() ?? "";
+  const oauth = oauthConfig();
+  const token = bearer.startsWith(TOKEN_PREFIX)
+    ? verifyAgentToken(bearer, request.ip)
+    : bearer.startsWith(ACCESS_TOKEN_PREFIX) && oauth
+      ? verifyOAuthAccessToken(bearer, request.ip, oauth)
+      : null;
   if (!token) {
+    const quota = anonymousIpBucket.take(`ip:${ipKey(request.ip)}`);
+    if (!quota.ok) return tooManyRequests(reply, quota.retryAfterSeconds);
+    // 开了 OAuth、从公网域名进来的：按 RFC 9728 指到受保护资源元数据，网页客户端从这里走授权流程；带了令牌但不认的标 invalid_token
+    const invalid = bearer ? ', error="invalid_token"' : "";
+    const challenge =
+      oauth && isPublicHostRequest(request)
+        ? `Bearer resource_metadata="${oauth.resourceMetadataUrl}", scope="${CHALLENGE_SCOPE}"${invalid}`
+        : `Bearer realm="OpenStrm"${invalid}`;
     return reply
       .code(401)
-      .header("www-authenticate", 'Bearer realm="OpenStrm"')
+      .header("www-authenticate", challenge)
       .send({ message: bearer ? "令牌无效或已过期" : "缺少令牌：请求头带上 Authorization: Bearer ostk_…", code: "UNAUTHORIZED" });
   }
   if (isUsingDefaultPassword()) {

@@ -33,6 +33,7 @@ export default async function (fastify: FastifyInstance) {
         allowTaskStart: telegram.allowTaskStart === true,
         allowOfflineAdd: telegram.allowOfflineAdd === true,
         allowShareReceive: telegram.allowShareReceive === true,
+        allowOAuthApproval: telegram.allowOAuthApproval === true,
       },
       notify: notifyPrefs(settings),
       notifyDefaults: DEFAULT_NOTIFY,

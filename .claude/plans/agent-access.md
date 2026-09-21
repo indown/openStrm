@@ -174,7 +174,7 @@ ingress:
 ```
 
 - cloudflared 可以作为一个容器和 OpenStrm 放在同一个 compose 里，`service` 直接写容器名。
-- 两种接法都要开 `TRUST_PROXY=true`。应用里「公网域名只放行公网路径」那一层认 `Host` / `X-Forwarded-Host`；两种接法下 Host 头各是什么，落地时各实测一次。
+- 两种接法都要开 `TRUST_PROXY=true`。应用里「公网域名只放行公网路径」那一层认 `Host` / `X-Forwarded-Host`；两种接法下 Host 头各是什么，落地时各实测一次。（2026-09-21：Cloudflare 快速隧道实测原样转发 `Host`，`X-Forwarded-For` 是真实客户端 IP；反代没实测，README 的 nginx 配置显式带了 `Host`，Caddy 默认就转发。）
 
 **走 Cloudflare 时的坑**（反代前面套了 Cloudflare 的橙云，和 Tunnel 都算）：
 
@@ -1034,6 +1034,79 @@ P1 做完，没提交。和上面设计不一样、或者做的时候才定下�
 
 **浏览器复测**（临时库 + 生产拓扑：后端托管 `next build` 的静态站，用完删了库）：改自定义档位令牌的名字，档位原样；建令牌输错密码只弹提示、不掉登录；建好的弹框 Esc、点外面都关不掉；用局域网 IP 打开（非安全上下文、`navigator.clipboard` 不存在）时，页面上和弹框里的复制按钮都真的复制上了；改密码页输错当前密码不掉登录，勾「同时撤销」后 3 个令牌都没了；登录失效时打开 `?share=` 深链，重新登录回来照样触发（就是这一步发现了上面那个 401 赛跑）。
 
+## 实施计划：P2
+
+2026-09-21 用户试过 rc.1 的 Codex（MCP 连得上），说「按照你的推荐继续往下做」：先做 ChatGPT Plus 的写操作探针（交给用户在 ChatGPT 里点），同时开做 P2。
+
+**顺序**：
+
+1. 数据与设置：迁移 0016（`oauth_clients`、`oauth_requests`、`oauth_grants`、`oauth_used_refresh`）、`repositories/oauth.ts`、共享类型；`agent.publicBaseUrl`（公网地址）、`agent.allowPasswordApproval`（授权页密码批准，默认关）。
+2. 授权服务器：两份元数据；DCR；CIMD（防 SSRF）；授权页 + 配对码 + 轮询 + 可选密码批准；token（授权码 / 刷新）；revoke；未登录请求按 IP 限流。
+3. 接入面：`/mcp` 认 `osat_`、401 带 `resource_metadata`；公网域名只放行公网路径；Telegram 批准按钮；`/api/agent/oauth/*` 管理接口和连接自检；housekeeping。
+4. 前端与 README。
+5. 测试、回归、本机临时库 + cloudflared 临时隧道走一遍授权页。
+
+**实施时定下来的**（和上面设计不一样、或者设计没写到的）：
+
+- **OAuth 授权单独一张表**（`oauth_grants`），不和手建令牌挤在 `api_tokens`：一次授权有访问令牌、刷新令牌两个会轮换的密钥，外加重放检测，放一行里清楚；设置页「已连接的客户端」就是这张表。`api_tokens.kind` 仍只有 `manual`。
+- **OAuth 令牌只认 `/mcp`**：REST 白名单只给手建令牌（脚本、n8n 这类），网页客户端用不着 REST。
+- **刷新令牌总是发**：要是只在客户端要了 `offline_access` 时才发，claude.ai 这类不要它的客户端就得每小时重新授权一次；元数据里照样声明 `offline_access`（ChatGPT 要），返回的 `scope` 里要了才带。
+- **给的档位 = 管理员选的 ∩ 客户端要的**（客户端要了 read / run / write / danger 里的任何一个时；什么都没要就按管理员选的），「查看」总在。管理员选档位时能看到客户端要了什么。
+- **授权码在授权页第一次轮询到「已批准」时才生成**，10 分钟内有效、一次性；同一个授权码再用一次，就把用它发出去的那次授权整个撤掉（RFC 6749 §4.1.2）。
+- **配对码** 8 位（去掉 0 / O / 1 / I 这类容易认错的字符），写成 `7F3K-9Q2M`；待批准请求 10 分钟过期，同一 IP 每小时最多发起 10 个，全局同时最多 20 个待批准。
+- **回调地址**：https 都收；http 也收（局域网里的 Open WebUI），批准时把域名摆出来让人核对；私有 scheme（`cursor://`、`vscode://` 这类桌面客户端的）也收，`javascript:`、`data:`、`file:` 这些不收；注册的是回环地址时端口可以不同。
+- **公网地址只收 https 的源**（不带路径）；保存时如果它的域名就是当前打开管理界面用的域名，直接拒——不然公网守卫会把管理界面自己挡在外面。
+- **连接自检**：后端从自己这边去请求公网地址的两份元数据、`/mcp` 的 401 和一条管理接口（应该 404），逐项报结果，给配反代 / Tunnel 的人用。
+
+### 实施记录（2026-09-21）
+
+五步都做完了，**未提交、未发版**（v2 上 rc.1 之后的工作区改动）。
+
+**落点**：迁移 `0016_oauth.sql`；`db/repositories/oauth.ts`；`services/oauth/`（`config` 路径和有效期、`clients` 认客户端 / DCR / token 端点的客户端认证、`cimd` 防 SSRF 取元数据、`redirect` 回调地址规则、`authorize` 发起 / 批准 / 拒绝 / 轮询 / 密码批准、`tokens` 换令牌 / 刷新 / 撤销 / 验令牌、`page` 授权页、`selfcheck` 连接自检）；`routes/oauth/`（元数据、注册、授权页、token / revoke）；`plugins/public-host.ts`（公网域名只放行公网路径）；`/mcp` 认 `osat_`，401 带 `resource_metadata` 和 `scope`；Telegram 的批准 / 拒绝按钮；`/api/agent/oauth/*` 管理接口；housekeeping 清过期的请求、授权、30 天没用的 DCR 客户端；改密码勾「同时撤销」时 OAuth 授权也一起撤。前端 `AgentWebClients.tsx`（从 `AgentSection` 拆出公共件到 `agent-common.tsx`）；README「网页客户端与公网部署」一节（Caddy、nginx、Cloudflare Tunnel 配置）。
+
+**测试**：`services/oauth/oauth.test.ts`（回调地址规则、CIMD 地址与文档校验、档位交集）5 条；`routes/oauth/oauth.itest.ts` 20 条（元数据、关着时 404、`/mcp` 质询、DCR 与限流、完整授权流程和审计、档位收窄、授权码重放、换令牌的各种错、授权请求校验、拒绝 / 过期 / 不存在、刷新轮换与重放、撤销、预注册客户端 post / basic / 错 secret / 删除、CIMD 缓存与不一致、密码批准、同 IP 限流、Telegram 批准、公网守卫、设置校验、改密码撤销）。后端全量 890 条通过。
+
+**真网络走查**（本机临时库 + `TRUST_PROXY=true` + cloudflared 快速隧道当公网域名，客户端用官方 `@modelcontextprotocol/client@2.0.0` 的 `OAuthClientProvider`，浏览器是真 Chrome）：
+
+- 设置页：http 地址、带路径的地址前端拦住；填管理界面自己的域名后端拒（见下面修的第 1 条）；尾斜杠保存时去掉。连接自检五项全绿（两份元数据、`/mcp` 不带令牌回 401 并指到元数据、`/` 和 `/api/task` 在公网域名下 404）。
+- **DCR**：SDK 自己走完 401 → 受保护资源元数据 → 授权服务器元数据 → 注册 → 授权页；管理界面待批准里核对配对码、批「日常」→ 授权页自己跳回回调（带 `code`、`state`、`iss`）→ SDK 校验 `iss` 后换令牌（`scope` 是 `read run write offline_access`）→ 列工具 12 个、调 `tasks_list`、调写档的 `sync_start`（任务不存在，照常报错）。撤掉访问令牌后下一次调用拿到 401 `invalid_token`，SDK 自己用刷新令牌换了一对新的（刷新令牌确实轮换了）再重试成功。
+- **CIMD**：AS 元数据声明了 `client_id_metadata_document_supported`，SDK 有元数据地址时直接用 CIMD、不注册。后端经公网真去取了客户端文档（User-Agent `OpenStrm-OAuth`），授权页显示文档里的名字；第二次授权走缓存没再取。批「只读」→ 令牌 `scope` 是 `read offline_access`，工具只剩 8 个查看类，`sync_start` 报工具不存在，审计里记成 `TOOL_NOT_ALLOWED`。刷新同样通。
+- **密码批准**：打开开关后授权页出现折叠的「用管理员密码直接批准」；错密码页上显示「密码不对」、继续等；对的密码（从终端调接口）返回带授权码的跳转。
+- **拒绝**：客户端收到 `error=access_denied`，带 `state`、`iss`。**断开 / 全部断开 / 预注册客户端**（`javascript:` 回调被拒、secret 只显示一次且弹框点外面和 Esc 关不掉、删除）都走了一遍。
+- 看到的事实：cloudflared 原样转发 `Host`（公网守卫按 `Host` 认就行），`X-Forwarded-For` 是真实客户端 IP（待批准里显示的「来自」、授权的最近使用 IP、审计 IP 都对）；SDK 的授权请求带 `prompt=consent`（我们忽略未知参数）；SDK 连上后会发一次 `GET /mcp`，回 405 它不在意；协商出的协议版本是 `2025-11-25`。
+
+**走查里发现并修了的**：
+
+1. 设置页保存遇到 400 一律提示「参数错误」，服务端给的原因（比如公网地址撞了管理界面的域名）看不到 → 有 `message` 就显示它。
+2. 被拒绝的请求，授权页轮询拿到的也是 `redirect`，页上先写「已批准，正在跳回客户端…」再跳；回调是桌面客户端的私有 scheme 时页面不走，就一直显示「已批准」→ 拒绝单独一个 `denied` 状态，页上说「管理员拒绝了这次连接」。
+3. 授权页到头之后（过期、已完成、不存在、跳走）还留着「到管理界面核对配对码再批准」、「别关掉」、密码表单和上一次的「密码不对」，和结果打架 → 到头就把这些都去掉，只留结果。
+4. 待批准列表在后台标签页不轮询（有意的），但切回来要等下一轮 → 切回可见时立刻取一次。
+5. 预注册客户端「删除」点了就删，比「断开」还重（secret 找不回来、用它连上的全断开）却不用确认 → 加确认框；「全部断开」的确认文案「它的」→「它们的」。
+6. 全量跑时 `download/enqueue.test.ts` 的「订阅方在任务开始后取消」偶发失败（固定睡 20ms 等任务开始，机器忙时不够）→ 改成等内层真的开始的信号。老问题，和这次改动无关，顺手修了。
+
+**还没验的**：真 claude.ai / ChatGPT 连一次（要发一个带 P2 的版本、用真域名；ChatGPT Plus 能不能调写工具、协商哪个协议版本、工具调用多久超时，都在这一步一起看）；真 Telegram 机器人上的批准按钮（测试里是直接喂 `handleUpdate`）；开着页面时来了新待批准的提示（自动化里切不到前台标签页）。
+
+**ChatGPT Plus 写工具探针不做了**（2026-09-21，用户没点，我撤掉了临时服务和隧道）：探针是为了在做 P2 之前摸清 Plus 能不能写；现在 P2 已经做完，结果不改设计（写工具照实标注，只读时有「在 OpenStrm 里打开」兜底），只影响 README 里一句说明，真连 ChatGPT 时自然就知道了。
+
+### P2 评审与修补（2026-09-21）
+
+用户说「发 v2.12.0-rc.2」后又说「先 review 一下吧」：五路并行只读评审（协议安全、暴露面、规范与客户端互通、数据层与生命周期、前端 / README / 测试），去重后约 50 条，**全部修完**。改动大的几处（都属于修评审发现，没有改用户定过的方向）：
+
+- **批准要输配对码**（原来是核对后点一下）：授权码是发给「拿着授权页」的人的，谁都能打开授权页、冒充 claude.ai 的 CIMD 客户端和回调地址发起；管理员一点批准，拿着页面的人就轮询到授权码了。现在待批准列表不给配对码，批准框要输入授权页上的那个（对不上什么都不改），Telegram 通知只带「拒绝」，把配对码发给机器人才出批准按钮（按钮还核对这次解锁过）。
+- **UI 批准要当前密码**：和 P1「建令牌要当前密码」同一个理由（刷新令牌能一直续，会话被偷了不能签出长期钥匙）；Telegram 里批准另加开关 `telegram.allowOAuthApproval`，默认关（原来白名单里的人能绕过其它 Telegram 开关给自己批出日常档）。
+- **CIMD 改成默认关**（`agent.oauthCimd`）：ChatGPT 的真 CIMD 文档写的是 `private_key_jwt`，原来的校验直接拒；国内网络取不到 claude.ai / chatgpt.com，Clash 类 fake-ip 解析成 198.18/15 又被 SSRF 拦，而声明了 CIMD 客户端就不会退回动态注册——谁也连不上。默认走动态注册、不往外访问；开了才声明、才去取，自检多两项实际去取 claude.ai、ChatGPT 的文档。
+- **刷新 / 授权码的宽限期**：令牌改成用本机密钥（`system.oauth_token_key`）从上一个（授权码 / 旧刷新令牌）HMAC 派生，同一个在 60 秒内又来、之后没再刷新过，就原样回当时那一对（并发刷新、回应丢了重试都不再把整个授权作废，客户端不用重新等批准）；授权码重试还要 PKCE 对得上。刷新前的访问令牌到它自己过期前照样认。
+- **TRUST_PROXY**：`true` 原来是「谁都信」，客户端在 X-Forwarded-For 左边写什么都行，按 IP 的限流全部形同虚设；现在 `true` = 信回环和内网来的代理（取从右往左第一个不是它们的地址），数字 = 跳数，别的 = 地址列表（`lib/trust-proxy.ts`）。IPv6 一律按 /64 计（`lib/ip.ts`）。
+- **公网守卫**：`Host: mcp.example.com.`（结尾带点）能绕过守卫、整个管理界面都出来；TRUST_PROXY 下客户端自带 X-Forwarded-Host 也能绕。现在原始 Host、X-Forwarded-Host 里的每一个、hostname 规范化后逐个比，哪个是公网域名就按公网算；方法也按路径卡（GET /oauth/token 这种原来会落到带管理界面外壳的 404 页）。
+- **CIMD 防 SSRF**：写 IP 的地址（127.0.0.1、[::1]、2130706433、0x7f.0.0.1…）Node 不走 lookup，原来直接连上去，出错原文还回到页面上，等于公网上的内网端口探测器。现在拒 IP、端口、单段主机名、. / .. 路径段，封锁表补上 IPv4 兼容 / 6to4 / Teredo / NAT64 本地前缀 / 站点本地等，总时限 5 秒，出错只回笼统的话；按来源限了再去取。
+- **授权页密码批准**：查锁、比对、记失败之间有 await，并发一批全部漏过去（25 个并发全被比对）；过期、拒过的请求还能拿来试密码。现在 `login-throttle` 加 begin / end 占位（登录、改密码、建令牌、UI 批准都用），授权页用单独一套退避（公网上的尝试不锁局域网登录），加匿名限流、每小时失败 30 次整个功能停一小时、只收还在等的请求。
+
+其余（逐条都修了）：只存用得上的客户端字段（原来 DCR 存整个 1 MB body、CIMD 存整份文档且从不清理）、register 16 KB 上限和全局每小时 60 个；每个来源同时最多 3 个待批准、全部拒绝；全部断开 / 改密码撤销 / 删客户端时连没走完的请求一起拒掉（原来批了还没换令牌的撤完还能换）；清理 DCR / CIMD 时跳过有请求在走的；授权页取码回应丢了再问会重发新码；回调核对过之后的出错只对回环地址自动跳（别的给链接，免当任意跳转器），授权页过期时同理；公网地址存规范写法（大小写、:443、国际化域名；原来国际化域名会让 401 回 500）；资源地址按规范写法比；动态注册多要的 grant_types 收窄（claude.ai 带 jwt-bearer）；资源那边的 scope 只列 read run write（原来列了 danger，Codex、Open WebUI 会照单要）；401 只在公网域名上指到元数据（局域网上的客户端跟着走会因资源地址对不上失败）；CORS 放出 WWW-Authenticate / Retry-After；协议里的 error_description 改成 ASCII 英文（中文只在授权页）；缺 grant_type / response_type 回 invalid_request、坏 JSON 也回 OAuth 格式、Basic 不分大小写、不用 Basic 认证失败回 400；接回调参数不改写登记的查询串；去掉 OIDC 发现地址；轮询改 POST（轮询密钥不进访问日志）；授权记录留下批准方式、时间、授权页 IP；公网地址改过的授权标「已失效」；预设名走 Object.hasOwn；http 提醒按解析后的协议判断；设置页 / 批准框各种状态（读取中、读取失败、404 当作已处理、轮询不叠发、防过期回应覆盖）、⋯ 菜单、无障碍名称、长名字换行；README 的 nginx 配置改成覆盖 X-Forwarded-For / X-Forwarded-Host、正则加 $。
+
+**测试**：后端 918 条全过（新增 `lib/ip.test.ts`、`lib/trust-proxy.test.ts`、`oauth.test.ts` 11 条、`oauth.itest.ts` 34 条，覆盖上面每一条）；前后端 tsc、eslint 干净，`next build` 通过。
+
+**真网络复测**（临时库 + cloudflared 快速隧道 + 官方 SDK 客户端 + 真 Chrome，用完删了）：公网地址输入大写加 `:443` 存成规范写法；自检七项全绿（含实际取到 claude.ai、ChatGPT 的 CIMD 文档）；经 Cloudflare 边缘：`/`、`/api/task`、`GET /oauth/token`、OIDC 地址、自带 X-Forwarded-Host、结尾带点的 Host 都是 404，伪造的 X-Forwarded-For 不算数（日志里是真实 IP），401 带 `scope="read run write"`、CORS 放出 WWW-Authenticate；SDK 动态注册 → 授权页（回环提醒、配对码）→ 批准框里输错配对码、输错密码各有提示 → 用接口带配对码和密码批准 → 授权页自己跳回 → 换令牌、调工具、强制刷新 → 同一个刷新令牌并发刷两次都 200、拿到同一对、授权还在。
+
 ## 核实记录
 
 2026-09-18 查的官方来源：
@@ -1065,4 +1138,4 @@ P1 做完，没提交。和上面设计不一样、或者做的时候才定下�
 - Cline 不写类型、默认按 SSE 连的时候，遇到 GET 回 405 会不会自己换成 Streamable HTTP（没查到，接入说明里先让用户显式写类型）；
 - Home Assistant 的 OAuth 实际对接：它对授权页、回调地址的具体要求。
 - Open WebUI 的 Python SDK 客户端在 `isError` 的结果上会不会也按 `outputSchema` 校验（所以 P1 先不声明 `outputSchema`）；
-- ChatGPT Plus 在 developer mode 里能不能用写工具（P2 前的探针）。
+- ChatGPT Plus 在 developer mode 里能不能用写工具（探针 2026-09-21 取消，改在真连 ChatGPT 时看）。

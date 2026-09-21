@@ -34,6 +34,11 @@ const PERMISSIONS: Array<{ key: keyof TelegramPermissions; label: string; hint: 
   { key: "allowTaskStart", label: "允许从 Telegram 启动 / 取消任务", hint: "/tasks 里的「运行」按钮会真的跑同步任务。" },
   { key: "allowOfflineAdd", label: "允许添加云下载", hint: "发磁力 / ed2k / http 链接给机器人，交给 115 云下载；选任务目录的话下完自动生成 strm。" },
   { key: "allowShareReceive", label: "允许转存分享", hint: "发 115 / 夸克分享链接给机器人，整个分享转存到同类账号的某个任务目录并触发同步。" },
+  {
+    key: "allowOAuthApproval",
+    label: "允许批准网页客户端的连接",
+    hint: "claude.ai、ChatGPT 这类网页客户端来连接时，把授权页上的配对码发给机器人，就能在 Telegram 里批准（只读或日常）。白名单里的人都能批，批出去的档位比上面几个开关管的多。",
+  },
 ];
 
 const NOTIFY: Array<{ key: keyof TelegramNotifySettings; label: string; hint: string }> = [

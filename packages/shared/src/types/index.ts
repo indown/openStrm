@@ -70,12 +70,19 @@ export type { UpdateRelease, UpdateState, UpdateStatus } from "./update.js";
 export type {
   AgentCall,
   AgentInfo,
+  AgentOAuthState,
   AgentScope,
   AgentSettings,
   AgentToken,
   AgentTokenCreated,
+  AgentSelfCheckItem,
   AgentToolInfo,
   AgentToolset,
+  OAuthClientCreated,
+  OAuthClientInfo,
+  OAuthClientKind,
+  OAuthGrantInfo,
+  OAuthPendingRequest,
 } from "./agent.js";
 export type {
   StrmEntryKind,

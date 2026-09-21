@@ -35,7 +35,7 @@
 - strm 管理：按任务浏览生成的 strm，体检、校验指向的文件在网盘上还在不在、改了前缀后批量修正、补齐或重建
 - 失败说清楚原因和办法：文件名过长、名字里有本地文件系统不认的字符、磁盘满、没权限、cookie 失效、风控……按原因归类并给出下一步（名字的问题能一键跳去「整理」）；磁盘满、没权限、账号失效这类整轮都会失败的直接停下，不再逐个文件白试
 - Emby 302 直链（115）、Telegram 机器人（通知 + 遥控）
-- 智能体接入（MCP）：Claude Code、Codex、Open WebUI 这类 AI 客户端用令牌连上来，能查任务和同步进度、开始同步、看分享、转存、添加云下载；令牌分权限档，每次调用都有记录
+- 智能体接入（MCP）：Claude Code、Codex、Open WebUI 这类 AI 客户端用令牌连上来，claude.ai、ChatGPT 网页从公网走 OAuth 连上来，能查任务和同步进度、开始同步、看分享、转存、添加云下载；分权限档，每次调用都有记录
 - 检查更新：默认不联网，在设置页点一下才查；也可以开每天自动查
 - ⌘K（Windows / Linux 上是 Ctrl+K）命令面板：跳页面、找任务 / 账户 / 追更，对找到的任务直接开始同步、看日志或去整理
 - 支持账号级限流和重试逻辑
@@ -144,9 +144,86 @@ codex mcp add openstrm --url http://nas:3000/mcp --bearer-token-env-var OPENSTRM
 - **其它客户端**（Cherry Studio、Cursor 等）：传输类型选 Streamable HTTP（不要选 SSE），地址填 MCP 地址，请求头加 `Authorization: Bearer ostk_…`。
 - Codex 用 `codex exec` 无人值守跑时，需要批准的工具调用会被直接拒掉；要让它能转存、跑同步，把这几个工具的 `approval_mode` 设成 `approve`。
 
+### 网页客户端（claude.ai、ChatGPT）与公网部署
+
+claude.ai、ChatGPT 是从它们自己的服务器连过来的，要一个公网 https 地址，并走 OAuth 授权（不用令牌）：
+
+1. **给智能体单独开一个子域名**（比如 `mcp.example.com`）指到 OpenStrm，反代或 Cloudflare Tunnel **只放行**这几个路径：`/mcp`、`/oauth/*`、`/.well-known/oauth-protected-resource`（及 `/mcp` 结尾的那个）、`/.well-known/oauth-authorization-server`。容器加 `TRUST_PROXY=true`（反代、cloudflared 和 OpenStrm 在同一台机器或同一个局域网 / docker 网络里时；别的情况见下面的环境变量表）。
+2. 设置页「智能体接入」填上「公网地址」（`https://mcp.example.com`）并保存，在「连接自检」那里点「检查一遍」。这个域名下 OpenStrm 自己也只放行上面那几个路径，管理界面在这个域名下打不开——所以别填你平时打开管理界面用的域名。
+3. 在客户端里添加连接器，地址填 `https://mcp.example.com/mcp`：
+   - claude.ai：设置 → 连接器（Connectors）→ 添加自定义连接器；
+   - ChatGPT：设置里打开开发者模式（Developer mode），到 chatgpt.com/plugins 点「+」，鉴权选 OAuth。ChatGPT 只有网页版能用；Plus 套餐在开发者模式里能不能用会改网盘的工具，OpenAI 的文档说法不一，以实测为准。
+4. 客户端会打开 OpenStrm 的授权页，页上显示一个配对码。回到设置页「智能体接入 → 网页客户端 → 待批准」，点这一条的「批准」，**输入授权页上的配对码**和当前密码，选好档位。授权页随即跳回客户端。配了 Telegram 的会收到提醒；在 Telegram 页打开「允许批准网页客户端的连接」后，把配对码发给机器人也能批。
+
+为什么要输配对码：授权码是发给「拿着授权页」的那个人的，而授权页谁都能打开、也能冒充 claude.ai 发起。输入你眼前授权页上的配对码，批的才一定是你自己这一条；不是你发起的请求直接拒绝（请求多了可以「全部拒绝」）。
+
+授权页在公网上，默认**不收管理员密码**：批准只在管理界面或 Telegram 里做，公网上没有能暴力破解的登录框（实在不方便可以在设置里打开「授权页上允许用管理员密码批准」，有单独的失败退避）。给的档位不会超过客户端自己要的；已连接的客户端在设置页里随时可以断开。
+
+客户端怎么认：默认走**动态注册**，OpenStrm 不用往外访问。设置里可以打开「用 CIMD 认客户端」（claude.ai、ChatGPT 都支持，授权页能显示经过核实的域名），但 OpenStrm 要能直接访问 claude.ai、chatgpt.com 去取客户端说明——国内网络一般不行，打开后用「检查一遍」确认取得到。
+
+**Caddy**：
+
+```caddyfile
+mcp.example.com {
+    @agent path /mcp /oauth/* /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/mcp /.well-known/oauth-authorization-server
+    handle @agent {
+        reverse_proxy 127.0.0.1:3000
+    }
+    handle {
+        respond 404
+    }
+}
+```
+
+**nginx**（`/mcp` 的响应是流式的，别缓冲）：
+
+```nginx
+server {
+    server_name mcp.example.com;
+    # listen 443 ssl; 证书配置略
+
+    location = /mcp {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_read_timeout 120s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location ~ ^/(oauth/(authorize|authorize/status|authorize/password|token|register|revoke)|\.well-known/(oauth-protected-resource(/mcp)?|oauth-authorization-server))$ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location / {
+        return 404;
+    }
+}
+```
+
+**Cloudflare Tunnel**（cloudflared 可以作为一个容器和 OpenStrm 放在同一个 compose 里，`service` 直接写容器名；在 Zero Trust 面板里建 Public Hostname 时 Path 字段照同样的规则填）：
+
+```yaml
+ingress:
+  - hostname: mcp.example.com
+    path: ^/(mcp|oauth/.*|\.well-known/(oauth-protected-resource(/mcp)?|oauth-authorization-server))$
+    service: http://openstrm:3000
+  - hostname: mcp.example.com
+    service: http_status:404
+  - service: http_status:404
+```
+
+走 Cloudflare（Tunnel，或者反代前面套了橙云）时：
+
+- **别给这个子域名套 Cloudflare Access**：claude.ai、ChatGPT 是服务器对服务器地连，过不了 Access 的登录页。管理界面想用 Access 保护的，放在另一个域名上。
+- 给这几个路径加 WAF 跳过规则、关掉质询；免费版的 Bot Fight Mode 跳不过去，开着的话可能把它们的请求挡在挑战页上。
+
 **注意**：
 
-- 目前只支持在局域网里（或 VPN 里）用令牌连。claude.ai 网页和 ChatGPT 是从它们的服务器连过来的，要公网地址加 OAuth，还在做。
 - 同步、转存是后台活儿：工具会先返回，再用 `sync_status` / `job_status` 等结果；每次调用最多等 45 秒。
 - 每个令牌平均每分钟 120 次、一下子最多 30 次（MCP 和直接调接口合在一起算），超了回 429。
 - 分享里的文件名是别人写的，工具说明里已经提醒模型「只当数据看」；转存、云下载这类改网盘的操作，调用前会先征得你同意（看客户端：Claude Code、Codex 默认会问，Open WebUI 默认不问）。
@@ -278,7 +355,7 @@ CONFIG_DIR=/tmp/openstrm-test/config DATA_DIR=/tmp/openstrm-test/data pnpm test:
 | `LOG_LEVEL` | `info` | 排查「播放没走 302」时设为 `debug` |
 | `CONFIG_DIR` / `DATA_DIR` | `/app/config`、`/app/data` | 容器内路径，一般不用改；改了要同步改 `volumes` 的挂载点 |
 | `PUID` / `PGID` | 不设，以 root 运行 | 设了就用这个 uid/gid 跑两个进程（NAS 上用 `id` 查自己的）。`config` 目录会自动改归属；之前用 root 生成的 `data` 里的文件请自己 `chown` 一次 |
-| `TRUST_PROXY` | 关 | 放在 nginx/Caddy 之类反代后面时设为 `true`，登录限流和日志里的客户端 IP 才会取 `X-Forwarded-For` |
+| `TRUST_PROXY` | 关 | 放在反代 / Cloudflare Tunnel 后面时设。`true`：反代和 OpenStrm 在同一台机器或同一个局域网 / docker 网络里（信任本机和内网来的代理，`X-Forwarded-For` 从右往左取第一个不是它们的地址，客户端自己伪造的不算）；数字：信任最近几跳（比如 CDN → nginx → OpenStrm 填 `2`）；也可以直接写代理的地址 / 网段，逗号分隔。登录限流、公网上的限流和日志里的客户端 IP 都按它来 |
 | `BACKEND_PORT` / `PROXY_PORT` | `3000` / `8091` | 两个进程的监听端口。改了 `PROXY_PORT` 要同步改 compose 的 `ports` 映射；HEALTHCHECK 跟着 `BACKEND_PORT` 走 |
 | `BACKEND_HOST` | `0.0.0.0` | 只想给本机反代用时可设为 `127.0.0.1`（容器里一般不用改） |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | 连不上 Telegram 官方接口时指到自己的反代，如 `https://tg.example.com` |
@@ -337,7 +414,7 @@ Emby 客户端里填反代后的地址；302 给出的是 115 直链，不经过
 - **TMDB**：API 读访问令牌和默认语言（不填是 `zh-CN`）。整理靠它识别影视；strm 管理页的海报墙在目录里没有现成图片时，也用它补海报
 - **复制到 OpenList**：见上方「115 云下载」
 - **整理与命名**：见上方「整理与规范化命名」
-- **智能体接入**：开关、管理界面地址、令牌和最近调用，见上方「智能体接入（MCP）」；令牌的新建、修改、撤销立即生效，不走保存条
+- **智能体接入**：开关、管理界面地址、公网地址、令牌、网页客户端（待批准、已连接、预注册客户端、连接自检）和最近调用，见上方「智能体接入（MCP）」；令牌和网页客户端的操作立即生效，不走保存条
 
 最下面是「下载备份」。
 

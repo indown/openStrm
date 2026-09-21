@@ -39,14 +39,18 @@ test("订阅方在任务开始后取消：内层被退订，槽位也释放", as
   clearRateLimiters();
   const key = "enqueue-test:cancel";
   let torn = false;
+  // 等内层真的开始了再取消：固定睡 20ms 在全量跑、机器忙的时候不够，任务还在排队就被取消，测的就成了另一条路
+  let started!: () => void;
+  const startedP = new Promise<void>((r) => (started = r));
   const hanging = () =>
     new Observable<number>(() => {
+      started();
       return () => {
         torn = true;
       };
     });
   const sub = enqueueForAccount(key, hanging, 1).subscribe();
-  await new Promise((r) => setTimeout(r, 20));
+  await timeout(startedP, 2000, "任务开始");
   sub.unsubscribe();
   assert.equal(torn, true, "取消要传到内层");
   assert.equal(await timeout(firstValueFrom(enqueueForAccount(key, () => job(9), 1)), 2000, "取消后的下一个任务"), 9);

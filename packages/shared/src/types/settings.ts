@@ -55,6 +55,8 @@ export type TelegramSettings = {
   allowTaskStart?: boolean;
   allowOfflineAdd?: boolean;
   allowShareReceive?: boolean;
+  /** 允许在 Telegram 里批准网页客户端（claude.ai、ChatGPT）的连接：把授权页上的配对码发给机器人 */
+  allowOAuthApproval?: boolean;
   /** 轮询开关的落库副本：轮询状态只在内存里，进程重启后据此自动恢复 */
   pollingEnabled?: boolean;
   notify?: TelegramNotifySettings;

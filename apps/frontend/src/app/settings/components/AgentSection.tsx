@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Bot, Check, Copy, KeyRound, Loader2, MoreHorizontal, Plus, RefreshCw } from "lucide-react";
+import { Bot, KeyRound, Loader2, MoreHorizontal, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
-import type { AgentCall, AgentInfo, AgentScope, AgentToken, AgentToolset } from "@openstrm/shared";
+import type { AgentCall, AgentInfo, AgentToken, AgentToolset } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,34 +21,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { StatusBadge } from "@/components/status-badge";
+import { StatusBadge, TONE_CLASS } from "@/components/status-badge";
 import { FieldHint } from "@/components/field-hint";
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
-import { copyToClipboard } from "@/lib/clipboard";
 import { fmtWhen } from "@/lib/format";
-
-/** 权限预设：档位是集合，界面上只给三个常用组合 */
-const PRESETS: Array<{ id: string; label: string; scopes: AgentScope[]; hint: string }> = [
-  { id: "read", label: "只读", scopes: ["read"], hint: "只能查看：任务、同步进度和记录、网盘目录、分享内容、云下载列表" },
-  { id: "daily", label: "日常", scopes: ["read", "run", "write"], hint: "查看，加上开始 / 取消同步、转存分享、添加云下载" },
-  {
-    id: "full",
-    label: "完全",
-    scopes: ["read", "run", "write", "danger"],
-    hint: "再加删除与花费类的操作。目前还没有这类工具；以后的版本加了，这个令牌不用再改就能用",
-  },
-];
-
-/** 修改一个不是三个预设之一的令牌（用接口建的）时，保持它原来的档位不动 */
-const CUSTOM = "custom";
-
-const SCOPE_LABEL: Record<AgentScope, string> = { read: "查看", run: "运行", write: "改网盘", danger: "删除与花费" };
-
-const TOOLSETS: Array<{ id: AgentToolset; label: string }> = [
-  { id: "sync", label: "同步" },
-  { id: "transfer", label: "转存与云下载" },
-];
+import { AgentWebClients } from "./AgentWebClients";
+import { CUSTOM, CopyButton, PRESETS, SCOPE_LABEL, TOOLSETS, hasAllToolsets, presetIdOf, presetLabel, toolsetText } from "./agent-common";
 
 const EXPIRY: Array<{ value: string; label: string; days: number | null }> = [
   { value: "never", label: "永不过期", days: null },
@@ -56,22 +35,6 @@ const EXPIRY: Array<{ value: string; label: string; days: number | null }> = [
   { value: "90", label: "90 天", days: 90 },
   { value: "365", label: "一年", days: 365 },
 ];
-
-function presetIdOf(scopes: AgentScope[]): string {
-  const key = [...scopes].sort().join(",");
-  return PRESETS.find((p) => [...p.scopes].sort().join(",") === key)?.id ?? CUSTOM;
-}
-
-function presetLabel(scopes: AgentScope[]): string {
-  return PRESETS.find((p) => p.id === presetIdOf(scopes))?.label ?? "自定义";
-}
-
-const hasAllToolsets = (toolsets: AgentToolset[]) => TOOLSETS.every((t) => toolsets.includes(t.id));
-
-function toolsetText(toolsets: AgentToolset[]): string {
-  if (hasAllToolsets(toolsets)) return "全部工具";
-  return toolsets.map((t) => TOOLSETS.find((x) => x.id === t)?.label ?? t).join("、") || "只有基础工具";
-}
 
 /** 各家客户端的配置片段；令牌只在新建后这一次拿得到明文 */
 function snippets(mcpUrl: string, token: string) {
@@ -101,24 +64,6 @@ function snippets(mcpUrl: string, token: string) {
 function mcpUrlOf(mcpPath: string): string {
   const base = (process.env.NEXT_PUBLIC_API_URL || window.location.origin).replace(/\/+$/, "");
   return `${base}${mcpPath}`;
-}
-
-function CopyButton({ text, label = "复制" }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    if (await copyToClipboard(text)) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } else {
-      toast.error("复制失败，手动选中复制吧");
-    }
-  };
-  return (
-    <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => void copy()} title={label}>
-      {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
-      <span className="sr-only">{label}</span>
-    </Button>
-  );
 }
 
 type Editing = { mode: "create" } | { mode: "edit"; token: AgentToken };
@@ -353,7 +298,7 @@ function CreatedDialog({ created, mcpUrl, onClose }: { created: { token: string;
  * 开关和管理界面地址是设置项，由页面的表单管（fields 传进来，跟着底部保存条一起存；enabled 是保存过的值）；
  * 令牌的增删改立即生效，不走保存条。
  */
-export function AgentSection({ enabled, fields }: { enabled: boolean; fields: React.ReactNode }) {
+export function AgentSection({ enabled, publicBaseUrl, fields }: { enabled: boolean; publicBaseUrl: string; fields: React.ReactNode }) {
   const [info, setInfo] = useState<AgentInfo | null>(null);
   const [tokens, setTokens] = useState<AgentToken[] | null>(null);
   const [tokensFailed, setTokensFailed] = useState(false);
@@ -514,6 +459,8 @@ export function AgentSection({ enabled, fields }: { enabled: boolean; fields: Re
         )}
       </div>
 
+      <AgentWebClients publicBaseUrl={publicBaseUrl} enabled={enabled} />
+
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-medium">最近调用</h3>
@@ -535,7 +482,7 @@ export function AgentSection({ enabled, fields }: { enabled: boolean; fields: Re
                   {c.tokenName}
                   {c.ip ? `（${c.ip}）` : ""}
                 </span>
-                {!c.ok && c.error && <span className="min-w-0 flex-1 truncate text-danger" title={c.error}>{c.error}</span>}
+                {!c.ok && c.error && <span className={`min-w-0 flex-1 truncate ${TONE_CLASS.danger.text}`} title={c.error}>{c.error}</span>}
                 <span className="ml-auto tabular-nums text-muted-foreground" title={new Date(c.at * 1000).toLocaleString("zh-CN", { hour12: false })}>
                   {fmtWhen(c.at * 1000)} · {c.durationMs} ms
                 </span>

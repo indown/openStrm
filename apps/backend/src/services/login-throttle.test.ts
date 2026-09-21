@@ -72,3 +72,24 @@ test("失败过一两次就停手的来源，闲置超过 maxLockMs 后桶被清
   throttle.recordFailure("recent");
   assert.equal(throttle.blockedFor("recent"), 10, "1 秒前失败过的桶不该被清");
 });
+
+test("begin 先占位子：同时打进来的一批比对，最多放进 maxFailures 个，全失败就锁", () => {
+  const { throttle } = make();
+  const admitted = [0, 1, 2, 3, 4].map(() => throttle.begin("ip"));
+  assert.deepEqual(admitted, [0, 0, 0, 1, 1], "第 4、5 个要等前面的出结果");
+  for (let i = 0; i < 3; i++) throttle.end("ip", false);
+  assert.equal(throttle.blockedFor("ip"), 10, "放进来的 3 个都失败，锁上");
+  assert.equal(throttle.begin("ip"), 10, "锁着时 begin 直接报剩余秒数");
+});
+
+test("end：成功清零；中途出错只还位子，不算失败", () => {
+  const { throttle } = make();
+  throttle.begin("ip");
+  throttle.end("ip");
+  for (let i = 0; i < 3; i++) assert.equal(throttle.begin("ip"), 0, "出错还回来的位子能再用");
+  throttle.end("ip", false);
+  throttle.end("ip", false);
+  throttle.end("ip", true);
+  assert.equal(throttle.blockedFor("ip"), 0);
+  assert.equal(throttle.begin("ip"), 0, "成功后从头算");
+});

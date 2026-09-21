@@ -82,6 +82,12 @@ import { flushEmbyRefresh } from "./services/media-server.js";
 // 智能体接入：令牌管理 + MCP 端点
 import agentRoute from "./routes/agent/index.js";
 import mcpRoute from "./routes/mcp/index.js";
+import { trustProxyOption } from "./lib/trust-proxy.js";
+import { publicHostPlugin } from "./plugins/public-host.js";
+import oauthMetadataRoute from "./routes/oauth/metadata.js";
+import oauthRegisterRoute from "./routes/oauth/register.js";
+import oauthAuthorizeRoute from "./routes/oauth/authorize.js";
+import oauthTokenRoute from "./routes/oauth/token.js";
 
 // System routes
 import clearDirectoryRoute from "./routes/system/clear-directory.js";
@@ -93,9 +99,7 @@ import backupRoute from "./routes/system/backup.js";
 const app = Fastify({
   loggerInstance: logger,
   forceCloseConnections: true,
-  // 放在 nginx/Caddy 后面时设 TRUST_PROXY=true，request.ip 才取 X-Forwarded-For——
-  // 登录退避按 IP 分桶，不设的话所有人共用反代那一个桶
-  trustProxy: process.env.TRUST_PROXY === "true",
+  trustProxy: trustProxyOption(process.env.TRUST_PROXY),
 });
 registerErrorHandling(app);
 
@@ -115,9 +119,12 @@ startUpdateChecks();
 // Global plugins
 // 生产是同源（API 进程托管前端），开发走 next dev 的 rewrites，两种情况都用不到跨域；
 // 留着 origin:true 只是给把 NEXT_PUBLIC_API_URL 指到别处的开发方式兜底。
-// 不开 credentials：凭据是请求头里的 Bearer token，没有 cookie，反射任意 origin 再带凭据是给将来埋雷
-await app.register(cors, { origin: true });
+// 不开 credentials：凭据是请求头里的 Bearer token，没有 cookie，反射任意 origin 再带凭据是给将来埋雷。
+// 浏览器里的 MCP 客户端要读 401 的 WWW-Authenticate（找授权服务器）、429 的 Retry-After，得明着放出来
+await app.register(cors, { origin: true, exposedHeaders: ["WWW-Authenticate", "Retry-After"] });
 await app.register(compress);
+// 从公网地址那个域名进来的，只放行智能体用的几个路径
+await app.register(publicHostPlugin);
 
 // Core plugins (order matters)
 await app.register(authPlugin);
@@ -166,9 +173,13 @@ await app.register(lifeMonitorRoute);
 // 整理与规范化命名
 await app.register(organizeRoute);
 
-// 智能体接入
+// 智能体接入：令牌管理、/mcp，以及网页客户端走的 OAuth（元数据、注册、授权页、令牌）
 await app.register(agentRoute);
 await app.register(mcpRoute);
+await app.register(oauthMetadataRoute);
+await app.register(oauthRegisterRoute);
+await app.register(oauthAuthorizeRoute);
+await app.register(oauthTokenRoute);
 
 // System routes
 await app.register(clearDirectoryRoute);

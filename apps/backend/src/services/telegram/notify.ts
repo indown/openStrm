@@ -7,10 +7,11 @@
  */
 import { classifyAccountIssue } from "../drive/errors.js";
 import type { AccountIssue as DriveAccountIssue } from "../drive/types.js";
-import type { AppSettings, TelegramNotifySettings, OrganizeErrorKind } from "@openstrm/shared";
+import type { AppSettings, OAuthPendingRequest, TelegramNotifySettings, OrganizeErrorKind } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { moduleLogger } from "../../lib/logger.js";
-import { createTelegramBot } from "./bot.js";
+import { createTelegramBot, type InlineKeyboard } from "./bot.js";
+import { oauthNotifyBucket } from "../agent/rate-limit.js";
 import { esc, fmtDuration, taskLabel, type TaskRef } from "./format.js";
 import { FAILURE_LABEL } from "../organize/failure-kinds.js";
 
@@ -261,6 +262,61 @@ export function setNotifySender(fn: Sender | null): void {
 
 export function __test_resetNotify(): void {
   recent.clear();
+}
+
+/* ------------------------------- OAuth 授权请求 ------------------------------- */
+
+/** 按钮的回调数据前缀：`oaa:<请求 id>:<read|daily>` 批准、`oad:<请求 id>` 拒绝，commands.ts 认这两个 */
+export const OAUTH_APPROVE_ACTION = "oaa";
+export const OAUTH_DENY_ACTION = "oad";
+
+const SCOPE_TEXT: Record<string, string> = { read: "查看", run: "运行", write: "改网盘", danger: "危险操作" };
+
+type ButtonSender = (chatId: string, text: string, buttons: InlineKeyboard) => Promise<void>;
+
+const realButtonSender: ButtonSender = async (chatId, text, buttons) => {
+  const token = readAppSettings().telegram?.botToken;
+  if (!token) return;
+  const res = await createTelegramBot(token).sendMessage(chatId, text, { buttons });
+  if (!res.ok) log.warn(`Telegram 批准通知发送失败：${res.error ?? res.description ?? "unknown"}`);
+};
+
+let buttonSender: ButtonSender = realButtonSender;
+
+/** 仅供测试：换掉带按钮的发送；传 null 恢复 */
+export function setButtonSender(fn: ButtonSender | null): void {
+  buttonSender = fn ?? realButtonSender;
+}
+
+/** 一条授权请求的说明（通知、配对码对上后回的消息都用）：名字是客户端自己报的，CIMD 的另外给出它地址的域名 */
+export function oauthRequestText(req: OAuthPendingRequest): string {
+  const lines = [
+    "🔐 <b>有客户端请求连接 OpenStrm</b>",
+    req.clientHost ? `${esc(req.clientName)}（身份：${esc(req.clientHost)}）` : `${esc(req.clientName)}（名字是它自己报的）`,
+    `授权后跳到：${esc(req.redirectHost)}${req.redirectInsecure ? "（公网上的 http，明文）" : req.redirectLoopback ? "（本机）" : ""}`,
+  ];
+  if (req.requestedScopes.length > 0) lines.push(`它要：${req.requestedScopes.map((s) => SCOPE_TEXT[s] ?? s).join("、")}`);
+  if (req.ip) lines.push(`来自：${esc(req.ip)}`);
+  return lines.join("\n");
+}
+
+/**
+ * 有客户端在授权页上等批准：推到通知的那个聊天，只带「拒绝」按钮。批准要证明批的是自己眼前那一条：
+ * 开了 Telegram 里批准的，把授权页上的配对码发给机器人才出批准按钮；没开的到设置页里批。
+ * 不看通知开关（这是要人去处理的）；一小时最多 10 条，有人刷授权请求时不至于刷屏
+ */
+export async function notifyOAuthRequest(req: OAuthPendingRequest): Promise<boolean> {
+  const telegram = readAppSettings().telegram;
+  if (!telegram?.botToken || !telegram.chatId) return false;
+  if (!oauthNotifyBucket.take("all").ok) {
+    log.warn({ requestId: req.id }, "授权请求通知太多，这一条不发了（设置页里照样看得到）");
+    return false;
+  }
+  const how = telegram.allowOAuthApproval
+    ? "是你自己发起的：把授权页上显示的配对码发给我，我回你批准按钮。不是你发起的就点拒绝。"
+    : "要批准：到 OpenStrm 的「设置 → 智能体接入 → 待批准」里点「批准」，输入授权页上的配对码。不是你发起的就点拒绝。";
+  await buttonSender(telegram.chatId, `${oauthRequestText(req)}\n\n${how}`, [[{ text: "❌ 拒绝", callback_data: `${OAUTH_DENY_ACTION}:${req.id}` }]]);
+  return true;
 }
 
 /** 事件是否该发、发什么，都在这里决定。返回是否真的发出去了 */

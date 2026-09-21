@@ -372,3 +372,134 @@ export const agentAudit = sqliteTable(
     atIdx: index("agent_audit_at_idx").on(t.at),
   }),
 );
+
+/**
+ * OAuth 客户端（网页客户端走授权流程时）：
+ *   dcr    动态注册（RFC 7591）来的，client_id 是我们发的；
+ *   cimd   client_id 本身是一个 https 地址，元数据从那里取来缓存在这里（设置里开了 CIMD 才有）；
+ *   manual 设置页手建的预注册客户端，有 secret（只存哈希）。
+ * 只存用得上的几样（名字、回调地址、scope），不存客户端交上来的整份元数据：注册谁都能发，存整份等于让人随便往库里塞东西
+ */
+export const oauthClients = sqliteTable(
+  "oauth_clients",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(),
+    name: text("name").notNull().default(""),
+    /** 登记的回调地址（JSON 数组） */
+    redirectUris: text("redirect_uris").notNull().default("[]"),
+    secretHash: text("secret_hash"),
+    /** 注册时要的 scope：DCR 的注册回应里要原样带回 */
+    scope: text("scope").notNull().default(""),
+    createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+    /** CIMD 元数据上次取的时间（秒） */
+    fetchedAt: integer("fetched_at"),
+    /** CIMD 元数据缓存到什么时候（秒）：按对方的 Cache-Control，最长一天 */
+    cacheUntil: integer("cache_until"),
+    lastUsedAt: integer("last_used_at"),
+  },
+  (t) => ({
+    kindIdx: index("oauth_clients_kind_idx").on(t.kind),
+  }),
+);
+
+/**
+ * 授权请求：授权页发起，等人在管理界面（或 Telegram）里输入授权页上的配对码后批准。
+ * 批准后授权页轮询时才生成授权码（只存哈希），一次性、10 分钟内有效。
+ */
+export const oauthRequests = sqliteTable(
+  "oauth_requests",
+  {
+    id: text("id").primaryKey(),
+    /** 授权页轮询用的密钥（哈希）：光知道请求 id 拿不到授权码 */
+    pollHash: text("poll_hash").notNull(),
+    clientId: text("client_id").notNull(),
+    clientName: text("client_name").notNull().default(""),
+    clientKind: text("client_kind").notNull(),
+    redirectUri: text("redirect_uri").notNull(),
+    state: text("state"),
+    codeChallenge: text("code_challenge").notNull(),
+    /** 客户端要的 scope，原样（空格分隔） */
+    requestedScope: text("requested_scope").notNull().default(""),
+    /** 令牌要绑定的资源（RFC 8707）：本实例的 <公网地址>/mcp */
+    resource: text("resource").notNull(),
+    pairingCode: text("pairing_code").notNull(),
+    /** pending → approved（批了，等授权页来取授权码）→ issued（授权码已发）→ used（换过令牌）；或 denied */
+    status: text("status").notNull().default("pending"),
+    grantedScopes: text("granted_scopes"),
+    grantedToolsets: text("granted_toolsets"),
+    /** 在哪批的：ui / telegram / password */
+    approvedVia: text("approved_via"),
+    codeHash: text("code_hash"),
+    codeExpiresAt: integer("code_expires_at"),
+    /** 授权码换令牌的时间：同一个授权码短时间内再来一次（回应丢了重试）要认得出 */
+    usedAt: integer("used_at"),
+    /** 用这个授权码换出来的授权：授权码被再用一次时整个撤掉 */
+    grantId: text("grant_id"),
+    ip: text("ip").notNull().default(""),
+    /** 按来源计数用的键：IPv6 按 /64（lib/ip.ts） */
+    ipKey: text("ip_key").notNull().default(""),
+    createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+    expiresAt: integer("expires_at").notNull(),
+    decidedAt: integer("decided_at"),
+  },
+  (t) => ({
+    codeUniq: uniqueIndex("oauth_requests_code_uniq").on(t.codeHash),
+    statusIdx: index("oauth_requests_status_idx").on(t.status, t.createdAt),
+    ipKeyIdx: index("oauth_requests_ip_key_idx").on(t.ipKey, t.createdAt),
+  }),
+);
+
+/**
+ * 一次授权 = 设置页「已连接的客户端」的一行：当前的访问令牌、刷新令牌（都只存哈希，每次刷新都换），
+ * 批给它的档位和工具集，令牌绑定的资源，怎么批的
+ */
+export const oauthGrants = sqliteTable(
+  "oauth_grants",
+  {
+    id: text("id").primaryKey(),
+    clientId: text("client_id").notNull(),
+    clientName: text("client_name").notNull().default(""),
+    scopes: text("scopes").notNull().default("[]"),
+    toolsets: text("toolsets").notNull(),
+    /** 客户端要没要 offline_access：返回的 scope 里带不带它 */
+    offline: integer("offline", { mode: "boolean" }).notNull().default(false),
+    resource: text("resource").notNull(),
+    accessHash: text("access_hash").notNull(),
+    accessExpiresAt: integer("access_expires_at").notNull(),
+    /** 刷新前的那个访问令牌：到它自己过期前照样认，刷新时正在路上的请求不会平白 401 */
+    prevAccessHash: text("prev_access_hash"),
+    prevAccessExpiresAt: integer("prev_access_expires_at"),
+    refreshHash: text("refresh_hash").notNull(),
+    refreshExpiresAt: integer("refresh_expires_at").notNull(),
+    /** 在哪批的（ui / telegram / password）、什么时候、发起授权的地址：出了事能查 */
+    approvedVia: text("approved_via"),
+    approvedAt: integer("approved_at"),
+    requestIp: text("request_ip"),
+    createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+    lastUsedAt: integer("last_used_at"),
+    lastUsedIp: text("last_used_ip"),
+  },
+  (t) => ({
+    accessUniq: uniqueIndex("oauth_grants_access_uniq").on(t.accessHash),
+    prevAccessUniq: uniqueIndex("oauth_grants_prev_access_uniq").on(t.prevAccessHash),
+    refreshUniq: uniqueIndex("oauth_grants_refresh_uniq").on(t.refreshHash),
+    clientIdx: index("oauth_grants_client_idx").on(t.clientId),
+  }),
+);
+
+/**
+ * 换过的刷新令牌：宽限期（一分钟）内再出现是客户端并发刷新 / 重试，回同一对令牌；
+ * 过了宽限期再出现就是被偷了拿去重放，整个授权作废（刷新令牌过期后就清掉）
+ */
+export const oauthUsedRefresh = sqliteTable(
+  "oauth_used_refresh",
+  {
+    hash: text("hash").primaryKey(),
+    grantId: text("grant_id").notNull(),
+    usedAt: integer("used_at").notNull().default(sql`(unixepoch())`),
+  },
+  (t) => ({
+    usedAtIdx: index("oauth_used_refresh_used_at_idx").on(t.usedAt),
+  }),
+);

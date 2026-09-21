@@ -9,8 +9,9 @@
  *   - 群聊只认设置里的 chatId 那一个群
  *   - 按钮回调同样过白名单（以前只查文字命令，群里谁都能点"启动"）
  *   - 会产生副作用的动作各有一个开关：allowTaskStart / allowOfflineAdd / allowShareReceive，默认全关
+ *   - 网页客户端的 OAuth 授权请求（批准 / 拒绝按钮）不另设开关：通知本身只发给管理员配的那个聊天，点的人还要过白名单
  */
-import type { AppSettings, TaskDefinition, TaskExecutionSummary } from "@openstrm/shared";
+import type { AppSettings, OAuthPendingRequest, TaskDefinition, TaskExecutionSummary } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { listTasks } from "../../db/repositories/tasks.js";
 import { listAccounts } from "../../db/repositories/accounts.js";
@@ -28,6 +29,10 @@ import { openlistListDir } from "../openlist/client.js";
 import { getLifeMonitorStatus } from "../life/monitor.js";
 import { normalizeOfflineUrls } from "../cloud-115/offline.js";
 import { KIND_LABEL, findShareLink, providerFor, providerForTask, shareForLink } from "../drive/registry.js";
+import { AGENT_TOOLSETS } from "../../db/repositories/api-tokens.js";
+import { findPendingOAuthRequestByCode, getOAuthRequest, normalizePairingCode } from "../../db/repositories/oauth.js";
+import { approveOAuthRequest, denyOAuthRequest, pendingRequestInfo, presetScopes, type ApproveResult } from "../oauth/authorize.js";
+import { OAUTH_APPROVE_ACTION, OAUTH_DENY_ACTION, oauthRequestText } from "./notify.js";
 import type { DriveKind } from "../drive/types.js";
 import { listWholeShareDir } from "../drive/share-walk.js";
 import { saveSelectionToTask } from "../share/receive.js";
@@ -109,6 +114,14 @@ export interface CommandDeps {
   }): Promise<{ ok: boolean; message: string }>;
   /** 任务的网盘目录（originPath/segments…）下的子目录名，目的地浏览用 */
   listSubdirs(task: TaskDefinition, segments: string[]): Promise<string[]>;
+  /** OAuth 授权请求：按配对码找还在等批准的（有人把授权页上的配对码发过来时） */
+  findOAuthByCode(code: string): OAuthPendingRequest | null;
+  /** 批准：pairingCode 是用户发来、对上了的那个；preset 是 read / daily */
+  approveOAuth(requestId: string, pairingCode: string, preset: string): ApproveResult;
+  /** 拒绝，返回是否改成了（已处理过或过期了就是 false） */
+  denyOAuth(requestId: string): boolean;
+  /** 批准通知的原文（改消息时保留），请求没了就是 null */
+  oauthRequestText(requestId: string): string | null;
 }
 
 /** 后端 startTask 的 message 是固定的英文句式，这里说成人话（和任务页保持一致）；个数用结构化的 total */
@@ -216,6 +229,19 @@ const realDeps: CommandDeps = {
     // 文件不进列表
     return (await provider.listDir(node.id)).filter((e) => e.isDir).map((e) => e.name);
   },
+  findOAuthByCode: (code) => {
+    const r = findPendingOAuthRequestByCode(code);
+    return r ? pendingRequestInfo(r) : null;
+  },
+  approveOAuth: (requestId, pairingCode, preset) => {
+    const scopes = presetScopes(preset);
+    return scopes ? approveOAuthRequest(requestId, pairingCode, { scopes, toolsets: AGENT_TOOLSETS }, "telegram") : "gone";
+  },
+  denyOAuth: (requestId) => denyOAuthRequest(requestId, "telegram"),
+  oauthRequestText: (requestId) => {
+    const r = getOAuthRequest(requestId);
+    return r ? oauthRequestText(pendingRequestInfo(r)) : null;
+  },
 };
 
 let deps: CommandDeps = { ...realDeps };
@@ -244,6 +270,7 @@ function perms(settings: AppSettings) {
     taskStart: settings.telegram?.allowTaskStart === true,
     offlineAdd: settings.telegram?.allowOfflineAdd === true,
     shareReceive: settings.telegram?.allowShareReceive === true,
+    oauthApproval: settings.telegram?.allowOAuthApproval === true,
   };
 }
 
@@ -276,6 +303,11 @@ async function handleMessage(bot: BotLike, msg: TelegramMessage): Promise<void> 
     return;
   }
 
+  if (normalizePairingCode(text)) {
+    await handlePairingCode(bot, chatId, text, settings);
+    return;
+  }
+
   const share = findShareLink(text);
   if (share) {
     await beginShare(bot, chatId, msg.from!.id, share.url, settings);
@@ -292,6 +324,44 @@ async function handleMessage(bot: BotLike, msg: TelegramMessage): Promise<void> 
     return;
   }
   await bot.sendMessage(chatId, "直接把 115 / 夸克分享链接或磁力/ed2k 链接发给我，或者用 /help 看看能做什么。");
+}
+
+/* ------------------------------- 网页客户端的配对码 ------------------------------- */
+
+/** 配对码对上之后记一笔：请求 id → 用户发来的配对码、在哪个聊天、什么时候。批准按钮按下时要有这一笔 */
+const oauthUnlocks = new Map<string, { code: string; chatId: string; at: number }>();
+const UNLOCK_TTL_MS = 10 * 60_000;
+
+/**
+ * 有人把授权页上的配对码发过来：对上了就回这一条的说明和批准按钮。
+ * 通知里不放批准按钮，就是为了让批准证明「批的是自己眼前授权页上的那一条」，见 services/oauth/authorize.ts 文件头
+ */
+async function handlePairingCode(bot: BotLike, chatId: string, text: string, settings: AppSettings): Promise<void> {
+  if (!perms(settings).oauthApproval) {
+    await bot.sendMessage(chatId, "Telegram 里批准网页客户端没开：到 OpenStrm 的 Telegram 页打开「允许批准网页客户端的连接」，或者直接到设置页里批准。");
+    return;
+  }
+  const req = deps.findOAuthByCode(text);
+  if (!req) {
+    await bot.sendMessage(chatId, "没找到这个配对码对应的授权请求：可能已经批过、拒过或过期了，回到客户端重新连接一次。");
+    return;
+  }
+  const now = Date.now();
+  for (const [id, u] of oauthUnlocks) if (now - u.at > UNLOCK_TTL_MS) oauthUnlocks.delete(id);
+  oauthUnlocks.set(req.id, { code: text, chatId, at: now });
+  const buttons: InlineKeyboard = [
+    [
+      { text: "✅ 批准（日常）", callback_data: `${OAUTH_APPROVE_ACTION}:${req.id}:daily` },
+      { text: "👁 只读", callback_data: `${OAUTH_APPROVE_ACTION}:${req.id}:read` },
+    ],
+    [{ text: "❌ 拒绝", callback_data: `${OAUTH_DENY_ACTION}:${req.id}` }],
+  ];
+  await bot.sendMessage(chatId, `${oauthRequestText(req)}\n\n配对码对上了，选个档位批准：`, { buttons });
+}
+
+/** 测试用 */
+export function __test_resetOAuthUnlocks(): void {
+  oauthUnlocks.clear();
 }
 
 /* ------------------------------- 命令 ------------------------------- */
@@ -329,6 +399,7 @@ function helpText(settings: AppSettings): string {
     "<b>直接发链接：</b>",
     `• 磁力 / ed2k / http 链接 → 交给 115 云下载，可选下到某个任务目录（能进子文件夹），下完自动生成 strm（${onOff(p.offlineAdd)}）`,
     `• 115 / 夸克分享链接 → 转存到同类账号的某个任务目录（能进子文件夹）并同步（${onOff(p.shareReceive)}）`,
+    `• 授权页上的配对码 → 批准 claude.ai、ChatGPT 这类网页客户端的连接（${onOff(p.oauthApproval)}）`,
     "",
     "<b>命令：</b>",
     `/tasks 任务列表，带「运行」按钮（${onOff(p.taskStart)}）`,
@@ -731,6 +802,39 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
         takePending(arg);
         await bot.answerCallback(q.id);
         await edit(bot, chatId, messageId, "已取消。");
+        return;
+      }
+      case OAUTH_APPROVE_ACTION:
+      case OAUTH_DENY_ACTION: {
+        const [requestId, preset = "daily"] = arg.split(":");
+        const approve = action === OAUTH_APPROVE_ACTION;
+        let ok: boolean;
+        if (approve) {
+          // 批准按钮只在配对码对上之后才发出来；这里再核一遍：开关开着、这个请求刚在这个聊天里用配对码解锁过
+          if (!perms(settings).oauthApproval) {
+            await bot.answerCallback(q.id, "Telegram 里批准网页客户端没开", { alert: true });
+            return;
+          }
+          const unlock = oauthUnlocks.get(requestId);
+          if (!unlock || unlock.chatId !== chatId || Date.now() - unlock.at > UNLOCK_TTL_MS) {
+            await bot.answerCallback(q.id, "先把授权页上的配对码发给我", { alert: true });
+            return;
+          }
+          oauthUnlocks.delete(requestId);
+          ok = deps.approveOAuth(requestId, unlock.code, preset) === "ok";
+        } else {
+          oauthUnlocks.delete(requestId);
+          ok = deps.denyOAuth(requestId);
+        }
+        const original = deps.oauthRequestText(requestId);
+        if (!ok) {
+          await bot.answerCallback(q.id, "这个授权请求已经处理过或过期了", { alert: true });
+          if (original) await edit(bot, chatId, messageId, `${original}\n\n（已处理或已过期）`);
+          return;
+        }
+        const result = approve ? `✅ 已批准（${preset === "read" ? "只读" : "日常"}），授权页会自动跳回客户端` : "❌ 已拒绝";
+        await bot.answerCallback(q.id, approve ? "已批准" : "已拒绝");
+        await edit(bot, chatId, messageId, original ? `${original}\n\n${result}` : result);
         return;
       }
       case "ofl":

@@ -142,6 +142,24 @@ export const organizeSettingsSchema = z
   });
 
 /** PUT /api/settings 的 body：只校验认识的键的类型，多出来的顶层键原样存 */
+/** https 的源（可以带端口，不能带路径、查询串、账号密码；域名结尾不能带点） */
+function isHttpsOrigin(v: string): boolean {
+  try {
+    const u = new URL(v);
+    return (
+      u.protocol === "https:" &&
+      !u.username &&
+      !u.password &&
+      (u.pathname === "/" || u.pathname === "") &&
+      !u.search &&
+      !u.hash &&
+      !u.hostname.endsWith(".")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export const settingsPatchSchema = z.looseObject({
   "user-agent": z.string().optional(),
   strmExtensions: z.array(z.string()).optional(),
@@ -163,6 +181,7 @@ export const settingsPatchSchema = z.looseObject({
       allowTaskStart: z.boolean().optional(),
       allowOfflineAdd: z.boolean().optional(),
       allowShareReceive: z.boolean().optional(),
+      allowOAuthApproval: z.boolean().optional(),
       pollingEnabled: z.boolean().optional(),
       notify: z
         .looseObject({
@@ -203,6 +222,17 @@ export const settingsPatchSchema = z.looseObject({
         .max(500)
         .refine((v) => v === "" || /^https?:\/\/[^\s/]+/i.test(v), "管理界面地址要以 http:// 或 https:// 开头")
         .optional(),
+      // 公网地址只收 https 的源：OAuth 的 issuer、资源地址都从它来，带了路径会和元数据的位置对不上
+      publicBaseUrl: z
+        .string()
+        .trim()
+        .max(300)
+        .refine((v) => v === "" || isHttpsOrigin(v), "公网地址要是 https:// 开头的域名（不带路径），比如 https://mcp.example.com")
+        // 存规范写法（小写、去默认端口、国际化域名转 punycode）：元数据里的资源地址要和客户端连的地址一字不差
+        .transform((v) => (v === "" ? "" : new URL(v).origin))
+        .optional(),
+      allowPasswordApproval: z.boolean().optional(),
+      oauthCimd: z.boolean().optional(),
     })
     .optional(),
 }) satisfies z.ZodType<Partial<AppSettings>>;

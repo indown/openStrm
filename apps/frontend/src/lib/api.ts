@@ -10,6 +10,9 @@ import type {
   AccountInfo,
   AgentCall,
   AgentInfo,
+  AgentOAuthState,
+  AgentSelfCheckItem,
+  OAuthClientCreated,
   AgentScope,
   AgentToken,
   AgentTokenCreated,
@@ -391,7 +394,7 @@ export type FollowPatch = Partial<{
 }>;
 
 export type TelegramNotifyPrefs = Required<TelegramNotifySettings>;
-export type TelegramPermissions = { allowTaskStart: boolean; allowOfflineAdd: boolean; allowShareReceive: boolean };
+export type TelegramPermissions = { allowTaskStart: boolean; allowOfflineAdd: boolean; allowShareReceive: boolean; allowOAuthApproval: boolean };
 export interface TelegramBotStatus {
   configured: boolean;
   /** 掩码后的 token，原样提交等于不改 */
@@ -539,6 +542,19 @@ export const api = {
     revokeAll: () => data(axiosInstance.delete<{ deleted: number }>("/api/agent/tokens")),
     calls: (tokenId?: string, limit = 20) =>
       data(axiosInstance.get<{ calls: AgentCall[] }>("/api/agent/calls", { params: { tokenId: tokenId || undefined, limit } })),
+    /** 网页客户端（OAuth）：待批准、已连接的、预注册的 */
+    oauth: () => data(axiosInstance.get<AgentOAuthState>("/api/agent/oauth")),
+    /** 批准：pairingCode 是授权页上显示的配对码（对不上不批），currentPassword 是管理界面的登录密码 */
+    approveOAuth: (id: string, input: { pairingCode: string; scopes: AgentScope[]; toolsets: AgentToolset[] | null; currentPassword: string }) =>
+      data(axiosInstance.post<{ success: boolean }>(`/api/agent/oauth/requests/${encodeURIComponent(id)}/approve`, input)),
+    denyOAuth: (id: string) => data(axiosInstance.post<{ success: boolean }>(`/api/agent/oauth/requests/${encodeURIComponent(id)}/deny`)),
+    denyAllOAuth: () => data(axiosInstance.post<{ denied: number }>("/api/agent/oauth/requests/deny-all")),
+    revokeGrant: (id: string) => data(axiosInstance.delete<{ success: boolean }>(`/api/agent/oauth/grants/${encodeURIComponent(id)}`)),
+    revokeAllGrants: () => data(axiosInstance.delete<{ deleted: number }>("/api/agent/oauth/grants")),
+    createOAuthClient: (input: { name: string; redirectUris: string[] }) => data(axiosInstance.post<OAuthClientCreated>("/api/agent/oauth/clients", input)),
+    deleteOAuthClient: (id: string) => data(axiosInstance.delete<{ success: boolean }>(`/api/agent/oauth/clients/${encodeURIComponent(id)}`)),
+    /** 连接自检：后端从自己那边请求公网地址，最多等十几秒 */
+    selfCheck: () => data(axiosInstance.post<{ items: AgentSelfCheckItem[] }>("/api/agent/selfcheck", undefined, { timeout: 60_000 })),
   },
   update: {
     get: () => data(axiosInstance.get<UpdateStatus>("/api/update")),

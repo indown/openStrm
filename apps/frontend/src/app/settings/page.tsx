@@ -57,6 +57,29 @@ const httpUrl = (hint: string) =>
     .trim()
     .refine((v) => v === "" || /^https?:\/\/\S+$/i.test(v), hint);
 
+/** 公网地址只收 https 的源（不带路径）：OAuth 的地址都从它拼，和后端的校验一致 */
+const httpsOrigin = (hint: string) =>
+  z
+    .string()
+    .trim()
+    .refine((v) => {
+      if (v === "") return true;
+      try {
+        const u = new URL(v);
+        return (
+          u.protocol === "https:" &&
+          !u.username &&
+          !u.password &&
+          (u.pathname === "/" || u.pathname === "") &&
+          !u.search &&
+          !u.hash &&
+          !u.hostname.endsWith(".")
+        );
+      } catch {
+        return false;
+      }
+    }, hint);
+
 /** 并发 / 频率这类计数在表单里是字符串：以前 `parseInt(v) || 2` 会把打错的字悄悄改回默认值 */
 const count = (min: number, max: number) =>
   z
@@ -97,6 +120,9 @@ const schema = z.object({
   agent: z.object({
     enabled: z.boolean(),
     uiBaseUrl: httpUrl("填 http:// 或 https:// 开头的地址，比如 http://nas:3000"),
+    publicBaseUrl: httpsOrigin("填 https:// 开头的域名，不带路径，比如 https://mcp.example.com"),
+    allowPasswordApproval: z.boolean(),
+    oauthCimd: z.boolean(),
   }),
 });
 
@@ -128,7 +154,13 @@ function fromSettings(s: AppSettings): SettingsValues {
     },
     organize: s.organize ?? {},
     update: s.update ?? {},
-    agent: { enabled: s.agent?.enabled === true, uiBaseUrl: s.agent?.uiBaseUrl ?? "" },
+    agent: {
+      enabled: s.agent?.enabled === true,
+      uiBaseUrl: s.agent?.uiBaseUrl ?? "",
+      publicBaseUrl: s.agent?.publicBaseUrl ?? "",
+      allowPasswordApproval: s.agent?.allowPasswordApproval === true,
+      oauthCimd: s.agent?.oauthCimd === true,
+    },
   };
 }
 
@@ -217,7 +249,8 @@ export default function SettingsPage() {
             // 有任务正在执行
             toast.error(apiError.response.data?.message || "有任务正在执行中，无法保存设置。请等待任务完成后再试。");
           } else if (apiError.response?.status === 400) {
-            toast.error("保存失败：参数错误");
+            // 表单自己校验过的不会走到这；能到这的是只有服务端才判得了的（比如公网地址撞了管理界面的域名），原因要让人看见
+            toast.error(`保存失败：${apiError.response.data?.message || "参数错误"}`);
           } else {
             toast.error("保存失败");
           }
@@ -634,6 +667,7 @@ export default function SettingsPage() {
 
             <AgentSection
               enabled={saved?.agent?.enabled === true}
+              publicBaseUrl={saved?.agent?.publicBaseUrl?.replace(/\/+$/, "") ?? ""}
               fields={
                 <div className="space-y-4">
                   <FormField
@@ -662,6 +696,46 @@ export default function SettingsPage() {
                         </FormDescription>
                         <FormMessage />
                       </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="agent.publicBaseUrl"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>公网地址（可选）</FormLabel>
+                        <FormControl>
+                          <Input placeholder="https://mcp.example.com" {...field} />
+                        </FormControl>
+                        <FormDescription className="text-xs">
+                          claude.ai、ChatGPT 这类网页客户端从它们的服务器连过来，要一个公网 https 地址，并走 OAuth 授权。给智能体单独开一个子域名：这个域名下只放行智能体用的几个路径，管理界面在这个域名下打不开。反代和 Cloudflare Tunnel 的配法见 README
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="agent.allowPasswordApproval"
+                    render={({ field }) => (
+                      <SwitchRow
+                        label="授权页上允许用管理员密码批准"
+                        description="默认关：授权页在公网上，批准只在这里或 Telegram 里做。打不开这个界面、也没配 Telegram 时才打开"
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="agent.oauthCimd"
+                    render={({ field }) => (
+                      <SwitchRow
+                        label="用 CIMD 认客户端"
+                        description="默认关，客户端用动态注册。开了 claude.ai、ChatGPT 会改用 CIMD（授权页能显示它们经过核实的域名），但 OpenStrm 要能直接访问 claude.ai、chatgpt.com 去取客户端说明——国内网络一般不行，取不到就谁也连不上。开了之后点下面的「检查一遍」看取不取得到"
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
                     )}
                   />
                 </div>
