@@ -1,15 +1,19 @@
 /**
- * 授权页：后端直接出的一张极简 HTML（中文、内联样式和脚本），不依赖前端的静态导出——公网上不需要露出管理界面。
- * 页面上显示配对码，管理员把它输进管理界面（或发给 Telegram 机器人）批准；页面每两秒问一次后端批了没有，
- * 批了就带着授权码跳回客户端。轮询用 POST，轮询密钥不进地址栏、不进访问日志。
- * 客户端名、回调地址都是别人给的：一律转义；嵌进脚本的数据把 < 转掉，免得提前闭合 script。
+ * 授权页：后端直接出的一张极简 HTML（中文、内联样式和脚本），不依赖前端的静态导出（管理界面不一定在公网上）。
+ * 两种批法：
+ *   - 配对码：页面上显示配对码，管理员把它输进管理界面（或发给 Telegram 机器人）批准；
+ *   - 密码（设置里开了、这个客户端也在允许之列）：一个域名共用时密码框放最前、配对码收进「在别的设备上批准」，
+ *     不然配对码在前、密码折叠着。
+ * 页面每两秒问一次后端批了没有，批了就带着授权码跳回客户端。轮询用 POST，轮询密钥不进地址栏、不进访问日志。
+ * 客户端名、回调地址都是别人给的：一律转义，动态注册的名字标明是它自己报的；嵌进脚本的数据把 < 转掉，免得提前闭合 script。
+ * 批准按钮要等页面上真有过鼠标移动、按键或触摸才能点（防「双击劫持」：诱导你在别的窗口双击，第二下落到这里）。
  */
 import { randomBytes } from "node:crypto";
 import type { FastifyReply } from "fastify";
 import { hostOf, type OAuthRequestRecord } from "../../db/repositories/oauth.js";
 import { clientHostOf } from "./clients.js";
 import { OAUTH_PATHS } from "./config.js";
-import { isInsecureUri, isLoopbackUri } from "./redirect.js";
+import { isInsecureUri, isLoopbackUri, passwordApprovalAllowed } from "./redirect.js";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const jsonForScript = (v: unknown) => JSON.stringify(v).replace(/</g, "\\u003c");
@@ -61,32 +65,57 @@ export function sendErrorPage(reply: FastifyReply, status: number, message: stri
   return send(reply, status, layout("连接 OpenStrm", `<h1>连接不上 OpenStrm</h1><p class="error">${esc(message)}</p>${back}`));
 }
 
-export function sendAuthorizePage(reply: FastifyReply, request: OAuthRequestRecord, pollSecret: string, allowPassword: boolean, telegramApproval: boolean) {
+export interface AuthorizePageOptions {
+  /** 设置里开了「授权页上允许用管理员密码批准」（这个客户端能不能用，页面自己再按回调判断） */
+  allowPassword: boolean;
+  /** 设置里开了 Telegram 里批准网页客户端 */
+  telegramApproval: boolean;
+  /**
+   * 密码批准放在最前、默认展开：公网地址这个域名也用来打开管理界面时（多数人就一个域名），登录页本来就在公网上，
+   * 在授权页上输密码批准是最顺的一步（业界标准的「在授权页上登录并同意」）；配对码收进「在别的设备上批准」
+   */
+  passwordFirst: boolean;
+}
+
+export function sendAuthorizePage(reply: FastifyReply, request: OAuthRequestRecord, pollSecret: string, opts: AuthorizePageOptions) {
   const nonce = randomBytes(16).toString("base64");
   const target = hostOf(request.redirectUri);
   const verifiedHost = clientHostOf(request.clientKind, request.clientId);
-  const where = telegramApproval
-    ? "到 OpenStrm 管理界面的「设置 → 智能体接入 → 待批准」，点这一条的「批准」并输入下面的配对码；也可以把配对码发给 OpenStrm 的 Telegram 机器人。"
-    : "到 OpenStrm 管理界面的「设置 → 智能体接入 → 待批准」，点这一条的「批准」并输入下面的配对码。";
-  const body = `
+  const where = opts.telegramApproval
+    ? "到 OpenStrm 管理界面的「设置 → 智能体接入 → 待批准」，点这一条的「批准」并输入上面的配对码；也可以把配对码发给 OpenStrm 的 Telegram 机器人。"
+    : "到 OpenStrm 管理界面的「设置 → 智能体接入 → 待批准」，点这一条的「批准」并输入上面的配对码。";
+  // 设置开着，还要看授权码发去哪：发到别的公网域名的（动态注册谁都能做），只能用配对码在管理界面里批
+  const passwordOk = opts.allowPassword && passwordApprovalAllowed(request.clientKind, request.redirectUri);
+  const header = `
 <h1>连接 OpenStrm</h1>
-<p><b>${esc(request.clientName)}</b> 请求连接你的 OpenStrm。</p>
+<p><b>${esc(request.clientName)}</b>${request.clientKind === "dcr" ? `<span class="muted">（名字是它自己报的）</span>` : ""} 请求连接你的 OpenStrm。</p>
 ${verifiedHost ? `<p class="muted">客户端身份：${esc(verifiedHost)}（它的元数据地址所在的域名）</p>` : ""}
-<p class="muted">授权后跳回：${esc(target)}</p>
+<p>批准后，授权会发给 <b>${esc(target)}</b></p>
 ${isInsecureUri(request.redirectUri) ? `<p class="warn" id="warn">回调地址是公网上的 http（明文），确认它是你自己的服务再批准。</p>` : ""}
-${isLoopbackUri(request.redirectUri) ? `<p class="warn" id="warn">授权后跳回本机（${esc(target)}）：只有你正在这台电脑上用命令行或桌面客户端连接时才对。</p>` : ""}
-<div class="code" id="code">${esc(request.pairingCode)}</div>
-<p id="howto">${where}不是你自己发起的连接就别批，直接拒绝。</p>
-<p class="status" id="status">等待批准…</p>
-<p class="muted" id="hint">批准后这个页面会自动跳回客户端，别关掉。</p>
-${
-  allowPassword
-    ? `<details id="pwbox"><summary>用管理员密码直接批准</summary>
-<form id="pw"><input type="password" id="password" autocomplete="current-password" placeholder="管理界面的登录密码" required>
-<select id="preset"><option value="daily">日常：查看、开始同步、转存、云下载</option><option value="read">只读：只能查看</option></select>
-<button type="submit" id="pwbtn">批准</button><p class="error" id="pwerr" hidden></p></form></details>`
-    : ""
-}`;
+${isLoopbackUri(request.redirectUri) ? `<p class="warn" id="warn">授权后跳回本机（${esc(target)}）：只有你正在这台电脑上用命令行或桌面客户端连接时才对。</p>` : ""}`;
+  const form = `<form id="pw"><select id="preset"><option value="daily">日常：查看、开始同步、转存、云下载</option><option value="read">只读：只能查看</option></select>
+<input type="password" id="password" autocomplete="current-password" placeholder="管理界面的登录密码" required>
+<button type="submit" id="pwbtn">批准</button><p class="error" id="pwerr" hidden></p></form>`;
+  const pairing = `<div class="code" id="code">${esc(request.pairingCode)}</div>
+<p id="howto">${where}不是你自己发起的连接就别批，直接拒绝。</p>`;
+  const status = `<p class="status" id="status">等待批准…</p>
+<p class="muted" id="hint">批准后这个页面会自动跳回客户端，别关掉。</p>`;
+  const pwNote =
+    opts.allowPassword && !passwordOk
+      ? `<p class="muted" id="pwnote">授权会发给 ${esc(target)}：不是本机、局域网，也不是 claude.ai、ChatGPT，这里不能用密码批准（免得有人拿假冒的客户端骗你一键批了），请用配对码。</p>`
+      : "";
+  const body =
+    passwordOk && opts.passwordFirst
+      ? `${header}
+<div id="pwbox"><p>是你自己在连接的话：选好档位，输入 OpenStrm 管理界面的登录密码批准。不是你发起的就关掉这个页面。</p>
+${form}</div>
+${status}
+<details id="alt"><summary>在别的设备上批准（配对码）</summary>
+${pairing}</details>`
+      : `${header}
+${pairing}
+${status}
+${passwordOk ? `<details id="pwbox"><summary>用管理员密码直接批准</summary>\n${form}</details>` : pwNote}`;
   const data = { id: request.id, k: pollSecret, status: OAUTH_PATHS.authorizeStatus, password: OAUTH_PATHS.authorizePassword, expiresAt: request.expiresAt };
   const script = `<script nonce="${nonce}">
 (() => {
@@ -96,7 +125,7 @@ ${
   // 到头了（跳走、拒绝、过期、已完成）：怎么批准、「别关掉」、密码表单都不再有意义，留着只会和结果打架（比如旁边还挂着上一次的「密码不对」）
   const finish = (text, cls) => {
     stopped = true; statusEl.textContent = text; if (cls) statusEl.className = "status " + cls;
-    for (const id of ["warn", "howto", "hint", "pwbox"]) document.getElementById(id)?.remove();
+    for (const id of ["warn", "howto", "hint", "pwbox", "alt", "pwnote"]) document.getElementById(id)?.remove();
   };
   const backLink = (url) => {
     const a = document.createElement("a"); a.className = "back"; a.href = url; a.rel = "noreferrer"; a.textContent = "回到客户端";
@@ -125,6 +154,17 @@ ${
   };
   poll();
   const form = document.getElementById("pw");
+  // 批准按钮先灰着，页面上真有过鼠标移动、按键或触摸才能点：别的窗口里诱导的双击，第二下落到这里也点不动
+  const pwbtn = document.getElementById("pwbtn");
+  if (pwbtn) {
+    pwbtn.disabled = true;
+    const arm = (e) => {
+      if (!e.isTrusted) return;
+      pwbtn.disabled = false;
+      for (const t of ["pointermove", "keydown", "touchstart"]) document.removeEventListener(t, arm, true);
+    };
+    for (const t of ["pointermove", "keydown", "touchstart"]) document.addEventListener(t, arm, true);
+  }
   if (form) form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = document.getElementById("pwbtn"), err = document.getElementById("pwerr");

@@ -2,8 +2,13 @@
  * 回调地址的规矩：
  *   - https 都收；http 也收（局域网里的 Open WebUI 多半是 http），批准时标出来让人核对；
  *   - 桌面客户端的私有 scheme（cursor://、vscode:// 这类）也收，能执行脚本或读本地的 scheme 不收；
- *   - 比对按完全一致；登记的是本机回环地址时端口可以不同（RFC 8252 §7.3：命令行客户端每次随机开端口）。
+ *   - 比对按完全一致；登记的是本机回环地址时端口可以不同（RFC 8252 §7.3：命令行客户端每次随机开端口）；
+ *   - 授权页上的密码批准只给「授权码发过去别人拿不到」的回调（见 passwordApprovalAllowed）。
  */
+import net from "node:net";
+import type { OAuthClientKind } from "@openstrm/shared";
+import { isInternalAddress } from "../../lib/ip.js";
+
 const BLOCKED_SCHEMES = new Set(["javascript:", "data:", "file:", "vbscript:", "about:", "blob:", "filesystem:"]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]", "localhost"]);
 
@@ -51,6 +56,41 @@ export function isInsecureUri(uri: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** claude.ai、ChatGPT 的回调所在的域名（2026-09 核实：claude.ai/api/mcp/auth_callback、chatgpt.com/connector_platform_oauth_redirect） */
+const KNOWN_WEB_CLIENT_HOSTS = new Set(["claude.ai", "chatgpt.com"]);
+/** 只在局域网里解析得到的主机名后缀 */
+const LAN_SUFFIXES = [".local", ".lan", ".home", ".internal", ".localdomain", ".home.arpa"];
+
+/**
+ * 授权码发到这个回调，外面的人拿不到：本机、局域网地址、桌面客户端的私有 scheme、claude.ai / ChatGPT 的回调。
+ * 反过来的例子：动态注册谁都能做、回调随便填，发到别的公网域名的，谁拿着授权页批了，授权码就直接进了注册它的人手里
+ */
+export function isTrustedRedirect(uri: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(uri);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return true;
+  const host = u.hostname
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/, "$1")
+    .replace(/\.$/, "");
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (net.isIP(host)) return isInternalAddress(host);
+  if (!host.includes(".") || LAN_SUFFIXES.some((s) => host.endsWith(s))) return true;
+  return u.protocol === "https:" && KNOWN_WEB_CLIENT_HOSTS.has(host);
+}
+
+/**
+ * 授权页上能不能用管理员密码批准：管理员自己手建的客户端（回调是他登记的，换令牌还要密钥），或者回调别人拿不到。
+ * 别的走配对码——在管理界面里批，看得到「名字是它自己报的」和回调域名
+ */
+export function passwordApprovalAllowed(kind: OAuthClientKind, redirectUri: string): boolean {
+  return kind === "manual" || isTrustedRedirect(redirectUri);
 }
 
 /** 这次带来的回调地址对不对得上登记过的 */

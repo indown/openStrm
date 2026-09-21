@@ -264,6 +264,14 @@ export function __test_resetNotify(): void {
   recent.clear();
 }
 
+/** 安全告警（比如管理员密码一小时里错了太多次）：不看通知开关，配了机器人就发 */
+export async function notifySecurityAlert(text: string): Promise<boolean> {
+  const telegram = readAppSettings().telegram;
+  if (!telegram?.botToken || !telegram.chatId) return false;
+  await sender(telegram.chatId, text);
+  return true;
+}
+
 /* ------------------------------- OAuth 授权请求 ------------------------------- */
 
 /** 按钮的回调数据前缀：`oaa:<请求 id>:<read|daily>` 批准、`oad:<请求 id>` 拒绝，commands.ts 认这两个 */
@@ -312,9 +320,12 @@ export async function notifyOAuthRequest(req: OAuthPendingRequest): Promise<bool
     log.warn({ requestId: req.id }, "授权请求通知太多，这一条不发了（设置页里照样看得到）");
     return false;
   }
-  const how = telegram.allowOAuthApproval
-    ? "是你自己发起的：把授权页上显示的配对码发给我，我回你批准按钮。不是你发起的就点拒绝。"
-    : "要批准：到 OpenStrm 的「设置 → 智能体接入 → 待批准」里点「批准」，输入授权页上的配对码。不是你发起的就点拒绝。";
+  const how = [
+    req.passwordApproval ? "是你自己在连接的话，直接在授权页上输管理员密码批准就行。" : "",
+    telegram.allowOAuthApproval
+      ? "是你自己发起的：把授权页上显示的配对码发给我，我回你批准按钮。不是你发起的就点拒绝。"
+      : "要批准：到 OpenStrm 的「设置 → 智能体接入 → 待批准」里点「批准」，输入授权页上的配对码。不是你发起的就点拒绝。",
+  ].join("");
   await buttonSender(telegram.chatId, `${oauthRequestText(req)}\n\n${how}`, [[{ text: "❌ 拒绝", callback_data: `${OAUTH_DENY_ACTION}:${req.id}` }]]);
   return true;
 }

@@ -9,7 +9,7 @@
  * 列表总是显示（公网地址清掉了，已连接的和预注册的也还在库里，得能看到、能断开）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle2, Globe, Loader2, MoreHorizontal, Plus, ShieldCheck, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Globe, Loader2, MoreHorizontal, Plus, ShieldCheck, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import type { AgentOAuthState, AgentScope, AgentSelfCheckItem, OAuthClientCreated, OAuthClientInfo, OAuthGrantInfo, OAuthPendingRequest } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
@@ -360,7 +360,17 @@ function ConfirmDialog({
 
 type Confirming = { kind: "grant"; grant: OAuthGrantInfo } | { kind: "allGrants" } | { kind: "client"; client: OAuthClientInfo };
 
-export function AgentWebClients({ publicBaseUrl, enabled }: { publicBaseUrl: string; enabled: boolean }) {
+export function AgentWebClients({
+  publicBaseUrl,
+  enabled,
+  sharedDomain,
+  passwordApproval,
+}: {
+  publicBaseUrl: string;
+  enabled: boolean;
+  sharedDomain: boolean;
+  passwordApproval: boolean;
+}) {
   const [state, setState] = useState<AgentOAuthState | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [approving, setApproving] = useState<OAuthPendingRequest | null>(null);
@@ -416,10 +426,10 @@ export function AgentWebClients({ publicBaseUrl, enabled }: { publicBaseUrl: str
     };
   }, [load]);
 
-  // 公网地址换了：上一次的自检结果说的是旧地址
+  // 公网地址换了、共用开关变了：上一次的自检结果说的是旧的设置
   useEffect(() => {
     setChecks(null);
-  }, [publicBaseUrl]);
+  }, [publicBaseUrl, sharedDomain]);
 
   const deny = async (req: OAuthPendingRequest) => {
     setBusy(true);
@@ -495,13 +505,20 @@ export function AgentWebClients({ publicBaseUrl, enabled }: { publicBaseUrl: str
         <h3 className="text-sm font-medium">网页客户端（claude.ai、ChatGPT）</h3>
         {publicBaseUrl && <StatusBadge tone={enabled ? "success" : "neutral"}>{enabled ? "可以连" : "未开启"}</StatusBadge>}
         <FieldHint label="网页客户端说明">
-          它们从自己的服务器连过来，要一个公网 https 地址，并走 OAuth：在客户端里填上地址，会打开一个授权页，页上显示配对码；回到这里点「批准」、输入配对码和当前密码（开了的话也可以把配对码发给 Telegram 机器人）。默认公网页面上不收管理员密码。
+          它们从自己的服务器连过来，要一个公网 https 地址，并走 OAuth：在客户端里填上地址、点连接，会弹出 OpenStrm 的授权页。开了「授权页上允许用管理员密码批准」的，claude.ai、ChatGPT 和本机、局域网里的客户端可以直接在授权页上选档位、输密码批准；别的回到这里点「批准」、输入授权页上的配对码和当前密码（在 Telegram 页打开了「允许批准网页客户端的连接」的，也可以把配对码发给机器人）。
         </FieldHint>
         {loadFailed && state && <span className={`ml-auto text-xs ${TONE_CLASS.warning.text}`}>刷新失败，显示的是上一次读到的</span>}
       </div>
 
+      {state?.untrustedProxy && (
+        <p className={`text-xs ${TONE_CLASS.warning.text}`}>
+          有请求经过反代（{state.untrustedProxy.peer}）进来，但容器没设 TRUST_PROXY：外面所有人都会被算成这一个地址，别人试错几次密码，你自己也会被锁住。给容器加
+          TRUST_PROXY=true 再重启，详见 README。
+        </p>
+      )}
+
       {!publicBaseUrl ? (
-        <p className="text-xs text-muted-foreground">先在上面填「公网地址」并保存。反代和 Cloudflare Tunnel 的配法见 README 的「公网部署」。</p>
+        <p className="text-xs text-muted-foreground">先在上面填「公网地址」并保存（从外网地址打开这个页面的，点「用当前地址」就行）。给智能体单独开子域名的配法见 README。</p>
       ) : (
         <div className="space-y-1.5">
           <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-2 py-1">
@@ -511,6 +528,13 @@ export function AgentWebClients({ publicBaseUrl, enabled }: { publicBaseUrl: str
           <ul className="list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
             <li>claude.ai：设置 → 连接器（Connectors）→ 添加自定义连接器，填上面的地址，点「连接」会打开授权页。</li>
             <li>ChatGPT：设置里打开开发者模式（Developer mode），到 chatgpt.com/plugins 点「+」，填上面的地址，鉴权选 OAuth。</li>
+            <li>
+              {passwordApproval && sharedDomain
+                ? "授权页上：选档位、输入这个界面的登录密码，批准后自动跳回客户端。在别的设备上批准的话，到下面「待批准」输入授权页上的配对码。"
+                : passwordApproval
+                  ? "授权页上会显示一个配对码：到下面「待批准」点「批准」，输入配对码和当前密码；也可以展开授权页上的「用管理员密码直接批准」。批准后授权页自动跳回客户端。"
+                  : "授权页上会显示一个配对码：到下面「待批准」点「批准」，输入配对码和当前密码，授权页随后自动跳回客户端。"}
+            </li>
           </ul>
         </div>
       )}
@@ -648,12 +672,17 @@ export function AgentWebClients({ publicBaseUrl, enabled }: { publicBaseUrl: str
               检查一遍
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">从服务器这边请求公网地址，看元数据、MCP 地址通不通，管理界面有没有漏到公网上。</p>
+          <p className="text-xs text-muted-foreground">
+            从服务器这边请求公网地址：看元数据、MCP 地址通不通，来源地址（TRUST_PROXY）认得对不对
+            {sharedDomain ? "" : "，管理界面有没有漏到公网上"}。
+          </p>
           {checks && (
             <ul className="space-y-1 text-xs">
               {checks.map((c) => (
                 <li key={c.name} className="flex items-start gap-2">
-                  {c.ok ? (
+                  {c.ok && c.warn ? (
+                    <AlertTriangle className={`mt-0.5 size-3.5 shrink-0 ${TONE_CLASS.warning.text}`} />
+                  ) : c.ok ? (
                     <CheckCircle2 className={`mt-0.5 size-3.5 shrink-0 ${TONE_CLASS.success.text}`} />
                   ) : (
                     <XCircle className={`mt-0.5 size-3.5 shrink-0 ${TONE_CLASS.danger.text}`} />

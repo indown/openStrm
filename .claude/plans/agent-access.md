@@ -119,6 +119,8 @@ API 进程 :3000（和界面同一个端口）
 
 ## 公网入口（网页端要用）
 
+> 2026-09-21 起默认改成一个域名（管理界面和智能体共用），这一节说的是「管理界面不上公网」的进阶做法，见末尾「公网地址和管理界面共用一个域名」。
+
 claude.ai、ChatGPT 是从它们自己的服务器连过来的，所以实例得有一个公网 HTTPS 地址。原则：**公网只露 agent 要用的那几个路径，管理界面和 `/api` 留在局域网。**
 
 **公网地址**：设置里填，例如 `https://mcp.example.com`。OAuth 的 issuer、资源地址、元数据里的各个 URL 都从它来。不填就不启用 OAuth，只能在局域网用手建令牌。
@@ -209,6 +211,8 @@ ingress:
 - **每个请求都校验** iss / aud / exp / scope（ChatGPT 文档的要求，本来也该这么做）。
 
 ### 批准：授权页默认不收管理员密码
+
+> 2026-09-21 起：一个域名共用时授权页上的密码批准是主流程（设置页打开共用时顺带打开），而且只对授权码别人拿不到的客户端开放（本机、局域网、claude.ai / ChatGPT 的回调、手建客户端），见末尾「共用域名评审与修补」。
 
 授权页在公网上。如果在这里输管理员密码，等于把登录框放到了公网上，所以默认的批准方式是：
 
@@ -1107,6 +1111,120 @@ P1 做完，没提交。和上面设计不一样、或者做的时候才定下�
 
 **真网络复测**（临时库 + cloudflared 快速隧道 + 官方 SDK 客户端 + 真 Chrome，用完删了）：公网地址输入大写加 `:443` 存成规范写法；自检七项全绿（含实际取到 claude.ai、ChatGPT 的 CIMD 文档）；经 Cloudflare 边缘：`/`、`/api/task`、`GET /oauth/token`、OIDC 地址、自带 X-Forwarded-Host、结尾带点的 Host 都是 404，伪造的 X-Forwarded-For 不算数（日志里是真实 IP），401 带 `scope="read run write"`、CORS 放出 WWW-Authenticate；SDK 动态注册 → 授权页（回环提醒、配对码）→ 批准框里输错配对码、输错密码各有提示 → 用接口带配对码和密码批准 → 授权页自己跳回 → 换令牌、调工具、强制刷新 → 同一个刷新令牌并发刷两次都 200、拿到同一对、授权还在。
 
+## 公网地址和管理界面共用一个域名（设计，2026-09-21）
+
+**起因**：用户的管理界面本来就放在公网上（`nas.example.com`），问能不能只用这一个域名同时做管理和智能体接入。P2 的公网守卫是按「管理界面不上公网」设计的：公网地址那个域名只放行智能体的几个路径，填成管理界面自己的域名会把管理界面挡掉，保存时直接拒。对管理界面本来就在公网上的人，这个一刀切不对。
+
+**业界怎么做**（2026-09-21 查）：
+- 自托管软件基本都是一个域名：Home Assistant 的 MCP 服务端就是实例自己域名下的 `/api/mcp`，OAuth 走 HA 自己的认证（只做 CIMD，不做 DCR），和界面同源；Gitea、Nextcloud、GitLab 当 OAuth 提供方也都在主域名下。
+- SaaS 的 MCP 多数放 `mcp.` 子域名（Linear、Notion、Atlassian、Sentry、Stripe），主要是部署上单独一个服务；也有挂主站路径下的（Hugging Face `huggingface.co/mcp`）。
+- 公网上的管理界面，常见的加固是身份代理（Cloudflare Access、Authelia / Authentik）挡在前面，给机器对机器的路径开 Bypass：Cloudflare Access 支持按路径建应用，更具体的路径优先（官方文档 app-paths），webhook 放行就是这么做的。
+- 反代信任：HA 要求 `use_x_forwarded_for` + 明确的 `trusted_proxies` 列表，没配时带转发头的请求直接拒；Gitea 默认只信回环，Docker 镜像里写成 `*` 就是 CVE-2026-20896（CVSS 9.8，一个请求头冒充任意用户）。rc.2 把 `TRUST_PROXY=true` 改成只信回环 / 内网，方向一致。
+
+**结论**：共用域名本身没有安全问题；分开的好处是（1）管理界面能完全不上公网，（2）授权页（显示别人填的客户端名）和管理界面的登录状态不同源，（3）以后给管理界面上 Access 不用写路径例外。对管理界面已经在公网上的人，只剩（2）（3）两点，而授权页已经转义 + 严格 CSP。所以做成一个开关，默认保持现状。
+
+### 第一阶段（要做的）
+
+**2026-09-21 用户补充：这个软件大部分人只会用一个域名。** 所以按「一个域名是主路径、单独子域名是进阶」来设计，不是反过来：
+
+1. **一个域名是默认走法，设置一步到位**：
+   - 设置页「公网地址」旁边加「用当前地址」：当前页面是从 https、非内网地址打开的，就把 `window.location.origin` 填进去，同时打开「这个域名也用来打开管理界面」。大多数人只要：开启智能体接入 → 用当前地址 → 保存。
+   - 手填的公网地址等于当前页面的源，也自动打开这个开关（旁边说明为什么）；后端只有开关开着才收「和当前打开管理界面的域名相同」的地址，关着时报错提示打开它。
+   - 开关（`agent.publicServesUi`）默认关，老配置行为不变；关着就是现在的「这个域名只给智能体」，留给单独开子域名、管理界面只在内网的人。
+2. **一个域名时，授权页上直接用密码批准是主流程**（业界标准的「在授权页上登录并同意」，Home Assistant 就是授权页上登录）：
+   - 共用域名意味着登录页本来就在公网上，「公网上不放能撞库的密码框」这条理由不成立了；密码框有单独的失败退避、每小时失败上限、只收还在等的请求，不比登录页更好撞。
+   - 打开共用开关时，设置页顺带把「授权页上允许用管理员密码批准」打开（两个开关仍然各自能关）；授权页上密码框默认展开、放在最前，配对码那段写成「在别的设备上批准」。
+   - 流程变成：客户端里点连接 → 弹出授权页 → 选档位、输密码 → 批准 → 跳回客户端，不用切到设置页、不用抄配对码。
+   - 安全上的前提（评审后更正）：批准和授权页在同一个浏览器里发生，授权页的轮询密钥只在这个页面上。原来这里写「钓鱼链接让你批的那一条，授权码会跳去真客户端的回调，PKCE 对不上换不了令牌」——只在冒用真客户端的 client_id 时成立：动态注册谁都能做、回调随便填，注册一个叫「Claude」、回调指向自己域名的客户端，你一批授权码就进了他手里。所以密码批准只对授权码别人拿不到的回调开放（本机、局域网、桌面客户端的私有 scheme、claude.ai / ChatGPT 的回调、手建的客户端），别的走配对码；授权页上动态注册的名字标明「是它自己报的」，回调域名放显眼处。剩下的风险是有人用自己的 claude.ai 账号发起连接、把授权链接发给你——和所有 OAuth 同意页一样，靠页面写明「不是你发起的就关掉」。
+3. **管理界面地址（`agent.uiBaseUrl`）**：共用时默认就是公网地址，输入框只在「管理界面在别的地址上」时才需要填（占位文字显示当前生效的地址）。
+4. **连接自检**：共用时「管理界面 / 管理接口不在公网上」换成加固建议；两种模式都加「来源地址（TRUST_PROXY）」检查（自检请求带一次性标记绕公网回来，看有没有转发头、认出的来源对不对）——一个域名时登录页在公网上，这项最要紧。
+5. **管理界面的安全头**：防点击劫持（`X-Frame-Options: DENY` + `frame-ancestors 'none'`）、`nosniff`、`Referrer-Policy`；HSTS 交给反代 / Cloudflare。
+6. **README 改成一个域名打头**：「已经能从外网用 https 打开 OpenStrm 的：开启 → 用当前地址 → 在客户端里连接 → 授权页上输密码」三步；反代 / Tunnel 什么都不用改（除非开了 Cloudflare 的 Bot Fight Mode / WAF 质询，要给智能体的几个路径放行；套了 Access 的给机器对机器的路径建 Bypass 应用，`/oauth/authorize` 可以留在 Access 后面）。单独子域名、按路径放行那套挪到「进阶：管理界面不放公网」。
+7. **测试**：共用模式下管理界面、`/api` 照常；开关关着照旧 404；保存校验；自检两种模式；来源地址三种结果；安全头；`uiBaseUrl` 默认值；授权页共用模式下密码框默认展开。
+
+### 第二阶段（以后可选，这次不做）
+
+- **管理界面只允许内网访问**（按来源地址，不按域名）：从公网来的请求不管哪个域名都只给智能体的路径。适合内外网同一个域名、又不想把管理界面放公网的人。必须「失败时关」：没设 `TRUST_PROXY` 又带着转发头的一律当公网；自检用绕回来的请求验证公网请求确实被认成了公网（反代没传客户端地址时所有请求都像内网，最危险，要能查出来）。
+- **登录两步验证（TOTP）**：公网管理界面的标准做法，单独一个功能。一个域名是主流用法 → 登录页多数人都在公网上，这项优先级提到第二阶段的第一位（做的时候授权页的密码批准也要跟着要验证码）。
+- **新地址登录提醒**（Telegram）。
+- **管理界面完整的 CSP**：Next 静态导出有内联脚本，要在构建时算哈希，工作量不小。
+
+### 第一阶段实施记录（2026-09-21）
+
+**落点**：
+- 设置 `agent.publicServesUi`（shared 类型 + zod）；`services/oauth/config.ts` 加 `publicServesUi()` 和 `OAuthConfig.servesUi`。
+- 公网守卫 `plugins/public-host.ts`：开关开着就整个不拦（和公网地址一起缓存 5 秒）。`isPublicHostRequest` 不变：共用域名也还是公网域名，`/mcp` 的 401 照样指到元数据。
+- 保存校验 `routes/settings/index.ts`：公网地址和这次请求的主机名相同时，本次提交的 `publicServesUi` 是 true 才收（设置按顶层键整体替换，提交的 agent 对象就是存完后的值），报错文案改成提示打开开关。顺带的效果：在公网域名上把开关关掉也会被拒（存完自己就进不来了），要关得从局域网地址关。
+- 授权页 `services/oauth/page.ts`：`sendAuthorizePage` 改收选项对象。共用 + 允许密码批准时密码框放最前（`<div id="pwbox">`），配对码收进 `<details id="alt">`「在别的设备上批准（配对码）」；单独子域名时还是原布局（配对码在前，密码批准折叠）。
+- `services/agent/format.ts` 加 `uiBase()`：填了管理界面地址用它；没填且共用就用公网地址的源。
+- 自检 `services/oauth/selfcheck.ts`：
+  - 来源地址探针：`POST /mcp` 那次带 `x-openstrm-selfcheck: <一次性标记>`。公网守卫的 onRequest 钩子（`noteSelfCheckProbe`）只认登记过的标记，记下 `request.ip`、直连端、有没有转发头。
+  - `judgeSource` 的结论：经过了代理但没设 TRUST_PROXY → 配错；设了，但认出的来源还是直连端 → 没信任这个代理，建议把它的地址写进去；直连且设了 → 提示可以不设；其余 OK。公网回了响应但标记没回来 → 「请求没到这台 OpenStrm」。
+  - 共用时两条 404 检查换成一条加固建议，列出 Access 要放行的路径。
+- 安全头 `plugins/security-headers.ts`（新）：HTML 响应加 `X-Frame-Options: SAMEORIGIN` + `frame-ancestors 'self'`，所有响应加 `nosniff` 和 `Referrer-Policy: strict-origin-when-cross-origin`；路由自己设过的不覆盖（授权页的 DENY / `'none'` / `no-referrer` 保留）。环境变量 `FRAME_ANCESTORS` 放开嵌入：写地址列表只给 CSP，写 `*` 不限制。
+- 前端设置页：
+  - 「用当前地址」只在页面是 https、主机名是公网域名时出现：排除 IP、localhost、单段主机名，以及 .local / .lan / .home / .internal / .localdomain / .home.arpa。
+  - 手填的地址等于当前页面的源时，自动打开共用；打开共用时顺带打开密码批准。
+  - 管理界面地址的占位文字显示生效的地址；网页客户端的步骤说明按模式换。
+- README 改成一个域名打头，单独子域名挪到进阶。
+
+**和设计的出入**：
+- 防点击劫持默认用 `SAMEORIGIN` / `'self'`，不是设计写的 `DENY` / `'none'`：同源嵌入没有风险；要把 OpenStrm 嵌进导航页、仪表盘的人要能放开，所以加了 `FRAME_ANCESTORS`。
+- 「用当前地址」判断「非内网地址」按主机名后缀清单，不去解析 DNS。
+
+**测试**：
+- 单元：`plugins/security-headers.test.ts`（4 条，含静态托管出的页面和 404 页）；`services/oauth/oauth.test.ts` 加来源探针和判断 2 条；`services/agent/agent.test.ts` 加 uiLink 1 条。
+- 集成 `routes/oauth/oauth.itest.ts`：挂上安全头插件，改了保存校验那条，加共用域名 2 条、自检 3 条。自检那几条把发往公网地址的 fetch 接到 `app.inject` 上，用来模拟反代加的头和标记丢失。
+- 后端全量 930 条全过；前后端 tsc / eslint 干净；`next build` 通过。
+
+**真网络（cloudflared 快速隧道当唯一的域名，临时库）**：
+- 从隧道域名打开管理界面（注入临时令牌）→ 开启 → 用当前地址 → 两个开关跟着打开 → 保存成功；刷新后管理界面照常。安全头经过 Cloudflare 原样到达。
+- 连接自检 5 项全绿；来源地址认出的是本机的公网出口（`TRUST_PROXY=true`，cloudflared 在本机回环上）。
+- 官方 MCP SDK 客户端（DCR）：发现 → 注册 → 授权页是密码优先的布局 → 从终端调 `/oauth/authorize/password` 批准（不在浏览器里输密码）→ 浏览器轮询到后跳回回调（带 code / state / iss）→ 换令牌 → 12 个工具、`tasks_list` → 吊销访问令牌后自动刷新 → 并发刷新拿到同一对。
+- 在隧道域名上关共用：400，提示打开开关。从本机地址关：可以；5 秒后隧道上 `/`、`/settings`、`/api/task`、`/api/agent/tokens` 全 404，`/mcp` 照常 401，自检换回两条 404 检查，全绿。
+- 不设 TRUST_PROXY 重启：自检的「来源地址」报「经过了反代 / Cloudflare Tunnel，但容器没设 TRUST_PROXY」，其余几项不变。
+- 实验完删了临时库、实验密码、令牌，停了后端和隧道。
+
+### 共用域名评审与修补（2026-09-21）
+
+用户说「review一下，然后发 v2.12.0-rc.3」。三路并行只读评审（安全与暴露面 / 后端正确性与联动 / 前端 README 文案），去重后全修：
+
+**来源地址自检重写**（三路都报了）：原来按「带没带转发头」判，Fastify 其实只认 X-Forwarded-For，几种常见错配都给绿勾。现在探针请求自己在 X-Forwarded-For 里放一个哨兵 `192.0.2.1`（文档专用地址），记下收到的整条链、X-Real-IP、CF-Connecting-IP，按「第一层代理看到的来源」（哨兵右边第一项，或 CF-Connecting-IP）判：
+- 反代没往 X-Forwarded-For 里追加（nginx 最简配置、只带 X-Real-IP）：没设 TRUST_PROXY 时所有人算成反代一个地址；设了 true 时认出的是哨兵 = 来源能伪造。两种都判错，给追加的写法。
+- 认出的是哨兵、且第一层看到的是公网地址：TRUST_PROXY 信任过头（比如只有一层却写 2），判错。
+- 认出的就是第一层看到的来源：对；第一层看到的是内网地址（NAT 回环、内网 DNS）时标「看不全」（新加的 `warn`）。
+- 认出的是直连端：没信任这一层，按它在内网 / 公网给 `true` 或写网段。
+- 认出的是中间一跳（CDN → 反代只信了反代）：按探针经过的层数建议 TRUST_PROXY 写几，并写明「源站能被绕过代理直接连上时写层数不安全」；Cloudflare 看到的来源不在链上 = 中间把 XFF 换掉了（`$remote_addr`）。
+- 单测用真 Fastify（trustProxy 取 TRUST_PROXY 的解析结果）按 14 种部署拓扑算来源再判，不手写结果。
+
+**自检其它**：被 Cloudflare Access 的登录页（302 到 cloudflareaccess.com）、Cloudflare 质询页（`cf-mitigated: challenge`）挡住的直接点名；/mcp 那一项没过就不再单出来源一项；非共用模式下 404 检查通过时提示「平时从外网就用这个域名的话打开开关」；共用那一项点名域名；公网地址带端口出一条 `warn`（claude.ai 只往 443 连）。
+
+**授权页防同意钓鱼**（安全评审中危）：设计稿原来的论证「钓鱼批的那一条授权码会跳去真客户端的回调，PKCE 对不上」只在冒用真客户端的 client_id 时成立；动态注册谁都能做、回调随便填。改成：
+- 密码批准只给授权码别人拿不到的回调（`redirect.ts` 的 `passwordApprovalAllowed`）：手建的客户端、本机回环、桌面客户端的私有 scheme、局域网地址（内网 IP、单段主机名、.local / .lan 这类后缀）、claude.ai / chatgpt.com 的 https 回调（只放 2026-09 核实过的这两个域名，换了域名最多退回配对码）。服务端 `/oauth/authorize/password` 同样拦，授权页上给一句为什么；待批准列表多一个 `passwordApproval` 字段。
+- 授权页上动态注册的名字标明「是它自己报的」，「批准后，授权会发给 X」放显眼处；「输入下面的配对码」改成「上面」（配对码本来就在说明上面）。
+- 批准按钮先灰着，页面上真有过鼠标移动、按键或触摸才能点（防「双击劫持」）。
+- 没采纳：密码框改 `autocomplete="new-password"`。业界的授权页登录框都是 current-password；新密码会让密码管理器提示「生成强密码」，正常流程很别扭；钓鱼的主路已经被回调限制堵上。
+- Telegram 的授权通知：这条能在授权页上用密码批的，说一声。
+
+**跨域 + 密码入口**（安全评审中危）：
+- `origin: true` 反射任意来源，任何网页都能借访客的浏览器跨域调 `/api/auth/login` 试密码，每个访客一个来源，按来源的退避就白搭了。改成按路径（`plugins/cors.ts`）：智能体用的几个路径（`CORS_PATHS`）谁都开，别的只对本机来源开（开发用）。
+- 新的 `services/password-check.ts`：登录、再输一次当前密码、授权页密码批准都走它，共用 login-throttle 的按来源的桶（授权页原来单独一个桶）。
+- 去掉授权页「一小时失败 30 次整个停一小时」：硬停等于谁都能把主流程关掉。改成全局告警 + 放慢：一小时里经过反代或从公网来的失败满 20 次，发一条 Telegram 告警（一小时一条），之后这类比对先等 2 秒；从内网直接连进来的（没带 X-Forwarded-For、对端是内网地址）不算数、也不等，管理员在家总能登。
+- 设置页提示「反代后面没设 TRUST_PROXY」：公网守卫的钩子看到带 X-Forwarded-For、对端是内网地址、又没设 TRUST_PROXY 的请求就记一笔（`/api/agent/oauth` 的 `untrustedProxy`）；对端是公网地址的不记（那可能是有人直接连端口自己写的头，这时候提示去设反而让伪造生效）。
+- README / `lib/trust-proxy.ts` 写明前提：反代要追加 X-Forwarded-For（进阶的 nginx 片段改成 `$proxy_add_x_forwarded_for`），OpenStrm 的端口不能绕过反代从公网直接连上（docker 端口转发在 IPv6 / rootless 下会把外面的来源换成网关的内网地址）；写层数只在源站只能经 CDN 访问时安全。
+
+**开关跟域名绑定**：设置页记下「这个域名也用来打开管理界面」是对哪个域名开的；公网地址失焦时换成了别的域名（且不是当前页面的地址），开关自动关掉并说明。自动打开（用当前地址、填了当前页面的地址）时也说一句为什么。开关关着、地址已填时说明换成警示：主机名就是当前页面的，提前说「保存会被拒」；不是的，说「保存后从外网打开管理界面会是 404」。
+
+**其它**：保存设置后立刻清公网守卫的缓存（原来 5 秒内自检会看到旧设置，报的建议正好相反）；`FRAME_ANCESTORS` 逐项校验（只认 'self'、http(s):、[http(s)://][*.]主机[:端口]，中文域名转 punycode，带分号的整项不认，写错的记警告跳过，单写 'none' 真的禁止嵌入——原来写个中文域名每个 HTML 响应都 500）；「用当前地址」自己拼 origin（location.origin 会留着域名结尾的点）；网页客户端那块的步骤按「共用 / 密码批准」三种情况写，切换共用后清掉旧的自检结果；Telegram 批准的说明补上要在 Telegram 页另开开关；README 补 Access / WAF 的例外、443 端口、uiBaseUrl 默认值、进阶里 Access 的矛盾说法、FRAME_ANCESTORS 是升级后的新行为；一批过时注释（「批准只在局域网」「生产用不到跨域」「客户端伪造的不算」）。
+
+**真网络复测**（cloudflared 快速隧道当唯一的域名，临时库，用完删掉）：
+- 设置页：「用当前地址」后出现「已顺带打开…」的说明；把地址改成别的域名、移开焦点，开关自动关掉并提示；在当前域名上关开关，说明变成红色的「保存会被拒」，硬存被后端拒（新的报错文案）。
+- 自检：TRUST_PROXY=true 全绿，来源地址认出的是本机出口——Cloudflare 确实是往 X-Forwarded-For 后面追加，哨兵留在最左边；TRUST_PROXY=2 判「信任过头」；不设时设置页出「反代后面没设 TRUST_PROXY」的提示。
+- 跨域：外站预检 `/api/auth/login` 404、拿不到跨域许可，外站 POST 也没有；外站预检 `/mcp` 204、带 WWW-Authenticate。
+- 授权页：SDK 客户端（DCR、回环回调）是密码优先的布局，批准按钮加载后是灰的、鼠标移动后才能点；终端调密码批准 → 回调 → 换令牌 → 工具 → 吊销后刷新 → 并发刷新拿同一对都通。假冒客户端（名字写 Claude、回调在别的域名）只有配对码和一句为什么，硬发密码批准回 403。
+
+**测试**：新增 `plugins/cors.test.ts`、`services/password-check.test.ts`；`oauth.test.ts` 的拓扑表和回调判断；`security-headers.test.ts` 的校验；`lib/ip.test.ts` 的地址工具；`oauth.itest.ts` 挂上真的跨域配置和 trustProxy，自检替身改成模拟本机反代追加来源，加了保存即生效、没设 TRUST_PROXY 的提示、Access 挡住、连不上、带端口、并发自检、密码批准的回调限制、Telegram 说明。后端全量 947 条全过；前后端 tsc / eslint 干净；`next build` 通过。
+
 ## 核实记录
 
 2026-09-18 查的官方来源：
@@ -1125,6 +1243,10 @@ P1 做完，没提交。和上面设计不一样、或者做的时候才定下�
 - schema 可移植性：MCP 的 SEP-2106（2026-07-28 版里定稿）；OpenAI 的 structured-outputs、function-calling、plugins/plan/tools；Anthropic 的 define-tools。
 - 开源 agent 项目：22 个项目逐个对照官方文档或源码（地址见当时的调研记录），重点是 Dify 的 `api/core/mcp/mcp_client.py`、n8n 的 McpClientTool 节点、Cherry Studio 的 `src/main/ai/mcp`、Open WebUI 的 MCP 文档、Home Assistant 的 `homeassistant/components/mcp`、Coze Studio 的 issue 2218。
 - Open WebUI：docs.openwebui.com 的 features/extensibility/mcp、features/extensibility/plugin/tools、reference/env-configuration；源码对照 v0.11.3（`backend/open_webui/utils/mcp/client.py`、`utils/oauth.py`、`utils/middleware.py`、`src/lib/components/AddToolServerModal.svelte`）和它依赖的 Python `mcp` 1.27.2；相关 issue 28926、29778、29879、29967、30068、30110。
+
+2026-09-21 查的非 443 端口：claude.ai 自定义连接器的官方文档（claude.com/docs/connectors/custom/remote-mcp）没写端口限制；anthropics/claude-ai-mcp 的 issue #85（:5050）、#373（:44366）都是带非 443 端口的地址连不上、服务器日志里看不到 Anthropic 的请求；Brendan Long 2026-07-04 的排障文章直说 Claude 的后端只从 443 往外连。ChatGPT 没查到明确说法。
+
+2026-09-21 为「共用域名」查的：Home Assistant 的 MCP Server 集成文档（home-assistant.io/integrations/mcp_server，`/api/mcp`、OAuth、只做 CIMD）和 HTTP 集成文档（`use_x_forwarded_for`、`trusted_proxies`）；Cloudflare One 的 Application paths 文档（按路径建应用、更具体的优先）和 Bypass 放行 webhook 的做法；Gitea 的 `REVERSE_PROXY_TRUSTED_PROXIES` 默认值与 CVE-2026-20896（GHSA-f75j-4cw6-rmx4）。
 
 还没核实的：
 

@@ -8,6 +8,8 @@
  *   - 拒绝、全部拒绝、过期、丢了回应再取；预注册客户端（post / basic）；CIMD（开关、缓存、ChatGPT 的真文档）；授权页密码批准
  *   - 限流：每小时、每个来源同时在等的、全局在等的；Telegram（开关、发配对码才出批准按钮、通知限量）
  *   - 公网守卫（主机名各种写法）；设置（规范化）；改密码 / 全部断开连没走完的请求一起撤；公网地址改了之后的授权
+ *   - 共用域名（这个域名也用来打开管理界面）：守卫不拦、授权页密码批准在前；密码批准只给授权码别人拿不到的回调；
+ *     保存设置马上生效；连接自检（来源地址探针、两种模式各自的检查项、被 Access 挡住、带端口）；没设 TRUST_PROXY 的提示
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/routes/oauth/oauth.itest.ts
  */
@@ -16,11 +18,13 @@ import { createHash, randomBytes } from "node:crypto";
 import { after, before, beforeEach, test } from "node:test";
 import Fastify, { type FastifyInstance, type LightMyRequestResponse } from "fastify";
 import cors from "@fastify/cors";
-import type { AppSettings } from "@openstrm/shared";
+import type { AgentSelfCheckItem, AppSettings } from "@openstrm/shared";
 import { eq } from "drizzle-orm";
 import { registerErrorHandling } from "../../plugins/error-handler.js";
 import { authPlugin } from "../../plugins/auth.js";
-import { __test_resetPublicHost, publicHostPlugin } from "../../plugins/public-host.js";
+import { corsDelegator } from "../../plugins/cors.js";
+import { __test_resetUntrustedProxy, invalidatePublicHost, publicHostPlugin } from "../../plugins/public-host.js";
+import { securityHeadersPlugin } from "../../plugins/security-headers.js";
 import agentRoute from "../agent/index.js";
 import mcpRoute from "../mcp/index.js";
 import settingsRoute from "../settings/index.js";
@@ -39,8 +43,10 @@ import { deleteStaleOAuthClients, listOAuthGrants } from "../../db/repositories/
 import { patchAppSettings, readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { __test_resetAgentQuota } from "../../services/agent/rate-limit.js";
 import { loginThrottle } from "../../services/login-throttle.js";
-import { __test_resetPasswordApproval } from "../../services/oauth/authorize.js";
+import { trustProxyOption } from "../../lib/trust-proxy.js";
+import { __test_resetPasswordGuard } from "../../services/password-check.js";
 import { setCimdFetcher } from "../../services/oauth/cimd.js";
+import { SOURCE_PROBE_HEADER } from "../../services/oauth/selfcheck.js";
 import { __test_resetOAuthUnlocks, handleUpdate } from "../../services/telegram/commands.js";
 import { setButtonSender } from "../../services/telegram/notify.js";
 import type { BotLike, InlineKeyboard } from "../../services/telegram/bot.js";
@@ -51,6 +57,8 @@ const RESOURCE = `${PUBLIC}/mcp`;
 const PASSWORD = "oauth-itest-pw";
 const CALLBACK = "https://client.example/callback";
 const LOOPBACK = "http://127.0.0.1:43210/callback";
+/** claude.ai 的回调：授权码发到这里别人拿不到，授权页上能用密码批准 */
+const CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
 
 let app: FastifyInstance;
 let session: Record<string, string>;
@@ -65,9 +73,11 @@ before(async () => {
     sent.push({ chatId, text, buttons });
   });
 
-  app = Fastify();
+  // 和生产一样按 TRUST_PROXY=true 认来源（反代在本机）：自检那几条模拟本机反代往 X-Forwarded-For 里追加来源
+  app = Fastify({ trustProxy: trustProxyOption("true") });
   registerErrorHandling(app);
-  await app.register(cors, { origin: true, exposedHeaders: ["WWW-Authenticate", "Retry-After"] });
+  await app.register(cors, { delegator: corsDelegator });
+  await app.register(securityHeadersPlugin);
   await app.register(publicHostPlugin);
   await app.register(authPlugin);
   for (const route of [agentRoute, mcpRoute, settingsRoute, passwordRoute, oauthMetadataRoute, oauthRegisterRoute, oauthAuthorizeRoute, oauthTokenRoute]) {
@@ -86,8 +96,9 @@ after(async () => {
   resetOAuthTables();
   deleteAllApiTokens();
   __test_resetAgentQuota();
-  __test_resetPublicHost();
-  __test_resetPasswordApproval();
+  invalidatePublicHost();
+  __test_resetPasswordGuard();
+  __test_resetUntrustedProxy();
   __test_resetOAuthUnlocks();
   loginThrottle.reset();
   replaceAppSettings(baseline);
@@ -104,8 +115,9 @@ function resetOAuthTables(): void {
 beforeEach(() => {
   resetOAuthTables();
   __test_resetAgentQuota();
-  __test_resetPublicHost();
-  __test_resetPasswordApproval();
+  invalidatePublicHost();
+  __test_resetPasswordGuard();
+  __test_resetUntrustedProxy();
   __test_resetOAuthUnlocks();
   loginThrottle.reset();
   sent.length = 0;
@@ -266,7 +278,7 @@ test("没填公网地址或开关关着：OAuth 这些路径都是 404", async (
   assert.equal((await app.inject({ method: "GET", url: "/.well-known/oauth-authorization-server" })).statusCode, 404);
   assert.equal((await register({ redirect_uris: [CALLBACK] })).statusCode, 404);
   patchAppSettings({ agent: { enabled: false, publicBaseUrl: PUBLIC } });
-  __test_resetPublicHost();
+  invalidatePublicHost();
   assert.equal((await app.inject({ method: "GET", url: "/.well-known/oauth-protected-resource", headers: PUB })).statusCode, 404);
   assert.equal((await authorize({ client_id: "x" })).statusCode, 404);
 });
@@ -742,9 +754,9 @@ test("CIMD 真去取的那条路：写 IP、单段主机名的地址不去连，
   }
 });
 
-test("授权页密码批准：默认关；开了之后密码不对拒（中文说明给页面）、并发撞库最多放进 5 个、拒过的请求不能拿来试、档位只认 read / daily", async () => {
-  const clientId = await registerClient();
-  const params = authParams(clientId).params;
+test("授权页密码批准：默认关；开了之后密码不对拒（中文说明给页面）、并发撞库最多放进 5 个、拒过的请求不能拿来试、档位只认 read / daily；回调在别的公网域名上的不给", async () => {
+  const clientId = await registerClient([CLAUDE_CALLBACK]);
+  const params = authParams(clientId, { redirect_uri: CLAUDE_CALLBACK }).params;
   const page = await authorize(params);
   assert.ok(!page.body.includes('id="pw"'), "默认不出密码框");
   const d = pageData(page.body);
@@ -771,6 +783,19 @@ test("授权页密码批准：默认关；开了之后密码不对拒（中文�
   const d3 = pageData((await authorize(params)).body);
   await app.inject({ method: "POST", url: `/api/agent/oauth/requests/${d3.id}/deny`, headers: session });
   assert.equal((await pw({ id: d3.id, k: d3.k, password: "whatever", preset: "daily" })).statusCode, 404, "拒过的请求不能拿来试密码");
+
+  // 动态注册谁都能做、回调随便填：授权码发到别的公网域名的，授权页上没有密码框，硬发也不收，只能用配对码
+  const other = await registerClient();
+  const otherPage = await authorize(authParams(other).params);
+  assert.ok(!otherPage.body.includes('id="pw"'), "没有密码框");
+  assert.match(otherPage.body, /id="pwnote"/);
+  const d4 = pageData(otherPage.body);
+  const refused = await pw({ id: d4.id, k: d4.k, password: PASSWORD, preset: "daily" });
+  assert.equal(refused.statusCode, 403);
+  assert.match(refused.json().message, /client\.example.*配对码/);
+  assert.equal((await poll(d4)).status, "pending");
+  const infos = (await oauthState()).pending as Array<{ id: string; passwordApproval: boolean }>;
+  assert.equal(infos.find((r) => r.id === d4.id)?.passwordApproval, false);
 });
 
 test("授权请求限流：同一来源一小时 10 个、同时最多 3 个在等；全局最多 20 个在等；回环回调超限直接跳回 temporarily_unavailable", async () => {
@@ -884,6 +909,25 @@ test("Telegram：通知只带「拒绝」；开关关着发配对码也不给批
   }
 });
 
+test("Telegram 通知：授权页上能用密码批准的（claude.ai 这类回调），通知里说一声；回调在别的公网域名上的不说", async () => {
+  patchAppSettings({
+    telegram: { ...(readAppSettings().telegram ?? {}), botToken: "123:abc", chatId: "900", allowedUsers: [7] },
+    agent: { enabled: true, publicBaseUrl: PUBLIC, publicServesUi: true, allowPasswordApproval: true },
+  });
+  try {
+    const claude = await registerClient([CLAUDE_CALLBACK]);
+    await authorize(authParams(claude, { redirect_uri: CLAUDE_CALLBACK }).params);
+    const other = await registerClient();
+    await authorize(authParams(other).params);
+    assert.equal(sent.length, 2);
+    assert.match(sent[0].text, /直接在授权页上输管理员密码批准/);
+    assert.doesNotMatch(sent[1].text, /授权页上输管理员密码/);
+    assert.match(sent[1].text, /配对码/);
+  } finally {
+    patchAppSettings({ telegram: baseline.telegram ?? {} });
+  }
+});
+
 test("Telegram 通知限量：一小时最多 10 条（有人刷授权请求时不刷屏），设置页里照样都看得到", async () => {
   patchAppSettings({ telegram: { ...(readAppSettings().telegram ?? {}), botToken: "123:abc", chatId: "900", allowedUsers: [7] } });
   try {
@@ -918,25 +962,117 @@ test("公网域名只放行公网路径：页面、管理接口、路径变体�
   assert.equal((await app.inject({ method: "GET", url: "/api/agent/tokens", headers: { host: "nas.lan", ...session } })).statusCode, 200, "本地域名：接口照常");
 });
 
-test("设置：公网地址只收 https 的源，存规范写法；域名结尾带点的不收；不能和现在打开管理界面的域名一样", async () => {
-  const put = (publicBaseUrl: string, host = "nas.example.com") =>
-    app.inject({ method: "PUT", url: "/api/settings", headers: { ...session, host }, payload: { agent: { enabled: true, publicBaseUrl } } });
+test("共用域名：公网域名上管理界面、管理接口照常（接口照样要登录）；/mcp、OAuth 照常；关掉共用守卫马上回来", async () => {
+  patchAppSettings({ agent: { enabled: true, publicBaseUrl: PUBLIC, publicServesUi: true } });
+  invalidatePublicHost();
+  for (const url of ["/", "/settings", "/api/task", "/api/agent/tokens"]) {
+    assert.equal((await app.inject({ method: "GET", url, headers: { ...PUB, ...session } })).statusCode, 200, url);
+  }
+  assert.equal((await app.inject({ method: "GET", url: "/api/agent/tokens", headers: PUB })).statusCode, 401, "管理接口照样要登录");
+  const bare = await app.inject({ method: "POST", url: "/mcp", headers: { ...PUB, "content-type": "application/json" }, payload: "{}" });
+  assert.equal(bare.statusCode, 401);
+  assert.match(String(bare.headers["www-authenticate"]), /resource_metadata=/, "共用域名也还是公网域名：401 照样指到元数据");
+  const { tokens } = await fullFlow();
+  assert.equal((await mcp(tokens.access_token)).res.statusCode, 200);
+
+  patchAppSettings({ agent: { enabled: true, publicBaseUrl: PUBLIC, publicServesUi: false } });
+  invalidatePublicHost();
+  for (const url of ["/", "/api/agent/tokens"]) {
+    assert.equal((await app.inject({ method: "GET", url, headers: { ...PUB, ...session } })).statusCode, 404, url);
+  }
+});
+
+test("共用域名的授权页：开了密码批准就把它放最前，配对码收进「在别的设备上批准」；没开还是配对码；页面自己的安全头不被通用的盖掉", async () => {
+  patchAppSettings({ agent: { enabled: true, publicBaseUrl: PUBLIC, publicServesUi: true, allowPasswordApproval: true } });
+  invalidatePublicHost();
+  const clientId = await registerClient([CLAUDE_CALLBACK]);
+  const { verifier, params } = authParams(clientId, { resource: RESOURCE, redirect_uri: CLAUDE_CALLBACK });
+  const page = await authorize(params);
+  assert.equal(page.statusCode, 200, page.body);
+  const [pwbox, alt, code] = ['<div id="pwbox">', '<details id="alt">', 'id="code"'].map((m) => page.body.indexOf(m));
+  assert.ok(pwbox > 0 && alt > pwbox && code > alt, `密码批准在前、配对码折叠在后：${[pwbox, alt, code]}`);
+  assert.match(page.body, /测试客户端<\/b><span class="muted">（名字是它自己报的）/, "动态注册的名字标明是自己报的");
+  assert.match(page.body, /批准后，授权会发给 <b>claude\.ai<\/b>/);
+  assert.match(page.body, /pwbtn\.disabled = true/, "批准按钮先灰着，等页面上真有过交互");
+  assert.equal(page.headers["x-frame-options"], "DENY");
+  assert.equal(page.headers["referrer-policy"], "no-referrer");
+  assert.match(String(page.headers["content-security-policy"]), /frame-ancestors 'none'/);
+
+  const d = pageData(page.body);
+  const ok = await app.inject({ method: "POST", url: "/oauth/authorize/password", headers: PUB, payload: { id: d.id, k: d.k, password: PASSWORD, preset: "daily" } });
+  assert.equal(ok.statusCode, 200, ok.body);
+  const code2 = new URL(ok.json().url as string).searchParams.get("code")!;
+  const res = await token({ grant_type: "authorization_code", code: code2, redirect_uri: CLAUDE_CALLBACK, client_id: clientId, code_verifier: verifier, resource: RESOURCE });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.equal(res.json().scope, "read run write");
+
+  // 回调在别的公网域名上的：共用域名也只给配对码
+  const other = await registerClient();
+  const otherBody = (await authorize(authParams(other).params)).body;
+  assert.ok(!otherBody.includes('id="pwbox"') && otherBody.includes('id="pwnote"'), "只有配对码，外加一句为什么");
+  assert.ok(otherBody.indexOf('id="code"') < otherBody.indexOf('id="howto"'), "说明写的是「上面的配对码」，配对码真在上面");
+
+  const again = authParams(clientId, { redirect_uri: CLAUDE_CALLBACK }).params;
+  patchAppSettings({ agent: { enabled: true, publicBaseUrl: PUBLIC, publicServesUi: true, allowPasswordApproval: false } });
+  const plain = (await authorize(again)).body;
+  assert.ok(!plain.includes('id="pwbox"') && !plain.includes('id="alt"') && !plain.includes('id="pwnote"'), "没开密码批准：只有配对码");
+  patchAppSettings({ agent: { enabled: true, publicBaseUrl: PUBLIC, publicServesUi: false, allowPasswordApproval: true } });
+  const separate = (await authorize(again)).body;
+  assert.ok(separate.indexOf('id="code"') < separate.indexOf('<details id="pwbox">'), "单独的子域名：配对码在前，密码批准折叠着");
+});
+
+test("保存设置马上生效：公网守卫缓存着的开关随保存清掉，不用等 5 秒", async () => {
+  assert.equal((await app.inject({ method: "GET", url: "/", headers: PUB })).statusCode, 404, "守卫先按「只放行智能体路径」缓存上");
+  const put = await app.inject({ method: "PUT", url: "/api/settings", headers: { ...session, host: "nas.lan:3000" }, payload: { agent: { enabled: true, publicBaseUrl: PUBLIC, publicServesUi: true } } });
+  assert.equal(put.statusCode, 200, put.body);
+  assert.equal((await app.inject({ method: "GET", url: "/", headers: PUB })).statusCode, 200, "没手动清缓存，保存完立刻按新设置走");
+});
+
+test("反代后面没设 TRUST_PROXY：看到经内网反代进来的请求就给设置页提示；公网上直接连过来自己带的头不算；设了就不提示", async () => {
+  const saved = process.env.TRUST_PROXY;
+  delete process.env.TRUST_PROXY;
+  try {
+    const hit = (remoteAddress: string) =>
+      app.inject({ method: "GET", url: "/.well-known/oauth-authorization-server", headers: { ...PUB, "x-forwarded-for": "198.51.100.7" }, remoteAddress });
+    assert.equal((await oauthState()).untrustedProxy, null);
+    await hit("203.0.113.200");
+    assert.equal((await oauthState()).untrustedProxy, null, "对端是公网地址：可能是有人直接连端口、自己写的头");
+    await hit("172.18.0.2");
+    assert.equal((await oauthState()).untrustedProxy?.peer, "172.18.0.2");
+    process.env.TRUST_PROXY = "true";
+    __test_resetUntrustedProxy();
+    await hit("172.18.0.2");
+    assert.equal((await oauthState()).untrustedProxy, null);
+  } finally {
+    if (saved === undefined) delete process.env.TRUST_PROXY;
+    else process.env.TRUST_PROXY = saved;
+  }
+});
+
+test("设置：公网地址只收 https 的源，存规范写法；域名结尾带点的不收；和现在打开管理界面的域名一样时得打开共用", async () => {
+  const put = (publicBaseUrl: string, host = "nas.example.com", publicServesUi?: boolean) =>
+    app.inject({ method: "PUT", url: "/api/settings", headers: { ...session, host }, payload: { agent: { enabled: true, publicBaseUrl, publicServesUi } } });
   assert.equal((await put("http://mcp.example.com")).statusCode, 400);
   assert.equal((await put("https://mcp.example.com/sub")).statusCode, 400);
   assert.equal((await put("https://mcp.example.com.")).statusCode, 400);
   const same = await put("https://NAS.example.com:443");
-  assert.equal(same.statusCode, 400);
-  assert.match(same.json().message, /子域名/);
+  assert.equal(same.statusCode, 400, "只放行智能体路径的话，保存完管理界面自己就被挡在外面了");
+  assert.match(same.json().message, /这个域名也用来打开管理界面/);
   const viaProxy = await app.inject({ method: "PUT", url: "/api/settings", headers: { ...session, host: "127.0.0.1:3000", "x-forwarded-host": "nas.example.com" }, payload: { agent: { enabled: true, publicBaseUrl: "https://nas.example.com" } } });
   assert.equal(viaProxy.statusCode, 400, "反代后面：按 X-Forwarded-Host 也认得出是同一个域名");
-  assert.equal((await put("https://MCP.Example.com:443/")).statusCode, 200);
+  assert.equal((await put("https://NAS.example.com:443", "nas.example.com", true)).statusCode, 200, "打开了共用就能存");
+  assert.deepEqual([readAppSettings().agent?.publicBaseUrl, readAppSettings().agent?.publicServesUi], ["https://nas.example.com", true]);
+  assert.equal((await put("https://nas.example.com", "nas.example.com", false)).statusCode, 400, "在这个域名上关掉共用：存完自己就进不来了");
+  assert.equal((await put("https://nas.example.com", "nas.lan:3000", false)).statusCode, 200, "从局域网地址关掉可以");
+  assert.equal((await put("https://nas.example.com", "nas.example.com", true)).statusCode, 404, "关掉之后马上生效：这个域名下管理接口已经打不开了");
+  assert.equal((await put("https://MCP.Example.com:443/", "nas.lan:3000")).statusCode, 200);
   assert.equal(readAppSettings().agent?.publicBaseUrl, "https://mcp.example.com", "存规范写法：小写、去默认端口和结尾的 /");
 });
 
 test("公网地址改了：旧授权绑的还是旧地址，/mcp 不认、刷新不了，列表里标成失效", async () => {
   const { clientId, tokens } = await fullFlow();
   patchAppSettings({ agent: { enabled: true, publicBaseUrl: "https://mcp2.example.com" } });
-  __test_resetPublicHost();
+  invalidatePublicHost();
   const lanMcp = await app.inject({
     method: "POST",
     url: "/mcp",
@@ -999,7 +1135,7 @@ test("管理接口只认会话：手建令牌 403，网页客户端的令牌 401
   const manual = createApiToken({ name: "手建的", scopes: ["read", "run", "write", "danger"], toolsets: ["sync", "transfer"], expiresAt: null });
   assert.equal((await app.inject({ method: "GET", url: "/api/agent/oauth", headers: { host: "nas.lan", authorization: `Bearer ${manual.token}` } })).statusCode, 403);
   assert.equal((await app.inject({ method: "GET", url: "/api/agent/oauth", headers: { host: "nas.lan", authorization: `Bearer ${tokens.access_token}` } })).statusCode, 401);
-  const self = await app.inject({ method: "POST", url: "/api/agent/selfcheck", headers: session });
+  const self = await withPublicFetch({}, () => app.inject({ method: "POST", url: "/api/agent/selfcheck", headers: session }));
   assert.equal(self.statusCode, 200);
 });
 
@@ -1008,6 +1144,137 @@ test("连接自检：没填公网地址时只说这一句（不出网）", async
   const res = await app.inject({ method: "POST", url: "/api/agent/selfcheck", headers: session });
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.json().items.map((i: { name: string; ok: boolean }) => [i.name, i.ok]), [["公网地址", false]]);
+});
+
+/** 模拟的公网出口：自检请求经过「本机反代」时，反代往 X-Forwarded-For 里追加的就是它 */
+const EGRESS = "203.0.113.10";
+
+interface PublicFetchOptions {
+  /** 反代怎么转：默认往 X-Forwarded-For 里追加来源；passthrough 原样转客户端带的；lose 请求被别的机器接走（标记带不回来） */
+  proxy?: "append" | "passthrough" | "lose";
+  /** 这个路径直接回它，不进 OpenStrm（模拟被 Access 挡住） */
+  intercept?: (path: string) => Response | null;
+  /** 这个路径连不上 */
+  unreachable?: (path: string) => boolean;
+  /** 公网地址的源，默认 PUBLIC */
+  origin?: string;
+}
+
+/**
+ * 连接自检是服务器自己去请求公网地址：测试里把发往公网地址的 fetch 接到 app.inject 上（Host 用公网域名），
+ * 前面模拟一层本机反代（对端 127.0.0.1）；TRUST_PROXY 按 true 算，和应用的 trustProxy 一致
+ */
+async function withPublicFetch<T>(opts: PublicFetchOptions, fn: () => Promise<T>): Promise<T> {
+  const realFetch = globalThis.fetch;
+  const trustProxy = process.env.TRUST_PROXY;
+  process.env.TRUST_PROXY = "true";
+  const origin = opts.origin ?? PUBLIC;
+  globalThis.fetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.origin !== origin) throw new Error(`自检不该请求别的地址：${url.href}`);
+    if (opts.unreachable?.(url.pathname)) throw new TypeError("fetch failed");
+    const intercepted = opts.intercept?.(url.pathname);
+    if (intercepted) return intercepted;
+    const headers = Object.fromEntries(new Headers(init.headers).entries());
+    if (opts.proxy === "lose") delete headers[SOURCE_PROBE_HEADER];
+    if (opts.proxy !== "passthrough") headers["x-forwarded-for"] = headers["x-forwarded-for"] ? `${headers["x-forwarded-for"]}, ${EGRESS}` : EGRESS;
+    const res = await app.inject({
+      method: (init.method ?? "GET") as "GET" | "POST",
+      url: url.pathname + url.search,
+      headers: { ...headers, host: url.host },
+      payload: typeof init.body === "string" ? init.body : undefined,
+      remoteAddress: "127.0.0.1",
+    });
+    const out = new Headers();
+    for (const [k, v] of Object.entries(res.headers)) {
+      if (v !== undefined && k !== "content-length" && k !== "transfer-encoding") out.set(k, Array.isArray(v) ? v.join(", ") : String(v));
+    }
+    return new Response(res.body, { status: res.statusCode, headers: out });
+  }) as typeof fetch;
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = realFetch;
+    if (trustProxy === undefined) delete process.env.TRUST_PROXY;
+    else process.env.TRUST_PROXY = trustProxy;
+  }
+}
+
+async function selfCheck(): Promise<AgentSelfCheckItem[]> {
+  const res = await app.inject({ method: "POST", url: "/api/agent/selfcheck", headers: session });
+  assert.equal(res.statusCode, 200, res.body);
+  return res.json().items as AgentSelfCheckItem[];
+}
+
+const verdicts = (items: AgentSelfCheckItem[]) => items.map((i) => [i.name, i.ok, i.warn === true]);
+const source = (items: AgentSelfCheckItem[]) => items.find((i) => i.name === "来源地址（TRUST_PROXY）");
+
+test("连接自检（只放行智能体路径）：元数据、/mcp、来源地址都通；管理界面和 /api 从公网地址 404（顺带提醒开关）", async () => {
+  const items = await withPublicFetch({}, selfCheck);
+  assert.deepEqual(verdicts(items), [
+    ["受保护资源元数据", true, false],
+    ["授权服务器元数据", true, false],
+    ["MCP 地址", true, false],
+    ["来源地址（TRUST_PROXY）", true, false],
+    ["管理界面不在公网上", true, false],
+    ["管理接口不在公网上", true, false],
+  ]);
+  assert.match(source(items)!.detail, new RegExp(`${EGRESS.replace(/\./g, "\\.")}.*配得对`));
+  assert.match(items[4].detail, /这个域名也用来打开管理界面/);
+});
+
+test("连接自检（共用域名）：管理界面那两条换成一条加固建议，点名是哪个域名", async () => {
+  patchAppSettings({ agent: { enabled: true, publicBaseUrl: PUBLIC, publicServesUi: true } });
+  invalidatePublicHost();
+  const items = await withPublicFetch({}, selfCheck);
+  assert.deepEqual(verdicts(items), [
+    ["受保护资源元数据", true, false],
+    ["授权服务器元数据", true, false],
+    ["MCP 地址", true, false],
+    ["来源地址（TRUST_PROXY）", true, false],
+    ["管理界面在公网上（共用域名）", true, false],
+  ]);
+  assert.match(items.at(-1)!.detail, /mcp\.example\.com 也能打开管理界面/);
+  assert.match(items.at(-1)!.detail, /\/oauth\/token/, "加固建议里列出身份代理要放行的路径");
+});
+
+test("连接自检的来源地址：反代原样透传 X-Forwarded-For 报「能伪造」；请求没到这台机器报出来；两次自检同时跑各算各的", async () => {
+  const passthrough = source(await withPublicFetch({ proxy: "passthrough" }, selfCheck));
+  assert.equal(passthrough?.ok, false);
+  assert.match(passthrough!.detail, /原样转了过来.*proxy_add_x_forwarded_for/);
+  const lost = source(await withPublicFetch({ proxy: "lose" }, selfCheck));
+  assert.equal(lost?.ok, false);
+  assert.match(lost!.detail, /没到这台 OpenStrm/);
+  const both = await withPublicFetch({}, () => Promise.all([selfCheck(), selfCheck()]));
+  for (const items of both) assert.equal(source(items)?.ok, true);
+});
+
+test("连接自检：被 Cloudflare Access 挡住直接说是它，不再单出来源一项；/mcp 连不上也不出来源一项；公网地址带端口提醒 443", async () => {
+  const access = () => new Response(null, { status: 302, headers: { location: "https://team.cloudflareaccess.com/cdn-cgi/access/login/mcp.example.com" } });
+  const blocked = await withPublicFetch({ intercept: (path) => (path === "/mcp" || path.startsWith("/.well-known/") ? access() : null) }, selfCheck);
+  for (const name of ["受保护资源元数据", "授权服务器元数据", "MCP 地址"]) {
+    const item = blocked.find((i) => i.name === name)!;
+    assert.equal(item.ok, false, name);
+    assert.match(item.detail, /Cloudflare Access.*Bypass/, name);
+  }
+  assert.equal(source(blocked), undefined, "/mcp 那一项已经说了原因");
+
+  const down = await withPublicFetch({ unreachable: (path) => path === "/mcp" }, selfCheck);
+  assert.match(down.find((i) => i.name === "MCP 地址")!.detail, /访问不到/);
+  assert.equal(source(down), undefined);
+
+  const withPort = "https://mcp.example.com:8443";
+  patchAppSettings({ agent: { enabled: true, publicBaseUrl: withPort } });
+  invalidatePublicHost();
+  const ported = await withPublicFetch({ origin: withPort }, selfCheck);
+  assert.deepEqual(verdicts(ported).slice(0, 5), [
+    ["公网地址的端口", true, true],
+    ["受保护资源元数据", true, false],
+    ["授权服务器元数据", true, false],
+    ["MCP 地址", true, false],
+    ["来源地址（TRUST_PROXY）", true, false],
+  ]);
+  assert.match(ported[0].detail, /:8443.*443/);
 });
 
 test("清理：久没用的 DCR / CIMD 客户端清掉；有授权挂着、有授权请求在走的留着", async () => {

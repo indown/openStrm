@@ -83,7 +83,9 @@ import { flushEmbyRefresh } from "./services/media-server.js";
 import agentRoute from "./routes/agent/index.js";
 import mcpRoute from "./routes/mcp/index.js";
 import { trustProxyOption } from "./lib/trust-proxy.js";
+import { corsDelegator } from "./plugins/cors.js";
 import { publicHostPlugin } from "./plugins/public-host.js";
+import { securityHeadersPlugin } from "./plugins/security-headers.js";
 import oauthMetadataRoute from "./routes/oauth/metadata.js";
 import oauthRegisterRoute from "./routes/oauth/register.js";
 import oauthAuthorizeRoute from "./routes/oauth/authorize.js";
@@ -117,13 +119,12 @@ startHousekeeping();
 startUpdateChecks();
 
 // Global plugins
-// 生产是同源（API 进程托管前端），开发走 next dev 的 rewrites，两种情况都用不到跨域；
-// 留着 origin:true 只是给把 NEXT_PUBLIC_API_URL 指到别处的开发方式兜底。
-// 不开 credentials：凭据是请求头里的 Bearer token，没有 cookie，反射任意 origin 再带凭据是给将来埋雷。
-// 浏览器里的 MCP 客户端要读 401 的 WWW-Authenticate（找授权服务器）、429 的 Retry-After，得明着放出来
-await app.register(cors, { origin: true, exposedHeaders: ["WWW-Authenticate", "Retry-After"] });
+// 跨域按路径给：智能体用的几个路径对谁都开，/api 不对外站开（管理界面是同源的），见 plugins/cors.ts
+await app.register(cors, { delegator: corsDelegator });
 await app.register(compress);
-// 从公网地址那个域名进来的，只放行智能体用的几个路径
+// 防点击劫持、nosniff 这些通用的安全头：管理界面多数人直接放在公网上（FRAME_ANCESTORS 放开嵌入，见插件说明）
+await app.register(securityHeadersPlugin, { frameAncestors: process.env.FRAME_ANCESTORS });
+// 从公网地址那个域名进来的：没打开「这个域名也用来打开管理界面」时，只放行智能体用的几个路径
 await app.register(publicHostPlugin);
 
 // Core plugins (order matters)

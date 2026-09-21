@@ -31,6 +31,7 @@ import {
 } from "../../db/repositories/oauth.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
+import { untrustedProxySeen } from "../../plugins/public-host.js";
 import { MCP_PATH, agentEnabled } from "../../services/agent/access.js";
 import { toolCatalog } from "../../services/agent/tools/index.js";
 import { assertCurrentPassword } from "../../services/current-password.js";
@@ -152,6 +153,7 @@ export default async function (fastify: FastifyInstance) {
     return {
       publicBaseUrl: base,
       active: oauthConfig() !== null,
+      untrustedProxy: untrustedProxySeen(),
       pending: listPendingOAuthRequests().map(pendingRequestInfo),
       // 令牌绑的资源不是现在的 <公网地址>/mcp（公网地址改过了）的，标成失效
       grants: listOAuthGrants(base ? `${base}${MCP_PATH}` : null),

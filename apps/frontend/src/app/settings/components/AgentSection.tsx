@@ -298,7 +298,21 @@ function CreatedDialog({ created, mcpUrl, onClose }: { created: { token: string;
  * 开关和管理界面地址是设置项，由页面的表单管（fields 传进来，跟着底部保存条一起存；enabled 是保存过的值）；
  * 令牌的增删改立即生效，不走保存条。
  */
-export function AgentSection({ enabled, publicBaseUrl, fields }: { enabled: boolean; publicBaseUrl: string; fields: React.ReactNode }) {
+export function AgentSection({
+  enabled,
+  publicBaseUrl,
+  sharedDomain,
+  passwordApproval,
+  fields,
+}: {
+  enabled: boolean;
+  publicBaseUrl: string;
+  /** 保存过的「这个域名也用来打开管理界面」：授权页的样子（密码在前还是配对码在前）跟着它 */
+  sharedDomain: boolean;
+  /** 保存过的「授权页上允许用管理员密码批准」：网页客户端那块的步骤按它写 */
+  passwordApproval: boolean;
+  fields: React.ReactNode;
+}) {
   const [info, setInfo] = useState<AgentInfo | null>(null);
   const [tokens, setTokens] = useState<AgentToken[] | null>(null);
   const [tokensFailed, setTokensFailed] = useState(false);
@@ -459,7 +473,7 @@ export function AgentSection({ enabled, publicBaseUrl, fields }: { enabled: bool
         )}
       </div>
 
-      <AgentWebClients publicBaseUrl={publicBaseUrl} enabled={enabled} />
+      <AgentWebClients publicBaseUrl={publicBaseUrl} enabled={enabled} sharedDomain={sharedDomain} passwordApproval={passwordApproval} />
 
       <div className="space-y-2">
         <div className="flex items-center gap-2">

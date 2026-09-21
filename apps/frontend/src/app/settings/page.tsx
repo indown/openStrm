@@ -1,9 +1,10 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { TagInput } from "@/components/ui/tag-input";
 import { SecretInput } from "@/components/ui/secret-input";
 import { Button } from "@/components/ui/button";
@@ -80,6 +81,46 @@ const httpsOrigin = (hint: string) =>
       }
     }, hint);
 
+/** 两个地址是不是同一个源（大小写、默认端口、结尾的 / 不计较）：公网地址填的就是当前页面的地址 → 一个域名共用 */
+function sameOrigin(value: string, origin: string): boolean {
+  try {
+    return new URL(value.trim()).origin === origin;
+  } catch {
+    return false;
+  }
+}
+
+/** 只在局域网里解析得到的主机名后缀：从这样的地址打开的，外面的网页客户端连不上 */
+const LAN_SUFFIXES = [".local", ".lan", ".home", ".internal", ".localdomain", ".home.arpa"];
+
+/** 地址里的主机名（小写、去结尾的点）；不是合法地址返回 null */
+function hostOfUrl(value: string): string | null {
+  try {
+    return new URL(value.trim()).hostname.toLowerCase().replace(/\.$/, "") || null;
+  } catch {
+    return null;
+  }
+}
+
+/** 地址里写明的端口（没写、写的默认端口都是空） */
+function portOf(value: string): string {
+  try {
+    return new URL(value.trim()).port;
+  } catch {
+    return "";
+  }
+}
+
+/** 当前页面能不能当公网地址用：https、写的是公网域名（不是 IP、localhost、单段主机名、.local 这类局域网名字） */
+function publicOriginOfPage(): string | null {
+  const { protocol, hostname, port } = window.location;
+  const host = hostname.toLowerCase().replace(/\.$/, "");
+  if (protocol !== "https:" || host === "localhost" || /^[\d.]+$/.test(host) || host.startsWith("[")) return null;
+  if (!host.includes(".") || host.endsWith(".localhost") || LAN_SUFFIXES.some((s) => host.endsWith(s))) return null;
+  // 自己拼：location.origin 会留着域名结尾的点（nas.example.com.），填进去过不了校验
+  return `https://${host}${port ? `:${port}` : ""}`;
+}
+
 /** 并发 / 频率这类计数在表单里是字符串：以前 `parseInt(v) || 2` 会把打错的字悄悄改回默认值 */
 const count = (min: number, max: number) =>
   z
@@ -120,7 +161,8 @@ const schema = z.object({
   agent: z.object({
     enabled: z.boolean(),
     uiBaseUrl: httpUrl("填 http:// 或 https:// 开头的地址，比如 http://nas:3000"),
-    publicBaseUrl: httpsOrigin("填 https:// 开头的域名，不带路径，比如 https://mcp.example.com"),
+    publicBaseUrl: httpsOrigin("填 https:// 开头的域名，不带路径，比如 https://nas.example.com"),
+    publicServesUi: z.boolean(),
     allowPasswordApproval: z.boolean(),
     oauthCimd: z.boolean(),
   }),
@@ -158,6 +200,7 @@ function fromSettings(s: AppSettings): SettingsValues {
       enabled: s.agent?.enabled === true,
       uiBaseUrl: s.agent?.uiBaseUrl ?? "",
       publicBaseUrl: s.agent?.publicBaseUrl ?? "",
+      publicServesUi: s.agent?.publicServesUi === true,
       allowPasswordApproval: s.agent?.allowPasswordApproval === true,
       oauthCimd: s.agent?.oauthCimd === true,
     },
@@ -217,10 +260,58 @@ export default function SettingsPage() {
   // defaultValues 就是"上次从服务器读到的那份"，每次 reset 之后它跟着走
   const changes = countChanges(form.formState.defaultValues, values);
 
+  // 当前页面的地址能不能直接当公网地址用（https、写的域名）：能就给「用当前地址」；pageHost 是现在打开管理界面用的主机名
+  const [pageOrigin, setPageOrigin] = useState<string | null>(null);
+  const [pageHost, setPageHost] = useState<string | null>(null);
+  useEffect(() => {
+    setPageOrigin(publicOriginOfPage());
+    setPageHost(window.location.hostname.toLowerCase().replace(/\.$/, ""));
+  }, []);
+  /**
+   * 「这个域名也用来打开管理界面」是对哪个域名开的：这次编辑里打开的记在这里，没有就看已保存的设置。
+   * 公网地址换成别的域名时开关跟着关，不然新域名（比如给智能体单独开的子域名）下管理界面也打得开
+   */
+  const sharedHost = useRef<string | null>(null);
+  // 公网地址下面的一句说明：两个开关为什么自己变了
+  const [sharedNote, setSharedNote] = useState<"auto" | "unbound" | null>(null);
+  const resetForm = useCallback(
+    (values?: SettingsValues) => {
+      form.reset(values);
+      sharedHost.current = null;
+      setSharedNote(null);
+    },
+    [form],
+  );
+  /**
+   * 一个域名共用（多数人）：打开「这个域名也用来打开管理界面」，顺带打开授权页上的密码批准——
+   * 这时登录页本来就在公网上，在客户端弹出的授权页上直接输密码批准是最顺的一步。两个开关之后仍然各自能关
+   */
+  const shareDomain = useCallback(() => {
+    form.setValue("agent.publicServesUi", true, { shouldDirty: true });
+    form.setValue("agent.allowPasswordApproval", true, { shouldDirty: true });
+    sharedHost.current = pageOrigin ? hostOfUrl(pageOrigin) : null;
+    setSharedNote("auto");
+  }, [form, pageOrigin]);
+  /** 公网地址填完（失焦）：开关开着、域名却换了，就关掉开关并说明；换成的是当前页面的地址就照旧共用 */
+  const checkSharedHost = useCallback(() => {
+    const value = form.getValues("agent.publicBaseUrl");
+    const host = hostOfUrl(value);
+    if (!host || !form.getValues("agent.publicServesUi")) return;
+    const saved = form.formState.defaultValues?.agent;
+    const bound = sharedHost.current ?? (saved?.publicServesUi && saved.publicBaseUrl ? hostOfUrl(saved.publicBaseUrl) : null);
+    if (bound === null || host === bound || (pageOrigin && sameOrigin(value, pageOrigin))) {
+      sharedHost.current = host;
+      return;
+    }
+    form.setValue("agent.publicServesUi", false, { shouldDirty: true });
+    sharedHost.current = null;
+    setSharedNote("unbound");
+  }, [form, pageOrigin]);
+
   useEffect(() => {
     api.settings
       .get()
-      .then((s) => form.reset(fromSettings(s)))
+      .then((s) => resetForm(fromSettings(s)))
       .catch((err) => toast.error(apiErrorMessage(err, "加载设置失败")))
       .finally(() => setLoading(false));
     // 「复制到 OpenList」里的账号下拉；拉不到就只剩空提示，不拦别的设置
@@ -228,7 +319,7 @@ export default function SettingsPage() {
       .list()
       .then((rows) => setOpenlistAccounts(rows.filter((a) => a.accountType === "openlist").map((a) => a.name)))
       .catch(() => {});
-  }, [form]);
+  }, [resetForm]);
 
   const onSave = useCallback(
     async (v: SettingsValues) => {
@@ -237,9 +328,9 @@ export default function SettingsPage() {
         // 重读一次而不是拿刚发出去的当基准：密钥存进去之后服务端只回掩码，
         // 拿本地那份明文当基准的话，输入框会把刚打的密钥当成"已保存的掩码"明文摆出来
         try {
-          form.reset(fromSettings(await api.settings.get()));
+          resetForm(fromSettings(await api.settings.get()));
         } catch {
-          form.reset(v);
+          resetForm(v);
         }
         toast.success("保存成功");
       } catch (error: unknown) {
@@ -259,7 +350,7 @@ export default function SettingsPage() {
         }
       }
     },
-    [form],
+    [resetForm],
   );
 
   // ⌘S / Ctrl+S 保存。浏览器那个"保存网页"对这里没意义，脏着就接管
@@ -668,6 +759,8 @@ export default function SettingsPage() {
             <AgentSection
               enabled={saved?.agent?.enabled === true}
               publicBaseUrl={saved?.agent?.publicBaseUrl?.replace(/\/+$/, "") ?? ""}
+              sharedDomain={saved?.agent?.publicServesUi === true}
+              passwordApproval={saved?.agent?.allowPasswordApproval === true}
               fields={
                 <div className="space-y-4">
                   <FormField
@@ -684,35 +777,94 @@ export default function SettingsPage() {
                   />
                   <FormField
                     control={form.control}
-                    name="agent.uiBaseUrl"
+                    name="agent.publicBaseUrl"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>管理界面地址（可选）</FormLabel>
-                        <FormControl>
-                          <Input placeholder="http://nas:3000" {...field} />
-                        </FormControl>
+                        <FormLabel>公网地址（可选）</FormLabel>
+                        <InputGroup>
+                          <FormControl>
+                            <InputGroupInput
+                              placeholder="https://nas.example.com"
+                              {...field}
+                              onChange={(e) => {
+                                field.onChange(e);
+                                // 填的就是当前页面的地址：这个域名本来就用来打开管理界面，自动按共用处理
+                                if (pageOrigin && sameOrigin(e.target.value, pageOrigin) && !form.getValues("agent.publicServesUi")) shareDomain();
+                              }}
+                              onBlur={() => {
+                                field.onBlur();
+                                checkSharedHost();
+                              }}
+                            />
+                          </FormControl>
+                          {pageOrigin && (
+                            <InputGroupButton
+                              onClick={() => {
+                                form.setValue("agent.publicBaseUrl", pageOrigin, { shouldDirty: true, shouldValidate: true });
+                                shareDomain();
+                              }}
+                              title={`填成 ${pageOrigin}`}
+                            >
+                              用当前地址
+                            </InputGroupButton>
+                          )}
+                        </InputGroup>
                         <FormDescription className="text-xs">
-                          工具结果里「在 OpenStrm 里打开」的链接用这个地址拼，填你平时打开这个界面的地址；不填就不给链接
+                          claude.ai、ChatGPT 这类网页客户端从它们的服务器连过来，要一个公网 https 地址并走 OAuth 授权。多数人就填平时从外网打开这个界面的地址
+                          {pageOrigin ? "（点「用当前地址」）" : "，并打开下面的「这个域名也用来打开管理界面」"}；给智能体单独开子域名的配法见 README
                         </FormDescription>
+                        {sharedNote === "auto" && (
+                          <p className="text-xs text-muted-foreground">
+                            填的就是你现在打开这个页面的地址：已顺带打开「这个域名也用来打开管理界面」和「授权页上允许用管理员密码批准」。
+                          </p>
+                        )}
+                        {sharedNote === "unbound" && (
+                          <p className="text-xs text-warning">
+                            公网地址换了域名，已关掉「这个域名也用来打开管理界面」：新域名下只放行智能体用的几个路径。它也用来打开管理界面的话，再把开关打开。
+                          </p>
+                        )}
+                        {portOf(values.agent.publicBaseUrl) && (
+                          <p className="text-xs text-warning">
+                            带端口（:{portOf(values.agent.publicBaseUrl)}）的地址 claude.ai 连不上：它的服务器只往 443 端口连。443 被封的可以用 Cloudflare Tunnel，见 README。
+                          </p>
+                        )}
                         <FormMessage />
                       </FormItem>
                     )}
                   />
                   <FormField
                     control={form.control}
-                    name="agent.publicBaseUrl"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>公网地址（可选）</FormLabel>
-                        <FormControl>
-                          <Input placeholder="https://mcp.example.com" {...field} />
-                        </FormControl>
-                        <FormDescription className="text-xs">
-                          claude.ai、ChatGPT 这类网页客户端从它们的服务器连过来，要一个公网 https 地址，并走 OAuth 授权。给智能体单独开一个子域名：这个域名下只放行智能体用的几个路径，管理界面在这个域名下打不开。反代和 Cloudflare Tunnel 的配法见 README
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
+                    name="agent.publicServesUi"
+                    render={({ field }) => {
+                      const host = hostOfUrl(values.agent.publicBaseUrl);
+                      return (
+                        <SwitchRow
+                          label="这个域名也用来打开管理界面"
+                          description={
+                            field.value ? (
+                              `一个域名共用：${host ?? "这个域名"} 照常打开管理界面，智能体也从这里连。管理界面在公网上：密码要够长，放在反代 / Tunnel 后面要设 TRUST_PROXY；想再加一层可以套 Cloudflare Access（智能体的几个路径要放行，见 README）`
+                            ) : host && host === pageHost ? (
+                              <span className="text-destructive">
+                                关着的话保存会被拒：你现在就是用 {host} 打开的管理界面，关掉后它会被挡在外面。要让这个域名只给智能体用，换局域网地址打开管理界面再关
+                              </span>
+                            ) : host ? (
+                              <span className="text-warning">
+                                关着：保存后 {host} 下只放行智能体用的几个路径，从外网用它打开管理界面会是 404。你平时就用这个地址打开管理界面的话，打开它
+                              </span>
+                            ) : (
+                              "关着：这个域名下只放行智能体用的几个路径，管理界面在它下面打不开——给智能体单独开了子域名、管理界面不放公网时这么用"
+                            )
+                          }
+                          checked={field.value}
+                          onCheckedChange={(on) => {
+                            field.onChange(on);
+                            sharedHost.current = on ? host : null;
+                            setSharedNote(null);
+                            if (on) form.setValue("agent.allowPasswordApproval", true, { shouldDirty: true });
+                          }}
+                        />
+                      );
+                    }}
                   />
                   <FormField
                     control={form.control}
@@ -720,10 +872,33 @@ export default function SettingsPage() {
                     render={({ field }) => (
                       <SwitchRow
                         label="授权页上允许用管理员密码批准"
-                        description="默认关：授权页在公网上，批准只在这里或 Telegram 里做。打不开这个界面、也没配 Telegram 时才打开"
+                        description="开着：在客户端里点连接、弹出授权页，直接在上面选档位、输密码批准（一个域名时推荐）。只对 claude.ai、ChatGPT、本机和局域网里的客户端有效，别的客户端照样用配对码，免得有人拿假冒的客户端骗你一键批了。关着：到这里的「待批准」输入授权页上的配对码批准（在 Telegram 页打开了「允许批准网页客户端的连接」的，也可以把配对码发给机器人）"
                         checked={field.value}
                         onCheckedChange={field.onChange}
                       />
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="agent.uiBaseUrl"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>管理界面地址（可选）</FormLabel>
+                        <FormControl>
+                          <Input
+                            placeholder={
+                              values.agent.publicServesUi && values.agent.publicBaseUrl
+                                ? `不填就用公网地址 ${values.agent.publicBaseUrl.replace(/\/+$/, "")}`
+                                : "http://nas:3000"
+                            }
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormDescription className="text-xs">
+                          工具结果里「在 OpenStrm 里打开」的链接用这个地址拼（比如 ChatGPT 做不了转存时，点链接就是预填好的转存框）。一个域名共用时不用填，默认用公网地址；填了就用填的（从外网打不开的话清空它）
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
                     )}
                   />
                   <FormField
@@ -759,7 +934,7 @@ export default function SettingsPage() {
                   {modKey === "⌘" ? "⌘S" : "Ctrl+S"}
                 </kbd>
                 <div className="ml-auto flex items-center gap-2">
-                  <Button type="button" variant="ghost" size="sm" disabled={saving} onClick={() => form.reset()}>
+                  <Button type="button" variant="ghost" size="sm" disabled={saving} onClick={() => resetForm()}>
                     放弃更改
                   </Button>
                   <Button type="submit" size="sm" disabled={saving}>

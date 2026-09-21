@@ -23,14 +23,19 @@ export type AgentToolset = "sync" | "transfer";
 export type AgentSettings = {
   /** 总开关，默认关：关着时 /mcp 回 404，令牌也调不了 REST */
   enabled?: boolean;
-  /** 管理界面地址（局域网的，比如 http://nas:3000），工具结果里生成「在 OpenStrm 里打开」的链接用；不填就不给链接 */
+  /** 管理界面地址（比如 http://nas:3000），工具结果里生成「在 OpenStrm 里打开」的链接用；不填时共用域名就用公网地址，否则不给链接 */
   uiBaseUrl?: string;
   /**
-   * 公网地址（https 的源，比如 https://mcp.example.com）：claude.ai、ChatGPT 这类网页客户端从这里连，
-   * OAuth 的地址都从它来；不填就不启用 OAuth。这个域名下只放行智能体用的几个路径
+   * 公网地址（https 的源，比如 https://nas.example.com）：claude.ai、ChatGPT 这类网页客户端从这里连，
+   * OAuth 的地址都从它来；不填就不启用 OAuth。没打开 publicServesUi 时，这个域名下只放行智能体用的几个路径
    */
   publicBaseUrl?: string;
-  /** 授权页上允许用管理员密码直接批准，默认关（授权页在公网上） */
+  /**
+   * 公网地址这个域名也用来打开管理界面（多数人就一个域名）。关着时这个域名下只放行智能体用的几个路径，
+   * 给「智能体单独一个子域名、管理界面不上公网」的人用
+   */
+  publicServesUi?: boolean;
+  /** 授权页上允许用管理员密码直接批准，默认关（授权页在公网上）；设置页打开共用域名时会顺带打开 */
   allowPasswordApproval?: boolean;
   /**
    * 认 CIMD（client_id 是元数据地址，claude.ai、ChatGPT 都优先用），默认关。
@@ -136,6 +141,11 @@ export interface OAuthPendingRequest {
   redirectInsecure: boolean;
   /** 跳回的是本机回环地址（命令行、桌面客户端） */
   redirectLoopback: boolean;
+  /**
+   * 授权页上能不能用管理员密码批准：设置里开着，而且授权码发去的地方别人拿不到
+   * （本机、局域网、桌面客户端、claude.ai / ChatGPT 的回调，或者管理员手建的客户端）
+   */
+  passwordApproval: boolean;
   /** 客户端要的档位（read / run / write / danger 里的；没要就是空的，按管理员选的给） */
   requestedScopes: AgentScope[];
   ip: string;
@@ -169,6 +179,8 @@ export interface OAuthGrantInfo {
 export interface AgentSelfCheckItem {
   name: string;
   ok: boolean;
+  /** 不算错，但要人自己留意或再核对（比如公网地址带端口、自检是在内网里绕回来的） */
+  warn?: boolean;
   detail: string;
 }
 
@@ -177,6 +189,11 @@ export interface AgentOAuthState {
   publicBaseUrl: string | null;
   /** 开关开着、公网地址也填了：OAuth 在工作 */
   active: boolean;
+  /**
+   * 有请求经过本机 / 内网里的反代进来（带着 X-Forwarded-For），容器却没设 TRUST_PROXY：
+   * 公网上所有人都被算成这个反代的地址。peer 是反代的地址，at 是最近一次看到的时间（毫秒）
+   */
+  untrustedProxy: { peer: string; at: number } | null;
   pending: OAuthPendingRequest[];
   grants: OAuthGrantInfo[];
   clients: OAuthClientInfo[];

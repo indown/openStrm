@@ -1,17 +1,20 @@
 /**
  * OAuth 里不经过 HTTP 就能钉住的规矩：回调地址收哪些、怎么比、参数怎么接；CIMD 地址和文档的校验、不去请求内网地址；
- * 给的档位怎么算；地址、主机名、配对码怎么规范化。
+ * 给的档位怎么算；地址、主机名、配对码怎么规范化；连接自检的来源探针和 TRUST_PROXY 判断（按部署拓扑）；哪些回调能用授权页密码批准。
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/services/oauth/oauth.test.ts
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import { trustProxyOption } from "../../lib/trust-proxy.js";
 import { normalizePairingCode } from "../../db/repositories/oauth.js";
 import { grantScopes, presetScopes } from "./authorize.js";
 import { cacheSecondsFrom, cimdUrlProblem, isBlockedAddress, validateClientMetadata } from "./cimd.js";
 import { normalizeHost, normalizeOrigin, sameResource } from "./config.js";
 import { OAuthError } from "./errors.js";
-import { isInsecureUri, isLoopbackUri, redirectUriMatches, redirectUriProblem, withParams } from "./redirect.js";
+import { isInsecureUri, isLoopbackUri, isTrustedRedirect, passwordApprovalAllowed, redirectUriMatches, redirectUriProblem, withParams } from "./redirect.js";
+import { SOURCE_PROBE_HEADER, finishSourceProbe, judgeSource, noteSelfCheckProbe, startSourceProbe } from "./selfcheck.js";
 
 test("回调地址：https、http（局域网）、桌面客户端的私有 scheme 都收；能执行脚本、读本地的 scheme 不收", () => {
   for (const ok of [
@@ -189,4 +192,128 @@ test("规范化：公网地址存成标准的源；主机名去端口、大小�
   assert.equal(normalizePairingCode("7F3K-9Q2M"), "7F3K-9Q2M");
   assert.equal(normalizePairingCode("0O1I-AAAA"), null, "不在字母表里的字符（0 O 1 I）");
   assert.equal(normalizePairingCode("7F3K-9Q2"), null);
+});
+
+/** 探针只看这几样：请求头、Fastify 认出的来源、直接连过来的那一端 */
+const probeRequest = (headers: Record<string, string>, ip = "127.0.0.1", peer = "127.0.0.1") =>
+  ({ headers, ip, socket: { remoteAddress: peer } }) as unknown as FastifyRequest;
+
+test("连接自检的来源探针：只认自检登记过的标记；记下转发链、X-Real-IP、CF-Connecting-IP；先到的算数；取完就忘；一分钟没回来的清掉", () => {
+  noteSelfCheckProbe(probeRequest({ [SOURCE_PROBE_HEADER]: "not-registered" }));
+  assert.equal(finishSourceProbe("not-registered"), undefined, "别人带同名的头不记");
+
+  const t0 = 1_000_000;
+  const nonce = startSourceProbe(t0);
+  noteSelfCheckProbe(
+    probeRequest(
+      { [SOURCE_PROBE_HEADER]: nonce, "x-forwarded-for": "192.0.2.1,  203.0.113.10 ,104.23.0.9", "x-real-ip": "203.0.113.10", "cf-connecting-ip": "203.0.113.10" },
+      "104.23.0.9",
+      "172.18.0.2",
+    ),
+  );
+  noteSelfCheckProbe(probeRequest({ [SOURCE_PROBE_HEADER]: nonce }, "10.0.0.9", "10.0.0.9"));
+  assert.deepEqual(
+    finishSourceProbe(nonce),
+    { ip: "104.23.0.9", peer: "172.18.0.2", xff: ["192.0.2.1", "203.0.113.10", "104.23.0.9"], realIp: "203.0.113.10", cfIp: "203.0.113.10" },
+    "先到的算数，后来同标记的不覆盖",
+  );
+  assert.equal(finishSourceProbe(nonce), undefined, "取完就忘");
+
+  const stale = startSourceProbe(t0);
+  const fresh = startSourceProbe(t0 + 61_000);
+  noteSelfCheckProbe(probeRequest({ [SOURCE_PROBE_HEADER]: stale }));
+  assert.equal(finishSourceProbe(stale), undefined, "一分钟没回来的清掉，之后再来也不记");
+  finishSourceProbe(fresh);
+});
+
+/**
+ * 来源判断按部署拓扑一条条核：来源用真的 Fastify（trustProxy 取 TRUST_PROXY 的解析结果）算，探针记下，再判。
+ * 自检的出口地址是 203.0.113.10，Cloudflare 的节点是 104.23.0.9；探针请求自己带着哨兵 192.0.2.1
+ */
+test("来源地址判断：按部署拓扑（反代追加 / 没追加 / 只带 X-Real-IP / Cloudflare 两层 / 信任过头 / 内网绕回 / 覆盖 XFF / 公网上的代理 / 地址列表漏了反代）", async () => {
+  const cases: Array<{
+    name: string;
+    trust?: string;
+    peer: string;
+    xff?: string;
+    realIp?: string;
+    cfIp?: string;
+    ok: boolean;
+    warn?: boolean;
+    detail: RegExp;
+  }> = [
+    { name: "反代追加、设了 true", trust: "true", peer: "172.18.0.2", xff: "192.0.2.1, 203.0.113.10", ok: true, detail: /203\.0\.113\.10.*配得对/ },
+    { name: "反代追加、没设", peer: "172.18.0.2", xff: "192.0.2.1, 203.0.113.10", ok: false, detail: /没设 TRUST_PROXY.*TRUST_PROXY=true/ },
+    { name: "IPv4 映射的对端", trust: "true", peer: "::ffff:172.18.0.2", xff: "192.0.2.1, 203.0.113.10", ok: true, detail: /配得对/ },
+    { name: "反代原样透传、没设", peer: "172.18.0.2", xff: "192.0.2.1", ok: false, detail: /没把客户端地址加进 X-Forwarded-For.*172\.18\.0\.2/ },
+    { name: "反代原样透传、设了 true（能伪造）", trust: "true", peer: "172.18.0.2", xff: "192.0.2.1", ok: false, detail: /原样转了过来.*能绕过去/ },
+    { name: "只带 X-Real-IP、透传了 XFF", trust: "true", peer: "172.18.0.2", xff: "192.0.2.1", realIp: "203.0.113.10", ok: false, detail: /原样转了过来（它带的是 X-Real-IP/ },
+    { name: "只带 X-Real-IP、XFF 被清掉", trust: "true", peer: "172.18.0.2", realIp: "203.0.113.10", ok: false, detail: /没把客户端地址加进 X-Forwarded-For（它带的是 X-Real-IP/ },
+    { name: "Cloudflare → 反代，只信了反代", trust: "true", peer: "172.18.0.2", xff: "192.0.2.1, 203.0.113.10, 104.23.0.9", cfIp: "203.0.113.10", ok: false, detail: /104\.23\.0\.9.*中间一层代理（Cloudflare 的节点）.*TRUST_PROXY 写 2/ },
+    { name: "Cloudflare → 反代，写 2", trust: "2", peer: "172.18.0.2", xff: "192.0.2.1, 203.0.113.10, 104.23.0.9", cfIp: "203.0.113.10", ok: true, detail: /配得对/ },
+    { name: "只有一层却写 2（信任过头）", trust: "2", peer: "172.18.0.2", xff: "192.0.2.1, 203.0.113.10", ok: false, detail: /信任过头.*TRUST_PROXY=2.*只有一层反代/ },
+    { name: "内网绕回来（NAT 回环）", trust: "true", peer: "172.18.0.2", xff: "192.0.2.1, 192.168.1.1", ok: true, warn: true, detail: /内网里绕回来.*192\.168\.1\.1/ },
+    { name: "Cloudflare 之后被 $remote_addr 覆盖", trust: "true", peer: "172.18.0.2", xff: "104.23.0.9", cfIp: "203.0.113.10", ok: false, detail: /\$remote_addr/ },
+    { name: "Cloudflare 直接连到端口、没设", peer: "104.23.0.9", xff: "192.0.2.1, 203.0.113.10", cfIp: "203.0.113.10", ok: false, detail: /它在公网上.*网段/ },
+    { name: "地址列表里没有这个反代", trust: "10.9.9.9", peer: "172.18.0.2", xff: "192.0.2.1, 203.0.113.10", ok: false, detail: /TRUST_PROXY=10\.9\.9\.9，但没信任直接连过来的这一层（172\.18\.0\.2）.*TRUST_PROXY=true/ },
+  ];
+  const apps = new Map<string, FastifyInstance>();
+  try {
+    for (const c of cases) {
+      const key = c.trust ?? "";
+      let app = apps.get(key);
+      if (!app) {
+        app = Fastify({ trustProxy: trustProxyOption(c.trust) });
+        app.addHook("onRequest", async (request) => noteSelfCheckProbe(request));
+        app.post("/mcp", async () => ({}));
+        await app.ready();
+        apps.set(key, app);
+      }
+      const nonce = startSourceProbe();
+      const headers: Record<string, string> = { [SOURCE_PROBE_HEADER]: nonce };
+      if (c.xff) headers["x-forwarded-for"] = c.xff;
+      if (c.realIp) headers["x-real-ip"] = c.realIp;
+      if (c.cfIp) headers["cf-connecting-ip"] = c.cfIp;
+      await app.inject({ method: "POST", url: "/mcp", headers, remoteAddress: c.peer });
+      const seen = finishSourceProbe(nonce);
+      assert.ok(seen, c.name);
+      const verdict = judgeSource(seen, c.trust);
+      assert.equal(verdict.ok, c.ok, `${c.name}：${verdict.detail}`);
+      assert.equal(verdict.warn === true, c.warn === true, `${c.name}：${verdict.detail}`);
+      assert.match(verdict.detail, c.detail, c.name);
+    }
+  } finally {
+    for (const app of apps.values()) await app.close();
+  }
+});
+
+test("密码批准只给授权码别人拿不到的回调：本机、局域网、桌面客户端、claude.ai / ChatGPT；手建的客户端都行；别的公网域名不行", () => {
+  for (const uri of [
+    "http://127.0.0.1:33418/callback",
+    "http://localhost:6274/oauth/callback",
+    "https://localhost/cb",
+    "cursor://anysphere.cursor-retrieval/oauth/callback",
+    "http://192.168.1.5:8080/oauth/clients/mcp:openstrm/callback",
+    "http://[fd00::5]:8080/cb",
+    "http://openwebui.lan:8080/cb",
+    "http://nas:8080/cb",
+    "https://claude.ai/api/mcp/auth_callback",
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+  ]) {
+    assert.equal(isTrustedRedirect(uri), true, uri);
+    assert.equal(passwordApprovalAllowed("dcr", uri), true, uri);
+  }
+  for (const uri of [
+    "https://claude-ai.attacker.example/api/mcp/auth_callback",
+    "https://claude.ai.evil.example/cb",
+    "http://claude.ai/api/mcp/auth_callback",
+    "https://evil.example/cb",
+    "http://203.0.113.5/cb",
+    "not a url",
+  ]) {
+    assert.equal(isTrustedRedirect(uri), false, uri);
+    assert.equal(passwordApprovalAllowed("dcr", uri), false, uri);
+    assert.equal(passwordApprovalAllowed("cimd", uri), false, uri);
+  }
+  assert.equal(passwordApprovalAllowed("manual", "https://evil.example/cb"), true, "手建的客户端：回调是管理员自己登记的，换令牌还要密钥");
 });

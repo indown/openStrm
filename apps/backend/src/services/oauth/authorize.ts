@@ -6,8 +6,9 @@
  * 也能冒充 claude.ai 发起。批准时输入自己眼前授权页上的配对码，批的才一定是自己这一条；列表里只有别人冒充的那条时，
  * 管理员手里没有它的配对码，批不了。
  *
- * 授权页在公网上，默认不收管理员密码：批准只在管理界面（局域网）或 Telegram 里做，
- * 公网上就没有能暴力破解的登录框。设置里可以另开「授权页用密码批准」，有单独的失败退避和总量上限。
+ * 授权页上的密码批准（设置里另开，一个域名共用时顺带打开）：密码在这个页面上输，本身就证明批的是眼前这一条。
+ * 但只给「授权码发过去别人拿不到」的客户端（redirect.ts 的 passwordApprovalAllowed）：动态注册谁都能做、
+ * 回调随便填，给这种客户端一个密码框，就是给钓鱼递了一键批准。比对走和登录同一套退避（services/password-check.ts）。
  */
 import type { AgentScope, AgentToolset, OAuthPendingRequest } from "@openstrm/shared";
 import { readAuthConfig } from "../../db/repositories/auth.js";
@@ -27,9 +28,11 @@ import {
   type OAuthClientRecord,
   type OAuthRequestRecord,
 } from "../../db/repositories/oauth.js";
+import type { FastifyRequest } from "fastify";
+import { readAppSetting } from "../../db/repositories/settings.js";
 import { ipKey } from "../../lib/ip.js";
 import { moduleLogger } from "../../lib/logger.js";
-import { createLoginThrottle } from "../login-throttle.js";
+import { checkAdminPassword } from "../password-check.js";
 import { verifyPassword } from "../password.js";
 import { notifyOAuthRequest } from "../telegram/notify.js";
 import { clientHostOf, isUrlClientId, resolveClient } from "./clients.js";
@@ -43,7 +46,7 @@ import {
   type OAuthConfig,
 } from "./config.js";
 import { OAuthError } from "./errors.js";
-import { isInsecureUri, isLoopbackUri, redirectUriMatches, withParams } from "./redirect.js";
+import { isInsecureUri, isLoopbackUri, passwordApprovalAllowed, redirectUriMatches, withParams } from "./redirect.js";
 
 const log = moduleLogger("oauth");
 
@@ -82,6 +85,7 @@ export function pendingRequestInfo(r: OAuthRequestRecord): OAuthPendingRequest {
     redirectHost: hostOf(r.redirectUri),
     redirectInsecure: isInsecureUri(r.redirectUri),
     redirectLoopback: isLoopbackUri(r.redirectUri),
+    passwordApproval: readAppSetting("agent")?.allowPasswordApproval === true && passwordApprovalAllowed(r.clientKind, r.redirectUri),
     requestedScopes: AGENT_SCOPES.filter((s) => r.requestedScope.split(/\s+/).includes(s)),
     ip: r.ip,
     createdAt: r.createdAt,
@@ -285,57 +289,35 @@ export function pollAuthorization(id: string, pollSecret: string, cfg: OAuthConf
   }
 }
 
-/**
- * 授权页上的密码批准单独一套失败退避：公网上来的尝试不能把局域网里的登录也锁住。
- * 再加一道总量：一小时里失败太多（换着地址试），整个功能先停一小时，只能回管理界面批
- */
-const passwordThrottle = createLoginThrottle();
-const GLOBAL_FAILURES_PER_HOUR = 30;
-let globalFailures: { since: number; count: number } = { since: 0, count: 0 };
-
-function passwordApprovalSuspended(now: number): boolean {
-  if (now - globalFailures.since >= 3600) globalFailures = { since: now, count: 0 };
-  return globalFailures.count >= GLOBAL_FAILURES_PER_HOUR;
-}
-
-/** 测试用 */
-export function __test_resetPasswordApproval(): void {
-  passwordThrottle.reset();
-  globalFailures = { since: 0, count: 0 };
-}
-
-/** 授权页上用管理员密码直接批准（设置里开了才有）：密码在这个页面上输，本身就证明批的是这一条 */
+/** 授权页上用管理员密码直接批准（设置里开了、客户端也在允许之列才有）：密码在这个页面上输，本身就证明批的是这一条 */
 export async function approveWithPassword(
   input: { id: string; pollSecret: string; password: string; preset: string },
-  ip: string,
+  request: FastifyRequest,
   cfg: OAuthConfig,
 ): Promise<PollResult> {
   if (!cfg.allowPasswordApproval) throw new OAuthError("access_denied", "password approval is disabled", 403, "没有开启授权页密码批准");
   const now = nowS();
-  if (passwordApprovalSuspended(now)) {
-    throw new OAuthError("temporarily_unavailable", "password approval is suspended", 429, "最近失败太多，密码批准先停一小时了：到 OpenStrm 管理界面里批准");
-  }
   const record = getOAuthRequestForPoll(input.id, input.pollSecret);
   // 批过、拒过、过期了的请求不许再拿来试密码
   if (!record || record.status !== "pending" || record.expiresAt <= now) {
     throw new OAuthError("invalid_request", "authorization request not found or no longer pending", 404, "授权请求不存在或已失效");
   }
+  if (!passwordApprovalAllowed(record.clientKind, record.redirectUri)) {
+    throw new OAuthError(
+      "access_denied",
+      "password approval is not available for this client",
+      403,
+      `这个客户端的授权会发给 ${hostOf(record.redirectUri)}：授权页上不能用密码批准，到 OpenStrm 管理界面用配对码批准`,
+    );
+  }
   const scopes = presetScopes(input.preset);
   if (!scopes) throw new OAuthError("invalid_request", "preset must be read or daily", 400, "档位只能选只读或日常");
-  const key = ipKey(ip);
-  const wait = passwordThrottle.begin(key);
-  if (wait > 0) throw new OAuthError("slow_down", "too many attempts", 429, `尝试过于频繁，请 ${wait} 秒后再试`);
-  let ok: boolean | undefined;
-  try {
+  const check = await checkAdminPassword(request, async () => {
     const stored = readAuthConfig().password;
-    ok = await verifyPassword(input.password, typeof stored === "string" ? stored : "");
-  } finally {
-    passwordThrottle.end(key, ok);
-  }
-  if (!ok) {
-    globalFailures.count += 1;
-    throw new OAuthError("access_denied", "wrong password", 403, "密码不对");
-  }
+    return verifyPassword(input.password, typeof stored === "string" ? stored : "");
+  });
+  if (check.kind === "throttled") throw new OAuthError("slow_down", "too many attempts", 429, `尝试过于频繁，请 ${check.wait} 秒后再试`);
+  if (!check.ok) throw new OAuthError("access_denied", "wrong password", 403, "密码不对");
   const decided = decideOAuthRequest(
     record.id,
     { approved: true, scopes: grantScopes(record.requestedScope, scopes), toolsets: [...AGENT_TOOLSETS], via: "password" },

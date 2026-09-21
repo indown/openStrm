@@ -22,6 +22,45 @@ export function ipKey(ip: string): string {
     .join(":")}::/64`;
 }
 
+/**
+ * 地址的规范写法，拿来比较两个地址是不是同一个：去方括号和接口名、小写，IPv4 映射的 IPv6（::ffff:1.2.3.4）还原成 IPv4。
+ * 认不出的原样返回（trim 过）
+ */
+export function normalizeAddress(ip: string): string {
+  const addr = ip
+    .trim()
+    .replace(/^\[(.*)\]$/, "$1")
+    .split("%")[0]
+    .toLowerCase();
+  if (net.isIP(addr) !== 6) return addr;
+  const groups = expandIPv6(addr);
+  if (groups && groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+    return `${groups[6] >> 8}.${groups[6] & 255}.${groups[7] >> 8}.${groups[7] & 255}`;
+  }
+  return addr;
+}
+
+/** 本机和内网：回环、私有网段、链路本地、运营商级 NAT（100.64/10）、IPv6 唯一本地 */
+const INTERNAL = new net.BlockList();
+INTERNAL.addSubnet("127.0.0.0", 8, "ipv4");
+INTERNAL.addSubnet("10.0.0.0", 8, "ipv4");
+INTERNAL.addSubnet("172.16.0.0", 12, "ipv4");
+INTERNAL.addSubnet("192.168.0.0", 16, "ipv4");
+INTERNAL.addSubnet("169.254.0.0", 16, "ipv4");
+INTERNAL.addSubnet("100.64.0.0", 10, "ipv4");
+INTERNAL.addAddress("::1", "ipv6");
+INTERNAL.addSubnet("fc00::", 7, "ipv6");
+INTERNAL.addSubnet("fe80::", 10, "ipv6");
+
+/** 是不是本机或内网的地址（判断请求是不是从内网直接连进来的、反代在不在内网里）；认不出的算不是 */
+export function isInternalAddress(ip: string): boolean {
+  const addr = normalizeAddress(ip);
+  const family = net.isIP(addr);
+  if (family === 4) return INTERNAL.check(addr, "ipv4");
+  if (family === 6) return INTERNAL.check(addr, "ipv6");
+  return false;
+}
+
 /** 把 IPv6 展开成 8 组 16 位整数（:: 补零、结尾内嵌的 IPv4 拆成两组）；格式不对返回 null */
 function expandIPv6(addr: string): number[] | null {
   let s = addr.toLowerCase();

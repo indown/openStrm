@@ -24,7 +24,11 @@ export default async function (fastify: FastifyInstance) {
     if (result.kind === "redirect") return reply.header("cache-control", "no-store").redirect(result.url, 302);
     const telegram = readAppSetting("telegram");
     const telegramApproval = telegram?.allowOAuthApproval === true && Boolean(telegram.botToken && telegram.chatId);
-    return sendAuthorizePage(reply, result.request, result.pollSecret, cfg.allowPasswordApproval, telegramApproval);
+    return sendAuthorizePage(reply, result.request, result.pollSecret, {
+      allowPassword: cfg.allowPasswordApproval,
+      telegramApproval,
+      passwordFirst: cfg.servesUi,
+    });
   });
 
   // 授权页每两秒问一次：要带请求 id 和页面里的轮询密钥，光有 id 拿不到授权码
@@ -44,7 +48,7 @@ export default async function (fastify: FastifyInstance) {
     if (!throttleAnonymous(request, reply)) return reply;
     const b = stringParams(request.body);
     try {
-      return await approveWithPassword({ id: b.id ?? "", pollSecret: b.k ?? "", password: b.password ?? "", preset: b.preset ?? "" }, request.ip, cfg);
+      return await approveWithPassword({ id: b.id ?? "", pollSecret: b.k ?? "", password: b.password ?? "", preset: b.preset ?? "" }, request, cfg);
     } catch (err) {
       return sendOAuthError(reply, err, { withMessage: true });
     }

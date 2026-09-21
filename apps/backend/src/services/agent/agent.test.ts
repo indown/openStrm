@@ -4,6 +4,7 @@
  *   - 错误 → 给模型的失败结果：包成 HttpError 的网盘错误照样认出账号问题；转存成功后失败的带 received
  *   - 调一次工具：参数严格（多余的参数名报错）、null 当没填、每次都进调用记录（带 IP）
  *   - 限流一次扣多个；作业按 key 找最近一次；令牌换了 IP 立刻记下
+ *   - 「在 OpenStrm 里打开」的链接：管理界面地址没填、公网域名也用来打开管理界面时用公网地址
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/services/agent/agent.test.ts
  */
@@ -12,6 +13,7 @@ import { after, test } from "node:test";
 import { z } from "zod";
 import { createApiToken, deleteAllApiTokens, getApiToken, touchApiToken } from "../../db/repositories/api-tokens.js";
 import { listAgentCalls } from "../../db/repositories/agent-audit.js";
+import { readAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
 import { Cloud115ApiError } from "../cloud-115/client.js";
 import { ShareApiError } from "../cloud-115/share.js";
@@ -19,7 +21,7 @@ import { driveErrorToHttp } from "../drive/errors.js";
 import { ShareGoneError } from "../drive/types.js";
 import { callTool } from "./calls.js";
 import { ToolError, defineTool } from "./define.js";
-import { summarizeArgs, toFailure } from "./format.js";
+import { summarizeArgs, toFailure, uiLink } from "./format.js";
 import { __test_resetJobs, latestJob, startJob } from "./jobs.js";
 import { __test_resetAgentQuota, takeAgentQuota } from "./rate-limit.js";
 
@@ -151,4 +153,18 @@ test("令牌的「最近使用」：同一个 IP 60 秒内只写一次，换了 
   touchApiToken(info.id, "203.0.113.9", t0 + 10);
   assert.equal(getApiToken(info.id)?.lastUsedIp, "203.0.113.9", "换了 IP 要马上看得到");
   assert.equal(getApiToken(info.id)?.lastUsedAt, t0 + 10);
+});
+
+test("「在 OpenStrm 里打开」：填了管理界面地址用它；没填但公网域名也用来打开管理界面就用公网地址；都没有不给链接", () => {
+  const saved = readAppSetting("agent");
+  try {
+    writeAppSetting("agent", { enabled: true, uiBaseUrl: "http://nas:3000/", publicBaseUrl: "https://nas.example.com", publicServesUi: true });
+    assert.equal(uiLink("/logs"), "http://nas:3000/logs", "填了的优先，结尾的 / 去掉");
+    writeAppSetting("agent", { enabled: true, uiBaseUrl: "", publicBaseUrl: "https://nas.example.com", publicServesUi: true });
+    assert.equal(uiLink("home?share=x"), "https://nas.example.com/home?share=x");
+    writeAppSetting("agent", { enabled: true, publicBaseUrl: "https://mcp.example.com", publicServesUi: false });
+    assert.equal(uiLink("/logs"), undefined, "公网域名只放行智能体用的路径：给了链接也打不开");
+  } finally {
+    writeAppSetting("agent", saved);
+  }
 });

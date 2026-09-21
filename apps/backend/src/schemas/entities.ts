@@ -227,10 +227,11 @@ export const settingsPatchSchema = z.looseObject({
         .string()
         .trim()
         .max(300)
-        .refine((v) => v === "" || isHttpsOrigin(v), "公网地址要是 https:// 开头的域名（不带路径），比如 https://mcp.example.com")
+        .refine((v) => v === "" || isHttpsOrigin(v), "公网地址要是 https:// 开头的域名（不带路径），比如 https://nas.example.com")
         // 存规范写法（小写、去默认端口、国际化域名转 punycode）：元数据里的资源地址要和客户端连的地址一字不差
         .transform((v) => (v === "" ? "" : new URL(v).origin))
         .optional(),
+      publicServesUi: z.boolean().optional(),
       allowPasswordApproval: z.boolean().optional(),
       oauthCimd: z.boolean().optional(),
     })

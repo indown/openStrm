@@ -48,7 +48,7 @@ export const OAUTH_PATHS = {
 } as const;
 
 /**
- * 公网域名下只放行这些路径（精确匹配）和方法，别的一律 404：管理界面和 /api 不上公网。
+ * 没打开「这个域名也用来打开管理界面」时，公网域名下只放行这些路径（精确匹配）和方法，别的一律 404：管理界面和 /api 不上公网。
  * 方法也要卡：比如 GET /oauth/token 没有这个路由，会落到托管管理界面的静态站上，回的是带着管理界面外壳的 404 页。
  * null 是方法都放（/mcp 自己对 GET、DELETE 回 405）；OPTIONS（跨域预检）都放
  */
@@ -65,6 +65,20 @@ export const PUBLIC_ROUTES: ReadonlyMap<string, ReadonlySet<string> | null> = ne
   [OAUTH_PATHS.token, SUBMIT],
   [OAUTH_PATHS.register, SUBMIT],
   [OAUTH_PATHS.revoke, SUBMIT],
+]);
+
+/**
+ * 对任何来源都开跨域的路径：浏览器里的 MCP 客户端（比如调试器）要直接调的这几个。
+ * 授权页和它的轮询、密码批准是浏览器导航过去、同源请求的，不用跨域
+ */
+export const CORS_PATHS: ReadonlySet<string> = new Set([
+  MCP_PATH,
+  WELL_KNOWN_PRM,
+  `${WELL_KNOWN_PRM}${MCP_PATH}`,
+  WELL_KNOWN_AS,
+  OAUTH_PATHS.token,
+  OAUTH_PATHS.register,
+  OAUTH_PATHS.revoke,
 ]);
 
 /** 公网域名下这个方法、这个路径放不放行 */
@@ -84,6 +98,8 @@ export interface OAuthConfig {
   allowPasswordApproval: boolean;
   /** 认不认 CIMD（client_id 是元数据地址） */
   cimd: boolean;
+  /** 公网地址这个域名也用来打开管理界面（一个域名走天下） */
+  servesUi: boolean;
 }
 
 /** https 的源规范成一种写法：大小写、默认端口、国际化域名都统一；不是合法地址返回 null */
@@ -137,6 +153,11 @@ export function publicHostname(): string | null {
   return base ? normalizeHost(new URL(base).host) : null;
 }
 
+/** 公网地址这个域名是不是也用来打开管理界面：是的话公网守卫对它不生效 */
+export function publicServesUi(): boolean {
+  return readAppSetting("agent")?.publicServesUi === true;
+}
+
 export function oauthConfig(): OAuthConfig | null {
   const agent = readAppSetting("agent");
   if (agent?.enabled !== true) return null;
@@ -148,6 +169,7 @@ export function oauthConfig(): OAuthConfig | null {
     resourceMetadataUrl: `${issuer}${WELL_KNOWN_PRM}${MCP_PATH}`,
     allowPasswordApproval: agent.allowPasswordApproval === true,
     cimd: agent.oauthCimd === true,
+    servesUi: agent.publicServesUi === true,
   };
 }
 

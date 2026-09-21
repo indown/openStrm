@@ -102,14 +102,29 @@ export function fmtTime(ms: number | null | undefined): string | null {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+/** 管理界面从哪打开：填了管理界面地址用它；没填、但公网地址这个域名也用来打开管理界面（共用域名）就用公网地址 */
+export function uiBase(): string | undefined {
+  const agent = readAppSetting("agent");
+  const explicit = agent?.uiBaseUrl?.trim();
+  if (explicit) return explicit.replace(/\/+$/, "");
+  if (agent?.publicServesUi === true && agent.publicBaseUrl) {
+    try {
+      return new URL(agent.publicBaseUrl).origin;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 /**
- * 「在 OpenStrm 里打开」：设置里填了管理界面地址才给。
- * 只在能访问管理界面的地方打得开（局域网 / VPN），写操作最后一步交给人时用。
+ * 「在 OpenStrm 里打开」：知道管理界面地址才给（见 uiBase）。
+ * 写操作最后一步交给人时用：只读的客户端做不了，点链接就是预填好的转存框、日志页这些。
  */
 export function uiLink(pathAndQuery: string): string | undefined {
-  const base = readAppSetting("agent")?.uiBaseUrl?.trim();
+  const base = uiBase();
   if (!base) return undefined;
-  return `${base.replace(/\/+$/, "")}${pathAndQuery.startsWith("/") ? "" : "/"}${pathAndQuery}`;
+  return `${base}${pathAndQuery.startsWith("/") ? "" : "/"}${pathAndQuery}`;
 }
 
 /** 结果里的 openInUi 字段：没填管理界面地址就是空对象，直接展开进结果 */

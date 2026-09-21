@@ -4,7 +4,7 @@ import { HttpError } from "../../lib/http-error.js";
 import { maskSettings, unmaskSettingsPatch } from "../../lib/secrets.js";
 import { parse } from "../../lib/validate.js";
 import { settingsPatchSchema } from "../../schemas/entities.js";
-import { requestHosts } from "../../plugins/public-host.js";
+import { invalidatePublicHost, requestHosts } from "../../plugins/public-host.js";
 import { normalizeHost } from "../../services/oauth/config.js";
 
 export default async function (fastify: FastifyInstance) {
@@ -17,13 +17,19 @@ export default async function (fastify: FastifyInstance) {
    */
   fastify.put("/api/settings", { preHandler: [fastify.authenticate] }, async (request) => {
     const patch = parse(settingsPatchSchema, request.body);
-    // 公网地址的域名下只放行智能体用的路径：要是填的就是现在打开管理界面用的域名，保存完管理界面自己就被挡在外面了
+    // 没打开「这个域名也用来打开管理界面」时，公网地址的域名下只放行智能体用的路径：
+    // 要是填的就是现在打开管理界面用的域名，保存完管理界面自己就被挡在外面了
     // （这次请求能看到的主机名都比一遍：原始 Host、X-Forwarded-Host，规范化过的）
     const publicUrl = patch.agent?.publicBaseUrl;
-    if (publicUrl && requestHosts(request).includes(normalizeHost(new URL(publicUrl).host) ?? "")) {
-      throw new HttpError(400, "公网地址不能用现在打开管理界面的这个域名：那个域名下只放行智能体用的几个路径，管理界面会打不开。给智能体单独开一个子域名");
+    if (publicUrl && patch.agent?.publicServesUi !== true && requestHosts(request).includes(normalizeHost(new URL(publicUrl).host) ?? "")) {
+      throw new HttpError(
+        400,
+        "公网地址就是你现在打开管理界面用的域名。要继续在这个域名上用管理界面，打开「这个域名也用来打开管理界面」；要让它只给智能体用，换个地址（比如局域网地址）打开管理界面再关，不然保存完这个页面自己就打不开了",
+      );
     }
     patchAppSettings(unmaskSettingsPatch(patch, readAppSettings()));
+    // 公网守卫缓存着公网地址和共用开关：清掉，保存完马上按新的来（紧接着点自检也不会看到旧的）
+    invalidatePublicHost();
     return { message: "ok" };
   });
 }
