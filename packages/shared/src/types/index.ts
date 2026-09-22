@@ -12,6 +12,7 @@ export type { AccountInfo, Account115, AccountOpenlist, AccountQuark } from "./a
 export type {
   FileFailureAction,
   FileFailureKind,
+  TaskCopySettings,
   TaskDefinition,
   TaskExecutionHistory,
   TaskExecutionSummary,

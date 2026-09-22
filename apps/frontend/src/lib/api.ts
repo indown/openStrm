@@ -161,6 +161,8 @@ export type SaveToTaskChoice = {
   follow?: { intervalMinutes: number };
   /** 勾了「转存后整理」：后端转存成功后建一次整理（任务设了自动执行就直接执行，否则待确认） */
   organize?: boolean;
+  /** 勾了「转存后复制到 OpenList」：后端转存成功后把这些条目交给复制队列 */
+  copy?: boolean;
 };
 
 export interface TmdbSearchResult {
@@ -556,6 +558,7 @@ export const api = {
       watchPath?: string;
       name?: string;
       organize?: boolean;
+      copy?: boolean;
     }) => data(axiosInstance.post<ShareReceiveResult>("/api/share", { action: "receive", ...body }, { timeout: 180_000 })),
   },
 

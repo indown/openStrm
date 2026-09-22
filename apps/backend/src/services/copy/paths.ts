@@ -8,7 +8,7 @@
  * 这里的路径归一**只管斜杠**：不能用 drive/types.ts 的 normalizePath，
  * 它会把每一段首尾的空格削掉，而网盘上真有「Season 1 」这种带尾空格的目录名（见 test/fake-drive.ts）。
  */
-import type { AccountOpenlist, AppSettings } from "@openstrm/shared";
+import type { AccountOpenlist, AppSettings, TaskDefinition } from "@openstrm/shared";
 import { getAccount } from "../../db/repositories/accounts.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
@@ -106,4 +106,18 @@ export function resolveCopyConfig(settings: AppSettings = readAppSettings()): Co
 export function copyConfigured(account: string, settings: AppSettings = readAppSettings()): boolean {
   const cfg = settings.openlistCopy ?? {};
   return Boolean(cfg.account && normDir(cfg.dstDir) && normDir(cfg.mounts?.[account]));
+}
+
+/**
+ * 这一次要不要复制：明说了就按它（弹框里的一次性勾选），否则按任务上的开关。
+ * 全局没配好 / 这个账号没填挂载根一律当关——同「没配 TMDB key 就不自动整理」的路子。
+ */
+export function copyEnabledFor(
+  task: Pick<TaskDefinition, "account" | "copyToOpenlist"> | null,
+  forced: boolean | undefined,
+  settings: AppSettings = readAppSettings(),
+): boolean {
+  const account = task?.account;
+  if (!account || !copyConfigured(account, settings)) return false;
+  return forced ?? task?.copyToOpenlist?.enabled === true;
 }

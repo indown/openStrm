@@ -12,6 +12,7 @@ import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js
 import { getShareFollow } from "../../db/repositories/share-follows.js";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
+import { __test_resetCopy, listCopies } from "../copy/service.js";
 import { HttpError } from "../../lib/http-error.js";
 import { DATA_DIR } from "../../paths.js";
 import { setDriveProviderFactory } from "../drive/registry.js";
@@ -171,6 +172,35 @@ test("新集：只转存新的那条到同一位置，生成 strm，记进快照
   assert.deepEqual(ev.added, ["E03.mkv"]);
   assert.equal(ev.target, "tv/The Show");
   assert.equal(ev.generated, 1);
+});
+
+test("任务开了「复制到 OpenList」：新集顺手进复制队列；没开就不进", async () => {
+  replaceAppSettings({
+    ...readAppSettings(),
+    openlistCopy: { account: "ol", dstDir: "/local/media", mounts: { acc: "/115" } },
+  });
+  replaceAccounts([...listAccounts(), { accountType: "openlist", name: "ol", account: "u", password: "p", url: "http://ol.local" }]);
+  const s = await subscribe();
+  await __test_resetCopy();
+
+  // 没开开关：转存照做，复制队列一条都不进
+  share.addFile("/E03.mkv", { hash: "c" });
+  now += HOUR;
+  await checkFollow(s.id);
+  assert.equal(listCopies().length, 0, "任务没开复制就不进队列");
+
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true } }]);
+  share.addFile("/E04.mkv", { hash: "d" });
+  now += HOUR;
+  await checkFollow(s.id);
+  const [c] = listCopies();
+  assert.equal(c?.name, "E04.mkv");
+  assert.equal(c?.srcDir, "/tv/The Show");
+  assert.equal(c?.dstDir, "/local/media/The Show", "任务目录里的层级原样带过去");
+  assert.equal(c?.trigger, "follow");
+  await __test_resetCopy();
+  replaceTasks([task]);
+  replaceAccounts([account]);
 });
 
 test("新目录整项转存；已知目录里的新文件落到对应子目录", async () => {

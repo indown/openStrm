@@ -35,6 +35,8 @@ import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, KIND_LABEL, parseShareRef, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession, ShareUpdateSignal, DriveKind } from "../drive/types.js";
 import { saveSelectionToTask } from "../share/receive.js";
+import { enqueueCopy } from "../copy/service.js";
+import { copyEnabledFor } from "../copy/paths.js";
 import { maybeAutoOrganize } from "../organize/auto.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
@@ -526,6 +528,8 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
         items: group.items.map((i) => ({ id: i.id, name: baseName(i.path), isDir: i.isDir, token: i.token })),
         subPath,
         mode: "sync",
+        // 复制在下面一次性登记（按追更这一轮的全部新增，来源也写成「追更」），这里不各自登记
+        copy: false,
         settings,
       });
       if ("generatedCount" in r) generated += r.generatedCount;
@@ -573,6 +577,16 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
     log.info(`追更「${f.name}」新增 ${received.length} 项 → ${target2}，生成 ${generated} 个 strm`);
     if (generated > 0) scheduleEmbyRefresh();
     maybeAutoOrganize({ task, paths: landed, trigger: "follow" });
+    if (copyEnabledFor(task, undefined)) {
+      enqueueCopy({
+        account: provider.account.name,
+        sources: landed.map((p) => `${task.originPath}/${p}`),
+        rootPath: task.originPath,
+        taskId: task.id,
+        dstDir: task.copyToOpenlist?.dstDir,
+        trigger: "follow",
+      });
+    }
     void deps.notify({ type: "follow-added", name: f.name, added: received.map(baseName), generated, target: target2 }).catch(() => {});
   }
   if (errors.length) {

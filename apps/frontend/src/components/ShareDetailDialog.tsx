@@ -231,6 +231,9 @@ export function ShareDetailDialog({
         taskId: choice.taskId,
         subPath: choice.subPath,
         mode: choice.mode,
+        // 这两个是弹框里的一次性勾选，逐字段转发时漏过（勾了「转存后整理」不生效就是这个原因）
+        ...(choice.organize ? { organize: true } : {}),
+        ...(choice.copy ? { copy: true } : {}),
         // 追更盯的是当前浏览的这一层目录
         ...(choice.follow
           ? { follow: choice.follow, watchDirId: current.id, watchPath, name: watchPath ? `${title} / ${watchPath}` : title }

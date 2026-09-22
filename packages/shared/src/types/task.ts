@@ -15,6 +15,18 @@ export interface TaskDefinition {
   strmType?: string;
   /** 整理：库类型先验 + 自动整理策略 */
   organize?: TaskOrganizeSettings;
+  /** 复制到 OpenList：这个任务落下新文件时要不要复制走 */
+  copyToOpenlist?: TaskCopySettings;
+}
+
+/** 任务级「复制到 OpenList」设置 */
+export interface TaskCopySettings {
+  /** 开着才复制；默认关 */
+  enabled?: boolean;
+  /** 复制到哪（OpenList 完整路径）；不填用设置页的默认目标目录 */
+  dstDir?: string;
+  /** 复制成功后把网盘上那份删掉（搬运）。默认关，不可逆 */
+  deleteSource?: boolean;
 }
 
 /** 列表接口给的是这个：不带 logs。每条记录最多几千行日志，列表里没人看，白传几十 MB */

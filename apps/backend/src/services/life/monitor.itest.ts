@@ -28,6 +28,7 @@ import { setDriveProviderFactory } from "../drive/registry.js";
 import type { ChangeEvent } from "../drive/types.js";
 import { FakeDrive } from "../../test/fake-drive.js";
 import { __test_flushAutoOrganize, __test_resetAutoOrganize, setAutoOrganizeDeps } from "../organize/auto.js";
+import { __test_resetCopy, listCopies } from "../copy/service.js";
 import { QuarkSnapshotSource } from "./sources/quark.js";
 import { getLifeMonitorStatus, probeLifeEvents, startLifeMonitor, stopLifeMonitor } from "./monitor.js";
 
@@ -273,6 +274,59 @@ test("从任务外挪进来的文件按新增处理，也交给自动整理；�
     __test_resetAutoOrganize();
     setAutoOrganizeDeps(null);
     replaceTasks([taskA, taskQ]);
+    deleteLifeEventsBefore(Number.MAX_SAFE_INTEGER);
+  }
+});
+
+test("任务开了「复制到 OpenList」：新落下的交给复制队列；整理自己造成的事件不交", async () => {
+  configure({ accounts: ["A"], pullMode: "latest", intervalSeconds: 5 });
+  replaceAppSettings({
+    ...readAppSettings(),
+    openlistCopy: { account: "ol", dstDir: "/local/media", mounts: { A: "/115" } },
+  });
+  replaceAccounts([...listAccounts(), { accountType: "openlist", name: "ol", account: "u", password: "p", url: "http://ol.local" }]);
+  replaceTasks([{ ...taskA, copyToOpenlist: { enabled: true } }, taskQ]);
+  await __test_resetCopy();
+  dA.tree.addDir("/tv/Show");
+  dA.tree.addFile("/tv/Show/ep9.mkv");
+  dA.changes!.queue.push(ev({ id: "c1", kind: "create", path: "/tv/Show/ep9.mkv" }));
+  const r = await startLifeMonitor();
+  try {
+    assert.equal(r.ok, true, r.message);
+    await waitFor(() => listCopies().length > 0, "复制队列收到一条");
+    const [c] = listCopies();
+    assert.equal(c.account, "A");
+    assert.equal(c.srcDir, "/tv/Show");
+    assert.equal(c.name, "ep9.mkv");
+    assert.equal(c.dstDir, "/local/media/Show", "任务目录里的层级原样带过去");
+    assert.equal(c.trigger, "monitor");
+  } finally {
+    await stopLifeMonitor();
+    await __test_resetCopy();
+    replaceTasks([taskA, taskQ]);
+    deleteLifeEventsBefore(Number.MAX_SAFE_INTEGER);
+  }
+});
+
+test("任务没开复制：一条都不进复制队列", async () => {
+  configure({ accounts: ["A"], pullMode: "latest", intervalSeconds: 5 });
+  replaceAppSettings({
+    ...readAppSettings(),
+    openlistCopy: { account: "ol", dstDir: "/local/media", mounts: { A: "/115" } },
+  });
+  replaceTasks([taskA, taskQ]);
+  await __test_resetCopy();
+  dA.tree.addDir("/tv/Show3");
+  dA.tree.addFile("/tv/Show3/ep1.mkv");
+  dA.changes!.queue.push(ev({ id: "d1", kind: "create", path: "/tv/Show3/ep1.mkv" }));
+  const r = await startLifeMonitor();
+  try {
+    assert.equal(r.ok, true, r.message);
+    await waitFor(() => (statusOf("A")?.stats.handled ?? 0) >= 1, "事件处理完");
+    assert.equal(listCopies().length, 0);
+  } finally {
+    await stopLifeMonitor();
+    await __test_resetCopy();
     deleteLifeEventsBefore(Number.MAX_SAFE_INTEGER);
   }
 });

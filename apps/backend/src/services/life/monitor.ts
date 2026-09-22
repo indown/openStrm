@@ -31,6 +31,8 @@ import {
   writeKv,
 } from "../../db/repositories/life.js";
 import { bumpOwnHit, findOwnOperation, getRun as getOrganizeRun } from "../../db/repositories/organize.js";
+import { enqueueCopy } from "../copy/service.js";
+import { copyEnabledFor } from "../copy/paths.js";
 import { maybeAutoOrganize } from "../organize/auto.js";
 import { providerFor } from "../drive/registry.js";
 import type { AccountIssue, ChangeCursor, ChangeEvent, ChangeKind, ChangeLog, ChangeSource, DriveProvider, ProbeResult } from "../drive/types.js";
@@ -386,7 +388,20 @@ class AccountMonitor {
             // 新落进任务的才交给自动整理：新增，或者从任务外挪进来（从云下载、最近接收挪进剧集目录是常见的来路）；任务里挪来挪去的不算
             if (res.arrived && res.changed) {
               const m = matchTask(ctx, ev.path);
-              if (m?.relPath) maybeAutoOrganize({ task: m.task, paths: [m.relPath], trigger: "monitor", debounce: true });
+              if (m?.relPath) {
+                maybeAutoOrganize({ task: m.task, paths: [m.relPath], trigger: "monitor", debounce: true });
+                // 整理自己造成的事件走的是上面的 ownOk 分支，进不到这里，所以不会把整理搬过的文件再复制一遍
+                if (copyEnabledFor(m.task, undefined)) {
+                  enqueueCopy({
+                    account: this.name,
+                    sources: [{ path: ev.path, isDir: ev.isDir, nodeId: ev.nodeId }],
+                    rootPath: m.task.originPath,
+                    taskId: m.task.id,
+                    dstDir: m.task.copyToOpenlist?.dstDir,
+                    trigger: "monitor",
+                  });
+                }
+              }
             }
           } else {
             this.stats.skipped++;

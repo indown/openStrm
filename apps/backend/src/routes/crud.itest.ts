@@ -191,6 +191,33 @@ test("POST /api/task/cron/preview：试算下几次执行；不合法的表达�
   );
 });
 
+test("POST/PUT /api/task：任务级「复制到 OpenList」原样存取，改一次整块替换", async () => {
+  const created = await call("POST", "/api/task", {
+    account: "acc",
+    originPath: "tv",
+    targetPath: "tv",
+    copyToOpenlist: { enabled: true, dstDir: "/local/media", deleteSource: true },
+  });
+  assert.equal(created.statusCode, 201);
+  const id = created.json().id;
+  assert.deepEqual(created.json().copyToOpenlist, { enabled: true, dstDir: "/local/media", deleteSource: true });
+
+  // 浅合并：整块替换，没带的字段跟着没了（同 organize）
+  const put = await call("PUT", "/api/task", { id, copyToOpenlist: { enabled: false } });
+  assert.equal(put.statusCode, 200);
+  assert.deepEqual(listTasks().find((t) => t.id === id)?.copyToOpenlist, { enabled: false });
+
+  const bad = await call("POST", "/api/task", {
+    account: "acc",
+    originPath: "tv",
+    targetPath: "tv",
+    copyToOpenlist: { enabled: "yes" },
+  });
+  assert.equal(bad.statusCode, 400);
+  assert.equal(bad.json().code, "VALIDATION");
+  await call("DELETE", `/api/task?id=${id}`);
+});
+
 test("POST/PUT /api/task：strmPrefix 去掉首尾空白和尾斜杠再入库", async () => {
   const created = await call("POST", "/api/task", {
     account: "acc",

@@ -63,6 +63,10 @@ export const taskFormSchema = z.object({
     .string()
     .trim()
     .refine((v) => v === "" || CRON_SHAPE.test(v), "cron 表达式应为 5 段，例如 0 3 * * *"),
+  /** 复制到 OpenList：这个任务落下新文件时复制走 */
+  copyEnabled: z.boolean().optional(),
+  copyDstDir: z.string().optional(),
+  copyDeleteSource: z.boolean().optional(),
   /** 整理：库类型先验；自动整理策略（空串 = 跟随全局设置） */
   libraryType: z.enum(["mixed", "movie", "tv"]).optional(),
   organizeMode: z.enum(["", "off", "review", "auto"]).optional(),
@@ -118,6 +122,9 @@ function defaultsFor(task: TaskEditable | undefined): TaskFormValues {
     enable302: task?.enable302 ?? false,
     enablePathEncoding: task?.enablePathEncoding ?? false,
     cronExpression: task?.cronExpression ?? "",
+    copyEnabled: task?.copyToOpenlist?.enabled ?? false,
+    copyDstDir: task?.copyToOpenlist?.dstDir ?? "",
+    copyDeleteSource: task?.copyToOpenlist?.deleteSource ?? false,
     libraryType: task?.organize?.libraryType ?? "mixed",
     organizeMode: task?.organize?.mode ?? "",
   };
@@ -132,7 +139,7 @@ function SwitchRow({
   disabled = false,
 }: {
   control: Control<TaskFormValues>;
-  name: "removeExtraFiles" | "enable302" | "enablePathEncoding";
+  name: "removeExtraFiles" | "enable302" | "enablePathEncoding" | "copyEnabled" | "copyDeleteSource";
   label: string;
   description: string;
   disabled?: boolean;
@@ -250,6 +257,7 @@ export function AddTaskDialog({
   const originPath = useWatch({ control: form.control, name: "originPath" }) ?? "";
   const strmPrefix = useWatch({ control: form.control, name: "strmPrefix" }) ?? "";
   const enable302 = useWatch({ control: form.control, name: "enable302" }) ?? false;
+  const copyEnabled = useWatch({ control: form.control, name: "copyEnabled" }) ?? false;
   const cronExpression = useWatch({ control: form.control, name: "cronExpression" }) ?? "";
   const cronPreview = useCronPreview(cronExpression);
 
@@ -306,12 +314,17 @@ export function AddTaskDialog({
       // 115 + 302 且前缀是本地挂载路径时拼上账户名，代理按这个前缀识别挂载点；http(s) 前缀不拼，代理按任务反查账号
       const prefix = normalizePrefix(values.strmPrefix);
       const withAccount = is115Account && !!values.enable302 && !!values.account && !isHttpPrefix(prefix);
-      const { libraryType, organizeMode, ...rest } = values;
+      const { libraryType, organizeMode, copyEnabled, copyDstDir, copyDeleteSource, ...rest } = values;
       const taskData = {
         ...rest,
         strmPrefix: withAccount ? `${prefix}/${values.account}` : prefix,
         accountType,
         organize: { ...(organizeMode ? { mode: organizeMode } : {}), libraryType: libraryType ?? "mixed" },
+        copyToOpenlist: {
+          enabled: copyEnabled === true,
+          ...(copyDstDir?.trim() ? { dstDir: copyDstDir.trim() } : {}),
+          deleteSource: copyDeleteSource === true,
+        },
       };
 
       if (task?.id) {
@@ -593,6 +606,37 @@ export function AddTaskDialog({
                 description={encoding.description}
                 disabled={!encoding.allowed}
               />
+              <SwitchRow
+                control={form.control}
+                name="copyEnabled"
+                label="复制到 OpenList"
+                description="转存 / 追更 / 云下载 / 监控往这个任务目录里落下新文件时，让 OpenList 把它复制到另一个存储（比如挂载的本地磁盘）。先在设置页配好 OpenList 账号、目标目录和这个网盘的挂载根。"
+              />
+              {copyEnabled && (
+                <div className="space-y-3 rounded-md border p-3">
+                  <FormField
+                    control={form.control}
+                    name="copyDstDir"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>复制到哪（可选）</FormLabel>
+                        <FormControl>
+                          <Input placeholder="不填就用设置页的默认目标目录" {...field} />
+                        </FormControl>
+                        <FormDescription className="text-xs">
+                          任务目录里的层级会原样带到这个目录下面。
+                        </FormDescription>
+                      </FormItem>
+                    )}
+                  />
+                  <SwitchRow
+                    control={form.control}
+                    name="copyDeleteSource"
+                    label="复制完把网盘上那份删掉"
+                    description="等于搬运：只在复制成功、且目标目录里确认看得见之后才删（115 / 夸克进回收站）。默认关，备份类任务别开。"
+                  />
+                </div>
+              )}
             </div>
 
             <DialogFooter>

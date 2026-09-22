@@ -40,6 +40,13 @@ export const taskInputSchema = z.looseObject({
       libraryType: z.enum(["movie", "tv", "mixed"]).optional(),
     })
     .optional(),
+  copyToOpenlist: z
+    .object({
+      enabled: z.boolean().optional(),
+      dstDir: z.string().optional(),
+      deleteSource: z.boolean().optional(),
+    })
+    .optional(),
 }) satisfies z.ZodType<Omit<TaskDefinition, "id">>;
 
 export const taskPatchSchema = taskInputSchema.partial().extend({ id: z.string().min(1) });

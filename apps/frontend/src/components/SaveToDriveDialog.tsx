@@ -41,6 +41,8 @@ export interface SaveToTaskChoice {
   follow?: { intervalMinutes: number };
   /** 勾了「转存后整理」 */
   organize?: boolean;
+  /** 勾了「转存后复制到 OpenList」 */
+  copy?: boolean;
 }
 
 interface SaveToDriveDialogProps {
@@ -74,6 +76,7 @@ export function SaveToDriveDialog({
   const [followChecked, setFollowChecked] = useState(false);
   const [followInterval, setFollowInterval] = useState(String(DEFAULT_FOLLOW_INTERVAL));
   const [organizeChecked, setOrganizeChecked] = useState(false);
+  const [copyChecked, setCopyChecked] = useState(false);
 
   // 任务列表只在打开时拉一次；默认选中用函数式更新，别把 selectedTaskId 放进依赖里反复重拉
   useEffect(() => {
@@ -83,6 +86,7 @@ export function SaveToDriveDialog({
     setSubSegments([]);
     setFollowChecked(false);
     setOrganizeChecked(false);
+    setCopyChecked(false);
     api.tasks
       .list()
       .then((rows) => {
@@ -157,6 +161,7 @@ export function SaveToDriveDialog({
       mode,
       ...(followHint && followChecked ? { follow: { intervalMinutes: Number(followInterval) } } : {}),
       ...(mode === "sync" && organizeChecked ? { organize: true } : {}),
+      ...(mode === "sync" && copyChecked ? { copy: true } : {}),
     });
   };
 
@@ -341,6 +346,18 @@ export function SaveToDriveDialog({
                 <div className="text-sm font-medium">转存后整理</div>
                 <div className="text-xs text-muted-foreground">
                   转存完按 TMDB 识别并规划改名 / 归位：任务设了「把握大的直接执行」就直接整理，否则生成待确认清单，到「整理」页看。
+                </div>
+              </div>
+            </label>
+          )}
+
+          {mode === "sync" && (
+            <label className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
+              <Checkbox checked={copyChecked} onCheckedChange={(v) => setCopyChecked(v === true)} className="mt-0.5" />
+              <div>
+                <div className="text-sm font-medium">转存后复制到 OpenList</div>
+                <div className="text-xs text-muted-foreground">
+                  转存完让 OpenList 把这些条目复制到另一个存储（比如挂载的本地磁盘）。要先在设置页配好，任务上本来就开着的话不用勾。
                 </div>
               </div>
             </label>

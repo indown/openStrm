@@ -10,6 +10,8 @@ import { HttpError } from "../../lib/http-error.js";
 import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareRef } from "../drive/types.js";
+import { enqueueCopy } from "../copy/service.js";
+import { copyEnabledFor } from "../copy/paths.js";
 import { maybeAutoOrganize } from "../organize/auto.js";
 import { generateStrmForSelected, type SelectedItem } from "../strm/share-strm.js";
 import { startTask } from "../task/runner.js";
@@ -38,6 +40,8 @@ export interface SaveSelectionOpts {
    * false = 这次不整理，任务设了自动整理也不管（智能体里用户说「只转存，别整理」时用）
    */
   organize?: boolean;
+  /** 这次强制复制到 OpenList / 强制不复制；不给就按任务上的开关 */
+  copy?: boolean;
 }
 
 export type SaveSelectionResult =
@@ -105,6 +109,17 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
       // 明确给了 false 就这次不整理
       if (opts.organize !== false) {
         maybeAutoOrganize({ task, paths: items.map((i) => (subPath ? `${subPath}/${i.name}` : i.name)), trigger: "share", mode: forcedOrganizeMode(task, opts.organize) });
+      }
+      // 任务开了「复制到 OpenList」（或这次勾了）：把刚转存进来的条目交给复制队列
+      if (copyEnabledFor(task, opts.copy, settings)) {
+        enqueueCopy({
+          account: provider.account.name,
+          sources: items.map((i) => ({ path: `${fullOriginPath}/${i.name}`, isDir: i.isDir })),
+          rootPath: task.originPath,
+          taskId: task.id,
+          dstDir: task.copyToOpenlist?.dstDir,
+          trigger: "share",
+        });
       }
       return { mode: "sync", generatedCount, skippedCount, invalidNames };
     } catch (err) {
