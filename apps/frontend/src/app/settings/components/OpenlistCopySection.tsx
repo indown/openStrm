@@ -81,8 +81,8 @@ export function OpenlistCopySection({ value, onChange }: Props) {
     }
   };
 
-  const pathField = (label: string, current: string, onPick: (v: string) => void, placeholder: string, hint?: string) => (
-    <div className="flex flex-col gap-1.5">
+  const pathField = (key: string, label: string, current: string, onPick: (v: string) => void, placeholder: string, hint?: string) => (
+    <div key={key} className="flex flex-col gap-1.5">
       <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
       <InputGroup>
         <InputGroupInput value={current} placeholder={placeholder} onChange={(e) => onPick(e.target.value)} />
@@ -134,7 +134,7 @@ export function OpenlistCopySection({ value, onChange }: Props) {
                   : "用这个账号调 OpenList 的接口"}
           </p>
         </div>
-        {pathField("默认目标目录", value.dstDir ?? "", (v) => set({ dstDir: v }), "/local/downloads", "任务上没单独指定时复制到这里")}
+        {pathField("dst", "默认目标目录", value.dstDir ?? "", (v) => set({ dstDir: v }), "/local/downloads", "任务上没单独指定时复制到这里")}
       </div>
 
       <div className="space-y-3">
@@ -152,7 +152,7 @@ export function OpenlistCopySection({ value, onChange }: Props) {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {driveAccounts.map((a) =>
-              pathField(`${a.name}（${a.accountType}）`, value.mounts?.[a.name] ?? "", (v) => setMount(a.name, v), "/115"),
+              pathField(a.name, `${a.name}（${a.accountType}）`, value.mounts?.[a.name] ?? "", (v) => setMount(a.name, v), "/115"),
             )}
           </div>
         )}
