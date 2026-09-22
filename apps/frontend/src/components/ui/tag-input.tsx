@@ -17,6 +17,9 @@ type TagInputProps = {
   disabled?: boolean
   className?: string
   id?: string
+  /** FormControl 给的：说明文字 / 报错挂到里面那个 input 上，读屏才念得到 */
+  "aria-describedby"?: string
+  "aria-invalid"?: React.AriaAttributes["aria-invalid"]
 }
 
 const DEFAULT_NORMALIZE = (raw: string): string | null => {
@@ -31,9 +34,30 @@ const DEFAULT_NORMALIZE = (raw: string): string | null => {
  * 前后端各 split / trim / 补点号一遍，界面上还看不出哪几段是分开的。
  * 标签化之后值本身就是数组，规范化只在落标签这一刻发生一次。
  */
-function TagInput({ value, onChange, placeholder, normalize = DEFAULT_NORMALIZE, disabled, className, id }: TagInputProps) {
+function TagInput({
+  value,
+  onChange,
+  placeholder,
+  normalize = DEFAULT_NORMALIZE,
+  disabled,
+  className,
+  id,
+  "aria-describedby": ariaDescribedBy,
+  "aria-invalid": ariaInvalid,
+}: TagInputProps) {
   const [draft, setDraft] = React.useState("")
   const inputRef = React.useRef<HTMLInputElement>(null)
+  const rootRef = React.useRef<HTMLDivElement>(null)
+  /** 点 ✕ 删掉的是第几个：那个按钮带着焦点一起卸载了，值变了之后把焦点交给同一位置的下一个 ✕，删光了回输入框 */
+  const refocusAt = React.useRef<number | null>(null)
+
+  React.useLayoutEffect(() => {
+    const i = refocusAt.current
+    if (i === null) return
+    refocusAt.current = null
+    const buttons = rootRef.current?.querySelectorAll<HTMLButtonElement>("[data-slot=tag-input-remove]")
+    ;(buttons?.[Math.min(i, buttons.length - 1)] ?? inputRef.current)?.focus()
+  }, [value])
 
   const commit = (raw: string) => {
     const next = normalize(raw)
@@ -46,10 +70,13 @@ function TagInput({ value, onChange, placeholder, normalize = DEFAULT_NORMALIZE,
 
   return (
     <div
+      ref={rootRef}
       data-slot="tag-input"
       className={cn(
         "border-input dark:bg-input/30 flex min-h-9 w-full flex-wrap items-center gap-1 rounded-md border bg-transparent p-1 shadow-xs transition-[color,box-shadow]",
         "focus-within:border-ring focus-within:ring-ring/50 focus-within:ring-[3px]",
+        // 和 InputGroup 一样，校验失败的红框挂外壳
+        "has-[input[aria-invalid=true]]:border-destructive has-[input[aria-invalid=true]]:ring-destructive/20 dark:has-[input[aria-invalid=true]]:ring-destructive/40",
         disabled && "cursor-not-allowed opacity-50",
         className
       )}
@@ -71,9 +98,13 @@ function TagInput({ value, onChange, placeholder, normalize = DEFAULT_NORMALIZE,
           {!disabled && (
             <button
               type="button"
+              data-slot="tag-input-remove"
               className="text-muted-foreground hover:text-foreground -mr-0.5 rounded-sm outline-none focus-visible:ring-ring/50 focus-visible:ring-[2px]"
               aria-label={`删除 ${tag}`}
-              onClick={() => removeAt(i)}
+              onClick={() => {
+                refocusAt.current = i
+                removeAt(i)
+              }}
             >
               <XIcon className="size-3" />
             </button>
@@ -83,6 +114,8 @@ function TagInput({ value, onChange, placeholder, normalize = DEFAULT_NORMALIZE,
       <input
         ref={inputRef}
         id={id}
+        aria-describedby={ariaDescribedBy}
+        aria-invalid={ariaInvalid}
         disabled={disabled}
         value={draft}
         placeholder={value.length === 0 ? placeholder : ""}

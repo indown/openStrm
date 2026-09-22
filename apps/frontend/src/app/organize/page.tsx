@@ -1,9 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Bookmark, FolderOpen, FolderTree, History, Loader2, Search, X } from "lucide-react";
+import { Bookmark, FolderOpen, FolderTree, History, ListChecks, Loader2, RefreshCw, Search, X } from "lucide-react";
 import { toast } from "sonner";
 import type { OrganizeRun } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
@@ -70,6 +71,8 @@ function OrganizeContent() {
   const search = useSearchParams();
   const runId = search.get("run") ?? "";
   const [tasks, setTasks] = useState<TaskRow[] | null>(null);
+  /** 任务列表没读出来：和「一个任务都没有」分开说，给重试 */
+  const [tasksError, setTasksError] = useState<string | null>(null);
   const [taskId, setTaskId] = useState(search.get("task") ?? "");
   /** 范围：相对任务目录的一组目录；空的是整个任务 */
   const [scopes, setScopes] = useState<string[]>(() => {
@@ -83,18 +86,53 @@ function OrganizeContent() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
 
+  const taskSelectId = useId();
+  const scopeInputId = useId();
+  const scopeInputRef = useRef<HTMLInputElement>(null);
+  const chipsRef = useRef<HTMLDivElement>(null);
+
+  /** 读列表的回调只在挂载 / 重试时跑，闭包里的 taskId 是旧的；打开的整理可能已经把任务切过去了 */
+  const taskIdRef = useRef(taskId);
   useEffect(() => {
+    taskIdRef.current = taskId;
+  }, [taskId]);
+
+  const loadTasks = useCallback(() => {
+    setTasksError(null);
     api.tasks
       .list()
       .then((rows) => {
         setTasks(rows);
-        setTaskId((prev) => (prev && rows.some((t) => t.id === prev) ? prev : (rows[0]?.id ?? "")));
+        const cur = taskIdRef.current;
+        if (cur && rows.some((t) => t.id === cur)) return;
+        setTaskId(rows[0]?.id ?? "");
+        if (cur) {
+          // 链接里的任务已经不在了（删任务不删日志，日志页的「去整理这个目录」还指着它）：退回第一个任务，
+          // 链接带来的范围是那个任务的目录，一起清掉，免得拿去预览别的任务里恰好同名的目录
+          setScopes([]);
+          setDraft("");
+          toast.warning("链接里的任务已经不在了（可能被删了），换成了第一个任务", { id: "organize-missing-task" });
+        }
       })
-      .catch((err) => {
-        setTasks([]);
-        toast.error(apiErrorMessage(err, "读取任务列表失败"));
-      });
+      .catch((err) => setTasksError(apiErrorMessage(err, "读取任务列表失败")));
   }, []);
+
+  useEffect(() => {
+    loadTasks();
+  }, [loadTasks]);
+
+  /**
+   * 去掉一个范围之后焦点落到哪：点的那个 ✕ 带着焦点一起卸载了，不接住就掉到 body 上。
+   * 落到同一位置的下一个 ✕（没有就前一个），全删光了回输入框
+   */
+  const refocusChip = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const i = refocusChip.current;
+    if (i === null) return;
+    refocusChip.current = null;
+    const buttons = chipsRef.current?.querySelectorAll<HTMLButtonElement>("button[data-remove-scope]");
+    (buttons?.[Math.min(i, buttons.length - 1)] ?? scopeInputRef.current)?.focus();
+  }, [scopes]);
 
   const task = useMemo(() => tasks?.find((t) => t.id === taskId) ?? null, [tasks, taskId]);
   const origin = task ? trimSlashes(task.originPath) : "";
@@ -190,32 +228,40 @@ function OrganizeContent() {
       />
 
       <section className="space-y-3 rounded-xl border bg-card p-4">
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">任务</label>
-            {tasks === null ? (
-              <div className="text-sm text-muted-foreground">加载中…</div>
-            ) : tasks.length === 0 ? (
-              <div className="text-sm text-muted-foreground">还没有任务，先到「任务」页建一个。</div>
-            ) : (
-              <Select value={taskId} onValueChange={changeTask}>
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="选择任务" />
-                </SelectTrigger>
-                <SelectContent>
-                  {tasks.map((t) => (
-                    <SelectItem key={t.id} value={t.id}>
-                      {accountLabel(t.account, t.accountType)} · {t.originPath} → {t.targetPath}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
+        {/*
+          手机两列（范围 | 预览），md 三列（任务 | 范围 | 预览）。已选的范围在 DOM 里排在「预览」后面、单独一行挂在输入框下面，
+          Tab 的顺序和看到的一样。每一格是「标签在上、控件在下」的 flex 列：「范围」那行字折行把这一行撑高时，
+          两边的标签仍然顶着对齐，选择框、输入框、预览仍然底着对齐
+        */}
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+          <div className="col-span-2 flex flex-col justify-between gap-1.5 md:col-span-1">
+            <label htmlFor={taskSelectId} className="text-xs font-medium text-muted-foreground">
+              任务
+            </label>
+            {/* 没有任务时也摆着（灰掉），状态写在占位字里：控件一直是这个高度，标签也一直有个对象 */}
+            <Select value={tasks?.length ? taskId : ""} onValueChange={changeTask} disabled={!tasks?.length}>
+              <SelectTrigger id={taskSelectId} className="w-full">
+                <SelectValue
+                  placeholder={tasks === null ? (tasksError ? "读取失败" : "加载中…") : tasks.length === 0 ? "还没有任务" : "选择任务"}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {tasks?.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>
+                    {accountLabel(t.account, t.accountType)} · {t.originPath} → {t.targetPath}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">范围（任务目录里的目录，可以多个；不填就是整个任务）</label>
+          <div className="flex flex-col justify-between gap-1.5">
+            <label htmlFor={scopeInputId} className="text-xs font-medium text-muted-foreground">
+              范围（任务目录里的目录，可以多个；不填就是整个任务）
+            </label>
             <InputGroup>
               <InputGroupInput
+                id={scopeInputId}
+                ref={scopeInputRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -231,36 +277,74 @@ function OrganizeContent() {
                 <FolderOpen />
               </InputGroupButton>
             </InputGroup>
-            {scopes.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                {scopes.map((s) => (
-                  <span key={s} className="inline-flex max-w-full items-center gap-1 rounded-md border bg-muted/50 px-2 py-0.5 text-xs">
-                    <span className="break-all">{s}</span>
-                    <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setScopes((prev) => prev.filter((x) => x !== s))} aria-label={`去掉 ${s}`}>
-                      <X className="size-3" />
-                    </button>
-                  </span>
-                ))}
-                {scopes.length > 1 && (
-                  <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setScopes([])}>
-                    清空
+          </div>
+          <Button onClick={() => void createRun()} disabled={!taskId || creating} className="self-end">
+            {creating ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
+            预览
+          </Button>
+          {scopes.length > 0 && (
+            // -mt-1.5 是 gap-3 的一半：已选的范围贴着输入框，不和上一行隔得像两组
+            <div ref={chipsRef} className="col-span-2 -mt-1.5 flex flex-wrap items-center gap-1.5 md:col-span-1 md:col-start-2">
+              {scopes.map((s, i) => (
+                <span key={s} className="inline-flex max-w-full items-center gap-1 rounded-md border bg-muted/50 px-2 py-0.5 text-xs">
+                  <span className="break-all">{s}</span>
+                  <button
+                    type="button"
+                    data-remove-scope
+                    className="text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      refocusChip.current = i;
+                      setScopes((prev) => prev.filter((x) => x !== s));
+                    }}
+                    aria-label={`去掉 ${s}`}
+                  >
+                    <X className="size-3" />
                   </button>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="flex items-end">
-            <Button onClick={() => void createRun()} disabled={!taskId || creating} className="w-full md:w-auto">
-              {creating ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
-              预览
-            </Button>
-          </div>
+                </span>
+              ))}
+              {scopes.length > 1 && (
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => {
+                    refocusChip.current = 0;
+                    setScopes([]);
+                  }}
+                >
+                  清空
+                </button>
+              )}
+            </div>
+          )}
         </div>
         <p className="text-xs text-muted-foreground">预览只读网盘和 TMDB，不改任何东西；确认清单后点「执行」才会在网盘上改名 / 移动，本地 strm 会跟着走。</p>
       </section>
 
       {runId ? (
         <RunView key={runId} runId={runId} tasks={tasks} onClose={() => openRun(null)} onOpenRun={openRun} onLoaded={syncFromRun} />
+      ) : tasksError ? (
+        <EmptyState
+          icon={FolderTree}
+          title="读取任务列表失败"
+          description={tasksError}
+          action={
+            <Button variant="outline" onClick={loadTasks}>
+              <RefreshCw className="size-4" />
+              重试
+            </Button>
+          }
+        />
+      ) : tasks?.length === 0 ? (
+        <EmptyState
+          icon={ListChecks}
+          title="还没有同步任务"
+          description="整理按任务的网盘目录来；先到「任务」页新建一个。"
+          action={
+            <Button asChild variant="outline">
+              <Link href="/home">去任务页</Link>
+            </Button>
+          }
+        />
       ) : (
         <>
           <AttentionList tasks={tasks} onOpen={(run) => openRun(run.id, run.taskId)} />

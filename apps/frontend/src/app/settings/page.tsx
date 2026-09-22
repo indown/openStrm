@@ -248,7 +248,9 @@ function countChanges(base: unknown, next: unknown): number {
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [backingUp, setBackingUp] = useState(false);
-  const [openlistAccounts, setOpenlistAccounts] = useState<string[]>([]);
+  /** 「复制到 OpenList」的账号下拉：null 是还没读到（在读，或者读失败了——看 accountsFailed），不能当成「一个都没有」 */
+  const [openlistAccounts, setOpenlistAccounts] = useState<string[] | null>(null);
+  const [accountsFailed, setAccountsFailed] = useState(false);
   const modKey = useModKey();
 
   const form = useForm<SettingsValues>({
@@ -314,11 +316,11 @@ export default function SettingsPage() {
       .then((s) => resetForm(fromSettings(s)))
       .catch((err) => toast.error(apiErrorMessage(err, "加载设置失败")))
       .finally(() => setLoading(false));
-    // 「复制到 OpenList」里的账号下拉；拉不到就只剩空提示，不拦别的设置
+    // 「复制到 OpenList」里的账号下拉；读不出来也不拦别的设置，那一格自己说明
     api.accounts
       .list()
       .then((rows) => setOpenlistAccounts(rows.filter((a) => a.accountType === "openlist").map((a) => a.name)))
-      .catch(() => {});
+      .catch(() => setAccountsFailed(true));
   }, [resetForm]);
 
   const onSave = useCallback(
@@ -414,82 +416,79 @@ export default function SettingsPage() {
               render={({ field }) => <UpdateSection value={field.value ?? {}} onChange={field.onChange} />}
             />
 
+            {/* 一列排：UA 是一整串，另外三个是长短不定的标签串，两两并排时一边一行、一边四行，左边空一大块 */}
             <section id="basic" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
               <h2 className="text-base font-medium">基础设置</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <FormField
-                  control={form.control}
-                  name="user-agent"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>User-Agent</FormLabel>
-                      <FormControl>
-                        <Input placeholder="Mozilla/5.0 ..." {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="strmExtensions"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Strm 文件扩展名</FormLabel>
-                      <FormControl>
-                        <TagInput
-                          value={field.value}
-                          onChange={field.onChange}
-                          normalize={normalizeExtension}
-                          placeholder="例如：.mkv，回车落一个"
-                        />
-                      </FormControl>
-                      <FormDescription className="text-xs">这些扩展名的文件会生成 strm</FormDescription>
-                    </FormItem>
-                  )}
-                />
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <FormField
-                  control={form.control}
-                  name="downloadExtensions"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>下载文件扩展名</FormLabel>
-                      <FormControl>
-                        <TagInput
-                          value={field.value}
-                          onChange={field.onChange}
-                          normalize={normalizeExtension}
-                          placeholder="例如：.srt，回车落一个"
-                        />
-                      </FormControl>
-                      <FormDescription className="text-xs">
-                        这些扩展名的文件会真的下到本地（字幕、nfo、海报）
-                      </FormDescription>
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="mediaMountPath"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>额外的媒体挂载路径</FormLabel>
-                      <FormControl>
-                        <TagInput
-                          value={field.value}
-                          onChange={field.onChange}
-                          placeholder="/root/webdav/115，回车落一个"
-                        />
-                      </FormControl>
-                      <FormDescription className="text-xs">
-                        开了 302 的任务会自动把它的 strmPrefix 当作挂载路径，不用填在这里； 只填任务之外、也希望代理接管的前缀
-                      </FormDescription>
-                    </FormItem>
-                  )}
-                />
-              </div>
+              <FormField
+                control={form.control}
+                name="user-agent"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>User-Agent</FormLabel>
+                    <FormControl>
+                      <Input placeholder="Mozilla/5.0 ..." {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="strmExtensions"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Strm 文件扩展名</FormLabel>
+                    <FormControl>
+                      <TagInput
+                        value={field.value}
+                        onChange={field.onChange}
+                        normalize={normalizeExtension}
+                        placeholder="例如：.mkv，回车落一个"
+                      />
+                    </FormControl>
+                    <FormDescription className="text-xs">这些扩展名的文件会生成 strm</FormDescription>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="downloadExtensions"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>下载文件扩展名</FormLabel>
+                    <FormControl>
+                      <TagInput
+                        value={field.value}
+                        onChange={field.onChange}
+                        normalize={normalizeExtension}
+                        placeholder="例如：.srt，回车落一个"
+                      />
+                    </FormControl>
+                    <FormDescription className="text-xs">
+                      这些扩展名的文件会真的下到本地（字幕、nfo、海报）
+                    </FormDescription>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="mediaMountPath"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>额外的媒体挂载路径</FormLabel>
+                    <FormControl>
+                      <TagInput
+                        value={field.value}
+                        onChange={field.onChange}
+                        placeholder="/root/webdav/115，回车落一个"
+                      />
+                    </FormControl>
+                    <FormDescription className="text-xs">
+                      开了 302 的任务会自动把它的 strmPrefix 当作挂载路径，不用填在这里；只填任务之外、也希望代理接管的前缀
+                    </FormDescription>
+                  </FormItem>
+                )}
+              />
             </section>
 
             <section id="throttle" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
@@ -606,7 +605,7 @@ export default function SettingsPage() {
                   name="tmdb.apiKey"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>TMDB API Key (v4 Bearer Token)</FormLabel>
+                      <FormLabel>TMDB API Key</FormLabel>
                       <FormControl>
                         <SecretInput
                           value={field.value}
@@ -617,7 +616,10 @@ export default function SettingsPage() {
                           placeholder="eyJhbGciOiJIUzI1NiJ9..."
                         />
                       </FormControl>
-                      <FormDescription className="text-xs">改动即替换，清空即删除</FormDescription>
+                      {/* 「v4 Bearer Token」以前在标签里，窄一点的两列布局里标签折行，这一格的输入框就比旁边低一截 */}
+                      <FormDescription className="text-xs">
+                        填 v4 的 API Read Access Token（Bearer），不是 v3 的 API Key。改动即替换，清空即删除
+                      </FormDescription>
                     </FormItem>
                   )}
                 />
@@ -688,40 +690,64 @@ export default function SettingsPage() {
                 「下载完成后让 OpenList 复制走」：115 下完，就通知 OpenList
                 把产物从挂载的 115 存储复制到目标目录（比如挂载的本地磁盘）。
               </p>
+              {/* 账号单独一行（源目录 md:col-start-1 另起一行），源目录 → 目标目录并排成一对 */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <FormField
                   control={form.control}
                   name="openlistCopy.account"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>OpenList 账号</FormLabel>
-                      {openlistAccounts.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">还没有 openlist 账号，先到「账户」页添加一个。</p>
-                      ) : (
-                        <Select value={field.value} onValueChange={field.onChange}>
+                  render={({ field }) => {
+                    const names = openlistAccounts ?? [];
+                    // 存着的账号不在列表里：列表还没读到，或者账号已经删了。
+                    // Radix 的 Select 遇到选项里没有的值会显示成空白，得给它补一项，不然看着像没选
+                    const orphan = field.value !== "" && !names.includes(field.value);
+                    const gone = orphan && openlistAccounts !== null;
+                    return (
+                      <FormItem>
+                        <FormLabel>OpenList 账号</FormLabel>
+                        {/* 没有可选的也摆着（灰掉），状态写在占位字里：标签一直有个对象，这一格也一直是这个高度 */}
+                        <Select value={field.value} onValueChange={field.onChange} disabled={names.length === 0}>
                           <FormControl>
                             <SelectTrigger className="w-full">
-                              <SelectValue placeholder="选择账号" />
+                              <SelectValue
+                                placeholder={
+                                  openlistAccounts === null
+                                    ? accountsFailed
+                                      ? "账号列表没读出来"
+                                      : "加载中…"
+                                    : names.length === 0
+                                      ? "还没有 openlist 账号"
+                                      : "选择账号"
+                                }
+                              />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
-                            {openlistAccounts.map((name) => (
+                            {orphan && <SelectItem value={field.value}>{gone ? `${field.value}（已不存在）` : field.value}</SelectItem>}
+                            {names.map((name) => (
                               <SelectItem key={name} value={name}>
                                 {name}
                               </SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
-                      )}
-                      <FormDescription className="text-xs">用这个账号调 OpenList 的接口</FormDescription>
-                    </FormItem>
-                  )}
+                        <FormDescription className={gone ? "text-xs text-warning" : "text-xs"}>
+                          {accountsFailed
+                            ? "账号列表没读出来，刷新页面再试"
+                            : gone
+                              ? `账号「${field.value}」已经不在了：换一个，或者到「账户」页重新添加`
+                              : openlistAccounts !== null && names.length === 0
+                                ? "还没有 openlist 账号，先到「账户」页添加一个"
+                                : "用这个账号调 OpenList 的接口"}
+                        </FormDescription>
+                      </FormItem>
+                    );
+                  }}
                 />
                 <FormField
                   control={form.control}
                   name="openlistCopy.srcDir"
                   render={({ field }) => (
-                    <FormItem>
+                    <FormItem className="md:col-start-1">
                       <FormLabel>源目录</FormLabel>
                       <FormControl>
                         <Input placeholder="/115/云下载" {...field} />
