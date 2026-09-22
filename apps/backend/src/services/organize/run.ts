@@ -79,6 +79,7 @@ import { normalizePath, splitPath, type DriveNode, type DriveProvider, type Writ
 import { rewriteFollowSubPaths } from "../follow/service.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { rewriteOfflineSubPaths } from "../offline/service.js";
+import { rewriteCopyPaths } from "../copy/queue.js";
 import type { TmdbDetails, TmdbSearchResult } from "../tmdb.js";
 import { extSet } from "../strm/naming.js";
 import { notify } from "../telegram/notify.js";
@@ -653,7 +654,11 @@ async function preview(job: Job, runId: string): Promise<void> {
     listed: new Set(),
   };
   const under = (p: string, s: string) => s === "" || p === s || p.startsWith(`${s}/`);
-  const refPaths = [...rewriteFollowSubPaths(task.id, [], true), ...rewriteOfflineSubPaths(task.id, [], true)];
+  const refPaths = [
+    ...rewriteFollowSubPaths(task.id, [], true),
+    ...rewriteOfflineSubPaths(task.id, [], true),
+    ...rewriteCopyPaths(task.id, task.originPath, [], true),
+  ];
   const library = listLibraryEntries();
   const rows: OrganizeUnit[] = [];
   const plans: UnitPlan[] = [];
@@ -1624,7 +1629,10 @@ function afterApply(task: TaskDefinition, provider: DriveProvider, units: Organi
     });
   }
   if (mappings.length === 0) return;
-  const rewritten = rewriteFollowSubPaths(task.id, mappings).length + rewriteOfflineSubPaths(task.id, mappings).length;
+  const rewritten =
+    rewriteFollowSubPaths(task.id, mappings).length +
+    rewriteOfflineSubPaths(task.id, mappings).length +
+    rewriteCopyPaths(task.id, task.originPath, mappings).length;
   if (rewritten > 0) log.info({ taskId: task.id, rewritten }, "整理后改写了追更 / 云下载回执的目录");
 }
 
@@ -2112,6 +2120,7 @@ function afterRevert(task: TaskDefinition, provider: DriveProvider, units: Organ
   if (back.length === 0) return;
   rewriteFollowSubPaths(task.id, back);
   rewriteOfflineSubPaths(task.id, back);
+  rewriteCopyPaths(task.id, task.originPath, back);
   for (const m of back) if (m.root) repathMatches(provider.account.name, absOf(task, m.from), absOf(task, m.to));
 }
 

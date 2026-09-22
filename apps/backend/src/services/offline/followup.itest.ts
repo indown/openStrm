@@ -321,6 +321,7 @@ test("下到任务目录 + 勾复制：先生成 strm，再交给复制队列", 
     rootPath: "tv",
     taskId: "t1",
     dstDir: "/local/dl",
+    deleteSource: undefined,
     trigger: "offline",
   });
 });

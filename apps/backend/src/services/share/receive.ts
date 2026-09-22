@@ -119,6 +119,7 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
           taskId: task.id,
           dstDir: task.copyToOpenlist?.dstDir,
           trigger: "share",
+          deleteSource: task.copyToOpenlist?.deleteSource,
         });
       }
       return { mode: "sync", generatedCount, skippedCount, invalidNames };

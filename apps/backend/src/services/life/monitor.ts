@@ -399,6 +399,7 @@ class AccountMonitor {
                     taskId: m.task.id,
                     dstDir: m.task.copyToOpenlist?.dstDir,
                     trigger: "monitor",
+                    deleteSource: m.task.copyToOpenlist?.deleteSource,
                   });
                 }
               }

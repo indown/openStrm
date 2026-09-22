@@ -24,7 +24,7 @@ export type OrganizeRunStatus =
 export type OrganizeRunMode = "manual" | "review" | "auto";
 
 /** 谁发起的：手动、转存、追更、云下载、网盘监控 */
-export type OrganizeTrigger = "manual" | "share" | "follow" | "offline" | "monitor";
+export type OrganizeTrigger = "manual" | "share" | "follow" | "offline" | "monitor" | "copy";
 
 /** 计划项的动作；delete 只有用户在冲突上选了删除 / 覆盖才会有 */
 export type OrganizeAction = "keep" | "rename" | "move" | "mkdir" | "rmdir" | "skip" | "conflict" | "delete";

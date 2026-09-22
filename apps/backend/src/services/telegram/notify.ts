@@ -37,10 +37,14 @@ export type NotifyEvent =
   | { type: "task-start-failed"; task: TaskRef; reason: string; trigger?: TaskTrigger; issue?: AccountIssue | null }
   | { type: "offline-done"; name: string; detail: string; target: string }
   | { type: "offline-failed"; name: string; detail: string }
-  /** 云下载完成后由 OpenList 复制到了目标目录 */
+  /** 云下载完成后由 OpenList 复制到了目标目录。旧名字，留一轮给存量的调用方 */
   | { type: "offline-copied"; name: string; target: string }
-  /** 云下载的「复制到 OpenList」没走完：115 下载失败或 OpenList 复制失败，detail 里说清楚 */
+  /** 云下载的「复制到 OpenList」没走完；旧名字，留一轮 */
   | { type: "offline-copy-failed"; name: string; detail: string }
+  /** OpenList 复制完了。source 是谁触发的（转存 / 追更 / 监控 / 云下载） */
+  | { type: "copy-done"; name: string; target: string; source: string }
+  /** OpenList 复制失败，detail 里说清楚在哪一步 */
+  | { type: "copy-failed"; name: string; detail: string; source: string }
   /** 追更转存了新文件 */
   | { type: "follow-added"; name: string; added: string[]; generated: number; target: string }
   /** 追更连续几次检查失败；按订阅 id 一小时只说一次 */
@@ -191,6 +195,10 @@ function render(event: NotifyEvent): string {
       return `📦 <b>已复制到 OpenList</b>\n${esc(event.name)}\n→ ${esc(event.target)}`;
     case "offline-copy-failed":
       return `❌ <b>云下载未能复制到 OpenList</b>\n${esc(event.name)}\n${esc(event.detail)}`;
+    case "copy-done":
+      return `📦 <b>已复制到 OpenList</b>（${esc(event.source)}）\n${esc(event.name)}\n→ ${esc(event.target)}`;
+    case "copy-failed":
+      return `❌ <b>复制到 OpenList 失败</b>（${esc(event.source)}）\n${esc(event.name)}\n${esc(event.detail)}`;
     case "follow-added": {
       const shown = event.added.slice(0, 8).map(esc).join("、");
       const more = event.added.length > 8 ? ` 等 ${event.added.length} 个` : "";
@@ -366,6 +374,9 @@ export async function notify(event: NotifyEvent): Promise<boolean> {
       case "offline-failed":
       case "offline-copied":
       case "offline-copy-failed":
+      // 复制的通知跟着云下载那个开关走：它本来就是从云下载长出来的，设置不用迁
+      case "copy-done":
+      case "copy-failed":
         if (!prefs.offline) return false;
         text = render(event);
         break;

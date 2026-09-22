@@ -31,6 +31,8 @@ export interface CopyRecord {
   /** 触发时的同步任务；没有就是空串 */
   taskId: string;
   trigger: CopyTrigger;
+  /** 复制成功后把网盘上那份删掉（搬运）。登记时按任务设置冻结，之后改设置不影响在途的 */
+  deleteSource?: boolean;
   addedAt: number;
   status: CopyStatus;
   stage: CopyStage;
@@ -97,4 +99,40 @@ export const hasPendingCopies = (): boolean => listCopies().some((c) => c.status
 /** 仅供测试 / 重置：清空队列 */
 export function clearCopies(): void {
   writeKv(QUEUE_KEY, []);
+}
+
+/**
+ * 整理把任务下的目录挪走后，队列里**还没提交**的待办跟着改（同 rewriteOfflineSubPaths / rewriteFollowSubPaths）。
+ * 已经提交给 OpenList 的不动：源路径改了也追不回来，让它按 OpenList 的报错自然结束，用户可以重试。
+ * 记录里存的是网盘绝对路径，而 mappings 是任务相对的，所以要先脱掉 originPath 再拼回去。
+ * dryRun 只返回会受影响的相对路径。
+ */
+export function rewriteCopyPaths(
+  taskId: string,
+  originPath: string,
+  mappings: Array<{ from: string; to: string }>,
+  dryRun = false,
+): string[] {
+  const rows = listCopies();
+  const root = originPath.replace(/^\/+|\/+$/g, "");
+  const hit: string[] = [];
+  let changed = false;
+  for (const c of rows) {
+    if (c.taskId !== taskId || c.status !== "pending" || c.stage !== "waiting") continue;
+    const abs = c.srcDir.replace(/^\/+/, "");
+    const rel = root === "" ? abs : abs === root ? "" : abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null;
+    if (rel === null) continue;
+    if (dryRun) {
+      hit.push(rel);
+      continue;
+    }
+    const m = mappings.find((x) => rel === x.from || rel.startsWith(`${x.from}/`));
+    if (!m) continue;
+    hit.push(rel);
+    const nextRel = rel === m.from ? m.to : `${m.to}${rel.slice(m.from.length)}`;
+    c.srcDir = root === "" ? `/${nextRel}` : `/${root}/${nextRel}`.replace(/\/+$/, "");
+    changed = true;
+  }
+  if (changed) saveCopies(rows);
+  return hit;
 }

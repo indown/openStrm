@@ -5,8 +5,9 @@
  */
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
-import type { AccountInfo, AppSettings } from "@openstrm/shared";
+import type { AccountInfo, AppSettings, TaskDefinition } from "@openstrm/shared";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
+import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { patchAppSettings, readAppSettings } from "../../db/repositories/settings.js";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
@@ -24,7 +25,7 @@ import {
   tickCopies,
 } from "./service.js";
 
-let baseline: { accounts: AccountInfo[]; openlistCopy: AppSettings["openlistCopy"] };
+let baseline: { accounts: AccountInfo[]; tasks: TaskDefinition[]; openlistCopy: AppSettings["openlistCopy"] };
 const drive: AccountInfo = { accountType: "115", name: "acc", cookie: "c" };
 const olAccount: AccountInfo = { accountType: "openlist", name: "ol", account: "u", password: "p", url: "http://ol.local" };
 
@@ -39,6 +40,10 @@ let copyError: Error | null = null;
 let tasks: { undone: OpenlistTaskInfo[]; done: OpenlistTaskInfo[] } = { undone: [], done: [] };
 let tasksError: Error | null = null;
 const notified: NotifyEvent[] = [];
+let embyRefreshes = 0;
+const organized: Array<{ taskId: string; paths: string[]; trigger: string }> = [];
+const removeCalls: Array<{ account: string; path: string; nodeId?: string }> = [];
+let removeResult: "removed" | "missing" | "changed" | "unsupported" = "removed";
 /** 队列里「刚登记要晾一会」的门槛：测试里把时钟往前拨，不真等 */
 let now = 1_800_000_000_000;
 
@@ -53,7 +58,7 @@ function seed(paths: string[] = ["/tv/某剧/S01/E01.mkv"], over: Partial<Parame
 }
 
 before(() => {
-  baseline = { accounts: listAccounts(), openlistCopy: readAppSettings().openlistCopy };
+  baseline = { accounts: listAccounts(), tasks: listTasks(), openlistCopy: readAppSettings().openlistCopy };
   replaceAccounts([drive, olAccount]);
   setCopyServiceDeps({
     openlist: {
@@ -79,6 +84,16 @@ before(() => {
       notified.push(ev);
     },
     now: () => now,
+    embyRefresh: () => {
+      embyRefreshes++;
+    },
+    organize: (input) => {
+      organized.push({ taskId: input.task.id, paths: input.paths, trigger: input.trigger });
+    },
+    removeSource: async (account, path, nodeId) => {
+      removeCalls.push({ account, path, nodeId });
+      return removeResult;
+    },
   });
 });
 
@@ -94,6 +109,11 @@ beforeEach(async () => {
   tasks = { undone: [], done: [] };
   tasksError = null;
   notified.length = 0;
+  embyRefreshes = 0;
+  organized.length = 0;
+  removeCalls.length = 0;
+  removeResult = "removed";
+  replaceTasks([]);
   now = 1_800_000_000_000;
   writeKv(KEY.offlineFollowups, []);
   replaceAccounts([drive, olAccount]);
@@ -105,6 +125,7 @@ after(async () => {
   setCopyServiceDeps(null);
   writeKv(KEY.offlineFollowups, []);
   replaceAccounts(baseline.accounts);
+  replaceTasks(baseline.tasks);
   patchAppSettings({ openlistCopy: baseline.openlistCopy });
 });
 
@@ -241,7 +262,7 @@ test("同存储秒完成（没有任务可盯）：直接算办完", async () =>
   await tickCopies();
   const [c] = listCopies();
   assert.equal(c.status, "done");
-  assert.deepEqual(notified.at(-1), { type: "offline-copied", name: "E01.mkv", target: "/local/media/某剧/S01" });
+  assert.deepEqual(notified.at(-1), { type: "copy-done", name: "E01.mkv", target: "/local/media/某剧/S01", source: "网盘监控" });
 });
 
 test("提交复制报错：重试 3 次后作废", async () => {
@@ -293,7 +314,7 @@ test("全部结束且成功：done 并通知", async () => {
   const [c] = listCopies();
   assert.equal(c.status, "done");
   assert.match(c.detail, /已复制到 \/local\/media\/某剧\/S01/);
-  assert.deepEqual(notified.at(-1), { type: "offline-copied", name: "E01.mkv", target: "/local/media/某剧/S01" });
+  assert.deepEqual(notified.at(-1), { type: "copy-done", name: "E01.mkv", target: "/local/media/某剧/S01", source: "网盘监控" });
 });
 
 test("OpenList 报失败：原文带出来并通知", async () => {
@@ -303,7 +324,7 @@ test("OpenList 报失败：原文带出来并通知", async () => {
   const [c] = listCopies();
   assert.equal(c.status, "failed");
   assert.match(c.detail, /磁盘空间不足/);
-  assert.equal(notified.at(-1)?.type, "offline-copy-failed");
+  assert.equal(notified.at(-1)?.type, "copy-failed");
 });
 
 test("done 里提交之前的陈年同名任务不算这次的", async () => {
@@ -397,4 +418,99 @@ test("升级：接管云下载里已经提交给 OpenList 的复制", () => {
   assert.equal(c.dstDir, "/local/dl");
   const left = readKv<Array<{ name: string }>>(KEY.offlineFollowups) ?? [];
   assert.deepEqual(left.map((f) => f.name), ["还在下"], "还在等 115 的留在回执里，下完走新路");
+});
+
+/* ------------------------------- 复制完之后 ------------------------------- */
+
+test("复制成功：通知 Emby 刷新", async () => {
+  await submitted();
+  tasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: now })] };
+  await tickCopies();
+  assert.equal(embyRefreshes, 1);
+});
+
+test("目标落在某个 OpenList 任务的目录里：按它的策略自动整理，trigger 是 copy", async () => {
+  replaceTasks([
+    { id: "olt", account: "ol", accountType: "openlist", originPath: "/local/media", targetPath: "media", strmPrefix: "/mnt" },
+  ]);
+  await submitted();
+  tasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: now })] };
+  await tickCopies();
+  assert.deepEqual(organized, [{ taskId: "olt", paths: ["某剧/S01/E01.mkv"], trigger: "copy" }]);
+});
+
+test("目标不在任何 OpenList 任务下：不整理", async () => {
+  replaceTasks([
+    { id: "olt", account: "ol", accountType: "openlist", originPath: "/别处", targetPath: "media", strmPrefix: "/mnt" },
+  ]);
+  await submitted();
+  tasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: now })] };
+  await tickCopies();
+  assert.equal(organized.length, 0);
+});
+
+test("删源：目标里看得见才删，看不见就留着并说明", async () => {
+  enqueueCopy({
+    account: "acc",
+    sources: [{ path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }],
+    rootPath: "/tv",
+    trigger: "monitor",
+    deleteSource: true,
+  });
+  now += 30_000;
+  names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
+  copyResult = [olTask({ id: "tid1" })];
+  await tickCopies();
+
+  // 目标里还看不见：不删
+  tasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: now })] };
+  await tickCopies();
+  assert.equal(removeCalls.length, 0);
+  assert.match(listCopies()[0].detail, /目标里没看到这一份，源文件没删/);
+});
+
+test("删源：目标里确认看得见就删，节点 id 一起带过去核对", async () => {
+  enqueueCopy({
+    account: "acc",
+    sources: [{ path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }],
+    rootPath: "/tv",
+    trigger: "monitor",
+    deleteSource: true,
+  });
+  now += 30_000;
+  names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
+  copyResult = [olTask({ id: "tid1" })];
+  await tickCopies();
+  names["/local/media/某剧/S01"] = ["E01.mkv"];
+  tasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: now })] };
+  await tickCopies();
+  assert.deepEqual(removeCalls, [{ account: "acc", path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }]);
+  assert.match(listCopies()[0].detail, /网盘上那份已删/);
+});
+
+test("删源：源路径上换成了别的文件（整理挪过）就不删", async () => {
+  removeResult = "changed";
+  enqueueCopy({
+    account: "acc",
+    sources: [{ path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }],
+    rootPath: "/tv",
+    trigger: "monitor",
+    deleteSource: true,
+  });
+  now += 30_000;
+  names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
+  copyResult = [olTask({ id: "tid1" })];
+  await tickCopies();
+  names["/local/media/某剧/S01"] = ["E01.mkv"];
+  tasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: now })] };
+  await tickCopies();
+  assert.match(listCopies()[0].detail, /换成了别的文件，没删/);
+});
+
+test("没开删源：一次都不调删除", async () => {
+  await submitted();
+  names["/local/media/某剧/S01"] = ["E01.mkv"];
+  tasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: now })] };
+  await tickCopies();
+  assert.equal(removeCalls.length, 0);
 });

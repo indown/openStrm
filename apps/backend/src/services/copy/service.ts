@@ -15,7 +15,7 @@
  * 路径换算在 ./paths.ts：网盘绝对路径 + 这个账号的挂载根 = OpenList 里的路径。
  */
 import { randomUUID } from "node:crypto";
-import type { AppSettings } from "@openstrm/shared";
+import type { AppSettings, TaskDefinition } from "@openstrm/shared";
 import { KEY } from "../../db/keys.js";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -33,12 +33,17 @@ import {
   type OpenlistTaskInfo,
 } from "../openlist/client.js";
 import { notify, type NotifyEvent } from "../telegram/notify.js";
+import { scheduleEmbyRefresh } from "../media-server.js";
+import { maybeAutoOrganize, type AutoOrganizeInput } from "../organize/auto.js";
+import { providerForAccount } from "../drive/registry.js";
+import { listTasks } from "../../db/repositories/tasks.js";
 import {
   baseName,
   dstDirFor,
   joinPath,
   normDir,
   parentDir,
+  relativeTo,
   resolveCopyConfig,
   toOpenlistPath,
   type CopyConfig,
@@ -92,6 +97,11 @@ interface Deps {
   notify: (event: NotifyEvent) => Promise<unknown>;
   settings: () => AppSettings;
   now: () => number;
+  /** 复制完的后续动作，抽出来是为了测试能断言它们被调过 */
+  embyRefresh: () => void;
+  organize: (input: AutoOrganizeInput) => void;
+  /** 删源：按网盘路径找到节点再删，找不到 / id 对不上就不删 */
+  removeSource: (account: string, path: string, nodeId?: string) => Promise<"removed" | "missing" | "changed" | "unsupported">;
 }
 
 const realDeps: Deps = {
@@ -104,6 +114,9 @@ const realDeps: Deps = {
   notify,
   settings: readAppSettings,
   now: () => Date.now(),
+  embyRefresh: scheduleEmbyRefresh,
+  organize: maybeAutoOrganize,
+  removeSource: removeSourceReal,
 };
 
 let deps: Deps = { ...realDeps };
@@ -134,6 +147,8 @@ export interface CopyRequest {
   /** 这一次复制到哪（OpenList 完整路径）；不给用设置里的 dstDir */
   dstDir?: string;
   trigger: CopyTrigger;
+  /** 复制成功后删掉网盘上那份（任务级开关，登记时冻结） */
+  deleteSource?: boolean;
 }
 
 /**
@@ -176,6 +191,7 @@ export function enqueueCopy(req: CopyRequest): void {
         dstDir,
         taskId: req.taskId ?? "",
         trigger: req.trigger,
+        deleteSource: req.deleteSource,
         addedAt: now,
         status: "pending",
         stage: "waiting",
@@ -314,6 +330,7 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], persist: () => 
       continue;
     }
 
+    const settled: CopyRecord[] = [];
     try {
       // /fs/copy 不会自己建目标目录，先建一次（已存在时 OpenList 自己会说，吞掉）
       await deps.openlist.mkdir(cfg, g.dstDir).catch(() => {});
@@ -328,7 +345,7 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], persist: () => 
         if (!task?.id) {
           // 同存储或极小文件会立即完成、没有任务可盯；OpenList 既然收下了就当办成了
           finish(c, "done", `OpenList 已复制到 ${g.dstDir}`);
-          void deps.notify({ type: "offline-copied", name: c.name, target: g.dstDir }).catch(() => {});
+          settled.push(c);
           return;
         }
         c.stage = "copying";
@@ -336,6 +353,8 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], persist: () => 
         c.detail = "已提交 OpenList 复制";
       });
       log.info(`已提交 OpenList 复制 ${todo.length} 项：${g.srcDir} → ${g.dstDir}`);
+      for (const c of settled) await afterCopied(c, cfg);
+      settled.length = 0;
     } catch (err) {
       const msg = messageOf(err);
       for (const c of todo) {
@@ -395,14 +414,66 @@ async function pollSubmitted(cfg: CopyConfig, items: CopyRecord[], persist: () =
     if (failed.length > 0) {
       const suffix = failed.length > 1 ? `（共 ${failed.length} 个任务失败）` : "";
       finish(c, "failed", `OpenList 复制失败：${failed[0].error || "未知原因"}${suffix}`);
-      void deps.notify({ type: "offline-copy-failed", name: c.name, detail: c.detail }).catch(() => {});
+      void deps.notify({ type: "copy-failed", name: c.name, detail: c.detail, source: TRIGGER_LABEL[c.trigger] }).catch(() => {});
       continue;
     }
     finish(c, "done", `OpenList 已复制到 ${c.dstDir}`);
     log.info(`复制完成：${joinPath(c.srcDir, c.name)} → ${c.dstDir}`);
-    void deps.notify({ type: "offline-copied", name: c.name, target: c.dstDir }).catch(() => {});
+    await afterCopied(c, cfg);
   }
   persist();
+}
+
+
+/**
+ * 删源：整理可能已经把文件挪走了，路径还在但换了一个同名的，所以有 nodeId 就必须对得上才删。
+ * 115 / 夸克删进回收站，OpenList 看存储后端。
+ */
+async function removeSourceReal(account: string, path: string, nodeId?: string): Promise<"removed" | "missing" | "changed" | "unsupported"> {
+  const provider = providerForAccount(account);
+  if (!provider.write) return "unsupported";
+  const node = await provider.resolvePath(path);
+  if (!node) return "missing";
+  if (nodeId && String(node.id) !== String(nodeId)) return "changed";
+  await provider.write.remove({ id: node.id, path, isDir: node.isDir });
+  return "removed";
+}
+
+/**
+ * 复制成功之后：通知 Emby 扫一遍、目标落在某个 OpenList 任务里就按它的策略自动整理、
+ * 按需删源。每一步失败都只写进 detail，不把已经成功的复制翻成失败。
+ */
+async function afterCopied(c: CopyRecord, cfg: CopyConfig): Promise<void> {
+  deps.embyRefresh();
+  void deps.notify({ type: "copy-done", name: c.name, target: c.dstDir, source: TRIGGER_LABEL[c.trigger] }).catch(() => {});
+
+  // 目标目录落在哪个「用这个 OpenList 账号」的任务下：最长 originPath 胜，同 life/handlers 的规则
+  const full = joinPath(c.dstDir, c.name);
+  const hit = listTasks()
+    .filter((t) => t.account === cfg.account.name)
+    .map((t) => ({ task: t, rel: relativeTo(t.originPath, full) }))
+    .filter((x): x is { task: TaskDefinition; rel: string } => x.rel !== null)
+    .sort((a, b) => b.task.originPath.length - a.task.originPath.length)[0];
+  if (hit && hit.rel) deps.organize({ task: hit.task, paths: [hit.rel], trigger: "copy", debounce: true });
+
+  if (!c.deleteSource) return;
+  const src = joinPath(c.srcDir, c.name);
+  try {
+    // 目标里确认看得见才删：overwrite 一直是 false，看得见就说明是这次复制过去的
+    const names = await deps.openlist.listNames(cfg, c.dstDir);
+    if (!names.includes(c.name)) {
+      c.detail += "；目标里没看到这一份，源文件没删";
+      return;
+    }
+    const r = await deps.removeSource(c.account, src, c.nodeId);
+    if (r === "removed") c.detail += "；网盘上那份已删";
+    else if (r === "missing") c.detail += "；源文件已不在原处，没删";
+    else if (r === "changed") c.detail += "；源路径上换成了别的文件，没删";
+    else c.detail += "；这个网盘不支持删除，源文件没删";
+  } catch (err) {
+    c.detail += `；删源失败：${messageOf(err)}`;
+    log.warn({ err }, `复制后删源失败：${src}`);
+  }
 }
 
 /* ------------------------------- 循环 ------------------------------- */

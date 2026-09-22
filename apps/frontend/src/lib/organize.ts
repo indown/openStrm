@@ -103,6 +103,7 @@ export const TRIGGER_LABEL: Record<OrganizeTrigger, string> = {
   follow: "追更",
   offline: "云下载",
   monitor: "监控",
+  copy: "复制到 OpenList",
 };
 
 export const baseName = (p: string): string => p.slice(p.lastIndexOf("/") + 1);

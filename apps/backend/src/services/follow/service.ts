@@ -585,6 +585,7 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
         taskId: task.id,
         dstDir: task.copyToOpenlist?.dstDir,
         trigger: "follow",
+        deleteSource: task.copyToOpenlist?.deleteSource,
       });
     }
     void deps.notify({ type: "follow-added", name: f.name, added: received.map(baseName), generated, target: target2 }).catch(() => {});

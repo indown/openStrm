@@ -585,6 +585,7 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
         rootPath: task.originPath,
         taskId: task.id,
         dstDir: f.copyDstDir,
+        deleteSource: task.copyToOpenlist?.deleteSource,
         trigger: "offline",
       });
     }
