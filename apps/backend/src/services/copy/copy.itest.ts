@@ -16,6 +16,7 @@ import type { NotifyEvent } from "../telegram/notify.js";
 import {
   __test_resetCopy,
   adoptLegacyCopyFollowups,
+  stopCopyWatcher,
   dropCopy,
   enqueueCopy,
   getCopyWatcherStatus,
@@ -36,6 +37,8 @@ const listedDirs: string[] = [];
 const mkdirCalls: string[] = [];
 const copyCalls: Array<{ srcDir: string; dstDir: string; names: string[] }> = [];
 let copyResult: OpenlistTaskInfo[] = [];
+/** 想让每次提交回不同的任务时用它（按调用顺序取） */
+let copyResultQueue: OpenlistTaskInfo[][] = [];
 let copyError: Error | null = null;
 let tasks: { undone: OpenlistTaskInfo[]; done: OpenlistTaskInfo[] } = { undone: [], done: [] };
 let tasksError: Error | null = null;
@@ -44,6 +47,8 @@ let embyRefreshes = 0;
 const organized: Array<{ taskId: string; paths: string[]; trigger: string }> = [];
 const removeCalls: Array<{ account: string; path: string; nodeId?: string }> = [];
 let removeResult: "removed" | "missing" | "changed" | "unsupported" = "removed";
+/** 网盘上某个目录里有哪些子项（删源前核对目录复制全了没有） */
+let driveChildren: Record<string, string[]> = {};
 /** 队列里「刚登记要晾一会」的门槛：测试里把时钟往前拨，不真等 */
 let now = 1_800_000_000_000;
 
@@ -51,9 +56,14 @@ const olTask = (over: Partial<OpenlistTaskInfo>): OpenlistTaskInfo => ({
   id: "tid1", name: "copy [/115](/tv/某剧) to [/local](/media)", state: 1, progress: 0, error: "", endedAt: null, ...over,
 });
 
-/** 登记一条，并把时钟拨过「晾一会」的窗口 */
-function seed(paths: string[] = ["/tv/某剧/S01/E01.mkv"], over: Partial<Parameters<typeof enqueueCopy>[0]> = {}): void {
+/**
+ * 登记一条，并把时钟拨过「晾一会」的窗口。
+ * enqueueCopy 会把循环拉起来，这里手动驱动 tickCopies，所以马上停掉——
+ * 不然真循环会插进来多跑几轮，按次数断言的用例就飘了（同 followup.itest 的 seed）
+ */
+async function seed(paths: string[] = ["/tv/某剧/S01/E01.mkv"], over: Partial<Parameters<typeof enqueueCopy>[0]> = {}): Promise<void> {
   enqueueCopy({ account: "acc", sources: paths, rootPath: "/tv", taskId: "t1", trigger: "monitor", ...over });
+  await stopCopyWatcher();
   now += 30_000;
 }
 
@@ -73,7 +83,7 @@ before(() => {
       copy: async (_cfg, srcDir, dstDir, ns) => {
         copyCalls.push({ srcDir, dstDir, names: ns });
         if (copyError) throw copyError;
-        return copyResult;
+        return copyResultQueue.length > 0 ? (copyResultQueue.shift() ?? []) : copyResult;
       },
       copyTasks: async () => {
         if (tasksError) throw tasksError;
@@ -94,6 +104,7 @@ before(() => {
       removeCalls.push({ account, path, nodeId });
       return removeResult;
     },
+    listDriveChildren: async (_account, path) => driveChildren[path] ?? [],
   });
 });
 
@@ -105,6 +116,7 @@ beforeEach(async () => {
   mkdirCalls.length = 0;
   copyCalls.length = 0;
   copyResult = [];
+  copyResultQueue = [];
   copyError = null;
   tasks = { undone: [], done: [] };
   tasksError = null;
@@ -113,6 +125,7 @@ beforeEach(async () => {
   organized.length = 0;
   removeCalls.length = 0;
   removeResult = "removed";
+  driveChildren = {};
   replaceTasks([]);
   now = 1_800_000_000_000;
   writeKv(KEY.offlineFollowups, []);
@@ -131,8 +144,8 @@ after(async () => {
 
 /* ------------------------------- 登记 ------------------------------- */
 
-test("登记：算好 OpenList 目标目录，按源路径的层级摆", () => {
-  seed(["/tv/某剧/S01/E01.mkv"]);
+test("登记：算好 OpenList 目标目录，按源路径的层级摆", async () => {
+  await seed(["/tv/某剧/S01/E01.mkv"]);
   const [c] = listCopies();
   assert.equal(c.account, "acc");
   assert.equal(c.srcDir, "/tv/某剧/S01");
@@ -142,26 +155,27 @@ test("登记：算好 OpenList 目标目录，按源路径的层级摆", () => {
   assert.equal(c.status, "pending");
 });
 
-test("登记：没配好 / 这个账号没挂载根，都不抛也不入队", () => {
+test("登记：没配好 / 这个账号没挂载根，都不抛也不入队", async () => {
   patchAppSettings({ openlistCopy: undefined });
-  seed();
+  await seed();
   assert.equal(listCopies().length, 0, "没配置就当没开");
 
   patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local/media", mounts: { 别的账号: "/x" } } });
-  seed();
+  await seed();
   assert.equal(listCopies().length, 0, "这个账号没填挂载根");
 });
 
-test("登记：同一个来源 + 同一个目标不重复排，目标不同的两条都留", () => {
-  seed(["/tv/某剧/S01/E01.mkv"]);
-  seed(["/tv/某剧/S01/E01.mkv"]);
+test("登记：同一个来源 + 同一个目标不重复排，目标不同的两条都留", async () => {
+  await seed(["/tv/某剧/S01/E01.mkv"]);
+  await seed(["/tv/某剧/S01/E01.mkv"]);
   assert.equal(listCopies().length, 1);
   enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], dstDir: "/local/backup", trigger: "manual" });
+  await stopCopyWatcher();
   assert.equal(listCopies().length, 2, "换了目标就是另一件事");
 });
 
 test("登记：刚复制完的同一条 24 小时内不重排（监控重来一轮会再报一遍）", async () => {
-  seed(["/tv/某剧/S01/E01.mkv"]);
+  await seed(["/tv/某剧/S01/E01.mkv"]);
   names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
   copyResult = [olTask({ id: "tid1" })];
   await tickCopies();
@@ -169,7 +183,7 @@ test("登记：刚复制完的同一条 24 小时内不重排（监控重来一�
   await tickCopies();
   assert.equal(listCopies()[0].status, "done");
 
-  seed(["/tv/某剧/S01/E01.mkv"]);
+  await seed(["/tv/某剧/S01/E01.mkv"]);
   assert.equal(listCopies().length, 1, "刚办完，不重排");
 });
 
@@ -177,12 +191,14 @@ test("登记：刚复制完的同一条 24 小时内不重排（监控重来一�
 
 test("刚登记的先晾一会儿：同目录的兄弟文件凑一批再提交", async () => {
   enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "monitor" });
+  await stopCopyWatcher();
   names = { "/115/tv/某剧/S01": ["E01.mkv", "E02.mkv"], "/local/media/某剧/S01": [] };
   await tickCopies();
   assert.equal(copyCalls.length, 0, "刚登记就提交的话，后面的兄弟文件只能各发各的");
 
   now += 5_000;
   enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E02.mkv"], rootPath: "/tv", trigger: "monitor" });
+  await stopCopyWatcher();
   now += 30_000;
   copyResult = [olTask({ id: "a" }), olTask({ id: "b" })];
   await tickCopies();
@@ -192,7 +208,7 @@ test("刚登记的先晾一会儿：同目录的兄弟文件凑一批再提交",
 });
 
 test("产物还没出现：等，不算失败；满 10 轮才作废", async () => {
-  seed();
+  await seed();
   names = { "/115/tv/某剧/S01": ["别的东西"] };
   for (let i = 1; i <= 9; i++) {
     await tickCopies();
@@ -208,7 +224,7 @@ test("产物还没出现：等，不算失败；满 10 轮才作废", async () =
 });
 
 test("源目录在 OpenList 里压根不存在：第一轮就失败，不白等 10 轮", async () => {
-  seed();
+  await seed();
   listError = new OpenlistError("object not found", 500, false);
   await tickCopies();
   const [c] = listCopies();
@@ -217,7 +233,7 @@ test("源目录在 OpenList 里压根不存在：第一轮就失败，不白等 
 });
 
 test("列目录是连不上（不是「不存在」）：按重试算，3 次才作废", async () => {
-  seed();
+  await seed();
   listError = new OpenlistError("connect ECONNREFUSED", undefined, true);
   await tickCopies();
   assert.match(listCopies()[0].detail, /稍后重试（1\/3）/);
@@ -227,7 +243,7 @@ test("列目录是连不上（不是「不存在」）：按重试算，3 次才
 });
 
 test("目标里已经有同名的：跳过，不提交也不覆盖", async () => {
-  seed();
+  await seed();
   names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": ["E01.mkv"] };
   await tickCopies();
   const [c] = listCopies();
@@ -237,7 +253,7 @@ test("目标里已经有同名的：跳过，不提交也不覆盖", async () =>
 });
 
 test("提交前先建目标目录：/fs/copy 不会自己建", async () => {
-  seed();
+  await seed();
   names = { "/115/tv/某剧/S01": ["E01.mkv"] };
   copyResult = [olTask({ id: "tid1" })];
   await tickCopies();
@@ -247,7 +263,7 @@ test("提交前先建目标目录：/fs/copy 不会自己建", async () => {
 });
 
 test("目标目录不同的两条不合批", async () => {
-  seed(["/tv/A/S01/E01.mkv", "/tv/B/S01/E01.mkv"]);
+  await seed(["/tv/A/S01/E01.mkv", "/tv/B/S01/E01.mkv"]);
   names = { "/115/tv/A/S01": ["E01.mkv"], "/115/tv/B/S01": ["E01.mkv"] };
   copyResult = [olTask({ id: "x" })];
   await tickCopies();
@@ -256,17 +272,17 @@ test("目标目录不同的两条不合批", async () => {
 });
 
 test("同存储秒完成（没有任务可盯）：直接算办完", async () => {
-  seed();
+  await seed();
   names = { "/115/tv/某剧/S01": ["E01.mkv"] };
   copyResult = [];
   await tickCopies();
   const [c] = listCopies();
   assert.equal(c.status, "done");
-  assert.deepEqual(notified.at(-1), { type: "copy-done", name: "E01.mkv", target: "/local/media/某剧/S01", source: "网盘监控" });
+  assert.deepEqual(notified.at(-1), { type: "copy-done", names: ["E01.mkv"], target: "/local/media/某剧/S01", source: "网盘监控" });
 });
 
 test("提交复制报错：重试 3 次后作废", async () => {
-  seed();
+  await seed();
   names = { "/115/tv/某剧/S01": ["E01.mkv"] };
   copyError = new Error("OpenList /api/fs/copy 失败：HTTP 500");
   await tickCopies();
@@ -281,7 +297,7 @@ test("提交复制报错：重试 3 次后作废", async () => {
 /* ------------------------------- 阶段二：盯任务 ------------------------------- */
 
 async function submitted(): Promise<void> {
-  seed();
+  await seed();
   names = { "/115/tv/某剧/S01": ["E01.mkv"] };
   copyResult = [olTask({ id: "tid1" })];
   await tickCopies();
@@ -314,7 +330,7 @@ test("全部结束且成功：done 并通知", async () => {
   const [c] = listCopies();
   assert.equal(c.status, "done");
   assert.match(c.detail, /已复制到 \/local\/media\/某剧\/S01/);
-  assert.deepEqual(notified.at(-1), { type: "copy-done", name: "E01.mkv", target: "/local/media/某剧/S01", source: "网盘监控" });
+  assert.deepEqual(notified.at(-1), { type: "copy-done", names: ["E01.mkv"], target: "/local/media/某剧/S01", source: "网盘监控" });
 });
 
 test("OpenList 报失败：原文带出来并通知", async () => {
@@ -329,14 +345,21 @@ test("OpenList 报失败：原文带出来并通知", async () => {
 
 test("done 里提交之前的陈年同名任务不算这次的", async () => {
   await submitted();
-  tasks = { undone: [], done: [olTask({ id: "old", state: 2, endedAt: now - 3600_000 })] };
+  // 名字带着这条的特征（尾巴两段），光看名字会认成自己人；只有 endedAt 早于提交时间能把它滤掉
+  const stale = { id: "上次复制留下的", name: "copy [/115](/tv/某剧/S01/E01.mkv) to [/local](/media)", state: 2, endedAt: now - 3600_000 };
+  tasks = { undone: [], done: [olTask(stale)] };
   await tickCopies();
   assert.equal(listCopies()[0].status, "pending", "只有陈年任务，不能当成这次的结果");
   assert.match(listCopies()[0].detail, /暂时没找到/);
+
+  // 同一条任务，结束时间换成这次提交之后：这才是这次的结果
+  tasks = { undone: [], done: [olTask({ ...stale, endedAt: now })] };
+  await tickCopies();
+  assert.equal(listCopies()[0].status, "done");
 });
 
 test("任务列表里找不到：3 轮后作废；换阶段时 waits 已清零", async () => {
-  seed();
+  await seed();
   names = { "/115/tv/某剧/S01": ["别的东西"] };
   await tickCopies();
   assert.equal(listCopies()[0].waits, 1);
@@ -366,7 +389,7 @@ test("任务列表拿不到：这一轮一个字段都不改", async () => {
 /* ------------------------------- 重试、删除、接管 ------------------------------- */
 
 test("重试：计数清零，回到等可见那一步", async () => {
-  seed();
+  await seed();
   names = { "/115/tv/某剧/S01": ["别的东西"] };
   for (let i = 0; i < 10; i++) await tickCopies();
   let [c] = listCopies();
@@ -383,16 +406,16 @@ test("重试：计数清零，回到等可见那一步", async () => {
   assert.equal(c.stage, "copying");
 });
 
-test("还在跑的不让重试；不存在的 404", () => {
-  seed();
+test("还在跑的不让重试；不存在的 404", async () => {
+  await seed();
   const [c] = listCopies();
   assert.throws(() => retryCopy(c.id), /还在队列里跑/);
   assert.throws(() => retryCopy("没这个 id"), /不存在/);
   assert.throws(() => dropCopy("没这个 id"), /不存在/);
 });
 
-test("删掉：从队列里去掉", () => {
-  seed();
+test("删掉：从队列里去掉", async () => {
+  await seed();
   const [c] = listCopies();
   dropCopy(c.id);
   assert.equal(listCopies().length, 0);
@@ -457,6 +480,7 @@ test("删源：目标里看得见才删，看不见就留着并说明", async ()
     trigger: "monitor",
     deleteSource: true,
   });
+  await stopCopyWatcher();
   now += 30_000;
   names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
   copyResult = [olTask({ id: "tid1" })];
@@ -477,6 +501,7 @@ test("删源：目标里确认看得见就删，节点 id 一起带过去核对"
     trigger: "monitor",
     deleteSource: true,
   });
+  await stopCopyWatcher();
   now += 30_000;
   names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
   copyResult = [olTask({ id: "tid1" })];
@@ -497,6 +522,7 @@ test("删源：源路径上换成了别的文件（整理挪过）就不删", as
     trigger: "monitor",
     deleteSource: true,
   });
+  await stopCopyWatcher();
   now += 30_000;
   names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
   copyResult = [olTask({ id: "tid1" })];
@@ -513,4 +539,135 @@ test("没开删源：一次都不调删除", async () => {
   tasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: now })] };
   await tickCopies();
   assert.equal(removeCalls.length, 0);
+});
+
+/* ------------------------------- 评审补的那些 ------------------------------- */
+
+test("一轮里成了好几条：通知合成一条，不是一个文件一条", async () => {
+  await seed(["/tv/某剧/S01/E01.mkv", "/tv/某剧/S01/E02.mkv", "/tv/某剧/S01/E03.mkv"]);
+  names = { "/115/tv/某剧/S01": ["E01.mkv", "E02.mkv", "E03.mkv"], "/local/media/某剧/S01": [] };
+  copyResult = [];
+  await tickCopies();
+  const done = notified.filter((e) => e.type === "copy-done");
+  assert.equal(done.length, 1, "三条只发一条通知");
+  assert.deepEqual((done[0] as { names: string[] }).names.sort(), ["E01.mkv", "E02.mkv", "E03.mkv"]);
+});
+
+test("登记会说清楚排上没有：没配挂载根时返回原因", async () => {
+  patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local/media", mounts: {} } });
+  const r = enqueueCopy({ account: "acc", sources: ["/tv/a.mkv"], trigger: "share" });
+  assert.equal(r.queued, 0);
+  assert.match(r.skipped ?? "", /挂载根/);
+  const ok = () => {
+    patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local/media", mounts: { acc: "/115" } } });
+    return enqueueCopy({ account: "acc", sources: ["/tv/a.mkv"], trigger: "share" });
+  };
+  assert.equal(ok().queued, 1);
+  await stopCopyWatcher();
+});
+
+test("全局目标目录空着、任务上填了：照样能排（那个是默认值，不是必填）", async () => {
+  patchAppSettings({ openlistCopy: { account: "ol", dstDir: "", mounts: { acc: "/115" } } });
+  const r = enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", dstDir: "/local/别处", trigger: "share" });
+  await stopCopyWatcher();
+  assert.equal(r.queued, 1);
+  assert.equal(listCopies()[0].dstDir, "/local/别处/某剧/S01");
+});
+
+test("重试之后目标里还有同名的：如实报失败，不当「已经复制过」跳过", async () => {
+  await seed();
+  names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": ["E01.mkv"] };
+  await tickCopies();
+  assert.equal(listCopies()[0].status, "skipped");
+
+  retryCopy(listCopies()[0].id);
+  await stopCopyWatcher();
+  now += 30_000;
+  await tickCopies();
+  const [c] = listCopies();
+  assert.equal(c.status, "failed");
+  assert.match(c.detail, /可能是上次没复制完的残留/);
+});
+
+test("两条记录的任务名互相包含：各认各的，不抢结果", async () => {
+  await seed(["/tv/某剧/S01/E01.mkv", "/tv/别的剧/S01/E01.mkv"]);
+  names = {
+    "/115/tv/某剧/S01": ["E01.mkv"],
+    "/115/tv/别的剧/S01": ["E01.mkv"],
+    "/local/media/某剧/S01": [],
+    "/local/media/别的剧/S01": [],
+  };
+  copyResultQueue = [[olTask({ id: "tA" })], [olTask({ id: "tB" })]];
+  await tickCopies();
+  const idOf = (dir: string) => listCopies().find((c) => c.srcDir === dir)?.copyTaskId;
+  assert.ok(idOf("/tv/某剧/S01") && idOf("/tv/别的剧/S01"), "两条各拿各的任务号");
+
+  // 一条失败了，另一条还在跑：不能被连累
+  tasks = {
+    undone: [olTask({ id: idOf("/tv/别的剧/S01")!, name: "copy [/115](/tv/别的剧/S01/E01.mkv) to [/local](/media)", progress: 5 })],
+    done: [olTask({ id: idOf("/tv/某剧/S01")!, name: "copy [/115](/tv/某剧/S01/E01.mkv) to [/local](/media)", state: 7, error: "炸了", endedAt: now })],
+  };
+  await tickCopies();
+  const statusOf = (dir: string) => listCopies().find((c) => c.srcDir === dir)?.status;
+  assert.equal(statusOf("/tv/某剧/S01"), "failed");
+  assert.equal(statusOf("/tv/别的剧/S01"), "pending", "另一条还在跑，不能被连累");
+});
+
+test("接管来的记录：不按名字乱认任务，失败了也不让重试", async () => {
+  writeKv(KEY.offlineFollowups, [
+    {
+      kind: "openlist-copy", infoHash: "h1", account: "acc", taskId: "", subPath: "", name: "Show.S01",
+      addedAt: now - 60_000, status: "pending", detail: "OpenList 复制中", attempts: 0, misses: 0,
+      copyDstDir: "/local/dl", copyTaskId: "tid9", copySubmittedAt: now - 30_000,
+    },
+  ]);
+  adoptLegacyCopyFollowups();
+  await stopCopyWatcher();
+
+  // 名字一样的别的任务不该被它认走：只认自己的任务号
+  tasks = { undone: [], done: [olTask({ id: "别的任务", name: "copy [/115](/x/Show.S01) to [/y](/z)", state: 2, endedAt: now })] };
+  await tickCopies();
+  assert.equal(listCopies()[0].status, "pending");
+
+  // 三轮都找不到自己的任务 → 失败；这时也不让重试（没有网盘路径，无从下手）
+  await tickCopies();
+  await tickCopies();
+  const [c] = listCopies();
+  assert.equal(c.status, "failed");
+  assert.throws(() => retryCopy(c.id), /升级前接管/);
+});
+
+test("别人在这一轮里新登记的记录不会被抹掉", async () => {
+  await seed(["/tv/某剧/S01/E01.mkv"]);
+  names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
+  copyResult = [olTask({ id: "tid1" })];
+  // 列目录的当口，监控那边又排进来一条（真实场景里两个循环就是这么交错的）：
+  // tickCopies 一进去就 await，这里的登记正好落在它读队列之后、写回之前
+  const tick = tickCopies();
+  enqueueCopy({ account: "acc", sources: ["/tv/某剧/S02/E01.mkv"], rootPath: "/tv", trigger: "monitor" });
+  await stopCopyWatcher();
+  await tick;
+  assert.equal(listCopies().length, 2, "新排进来的那条还在");
+});
+
+test("删源：目录只确认名字在目标里不够，子项少了就不删", async () => {
+  enqueueCopy({
+    account: "acc",
+    sources: [{ path: "/tv/某剧/S01", isDir: true, nodeId: "n1" }],
+    rootPath: "/tv",
+    trigger: "share",
+    deleteSource: true,
+  });
+  await stopCopyWatcher();
+  now += 30_000;
+  names = { "/115/tv/某剧": ["S01"], "/local/media/某剧": [] };
+  copyResult = [olTask({ id: "tid1" })];
+  await tickCopies();
+  names["/local/media/某剧"] = ["S01"];
+  names["/local/media/某剧/S01"] = ["E01.mkv"]; // 目标里只搬过去一集
+  driveChildren["/tv/某剧/S01"] = ["E01.mkv", "E02.mkv"]; // 源里有两集
+  tasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: now })] };
+  await tickCopies();
+  assert.equal(removeCalls.length, 0, "只搬过去一半就不能删源");
+  assert.match(listCopies()[0].detail, /目标里少了 1 项/);
 });

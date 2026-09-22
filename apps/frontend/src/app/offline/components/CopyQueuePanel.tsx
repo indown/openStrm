@@ -4,6 +4,16 @@ import { useCallback, useEffect, useState } from "react";
 import { Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { api, type CopyItem } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
@@ -30,16 +40,22 @@ const TRIGGER_LABEL: Record<CopyItem["trigger"], string> = {
 export function CopyQueuePanel() {
   const [items, setItems] = useState<CopyItem[] | null>(null);
   const [pending, setPending] = useState(0);
+  const [total, setTotal] = useState(0);
   const [working, setWorking] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<CopyItem | null>(null);
 
-  const load = useCallback(async (silent = true) => {
+  const load = useCallback(async () => {
     try {
       const q = await api.copy.list();
       setItems(q.items);
+      setTotal(q.total);
       setPending(q.watcher.pending);
+      setError(null);
     } catch (err) {
-      if (!silent) toast.error(apiErrorMessage(err, "读取复制队列失败"));
-      setItems([]);
+      // 轮询期间一次抖动不该让整块面板消失：留着上一份，只在旁边说一句
+      setError(apiErrorMessage(err, "读取复制队列失败"));
+      setItems((prev) => prev ?? []);
     }
   }, []);
 
@@ -86,9 +102,10 @@ export function CopyQueuePanel() {
             {pending} 个在队列里
           </StatusBadge>
         )}
+        {error && <span className="break-all text-xs text-destructive">{error}</span>}
       </div>
       <ul className="divide-y">
-        {items.slice(0, 20).map((c) => {
+        {items.map((c) => {
           const meta = STATUS_META[c.status];
           const busy = working.has(c.id);
           return (
@@ -118,7 +135,7 @@ export function CopyQueuePanel() {
                   className="size-8 text-destructive hover:text-destructive"
                   title="从队列里去掉"
                   disabled={busy}
-                  onClick={() => void act(c.id, "remove")}
+                  onClick={() => setDropTarget(c)}
                 >
                   <Trash2 className="size-4" />
                 </Button>
@@ -127,7 +144,31 @@ export function CopyQueuePanel() {
           );
         })}
       </ul>
-      {items.length > 20 && <p className="text-xs text-muted-foreground">只显示最近 20 条</p>}
+      {total > items.length && <p className="text-xs text-muted-foreground">只显示最近 {items.length} 条，队列里共 {total} 条</p>}
+
+      <AlertDialog open={dropTarget !== null} onOpenChange={(o) => !o && setDropTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>不跟这条复制了？</AlertDialogTitle>
+            <AlertDialogDescription>
+              「{dropTarget?.name}」会从队列里去掉。已经提交给 OpenList 的复制不会被取消，只是这边不再盯着它。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                const target = dropTarget;
+                setDropTarget(null);
+                if (target) void act(target.id, "remove");
+              }}
+            >
+              去掉
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }

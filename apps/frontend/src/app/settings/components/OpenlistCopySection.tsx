@@ -10,10 +10,11 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TreeSelectDialog } from "@/components/TreeSelectDialog";
 import { api } from "@/lib/api";
+import { accountLabel } from "@/lib/drive";
 import { apiErrorMessage } from "@/lib/axios";
 
-/** 能被复制走的网盘：OpenList 自己不用配挂载根 */
-const DRIVE_TYPES = ["115", "quark"];
+/** OpenList 之外的账号都是「网盘」：以后接新网盘时这里不用动（services/drive 的规矩） */
+const isDriveAccount = (a: AccountInfo): boolean => a.accountType !== "openlist";
 
 type Props = {
   value: OpenlistCopySettings;
@@ -43,13 +44,14 @@ export function OpenlistCopySection({ value, onChange }: Props) {
   const set = (patch: Partial<OpenlistCopySettings>) => onChange({ ...value, ...patch });
   const setMount = (account: string, path: string) => {
     const mounts = { ...(value.mounts ?? {}) };
-    if (path.trim()) mounts[account] = path;
+    // 存之前去空白：粘进来的路径常带前后空格，带着存会拼成「/ /115」这种谁也打不开的路径
+    if (path.trim()) mounts[account] = path.trim();
     else delete mounts[account];
     set({ mounts });
   };
 
   const olAccounts = (accounts ?? []).filter((a) => a.accountType === "openlist");
-  const driveAccounts = (accounts ?? []).filter((a) => DRIVE_TYPES.includes(a.accountType ?? ""));
+  const driveAccounts = (accounts ?? []).filter(isDriveAccount);
   const olName = value.account ?? "";
   const olMissing = olName !== "" && accounts !== null && !olAccounts.some((a) => a.name === olName);
 
@@ -134,7 +136,7 @@ export function OpenlistCopySection({ value, onChange }: Props) {
                   : "用这个账号调 OpenList 的接口"}
           </p>
         </div>
-        {pathField("dst", "默认目标目录", value.dstDir ?? "", (v) => set({ dstDir: v }), "/local/downloads", "任务上没单独指定时复制到这里")}
+        {pathField("dst", "默认目标目录", value.dstDir ?? "", (v) => set({ dstDir: v.trim() }), "/local/downloads", "任务上没单独指定时复制到这里")}
       </div>
 
       <div className="space-y-3">
@@ -145,20 +147,23 @@ export function OpenlistCopySection({ value, onChange }: Props) {
             网盘上的路径拼上它就是 OpenList 里的路径；不填的账号不复制。
           </p>
         </div>
-        {accounts === null ? (
+        {failed ? (
+          <p className="text-sm text-destructive">账号列表没读出来，刷新页面再试。</p>
+        ) : accounts === null ? (
           <p className="text-sm text-muted-foreground">加载中…</p>
         ) : driveAccounts.length === 0 ? (
           <p className="text-sm text-muted-foreground">还没有 115 / 夸克账号，先到「账户」页添加。</p>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {driveAccounts.map((a) =>
-              pathField(a.name, `${a.name}（${a.accountType}）`, value.mounts?.[a.name] ?? "", (v) => setMount(a.name, v), "/115"),
+              pathField(a.name, accountLabel(a.name, a.accountType), value.mounts?.[a.name] ?? "", (v) => setMount(a.name, v), "/115"),
             )}
           </div>
         )}
-        {value.srcDir && (
+        {value.srcDir && Object.keys(value.mounts ?? {}).length === 0 && (
           <p className="text-xs text-warning">
-            旧配置里的源目录（{value.srcDir}）还没换算成挂载根：填好上面的挂载根并保存之后它就不再生效。
+            旧配置里的源目录（{value.srcDir}）没能自动换算成挂载根（115 接口没通或默认下载目录变过）。
+            在上面填好挂载根并保存，复制才会重新工作。
           </p>
         )}
         <Button type="button" variant="outline" size="sm" disabled={!olName || checking} onClick={() => void check()}>

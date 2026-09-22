@@ -42,6 +42,8 @@ let generateError: Error | null = null;
 const copyCalls: CopyRequest[] = [];
 /** 115 目录 id → 网盘绝对路径 的桩 */
 let dirPaths: Record<string, string> = {};
+/** 复制队列收不收：默认收下一条 */
+let enqueueResult: { queued: number; skipped: string | null } = { queued: 1, skipped: null };
 
 const row = (over: Partial<OfflineTask>): OfflineTask => ({
   infoHash: "hash0", name: "Show.S01", url: "magnet:?xt=urn:btih:one", size: 1, percent: 100, status: 2, state: "done",
@@ -97,7 +99,7 @@ before(() => {
       return { generatedCount: 3, skippedCount: 1, invalidNames: [] };
     },
     notify: async (ev) => { notified.push(ev); },
-    enqueueCopy: (req) => { copyCalls.push(req); },
+    enqueueCopy: (req) => { copyCalls.push(req); return enqueueResult; },
     resolveDirPath: async (_acc, cid) => dirPaths[cid] ?? null,
   });
 });
@@ -112,6 +114,7 @@ beforeEach(async () => {
   notified.length = 0;
   copyCalls.length = 0;
   dirPaths = { "999": "/云下载", "5": "/别的目录" };
+  enqueueResult = { queued: 1, skipped: null };
   replaceTasks([task]);
   replaceAccounts([account, olAccount]);
   patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local/dl", mounts: { acc: "/115" } } });
@@ -290,7 +293,11 @@ test("下到 115 默认目录：下完把产物的网盘路径交给复制队列
   assert.deepEqual(copyCalls[0], {
     account: "acc",
     sources: [{ path: "/云下载/Show.S01", isDir: true, nodeId: "r1" }],
+    // 不属于任何任务：平铺到目标目录（没有 rootPath），也没有任务级的删源开关
+    rootPath: undefined,
+    taskId: undefined,
     dstDir: "/local/dl",
+    deleteSource: false,
     trigger: "offline",
   });
 });
@@ -321,7 +328,7 @@ test("下到任务目录 + 勾复制：先生成 strm，再交给复制队列", 
     rootPath: "tv",
     taskId: "t1",
     dstDir: "/local/dl",
-    deleteSource: undefined,
+    deleteSource: false,
     trigger: "offline",
   });
 });
@@ -369,6 +376,16 @@ test("115 下载失败的复制回执：作废并用复制的通知文案", asyn
   assert.equal(copyCalls.length, 0, "没下成就不该交给复制队列");
   assert.equal(notified.length, 1);
   assert.equal(notified[0].type, "offline-copy-failed");
+});
+
+test("复制队列没收下（配置没配好）：回执如实报失败，不记成已交付", async () => {
+  await seedCopy();
+  enqueueResult = { queued: 0, skipped: "账号 acc 没填「在 OpenList 里的挂载根」" };
+  pages = [[row({})]];
+  await tickFollowups();
+  const [f] = listFollowups();
+  assert.equal(f.status, "failed");
+  assert.match(f.detail, /没能交给复制队列：账号 acc 没填/);
 });
 
 test("落点目录解析不出来：回执失败，不乱猜路径", async () => {

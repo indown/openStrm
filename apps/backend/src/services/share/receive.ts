@@ -11,7 +11,7 @@ import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareRef } from "../drive/types.js";
 import { enqueueCopy } from "../copy/service.js";
-import { copyEnabledFor } from "../copy/paths.js";
+import { copyOptionsFor } from "../copy/paths.js";
 import { maybeAutoOrganize } from "../organize/auto.js";
 import { generateStrmForSelected, type SelectedItem } from "../strm/share-strm.js";
 import { startTask } from "../task/runner.js";
@@ -111,15 +111,17 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
         maybeAutoOrganize({ task, paths: items.map((i) => (subPath ? `${subPath}/${i.name}` : i.name)), trigger: "share", mode: forcedOrganizeMode(task, opts.organize) });
       }
       // 任务开了「复制到 OpenList」（或这次勾了）：把刚转存进来的条目交给复制队列
-      if (copyEnabledFor(task, opts.copy, settings)) {
+      const copyOpts = copyOptionsFor(task, opts.copy, settings);
+      if (copyOpts.enabled) {
         enqueueCopy({
           account: provider.account.name,
-          sources: items.map((i) => ({ path: `${fullOriginPath}/${i.name}`, isDir: i.isDir })),
+          // 带上网盘那边给的 id：删源时靠它核对「路径上还是当初复制的那一份」
+          sources: items.map((i, idx) => ({ path: `${fullOriginPath}/${i.name}`, isDir: i.isDir, nodeId: ids[idx] })),
           rootPath: task.originPath,
           taskId: task.id,
-          dstDir: task.copyToOpenlist?.dstDir,
+          dstDir: copyOpts.dstDir,
           trigger: "share",
-          deleteSource: task.copyToOpenlist?.deleteSource,
+          deleteSource: copyOpts.deleteSource,
         });
       }
       return { mode: "sync", generatedCount, skippedCount, invalidNames };

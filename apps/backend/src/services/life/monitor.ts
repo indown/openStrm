@@ -32,7 +32,7 @@ import {
 } from "../../db/repositories/life.js";
 import { bumpOwnHit, findOwnOperation, getRun as getOrganizeRun } from "../../db/repositories/organize.js";
 import { enqueueCopy } from "../copy/service.js";
-import { copyEnabledFor } from "../copy/paths.js";
+import { copyOptionsFor } from "../copy/paths.js";
 import { maybeAutoOrganize } from "../organize/auto.js";
 import { providerFor } from "../drive/registry.js";
 import type { AccountIssue, ChangeCursor, ChangeEvent, ChangeKind, ChangeLog, ChangeSource, DriveProvider, ProbeResult } from "../drive/types.js";
@@ -391,15 +391,18 @@ class AccountMonitor {
               if (m?.relPath) {
                 maybeAutoOrganize({ task: m.task, paths: [m.relPath], trigger: "monitor", debounce: true });
                 // 整理自己造成的事件走的是上面的 ownOk 分支，进不到这里，所以不会把整理搬过的文件再复制一遍
-                if (copyEnabledFor(m.task, undefined)) {
+                const copyOpts = copyOptionsFor(m.task, undefined);
+                if (copyOpts.enabled) {
                   enqueueCopy({
                     account: this.name,
                     sources: [{ path: ev.path, isDir: ev.isDir, nodeId: ev.nodeId }],
                     rootPath: m.task.originPath,
                     taskId: m.task.id,
-                    dstDir: m.task.copyToOpenlist?.dstDir,
+                    dstDir: copyOpts.dstDir,
                     trigger: "monitor",
-                    deleteSource: m.task.copyToOpenlist?.deleteSource,
+                    // 监控是一个文件一条事件：删源只对「整条目复制」开（转存 / 追更 / 云下载），
+                    // 不然自动整理还没来得及动那个文件，它就已经被删掉了
+                    deleteSource: false,
                   });
                 }
               }

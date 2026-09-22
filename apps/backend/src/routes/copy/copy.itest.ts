@@ -61,8 +61,9 @@ test("GET /api/copy：队列和循环状态一起给", async () => {
   enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "monitor" });
   const res = await call("GET", "/api/copy");
   assert.equal(res.statusCode, 200);
-  const body = res.json() as { items: Array<{ name: string; dstDir: string }>; watcher: { pending: number } };
+  const body = res.json() as { items: Array<{ name: string; dstDir: string }>; total: number; watcher: { pending: number } };
   assert.equal(body.items.length, 1);
+  assert.equal(body.total, 1);
   assert.equal(body.items[0].name, "E01.mkv");
   assert.equal(body.items[0].dstDir, "/local/media/某剧/S01");
   assert.equal(body.watcher.pending, 1);

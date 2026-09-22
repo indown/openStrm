@@ -175,32 +175,37 @@ test("新集：只转存新的那条到同一位置，生成 strm，记进快照
 });
 
 test("任务开了「复制到 OpenList」：新集顺手进复制队列；没开就不进", async () => {
+  const settingsBefore = readAppSettings();
   replaceAppSettings({
-    ...readAppSettings(),
+    ...settingsBefore,
     openlistCopy: { account: "ol", dstDir: "/local/media", mounts: { acc: "/115" } },
   });
   replaceAccounts([...listAccounts(), { accountType: "openlist", name: "ol", account: "u", password: "p", url: "http://ol.local" }]);
   const s = await subscribe();
   await __test_resetCopy();
+  try {
+    // 没开开关：转存照做，复制队列一条都不进
+    share.addFile("/E03.mkv", { hash: "c" });
+    now += HOUR;
+    await checkFollow(s.id);
+    assert.equal(listCopies().length, 0, "任务没开复制就不进队列");
 
-  // 没开开关：转存照做，复制队列一条都不进
-  share.addFile("/E03.mkv", { hash: "c" });
-  now += HOUR;
-  await checkFollow(s.id);
-  assert.equal(listCopies().length, 0, "任务没开复制就不进队列");
-
-  replaceTasks([{ ...task, copyToOpenlist: { enabled: true } }]);
-  share.addFile("/E04.mkv", { hash: "d" });
-  now += HOUR;
-  await checkFollow(s.id);
-  const [c] = listCopies();
-  assert.equal(c?.name, "E04.mkv");
-  assert.equal(c?.srcDir, "/tv/The Show");
-  assert.equal(c?.dstDir, "/local/media/The Show", "任务目录里的层级原样带过去");
-  assert.equal(c?.trigger, "follow");
-  await __test_resetCopy();
-  replaceTasks([task]);
-  replaceAccounts([account]);
+    replaceTasks([{ ...task, copyToOpenlist: { enabled: true } }]);
+    share.addFile("/E04.mkv", { hash: "d" });
+    now += HOUR;
+    await checkFollow(s.id);
+    const [c] = listCopies();
+    assert.equal(c?.name, "E04.mkv");
+    assert.equal(c?.srcDir, "/tv/The Show");
+    assert.equal(c?.dstDir, "/local/media/The Show", "任务目录里的层级原样带过去");
+    assert.equal(c?.trigger, "follow");
+  } finally {
+    // 失败也要收拾干净：留着配置和真循环会祸害后面的用例（它们会去连 http://ol.local）
+    await __test_resetCopy();
+    replaceTasks([task]);
+    replaceAccounts([account]);
+    replaceAppSettings(settingsBefore);
+  }
 });
 
 test("新目录整项转存；已知目录里的新文件落到对应子目录", async () => {

@@ -36,7 +36,7 @@ import { assertSameKind, KIND_LABEL, parseShareRef, providerForTask } from "../d
 import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession, ShareUpdateSignal, DriveKind } from "../drive/types.js";
 import { saveSelectionToTask } from "../share/receive.js";
 import { enqueueCopy } from "../copy/service.js";
-import { copyEnabledFor } from "../copy/paths.js";
+import { copyOptionsFor } from "../copy/paths.js";
 import { maybeAutoOrganize } from "../organize/auto.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
@@ -577,15 +577,16 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
     log.info(`追更「${f.name}」新增 ${received.length} 项 → ${target2}，生成 ${generated} 个 strm`);
     if (generated > 0) scheduleEmbyRefresh();
     maybeAutoOrganize({ task, paths: landed, trigger: "follow" });
-    if (copyEnabledFor(task, undefined)) {
+    const copyOpts = copyOptionsFor(task, undefined);
+    if (copyOpts.enabled) {
       enqueueCopy({
         account: provider.account.name,
         sources: landed.map((p) => `${task.originPath}/${p}`),
         rootPath: task.originPath,
         taskId: task.id,
-        dstDir: task.copyToOpenlist?.dstDir,
+        dstDir: copyOpts.dstDir,
         trigger: "follow",
-        deleteSource: task.copyToOpenlist?.deleteSource,
+        deleteSource: copyOpts.deleteSource,
       });
     }
     void deps.notify({ type: "follow-added", name: f.name, added: received.map(baseName), generated, target: target2 }).catch(() => {});

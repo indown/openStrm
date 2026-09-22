@@ -287,6 +287,8 @@ export interface CopyItem {
 
 export interface CopyQueue {
   items: CopyItem[];
+  /** 队列里一共多少条（items 只是前 limit 条） */
+  total: number;
   watcher: { running: boolean; pending: number; lastTickAt: number | null; lastError: string | null };
 }
 
@@ -664,7 +666,7 @@ export const api = {
 
   /** 复制到 OpenList 的队列：登记是各个来源自己做的，这里只看进度、重试、不跟了 */
   copy: {
-    list: () => data(axiosInstance.get<CopyQueue>("/api/copy")),
+    list: (limit = 20) => data(axiosInstance.get<CopyQueue>("/api/copy", { params: { limit } })),
     retry: (id: string) => data(axiosInstance.post<CopyItem>(`/api/copy/${encodeURIComponent(id)}/retry`)),
     remove: (id: string) => data(axiosInstance.delete<{ success: true }>(`/api/copy/${encodeURIComponent(id)}`)),
   },

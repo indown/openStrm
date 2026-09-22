@@ -16,7 +16,7 @@
 import type { Account115, AccountInfo as SharedAccountInfo, AppSettings, TaskDefinition } from "@openstrm/shared";
 import { getAccount, listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
-import { patchAppSettings, readAppSettings } from "../../db/repositories/settings.js";
+import { readAppSettings, updateAppSetting } from "../../db/repositories/settings.js";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
 import { HttpError, upstreamError } from "../../lib/http-error.js";
@@ -40,8 +40,8 @@ import {
   type OfflineListPage,
   type OfflineTask,
 } from "../cloud-115/offline.js";
-import { enqueueCopy, type CopyRequest } from "../copy/service.js";
-import { normDir, resolveCopyConfig } from "../copy/paths.js";
+import { enqueueCopy, type CopyEnqueueResult, type CopyRequest } from "../copy/service.js";
+import { copyOptionsFor, normDir, resolveCopyConfig } from "../copy/paths.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { maybeAutoOrganize } from "../organize/auto.js";
 import { normalizeSubPath } from "../strm/naming.js";
@@ -144,8 +144,8 @@ interface Deps {
   resolveDirId: (accountInfo: AccountInfo, path: string) => Promise<string>;
   generate: (p: GenerateParams) => Promise<GenerateResult>;
   notify: (event: NotifyEvent) => Promise<unknown>;
-  /** 115 下完之后把产物交给复制队列 */
-  enqueueCopy: (req: CopyRequest) => void;
+  /** 115 下完之后把产物交给复制队列；返回真排上了几条 */
+  enqueueCopy: (req: CopyRequest) => CopyEnqueueResult;
   /** 目标目录 id → 网盘绝对路径（交给复制队列时要算落点） */
   resolveDirPath: (accountInfo: AccountInfo, cid: string) => Promise<string | null>;
 }
@@ -276,14 +276,22 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
     if (opts.dirId != null && String(opts.dirId).trim() !== "") dirId = String(opts.dirId).trim();
   }
 
-  // 用户明确勾了「复制走」：配置不全就当场说清楚，别等下完了才发现复制不了
+  /**
+   * 要不要复制：弹框里明确勾了就按它；没说就看任务上的开关
+   * （「转存 / 追更 / 云下载 / 监控落下新文件就复制」是同一个开关，云下载不能漏）。
+   * 用户明确勾了却没配好，当场说清楚，别等下完了才发现复制不了。
+   */
+  const copyOpts = copyOptionsFor(task, opts.copyToOpenlist, readAppSettings());
   let copyDst = "";
-  if (opts.copyToOpenlist) {
+  if (opts.copyToOpenlist && !copyOpts.enabled) {
     const cfg = resolveCopyConfig();
     if (!cfg.mounts[account.name]) {
       throw new HttpError(400, `账号 ${account.name} 还没填「在 OpenList 里的挂载根」，先到设置页的「复制到 OpenList」里填上`);
     }
+    // 配置齐了却还是 false，只能是没有任务（copyOptionsFor 认任务）：按全局配置走
     copyDst = normDir(opts.copyDstDir) || cfg.dstDir;
+  } else if (copyOpts.enabled) {
+    copyDst = normDir(opts.copyDstDir) || normDir(copyOpts.dstDir) || resolveCopyConfig().dstDir;
   }
 
   let results: OfflineAddResult[];
@@ -321,7 +329,8 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
     );
     startOfflineWatcher();
   }
-  // 没有同步任务（下到默认目录或任意目录）时只复制，单独记一条回执
+  // 只复制不生成 strm 的（下到默认目录 / 任意目录，或任务目录但关了 strm）单独记一条回执。
+  // 有任务就把 taskId / subPath 一起记上：复制的落点要按任务目录的层级摆，整理挪目录时也要认得出来
   const copyTargets = strmFollowup ? [] : [...ok, ...dup];
   const copyFollowup = Boolean(copyDst) && copyTargets.length > 0;
   if (copyFollowup) {
@@ -330,8 +339,8 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
         kind: "openlist-copy" as const,
         infoHash: r.infoHash!,
         account: account.name,
-        taskId: "",
-        subPath: "",
+        taskId: task?.id ?? "",
+        subPath: task ? subPath : "",
         name: r.name || r.url,
         addedAt: now,
         status: "pending" as const,
@@ -585,7 +594,7 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
         rootPath: task.originPath,
         taskId: task.id,
         dstDir: f.copyDstDir,
-        deleteSource: task.copyToOpenlist?.deleteSource,
+        deleteSource: copyOptionsFor(task, undefined, readAppSettings()).deleteSource,
         trigger: "offline",
       });
     }
@@ -607,23 +616,27 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
 export async function migrateLegacyCopyMount(): Promise<void> {
   const cfg = readAppSettings().openlistCopy;
   if (!cfg?.srcDir || Object.keys(cfg.mounts ?? {}).length > 0) return;
-  let account: Account115;
-  try {
-    account = resolveAccount115(undefined);
-  } catch {
-    return; // 115 账号都没了，这条老配置也没意义了
-  }
   const srcDir = normDir(cfg.srcDir);
-  const dirs = await offlineDownPaths(account);
-  const picked = dirs.find((d) => d.selected) ?? dirs[0];
-  const abs = picked ? await resolveDirPath(account, picked.id) : null;
-  if (!abs || !srcDir.endsWith(abs)) {
-    log.warn(`旧的「复制到 OpenList」源目录 ${srcDir} 推不出挂载根，请到设置页填一下账号 ${account.name} 的挂载根`);
+  // 老功能只认「第一个 115 账号」，但库里可能不止一个；挨个试，谁的默认下载目录对得上就是谁
+  const candidates = listAccounts().filter((a): a is Account115 => a.accountType === "115" && Boolean(a.cookie));
+  for (const account of candidates) {
+    let root: string | null = null;
+    try {
+      const dirs = await offlineDownPaths(account);
+      const picked = dirs.find((d) => d.selected) ?? dirs[0];
+      const abs = picked ? await deps.resolveDirPath(account, picked.id) : null;
+      if (abs && srcDir.endsWith(abs)) root = srcDir.slice(0, srcDir.length - abs.length) || "/";
+    } catch (err) {
+      log.warn({ err }, `换算账号 ${account.name} 的挂载根失败，下次启动再试`);
+      return; // 接口不通就整件事下次再来，别把别的账号误判成对不上
+    }
+    if (!root) continue;
+    // 读—改—写要在一个事务里：启动时用户可能正好在设置页保存，整份写回会把他刚存的抹掉
+    updateAppSetting("openlistCopy", (cur) => ({ ...(cur ?? {}), mounts: { ...(cur?.mounts ?? {}), [account.name]: root }, srcDir: undefined }));
+    log.info(`旧配置已换算成挂载根：${account.name} → ${root}`);
     return;
   }
-  const root = srcDir.slice(0, srcDir.length - abs.length) || "/";
-  patchAppSettings({ openlistCopy: { ...cfg, mounts: { [account.name]: root }, srcDir: undefined } });
-  log.info(`旧配置已换算成挂载根：${account.name} → ${root}`);
+  log.warn(`旧的「复制到 OpenList」源目录 ${srcDir} 推不出挂载根，请到设置页手动填一下；在那之前复制不会发生`);
 }
 
 /**
@@ -646,13 +659,25 @@ async function handoffCopy(f: OfflineFollowup, t: OfflineTask, accountInfo: Acco
     finish(f, "failed", `解析不出 115 上的落点目录（id=${t.dirId}），没法交给 OpenList 复制`);
     return;
   }
-  deps.enqueueCopy({
+  const task = f.taskId ? getTask(f.taskId) : null;
+  const copyOpts = copyOptionsFor(task, undefined, readAppSettings());
+  const queued = deps.enqueueCopy({
     account: accountInfo.name,
     sources: [{ path: joinPanPath(dir, name), isDir: t.isDir, nodeId: t.resultId ? String(t.resultId) : undefined }],
+    // 有任务就按任务目录的层级摆，没有就平铺到目标目录
+    rootPath: task?.originPath,
+    taskId: task?.id,
     dstDir: f.copyDstDir,
     trigger: "offline",
+    deleteSource: copyOpts.deleteSource,
   });
   f.name = name;
+  // 队列没收下（配置被删了、挂载根还没换算出来）就如实报失败：
+  // 记成「已交给复制队列」的话，这次复制既不在队列里也没人知道它没了
+  if (queued.queued === 0) {
+    finish(f, "failed", `没能交给复制队列：${queued.skipped ?? "没有可排的条目"}`);
+    return;
+  }
   finish(f, "done", `已交给复制队列：${f.copyDstDir ?? "默认目标目录"}`);
 }
 

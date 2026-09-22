@@ -22,6 +22,14 @@ export interface CopyConfig {
   mounts: Record<string, string>;
 }
 
+/**
+ * 设置里手打的路径：先整串去空白再归一。
+ * 和 normDir 分开是因为网盘路径的最后一段可能真的带空格（「Season 1 」），那种不能 trim。
+ */
+export function normConfigDir(input?: string): string {
+  return normDir((input ?? "").trim());
+}
+
 /** 去掉尾斜杠、补上头斜杠、把连着的斜杠收成一个；空的还它空串，让调用方按「没配置」处理 */
 export function normDir(input?: string): string {
   const t = (input ?? "").replace(/\/{2,}/g, "/").replace(/\/+$/, "");
@@ -83,9 +91,10 @@ export function dstDirFor(base: string, rootPath: string | undefined, srcPath: s
 /** 设置页的 openlistCopy + 账号表 → 可用的配置；缺什么直接说什么 */
 export function resolveCopyConfig(settings: AppSettings = readAppSettings()): CopyConfig {
   const cfg = settings.openlistCopy ?? {};
-  const dstDir = normDir(cfg.dstDir);
-  if (!cfg.account || !dstDir) {
-    throw new HttpError(400, "「复制到 OpenList」还没配置好：请在设置页填上 OpenList 账号和目标目录");
+  // 目标目录可以只在任务上填（设置页那个是默认值），所以这里不强求；真到要用时 enqueueCopy 会再看一次
+  const dstDir = normConfigDir(cfg.dstDir);
+  if (!cfg.account) {
+    throw new HttpError(400, "「复制到 OpenList」还没配置好：请在设置页选一个 OpenList 账号");
   }
   const acc = getAccount(cfg.account);
   if (!acc) throw new HttpError(400, `OpenList 账号不存在：${cfg.account}`);
@@ -93,7 +102,7 @@ export function resolveCopyConfig(settings: AppSettings = readAppSettings()): Co
   if (!acc.url || !acc.account || !acc.password) throw new HttpError(400, `OpenList 账号 ${cfg.account} 缺少地址或用户名/密码`);
   const mounts: Record<string, string> = {};
   for (const [name, path] of Object.entries(cfg.mounts ?? {})) {
-    const norm = normDir(path);
+    const norm = normConfigDir(path);
     if (norm) mounts[name] = norm;
   }
   return { account: acc, dstDir, mounts };
@@ -103,21 +112,39 @@ export function resolveCopyConfig(settings: AppSettings = readAppSettings()): Co
  * 只看设置：OpenList 账号、目标目录、这个网盘账号的挂载根都填了没有。
  * 不碰账号表——给「要不要显示这个入口」用，账号本身好不好使留到真提交时报错。
  */
-export function copyConfigured(account: string, settings: AppSettings = readAppSettings()): boolean {
+export function copyConfigured(account: string, settings: AppSettings = readAppSettings(), taskDstDir?: string): boolean {
   const cfg = settings.openlistCopy ?? {};
-  return Boolean(cfg.account && normDir(cfg.dstDir) && normDir(cfg.mounts?.[account]));
+  const dst = normConfigDir(taskDstDir) || normConfigDir(cfg.dstDir);
+  return Boolean(cfg.account && dst && normConfigDir(cfg.mounts?.[account]));
 }
 
 /**
- * 这一次要不要复制：明说了就按它（弹框里的一次性勾选），否则按任务上的开关。
+ * 这一次复制什么参数。明说了就按它（弹框里的一次性勾选），否则按任务上的开关；
  * 全局没配好 / 这个账号没填挂载根一律当关——同「没配 TMDB key 就不自动整理」的路子。
+ *
+ * **删源只认任务开关**：一次性勾的那个复选框上只写着「复制」，
+ * 不能让它顺带把网盘上的源文件删了（任务上留着的旧 deleteSource 也不行）。
  */
+export function copyOptionsFor(
+  task: Pick<TaskDefinition, "account" | "copyToOpenlist"> | null,
+  forced: boolean | undefined,
+  settings: AppSettings = readAppSettings(),
+): { enabled: boolean; dstDir?: string; deleteSource: boolean } {
+  const account = task?.account;
+  const off = { enabled: false, deleteSource: false };
+  if (!account || !copyConfigured(account, settings, task?.copyToOpenlist?.dstDir)) return off;
+  const cfg = task?.copyToOpenlist;
+  const byTask = cfg?.enabled === true;
+  const enabled = forced ?? byTask;
+  if (!enabled) return off;
+  return { enabled: true, dstDir: cfg?.dstDir, deleteSource: byTask && cfg?.deleteSource === true };
+}
+
+/** 只问「这次要不要复制」 */
 export function copyEnabledFor(
   task: Pick<TaskDefinition, "account" | "copyToOpenlist"> | null,
   forced: boolean | undefined,
   settings: AppSettings = readAppSettings(),
 ): boolean {
-  const account = task?.account;
-  if (!account || !copyConfigured(account, settings)) return false;
-  return forced ?? task?.copyToOpenlist?.enabled === true;
+  return copyOptionsFor(task, forced, settings).enabled;
 }

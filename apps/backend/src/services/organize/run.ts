@@ -80,6 +80,10 @@ import { rewriteFollowSubPaths } from "../follow/service.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { rewriteOfflineSubPaths } from "../offline/service.js";
 import { rewriteCopyPaths } from "../copy/queue.js";
+import { dstDirFor } from "../copy/paths.js";
+
+/** 整理挪完之后，复制待办的目标目录按新路径重算（层级跟着源走） */
+const copyLayout = (base: string, rootPath: string | undefined, srcPath: string): string => dstDirFor(base, rootPath, srcPath).dstDir;
 import type { TmdbDetails, TmdbSearchResult } from "../tmdb.js";
 import { extSet } from "../strm/naming.js";
 import { notify } from "../telegram/notify.js";
@@ -1632,7 +1636,7 @@ function afterApply(task: TaskDefinition, provider: DriveProvider, units: Organi
   const rewritten =
     rewriteFollowSubPaths(task.id, mappings).length +
     rewriteOfflineSubPaths(task.id, mappings).length +
-    rewriteCopyPaths(task.id, task.originPath, mappings).length;
+    rewriteCopyPaths(task.id, task.originPath, mappings, false, copyLayout).length;
   if (rewritten > 0) log.info({ taskId: task.id, rewritten }, "整理后改写了追更 / 云下载回执的目录");
 }
 
@@ -2120,7 +2124,7 @@ function afterRevert(task: TaskDefinition, provider: DriveProvider, units: Organ
   if (back.length === 0) return;
   rewriteFollowSubPaths(task.id, back);
   rewriteOfflineSubPaths(task.id, back);
-  rewriteCopyPaths(task.id, task.originPath, back);
+  rewriteCopyPaths(task.id, task.originPath, back, false, copyLayout);
   for (const m of back) if (m.root) repathMatches(provider.account.name, absOf(task, m.from), absOf(task, m.to));
 }
 

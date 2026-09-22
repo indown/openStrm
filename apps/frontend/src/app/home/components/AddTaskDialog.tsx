@@ -320,11 +320,15 @@ export function AddTaskDialog({
         strmPrefix: withAccount ? `${prefix}/${values.account}` : prefix,
         accountType,
         organize: { ...(organizeMode ? { mode: organizeMode } : {}), libraryType: libraryType ?? "mixed" },
-        copyToOpenlist: {
-          enabled: copyEnabled === true,
-          ...(copyDstDir?.trim() ? { dstDir: copyDstDir.trim() } : {}),
-          deleteSource: copyDeleteSource === true,
-        },
+        // 开关关着就整块记成关：留着 deleteSource=true 的话，
+        // 以后在转存弹框里勾一次「转存后复制」会连带把网盘上的源文件删了
+        copyToOpenlist: copyEnabled
+          ? {
+              enabled: true,
+              ...(copyDstDir?.trim() ? { dstDir: copyDstDir.trim() } : {}),
+              deleteSource: copyDeleteSource === true,
+            }
+          : { enabled: false },
       };
 
       if (task?.id) {
