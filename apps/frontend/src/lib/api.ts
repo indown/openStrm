@@ -257,6 +257,37 @@ export type LifeEventRow = {
   detail: string;
 };
 
+/* ------------------------------- 复制到 OpenList ------------------------------- */
+
+export type CopyStatus = "pending" | "done" | "skipped" | "failed";
+export type CopyStage = "waiting" | "copying";
+export type CopyTrigger = "offline" | "share" | "follow" | "monitor" | "manual";
+
+/** 复制队列里的一条；和后端 services/copy/queue.ts 的 CopyRecord 对齐 */
+export interface CopyItem {
+  id: string;
+  account: string;
+  srcDir: string;
+  name: string;
+  isDir?: boolean;
+  dstDir: string;
+  taskId: string;
+  trigger: CopyTrigger;
+  addedAt: number;
+  status: CopyStatus;
+  stage: CopyStage;
+  detail: string;
+  doneAt?: number;
+  attempts: number;
+  waits: number;
+  misses: number;
+}
+
+export interface CopyQueue {
+  items: CopyItem[];
+  watcher: { running: boolean; pending: number; lastTickAt: number | null; lastError: string | null };
+}
+
 /* ------------------------------- 115 云下载 ------------------------------- */
 
 export type OfflineTaskState = "pending" | "downloading" | "done" | "failed" | "unknown";
@@ -349,7 +380,7 @@ export interface OfflineAddInput {
   taskId?: string;
   subPath?: string;
   generateStrm?: boolean;
-  /** 只能配合 115 默认目录（不带 dirId / taskId） */
+  /** 下完之后把产物交给复制队列；下到哪个目录都行，前提是这个账号配了挂载根 */
   copyToOpenlist?: boolean;
   /** 这次复制到哪（OpenList 完整路径）；不给用设置页的 dstDir */
   copyDstDir?: string;
@@ -626,6 +657,13 @@ export const api = {
       data(axiosInstance.post<{ success: true }>("/api/115/offline/restart", body)),
     downPaths: (account?: string) =>
       data(axiosInstance.get<{ dirs: OfflineDownPath[] }>("/api/115/offline/downpath", { params: { account } })),
+  },
+
+  /** 复制到 OpenList 的队列：登记是各个来源自己做的，这里只看进度、重试、不跟了 */
+  copy: {
+    list: () => data(axiosInstance.get<CopyQueue>("/api/copy")),
+    retry: (id: string) => data(axiosInstance.post<CopyItem>(`/api/copy/${encodeURIComponent(id)}/retry`)),
+    remove: (id: string) => data(axiosInstance.delete<{ success: true }>(`/api/copy/${encodeURIComponent(id)}`)),
   },
 
   /** strm 管理：路径都是相对任务 targetPath 的 POSIX 路径，"" 是任务根目录 */

@@ -86,7 +86,8 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
       .then((s) => {
         if (cancelled) return;
         const c = s.openlistCopy;
-        if (!c?.account || !c.srcDir?.trim() || !c.dstDir?.trim()) return;
+        // 这个 115 账号得有挂载根，后端才算得出产物在 OpenList 里的位置
+        if (!c?.account || !c.dstDir?.trim() || !c.mounts?.[account]?.trim()) return;
         const dst = c.dstDir.trim().replace(/\/+$/, "");
         setOpenlistCopy({ account: c.account, dstDir: dst.startsWith("/") ? dst : `/${dst}` });
       })
@@ -151,7 +152,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
   const copyBase = openlistCopy?.dstDir;
   const copyAccount = openlistCopy?.account;
   useEffect(() => {
-    if (!open || mode !== "dir" || dirId || !copyToOpenlist || !copyBase || !copyAccount) return;
+    if (!open || !copyToOpenlist || !copyBase || !copyAccount) return;
     let cancelled = false;
     setCopySubdirLoading(true);
     api.directory
@@ -168,7 +169,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
     return () => {
       cancelled = true;
     };
-  }, [open, mode, dirId, copyToOpenlist, copyBase, copyAccount, copySegments]);
+  }, [open, copyToOpenlist, copyBase, copyAccount, copySegments]);
 
   const lineCount = urls
     .split(/\r?\n/)
@@ -189,14 +190,14 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
     setInvalid([]);
     try {
       const copyDst = openlistCopy ? [openlistCopy.dstDir, ...copySegments].join("/") : "";
+      const copyOpts =
+        copyToOpenlist && openlistCopy ? { copyToOpenlist: true, ...(copySegments.length ? { copyDstDir: copyDst } : {}) } : {};
       const target =
         mode === "task"
-          ? { taskId, subPath: subSegments.join("/"), generateStrm }
+          ? { taskId, subPath: subSegments.join("/"), generateStrm, ...copyOpts }
           : dirId
-            ? { dirId }
-            : copyToOpenlist && openlistCopy
-              ? { copyToOpenlist: true, ...(copySegments.length ? { copyDstDir: copyDst } : {}) }
-              : {};
+            ? { dirId, ...copyOpts }
+            : copyOpts;
       const res = await api.offline.add({ account, urls, ...target });
       setResults(res.results);
       setInvalid(res.invalid);
@@ -407,7 +408,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
                 </div>
               )}
 
-              {mode === "dir" && !dirId && openlistCopy && (
+              {openlistCopy && (
                 <div className="ml-6 space-y-2">
                   <label className="flex items-start gap-2 cursor-pointer text-sm">
                     <Checkbox
@@ -422,6 +423,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
                       下载完成后让 OpenList 复制走
                       <span className="block text-xs text-muted-foreground">
                         复制到 {[openlistCopy.dstDir, ...copySegments].join("/")}（根目录在设置页配置）
+                        {mode === "task" ? "；任务目录里的层级会原样带过去" : ""}
                       </span>
                     </span>
                   </label>

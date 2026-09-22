@@ -209,7 +209,14 @@ export const settingsPatchSchema = z.looseObject({
     .optional(),
   lifeMonitor: lifeMonitorSchema.optional(),
   openlistCopy: z
-    .looseObject({ account: z.string().optional(), srcDir: z.string().optional(), dstDir: z.string().optional() })
+    .looseObject({
+      account: z.string().optional(),
+      dstDir: z.string().optional(),
+      /** 网盘账号名 → 它在 OpenList 里的挂载根 */
+      mounts: z.record(z.string(), z.string()).optional(),
+      /** 旧字段，升级时会尽量换算成 mounts */
+      srcDir: z.string().optional(),
+    })
     .optional(),
   organize: organizeSettingsSchema.optional(),
   update: z.looseObject({ enabled: z.boolean().optional(), includePrerelease: z.boolean().optional() }).optional(),

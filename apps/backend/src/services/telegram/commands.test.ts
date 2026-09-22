@@ -247,7 +247,11 @@ test("贴磁力链接：配置了 OpenList 复制才多一个目的地按钮，�
   await handleUpdate(bot, msg("magnet:?xt=urn:btih:aaa"));
   assert.equal(findButton("OpenList 复制走"), undefined, "没配置就不给按钮");
 
-  settings.openlistCopy = { account: "ol", srcDir: "/115/云下载", dstDir: "/local/dl/" };
+  settings.openlistCopy = { account: "ol", dstDir: "/local/dl/" };
+  await handleUpdate(bot, msg("magnet:?xt=urn:btih:aaa"));
+  assert.equal(findButton("OpenList 复制走"), undefined, "这个 115 账号没填挂载根也不给");
+
+  settings.openlistCopy = { account: "ol", dstDir: "/local/dl/", mounts: { "115": "/115" } };
   olDirTree = { "/local/dl": ["movies", "tv"], "/local/dl/movies": [] };
   sent.length = 0;
   await handleUpdate(bot, msg("magnet:?xt=urn:btih:aaa"));

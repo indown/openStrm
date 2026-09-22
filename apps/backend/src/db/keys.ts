@@ -7,6 +7,7 @@
  * - `system.*`  不该随任何响应体外发的机密：JWT 密钥、OAuth 令牌派生用的密钥。
  * - `life.*`    生活事件监控的运行状态：游标、接口降级状态，按账号各存一份。
  * - `offline.*` 云下载的回执：哪些 115 离线任务完成后要生成 strm。
+ * - `copy.*`    「复制到 OpenList」的队列：哪些新文件等着 OpenList 复制走，复制到哪一步了。
  * - `emby.*`    Emby 侧的运行状态，目前只有入库通知的游标。
  * - `update.*`  检查更新的运行状态：上次查到的版本、时间、失败原因。
  * - 无前缀的标记键：任何前缀匹配都碰不到它，用来记「已初始化」这类一次性事实。
@@ -22,6 +23,8 @@ export const KEY = {
   lifeCursor: (account: string) => `life.cursor.${account}`,
   lifeAppFallback: (account: string) => `life.appFallback.${account}`,
   offlineFollowups: "offline.followups",
+  /** 「复制到 OpenList」的队列；和回执一样是运行状态，不进 app. */
+  copyQueue: "copy.queue",
   embyNewCursor: "emby.newCursor",
   /** 上一次检查更新的结果；不放 app. 前缀——它是运行状态，不是用户设置 */
   updateState: "update.state",

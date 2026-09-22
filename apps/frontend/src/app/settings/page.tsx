@@ -10,13 +10,6 @@ import { SecretInput } from "@/components/ui/secret-input";
 import { Button } from "@/components/ui/button";
 import { SwitchRow } from "@/components/switch-row";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { toast } from "sonner";
 import { Settings as SettingsIcon } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
@@ -26,7 +19,8 @@ import { downloadBackupWithToast } from "@/lib/backup";
 import { useModKey } from "@/hooks/use-mod-key";
 import { apiErrorMessage } from "@/lib/axios";
 import { FEATURES } from "@/lib/features";
-import type { AppSettings, OrganizeSettings, UpdateSettings } from "@openstrm/shared";
+import type { AppSettings, OpenlistCopySettings, OrganizeSettings, UpdateSettings } from "@openstrm/shared";
+import { OpenlistCopySection } from "./components/OpenlistCopySection";
 import { OrganizeSection } from "./components/OrganizeSection";
 import { UpdateSection } from "./components/UpdateSection";
 import { AgentSection } from "./components/AgentSection";
@@ -155,7 +149,7 @@ const schema = z.object({
     apiKey: z.string(),
     baseUrl: FEATURES.hdhiveSearch ? httpUrl("填 http:// 或 https:// 开头的地址") : z.string(),
   }),
-  openlistCopy: z.object({ account: z.string(), srcDir: z.string(), dstDir: z.string() }),
+  openlistCopy: z.custom<OpenlistCopySettings>(),
   organize: z.custom<OrganizeSettings>(),
   update: z.custom<UpdateSettings>(),
   agent: z.object({
@@ -189,11 +183,7 @@ function fromSettings(s: AppSettings): SettingsValues {
     },
     tmdb: { apiKey: s.tmdb?.apiKey ?? "", language: s.tmdb?.language ?? "" },
     hdhive: { apiKey: s.hdhive?.apiKey ?? "", baseUrl: s.hdhive?.baseUrl ?? "" },
-    openlistCopy: {
-      account: s.openlistCopy?.account ?? "",
-      srcDir: s.openlistCopy?.srcDir ?? "",
-      dstDir: s.openlistCopy?.dstDir ?? "",
-    },
+    openlistCopy: s.openlistCopy ?? {},
     organize: s.organize ?? {},
     update: s.update ?? {},
     agent: {
@@ -248,9 +238,6 @@ function countChanges(base: unknown, next: unknown): number {
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [backingUp, setBackingUp] = useState(false);
-  /** 「复制到 OpenList」的账号下拉：null 是还没读到（在读，或者读失败了——看 accountsFailed），不能当成「一个都没有」 */
-  const [openlistAccounts, setOpenlistAccounts] = useState<string[] | null>(null);
-  const [accountsFailed, setAccountsFailed] = useState(false);
   const modKey = useModKey();
 
   const form = useForm<SettingsValues>({
@@ -316,11 +303,6 @@ export default function SettingsPage() {
       .then((s) => resetForm(fromSettings(s)))
       .catch((err) => toast.error(apiErrorMessage(err, "加载设置失败")))
       .finally(() => setLoading(false));
-    // 「复制到 OpenList」里的账号下拉；读不出来也不拦别的设置，那一格自己说明
-    api.accounts
-      .list()
-      .then((rows) => setOpenlistAccounts(rows.filter((a) => a.accountType === "openlist").map((a) => a.name)))
-      .catch(() => setAccountsFailed(true));
   }, [resetForm]);
 
   const onSave = useCallback(
@@ -683,98 +665,11 @@ export default function SettingsPage() {
               </section>
             )}
 
-            <section id="openlist-copy" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
-              <h2 className="text-base font-medium">复制到 OpenList</h2>
-              <p className="text-sm text-muted-foreground">
-                三项都配好后，「云下载」页添加任务（下载到 115 默认目录）时可以勾选
-                「下载完成后让 OpenList 复制走」：115 下完，就通知 OpenList
-                把产物从挂载的 115 存储复制到目标目录（比如挂载的本地磁盘）。
-              </p>
-              {/* 账号单独一行（源目录 md:col-start-1 另起一行），源目录 → 目标目录并排成一对 */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <FormField
-                  control={form.control}
-                  name="openlistCopy.account"
-                  render={({ field }) => {
-                    const names = openlistAccounts ?? [];
-                    // 存着的账号不在列表里：列表还没读到，或者账号已经删了。
-                    // Radix 的 Select 遇到选项里没有的值会显示成空白，得给它补一项，不然看着像没选
-                    const orphan = field.value !== "" && !names.includes(field.value);
-                    const gone = orphan && openlistAccounts !== null;
-                    return (
-                      <FormItem>
-                        <FormLabel>OpenList 账号</FormLabel>
-                        {/* 没有可选的也摆着（灰掉），状态写在占位字里：标签一直有个对象，这一格也一直是这个高度 */}
-                        <Select value={field.value} onValueChange={field.onChange} disabled={names.length === 0}>
-                          <FormControl>
-                            <SelectTrigger className="w-full">
-                              <SelectValue
-                                placeholder={
-                                  openlistAccounts === null
-                                    ? accountsFailed
-                                      ? "账号列表没读出来"
-                                      : "加载中…"
-                                    : names.length === 0
-                                      ? "还没有 openlist 账号"
-                                      : "选择账号"
-                                }
-                              />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            {orphan && <SelectItem value={field.value}>{gone ? `${field.value}（已不存在）` : field.value}</SelectItem>}
-                            {names.map((name) => (
-                              <SelectItem key={name} value={name}>
-                                {name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <FormDescription className={gone ? "text-xs text-warning" : "text-xs"}>
-                          {accountsFailed
-                            ? "账号列表没读出来，刷新页面再试"
-                            : gone
-                              ? `账号「${field.value}」已经不在了：换一个，或者到「账户」页重新添加`
-                              : openlistAccounts !== null && names.length === 0
-                                ? "还没有 openlist 账号，先到「账户」页添加一个"
-                                : "用这个账号调 OpenList 的接口"}
-                        </FormDescription>
-                      </FormItem>
-                    );
-                  }}
-                />
-                <FormField
-                  control={form.control}
-                  name="openlistCopy.srcDir"
-                  render={({ field }) => (
-                    <FormItem className="md:col-start-1">
-                      <FormLabel>源目录</FormLabel>
-                      <FormControl>
-                        <Input placeholder="/115/云下载" {...field} />
-                      </FormControl>
-                      <FormDescription className="text-xs">
-                        115 默认下载目录在 OpenList 里的完整路径（挂载路径 + 目录）
-                      </FormDescription>
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="openlistCopy.dstDir"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>目标目录</FormLabel>
-                      <FormControl>
-                        <Input placeholder="/local/downloads" {...field} />
-                      </FormControl>
-                      <FormDescription className="text-xs">
-                        复制到 OpenList 的哪个目录（另一个存储里的路径）
-                      </FormDescription>
-                    </FormItem>
-                  )}
-                />
-              </div>
-            </section>
+            <FormField
+              control={form.control}
+              name="openlistCopy"
+              render={({ field }) => <OpenlistCopySection value={field.value ?? {}} onChange={field.onChange} />}
+            />
 
             <FormField
               control={form.control}

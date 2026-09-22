@@ -1,5 +1,6 @@
 /**
- * 云下载回执循环：115 的任务列表和 strm 生成都换成桩，逐轮驱动 tickFollowups 验证状态机。
+ * 云下载回执循环：115 的任务列表、strm 生成、交给复制队列这三步都换成桩，
+ * 逐轮驱动 tickFollowups 验证状态机。真正的复制在 services/copy 里，那边另有测试。
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/services/offline/followup.itest.ts
  */
@@ -10,8 +11,8 @@ import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { patchAppSettings, readAppSettings } from "../../db/repositories/settings.js";
 import { setOfflineTransport, type OfflineListPage, type OfflineTask, type OfflineTransport } from "../cloud-115/offline.js";
-import type { OpenlistTaskInfo } from "../openlist/client.js";
 import type { NotifyEvent } from "../telegram/notify.js";
+import type { CopyRequest } from "../copy/service.js";
 import {
   __test_resetOffline,
   addOfflineTasks,
@@ -37,23 +38,15 @@ const generated: GenerateParams[] = [];
 const notified: NotifyEvent[] = [];
 let generateError: Error | null = null;
 
-/** OpenList 桩的状态 */
-let olNames: string[] = [];
-let olListError: Error | null = null;
-const olCopyCalls: Array<{ srcDir: string; dstDir: string; name: string }> = [];
-let olCopyResult: OpenlistTaskInfo | null = null;
-let olCopyError: Error | null = null;
-let olTasks: { undone: OpenlistTaskInfo[]; done: OpenlistTaskInfo[] } = { undone: [], done: [] };
-let olTasksError: Error | null = null;
+/** 交给复制队列的请求 */
+const copyCalls: CopyRequest[] = [];
+/** 115 目录 id → 网盘绝对路径 的桩 */
+let dirPaths: Record<string, string> = {};
 
 const row = (over: Partial<OfflineTask>): OfflineTask => ({
   infoHash: "hash0", name: "Show.S01", url: "magnet:?xt=urn:btih:one", size: 1, percent: 100, status: 2, state: "done",
   statusText: "下载成功", addTime: 1, lastUpdate: 1, leftTime: 0, peers: 0, rateDownload: 0, dirId: "999",
   resultId: "r1", resultName: "Show.S01", isDir: true, move: 1, pickCode: "pc", ...over,
-});
-
-const olTask = (over: Partial<OpenlistTaskInfo>): OpenlistTaskInfo => ({
-  id: "tid1", name: "copy [/115](/云下载/Show.S01) to [/local](/dl)", state: 1, progress: 0, error: "", endedAt: null, ...over,
 });
 
 const transport: OfflineTransport = {
@@ -64,7 +57,7 @@ const transport: OfflineTransport = {
     const result = urls.map((url, i) =>
       url.includes("dup")
         ? { state: false, error_msg: "任务已存在", info_hash: `hash${i}`, url }
-        : { state: true, info_hash: `hash${i}`, name: `name${i}`, url },
+        : { state: true, info_hash: url.includes("solo") ? "hash9" : `hash${i}`, name: `name${i}`, url },
     );
     return { state: true, data: { result } };
   },
@@ -104,21 +97,8 @@ before(() => {
       return { generatedCount: 3, skippedCount: 1, invalidNames: [] };
     },
     notify: async (ev) => { notified.push(ev); },
-    openlist: {
-      listNames: async () => {
-        if (olListError) throw olListError;
-        return olNames;
-      },
-      copy: async (cfg, name, dstDir) => {
-        olCopyCalls.push({ srcDir: cfg.srcDir, dstDir, name });
-        if (olCopyError) throw olCopyError;
-        return olCopyResult;
-      },
-      copyTasks: async () => {
-        if (olTasksError) throw olTasksError;
-        return olTasks;
-      },
-    },
+    enqueueCopy: (req) => { copyCalls.push(req); },
+    resolveDirPath: async (_acc, cid) => dirPaths[cid] ?? null,
   });
 });
 
@@ -130,16 +110,11 @@ beforeEach(async () => {
   listCalls.length = 0;
   generated.length = 0;
   notified.length = 0;
-  olNames = [];
-  olListError = null;
-  olCopyCalls.length = 0;
-  olCopyResult = null;
-  olCopyError = null;
-  olTasks = { undone: [], done: [] };
-  olTasksError = null;
+  copyCalls.length = 0;
+  dirPaths = { "999": "/云下载", "5": "/别的目录" };
   replaceTasks([task]);
   replaceAccounts([account, olAccount]);
-  patchAppSettings({ openlistCopy: { account: "ol", srcDir: "/115/云下载", dstDir: "/local/dl" } });
+  patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local/dl", mounts: { acc: "/115" } } });
 });
 
 after(async () => {
@@ -286,25 +261,19 @@ test("循环的启停：没待办不起；有待办才起；兑现完自己停",
   assert.equal(getOfflineWatcherStatus().running, false, "都兑现了就不该再起");
 });
 
-/* ------------------------------- 复制到 OpenList ------------------------------- */
+/* ------------------------------- 交给复制队列 ------------------------------- */
 
-test("复制到 OpenList：没配置或指定了目录，加任务时当场拒绝", async () => {
-  await assert.rejects(
-    addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", dirId: "5", copyToOpenlist: true }),
-    /只支持下载到 115 默认目录/,
-  );
-  await assert.rejects(
-    addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", taskId: "t1", copyToOpenlist: true }),
-    /只支持下载到 115 默认目录/,
-  );
+test("勾了复制但没配好：加任务时当场拒绝，不留回执", async () => {
   patchAppSettings({ openlistCopy: undefined });
   await assert.rejects(addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", copyToOpenlist: true }), /还没配置好/);
-  patchAppSettings({ openlistCopy: { account: "acc", srcDir: "/115/云下载", dstDir: "/local/dl" } });
+  patchAppSettings({ openlistCopy: { account: "acc", dstDir: "/local/dl" } });
   await assert.rejects(addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", copyToOpenlist: true }), /不是 openlist 账号/);
+  patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local/dl" } });
+  await assert.rejects(addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", copyToOpenlist: true }), /挂载根/);
   assert.equal(listFollowups().length, 0, "拒绝时不该留下任何回执");
 });
 
-test("复制回执走全程：下完 → 出现在 OpenList → 提交复制 → 盯任务到成功", async () => {
+test("下到 115 默认目录：下完把产物的网盘路径交给复制队列", async () => {
   const r = await seedCopy();
   assert.equal(r.followup, true);
   let [f] = listFollowups();
@@ -312,75 +281,58 @@ test("复制回执走全程：下完 → 出现在 OpenList → 提交复制 →
   assert.equal(f.taskId, "");
   assert.equal(f.copyDstDir, "/local/dl");
 
-  // 115 下完了，但 OpenList 刷新后还看不到产物：等，不算失败
   pages = [[row({})]];
-  olNames = ["别的东西"];
-  await tickFollowups();
-  [f] = listFollowups();
-  assert.equal(f.status, "pending");
-  assert.match(f.detail, /等「Show.S01」出现在 OpenList（1\/10）/);
-  assert.equal(olCopyCalls.length, 0);
-
-  // 出现了：提交复制，进入盯任务阶段
-  olNames = ["Show.S01"];
-  olCopyResult = olTask({ id: "tid1" });
-  await tickFollowups();
-  [f] = listFollowups();
-  assert.equal(f.status, "pending");
-  assert.equal(f.copyTaskId, "tid1");
-  assert.match(f.detail, /已提交 OpenList 复制/);
-  assert.deepEqual(olCopyCalls, [{ srcDir: "/115/云下载", dstDir: "/local/dl", name: "Show.S01" }]);
-
-  // 盯任务阶段不再翻 115 的列表
-  listCalls.length = 0;
-  olTasks = { undone: [olTask({ id: "tid1", progress: 40 })], done: [] };
-  await tickFollowups();
-  assert.match(listFollowups()[0].detail, /OpenList 复制中 40%/);
-  assert.equal(listCalls.length, 0, "复制阶段不该再碰 115");
-
-  // 目录复制：父任务结束了，逐文件的子任务还在 undone 里（按任务名里的产物名认）
-  olTasks = {
-    undone: [olTask({ id: "child1", name: "copy [/115](/云下载/Show.S01/E01.mkv) to [/local](/dl)", progress: 10 })],
-    done: [olTask({ id: "tid1", state: 2, progress: 100, endedAt: Date.now() })],
-  };
-  await tickFollowups();
-  assert.match(listFollowups()[0].detail, /OpenList 复制中 10%/);
-
-  // 全部结束且都成功：回执 done，通知 Telegram
-  olTasks = {
-    undone: [],
-    done: [
-      olTask({ id: "tid1", state: 2, progress: 100, endedAt: Date.now() }),
-      olTask({ id: "child1", name: "copy [/115](/云下载/Show.S01/E01.mkv) to [/local](/dl)", state: 2, endedAt: Date.now() }),
-    ],
-  };
   await tickFollowups();
   [f] = listFollowups();
   assert.equal(f.status, "done");
-  assert.match(f.detail, /OpenList 已复制到 \/local\/dl/);
-  assert.equal(notified.length, 1);
-  assert.deepEqual(notified[0], { type: "offline-copied", name: "Show.S01", target: "/local/dl" });
-  assert.equal(getOfflineWatcherStatus().pending, 0);
+  assert.match(f.detail, /已交给复制队列/);
+  assert.equal(copyCalls.length, 1);
+  assert.deepEqual(copyCalls[0], {
+    account: "acc",
+    sources: [{ path: "/云下载/Show.S01", isDir: true, nodeId: "r1" }],
+    dstDir: "/local/dl",
+    trigger: "offline",
+  });
 });
 
-test("加任务时选了目的子目录：整条链路用它，不用设置里的 dstDir", async () => {
+test("下到任意目录也能复制：不再限定 115 默认目录", async () => {
+  const r = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", dirId: "5", copyToOpenlist: true });
+  await stopOfflineWatcher();
+  assert.equal(r.followup, true);
+  pages = [[row({ dirId: "5" })]];
+  await tickFollowups();
+  assert.equal(listFollowups()[0].status, "done");
+  assert.deepEqual(copyCalls[0]?.sources, [{ path: "/别的目录/Show.S01", isDir: true, nodeId: "r1" }]);
+});
+
+test("下到任务目录 + 勾复制：先生成 strm，再交给复制队列", async () => {
+  await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", taskId: "t1", subPath: "S1", copyToOpenlist: true });
+  await stopOfflineWatcher();
+  pages = [[row({})]];
+  await tickFollowups();
+  const [f] = listFollowups();
+  assert.equal(f.status, "done");
+  assert.match(f.detail, /已生成 3 个 strm/);
+  assert.equal(generated.length, 1, "strm 照生成");
+  assert.equal(copyCalls.length, 1);
+  assert.deepEqual(copyCalls[0], {
+    account: "acc",
+    sources: [{ path: "tv/S1/Show.S01", isDir: true, nodeId: "r1" }],
+    rootPath: "tv",
+    taskId: "t1",
+    dstDir: "/local/dl",
+    trigger: "offline",
+  });
+});
+
+test("加任务时选了目的子目录：交给队列时用它，不用设置里的 dstDir", async () => {
   const r = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", copyToOpenlist: true, copyDstDir: "/local/dl/movies/" });
   await stopOfflineWatcher();
   assert.equal(r.followup, true);
   assert.equal(listFollowups()[0].copyDstDir, "/local/dl/movies", "尾斜杠在登记时就归一化");
-
   pages = [[row({})]];
-  olNames = ["Show.S01"];
-  olCopyResult = olTask({ id: "tid1" });
   await tickFollowups();
-  assert.deepEqual(olCopyCalls, [{ srcDir: "/115/云下载", dstDir: "/local/dl/movies", name: "Show.S01" }]);
-
-  olTasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: Date.now() })] };
-  await tickFollowups();
-  const [f] = listFollowups();
-  assert.equal(f.status, "done");
-  assert.match(f.detail, /OpenList 已复制到 \/local\/dl\/movies/);
-  assert.deepEqual(notified.at(-1), { type: "offline-copied", name: "Show.S01", target: "/local/dl/movies" });
+  assert.equal(copyCalls[0]?.dstDir, "/local/dl/movies");
 });
 
 test("重复提交（任务已存在）：复制回执照登并由循环接管，strm 回执不登", async () => {
@@ -392,13 +344,11 @@ test("重复提交（任务已存在）：复制回执照登并由循环接管�
   assert.equal(f.kind, "openlist-copy");
   assert.equal(f.infoHash, "hash0");
 
-  // 已存在的任务往往已经下完：下一轮直接提交复制
+  // 已存在的任务往往已经下完：下一轮直接交给复制队列
   pages = [[row({})]];
-  olNames = ["Show.S01"];
-  olCopyResult = olTask({ id: "tid1" });
   await tickFollowups();
-  assert.equal(olCopyCalls.length, 1);
-  assert.equal(listFollowups()[0].copyTaskId, "tid1");
+  assert.equal(copyCalls.length, 1);
+  assert.equal(listFollowups()[0].status, "done");
 
   // strm 模式的重复不登：已存在的任务可能不在任务目录里，生成的 strm 路径会是错的
   await __test_resetOffline();
@@ -415,118 +365,31 @@ test("115 下载失败的复制回执：作废并用复制的通知文案", asyn
   const [f] = listFollowups();
   assert.equal(f.status, "failed");
   assert.match(f.detail, /115 下载失败：资源违规/);
+  assert.equal(copyCalls.length, 0, "没下成就不该交给复制队列");
   assert.equal(notified.length, 1);
   assert.equal(notified[0].type, "offline-copy-failed");
 });
 
-test("产物迟迟不出现在 OpenList：等满 10 轮作废", async () => {
+test("落点目录解析不出来：回执失败，不乱猜路径", async () => {
   await seedCopy();
-  pages = [[row({})]];
-  olNames = [];
-  for (let i = 1; i <= 9; i++) {
-    await tickFollowups();
-    assert.equal(listFollowups()[0].status, "pending", `第 ${i} 轮还该在等`);
-  }
+  pages = [[row({ dirId: "不存在的目录" })]];
   await tickFollowups();
   const [f] = listFollowups();
   assert.equal(f.status, "failed");
-  assert.match(f.detail, /始终没有出现「Show.S01」/);
-  assert.equal(olCopyCalls.length, 0);
-});
-
-test("提交复制的接口报错：重试 3 次后作废", async () => {
-  await seedCopy();
-  pages = [[row({})]];
-  olNames = ["Show.S01"];
-  olCopyError = new Error("OpenList /api/fs/copy 失败：HTTP 500");
-  await tickFollowups();
-  assert.match(listFollowups()[0].detail, /稍后重试（1\/3）/);
-  await tickFollowups();
-  await tickFollowups();
-  const [f] = listFollowups();
-  assert.equal(f.status, "failed");
-  assert.match(f.detail, /提交 OpenList 复制失败：OpenList \/api\/fs\/copy 失败/);
-});
-
-test("OpenList 复制任务失败：把 error 原样带出来", async () => {
-  await seedCopy();
-  pages = [[row({})]];
-  olNames = ["Show.S01"];
-  olCopyResult = olTask({ id: "tid1" });
-  await tickFollowups();
-  olTasks = { undone: [], done: [olTask({ id: "tid1", state: 7, error: "存储空间不足", endedAt: Date.now() })] };
-  await tickFollowups();
-  const [f] = listFollowups();
-  assert.equal(f.status, "failed");
-  assert.match(f.detail, /OpenList 复制失败：存储空间不足/);
-  assert.equal(notified.at(-1)?.type, "offline-copy-failed");
-});
-
-test("done 列表里提交之前的陈年同名任务不算这次的", async () => {
-  await seedCopy();
-  pages = [[row({})]];
-  olNames = ["Show.S01"];
-  olCopyResult = olTask({ id: "tid1" });
-  await tickFollowups();
-  olTasks = {
-    undone: [],
-    done: [
-      olTask({ id: "old", state: 7, error: "上个月失败的", endedAt: Date.now() - 3600_000 }),
-      olTask({ id: "tid1", state: 2, endedAt: Date.now() }),
-    ],
-  };
-  await tickFollowups();
-  assert.equal(listFollowups()[0].status, "done", "旧任务的失败不该影响这次");
-});
-
-test("复制任务列表拿不到：这一轮不动，下轮再来", async () => {
-  await seedCopy();
-  pages = [[row({})]];
-  olNames = ["Show.S01"];
-  olCopyResult = olTask({ id: "tid1" });
-  await tickFollowups();
-  olTasksError = new Error("connect ECONNREFUSED");
-  await tickFollowups();
-  const [f] = listFollowups();
-  assert.equal(f.status, "pending");
-  assert.equal(f.misses, 0);
-  assert.equal(getOfflineWatcherStatus().lastError, "connect ECONNREFUSED");
-});
-
-test("复制任务从 OpenList 的列表里消失：3 轮后作废", async () => {
-  await seedCopy();
-  pages = [[row({})]];
-  olNames = ["Show.S01"];
-  olCopyResult = olTask({ id: "tid1" });
-  await tickFollowups();
-  olTasks = { undone: [], done: [] };
-  await tickFollowups();
-  assert.match(listFollowups()[0].detail, /暂时没找到这次复制（1\/3）/);
-  await tickFollowups();
-  await tickFollowups();
-  const [f] = listFollowups();
-  assert.equal(f.status, "failed");
-  assert.match(f.detail, /找不到这次复制/);
+  assert.match(f.detail, /解析不出 115 上的落点目录/);
+  assert.equal(copyCalls.length, 0);
 });
 
 test("strm 回执和复制回执混在一轮里：各走各的", async () => {
-  // ssp 桩按每次调用里的顺序编号：先加两条复制（hash0、hash1），再按任务目录加一条（hash0）。
-  // hash0 的复制回执被后来的 strm 回执覆盖（同 account+infoHash 只留最新），hash1 保持复制
-  await seedCopy("magnet:?xt=urn:btih:one\nmagnet:?xt=urn:btih:two");
   await seed("magnet:?xt=urn:btih:one");
-  pages = [[row({ infoHash: "hash0" }), row({ infoHash: "hash1", resultName: "Movie.2026", isDir: false, resultId: "f2" })]];
-  olNames = ["Movie.2026"];
-  olCopyResult = olTask({ id: "tid9" });
-  await tickFollowups();
+  await addOfflineTasks({ urls: "magnet:?xt=urn:btih:solo", copyToOpenlist: true });
+  await stopOfflineWatcher();
+  assert.equal(listFollowups().length, 2);
 
-  const rows = listFollowups();
-  assert.equal(rows.length, 2);
-  const strm = rows.find((f) => (f.kind ?? "strm") === "strm")!;
-  const copy = rows.find((f) => f.kind === "openlist-copy")!;
-  assert.equal(strm.infoHash, "hash0");
-  assert.equal(strm.status, "done", "strm 回执照常生成");
-  assert.equal(generated.length, 1);
-  assert.equal(copy.infoHash, "hash1");
-  assert.equal(copy.copyTaskId, "tid9", "复制回执照常提交");
-  assert.deepEqual(olCopyCalls, [{ srcDir: "/115/云下载", dstDir: "/local/dl", name: "Movie.2026" }]);
+  pages = [[row({ infoHash: "hash0" }), row({ infoHash: "hash9", name: "Other" })]];
+  await tickFollowups();
+  const done = listFollowups().filter((f) => f.status === "done");
+  assert.equal(done.length, 2, "两条都办完了");
+  assert.equal(generated.length, 1, "只有 strm 那条生成了 strm");
+  assert.equal(copyCalls.length, 1, "只有复制那条进了队列");
 });

@@ -59,6 +59,7 @@ import {
 } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import { AddOfflineTaskDialog } from "./components/AddOfflineTaskDialog";
+import { CopyQueuePanel } from "./components/CopyQueuePanel";
 
 /** 有任务在下载或有回执待兑现时的刷新间隔 */
 const POLL_INTERVAL_MS = 5000;
@@ -330,6 +331,8 @@ export default function OfflinePage() {
         }
       />
 
+      <CopyQueuePanel />
+
       {/* 手机上统计芯片和按钮各占一行；sm 起并排、按钮靠右 */}
       <div className="flex flex-col gap-2 text-sm sm:flex-row sm:flex-wrap sm:items-center">
         <div className="flex flex-wrap items-center gap-2">
@@ -346,7 +349,7 @@ export default function OfflinePage() {
           )}
           {data?.watcher.pending ? (
             <StatusBadge tone="brand" className="tabular-nums">
-              {data.watcher.pending} 个回执待兑现（生成 strm / 复制到 OpenList）
+              {data.watcher.pending} 个回执待兑现（下完生成 strm / 交给复制队列）
             </StatusBadge>
           ) : null}
           {data?.watcher.lastError && (

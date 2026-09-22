@@ -1,6 +1,7 @@
 export type {
   AppSettings,
   LifeMonitorSettings,
+  OpenlistCopySettings,
   LifePullMode,
   LifeEventMode,
   TelegramSettings,

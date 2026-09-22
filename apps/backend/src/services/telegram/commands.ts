@@ -22,10 +22,10 @@ import {
   addOfflineTasks,
   getOfflineWatcherStatus,
   listOfflineTasks,
-  resolveOpenlistCopyConfig,
   type AddOfflineResponse,
 } from "../offline/service.js";
 import { openlistListDir } from "../openlist/client.js";
+import { copyConfigured, resolveCopyConfig } from "../copy/paths.js";
 import { getLifeMonitorStatus } from "../life/monitor.js";
 import { normalizeOfflineUrls } from "../cloud-115/offline.js";
 import { KIND_LABEL, findShareLink, providerFor, providerForTask, shareForLink } from "../drive/registry.js";
@@ -165,7 +165,7 @@ const realDeps: CommandDeps = {
   cancelTask: (taskId) => cancelRunningTask(taskId, "Telegram 取消"),
   addOffline: (input) => addOfflineTasks(input),
   listOpenlistDirs: async (path) => {
-    const cfg = resolveOpenlistCopyConfig();
+    const cfg = resolveCopyConfig();
     return (await openlistListDir(cfg.account, path)).filter((e) => e.is_dir).map((e) => e.name);
   },
   listOffline: async () => {
@@ -549,10 +549,14 @@ async function beginOffline(bot: BotLike, chatId: string, userId: number, urls: 
   await bot.sendMessage(chatId, clamp([`收到 ${urls.length} 条链接，下载到哪里？`, ...preview, "", "选任务目录后还能进它的子文件夹；下完会自动生成 strm。"].join("\n")), { buttons });
 }
 
-/** 设置页的「复制到 OpenList」三项都填了才给这个目的地按钮；账号本身好不好使留到提交时报错 */
+/**
+ * 「复制到 OpenList」配好了、而且这个 115 账号填了挂载根，才给这个目的地按钮；
+ * 账号本身好不好使留到提交时报错
+ */
 function openlistCopyReady(settings: AppSettings): boolean {
-  const c = settings.openlistCopy;
-  return Boolean(c?.account && c.srcDir?.trim() && c.dstDir?.trim());
+  // 「115 默认目录」这条路走的就是第一个 115 账号（同 offline/service 的 resolveAccount115）
+  const account = deps.accounts().find((a) => a.kind === "115");
+  return Boolean(account && copyConfigured(account.name, settings));
 }
 
 /** 去尾斜杠、补头斜杠（和 offline/service 的 normDir 同规则，输入已保证非空） */

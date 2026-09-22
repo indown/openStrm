@@ -116,12 +116,24 @@ export type UpdateSettings = {
   includePrerelease?: boolean;
 };
 
-/** 「复制到 OpenList」：三项都填了才算配置完成 */
+/**
+ * 「复制到 OpenList」：新落到网盘上的文件，让 OpenList 复制到另一个存储（如挂载的本地磁盘）。
+ *
+ * account + dstDir + 这个网盘账号的挂载根，三样齐了这个账号才复制得了。
+ */
 export type OpenlistCopySettings = {
   /** 用哪个 openlist 账号调 API（「账户」页里的账号名） */
   account?: string;
-  /** 115 默认下载目录在 OpenList 里的完整路径，如 /115/云下载 */
-  srcDir?: string;
   /** 复制目标目录（另一个存储里的路径），如 /local/downloads */
   dstDir?: string;
+  /**
+   * 网盘账号名 → 它在 OpenList 里的挂载根，如 `{ "my115": "/115" }`。
+   * 网盘上的绝对路径拼上挂载根就是 OpenList 里的路径，所以任意目录、任意网盘都复制得了。
+   */
+  mounts?: Record<string, string>;
+  /**
+   * 旧字段：115 默认下载目录在 OpenList 里的完整路径，如 /115/云下载。
+   * 升级时会尽量反推成 mounts 里的挂载根；推不出来就留着，只给「下到 115 默认目录」那条老路兜底
+   */
+  srcDir?: string;
 };

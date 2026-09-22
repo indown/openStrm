@@ -49,7 +49,11 @@ import taskCronRoute from "./routes/task/cron.js";
 import cloudFilesRoute from "./routes/cloud/files.js";
 import shareRoute from "./routes/share/index.js";
 import cloudOfflineRoute from "./routes/cloud/offline.js";
-import { startOfflineWatcher, stopOfflineWatcher } from "./services/offline/service.js";
+import { migrateLegacyCopyMount, startOfflineWatcher, stopOfflineWatcher } from "./services/offline/service.js";
+
+// 复制到 OpenList
+import copyRoute from "./routes/copy/index.js";
+import { adoptLegacyCopyFollowups, startCopyWatcher, stopCopyWatcher } from "./services/copy/service.js";
 
 // 分享追更
 import followRoute from "./routes/follow/index.js";
@@ -152,6 +156,7 @@ await app.register(taskCronRoute);
 await app.register(cloudFilesRoute);
 await app.register(shareRoute);
 await app.register(cloudOfflineRoute);
+await app.register(copyRoute);
 await app.register(followRoute);
 
 // Library routes
@@ -229,6 +234,16 @@ try {
   }
   // 云下载回执：上次关机前还有"下完生成 strm"没兑现的，接着盯
   startOfflineWatcher();
+  // 复制到 OpenList：接管老版本在途的复制，再把队列里没办完的接着推
+  try {
+    adoptLegacyCopyFollowups();
+  } catch (err) {
+    app.log.warn({ err }, "接管旧的复制回执失败");
+  }
+  startCopyWatcher();
+  // 老配置只有「源目录」没有挂载根：查一次 115 的默认下载目录换算过来。
+  // 不 await：115 被风控时不能拖住启动，推不出来下次启动再试
+  void migrateLegacyCopyMount().catch((err) => app.log.warn({ err }, "旧的「复制到 OpenList」配置换算失败"));
   // 分享追更：有开着的订阅就接着按周期检查
   startFollowWatcher();
   // Emby 入库通知：循环常驻，开关和配置每轮现查
@@ -252,6 +267,7 @@ async function shutdown() {
 
   try { await stopLifeMonitor(); } catch { /* ignore */ }
   try { await stopOfflineWatcher(); } catch { /* ignore */ }
+  try { await stopCopyWatcher(); } catch { /* ignore */ }
   try { await stopFollowWatcher(); } catch { /* ignore */ }
   try { await stopEmbyNewWatcher(); } catch { /* ignore */ }
   try { flushEmbyRefresh(); } catch { /* ignore */ }
