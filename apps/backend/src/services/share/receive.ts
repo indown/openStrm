@@ -12,9 +12,13 @@ import { assertSameKind, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareRef } from "../drive/types.js";
 import { enqueueCopy } from "../copy/service.js";
 import { copyOptionsFor } from "../copy/paths.js";
-import { maybeAutoOrganize } from "../organize/auto.js";
+import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
 import { generateStrmForSelected, type SelectedItem } from "../strm/share-strm.js";
+import { setTimeout as sleep } from "node:timers/promises";
+import { moduleLogger } from "../../lib/logger.js";
 import { startTask } from "../task/runner.js";
+
+const log = moduleLogger("share");
 
 export interface SaveItem {
   id: string;
@@ -98,32 +102,35 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
   } catch (err) {
     throw driveErrorToHttp(err, "转存失败");
   }
+  // 网盘给了转存后的顶层 id 且一一对应时，目录直接按 id 列，省掉按路径解析那一步；删源时也靠它核对
+  const ids = topIds && topIds.length === items.length ? topIds : [];
+  /** 任务开了「复制到 OpenList」（或这次勾了）：把刚转存进来的条目交给复制队列。organizing = 刚排了会直接执行的自动整理 */
+  const enqueueCopyOf = (organizing: boolean) => {
+    const copyOpts = copyOptionsFor(task, opts.copy, settings);
+    if (!copyOpts.enabled) return;
+    enqueueCopy({
+      account: provider.account.name,
+      sources: items.map((i, idx) => ({ path: `${fullOriginPath}/${i.name}`, isDir: i.isDir, nodeId: ids[idx] })),
+      rootPath: task.originPath,
+      taskId: task.id,
+      dstDir: copyOpts.dstDir,
+      trigger: "share",
+      deleteSource: copyOpts.deleteSource,
+      holdForOrganize: organizing,
+    });
+  };
 
   if (mode === "sync") {
-    // 网盘给了转存后的顶层 id 且一一对应时，目录直接按 id 列，省掉按路径解析那一步
-    const ids = topIds && topIds.length === items.length ? topIds : [];
     const selectedItems: SelectedItem[] = items.map((i, idx) => ({ name: i.name, isDir: i.isDir, id: ids[idx] }));
     try {
       const { generatedCount, skippedCount, invalidNames } = await generateStrmForSelected({ task, provider, selectedItems, settings, subPath });
       // 任务开了自动整理（或这次勾了「转存后整理」）：刚转存进来的这些条目交给整理，识别失败或没开都不影响这次转存。
       // 明确给了 false 就这次不整理
+      const organizeMode = opts.organize === false ? undefined : forcedOrganizeMode(task, opts.organize);
       if (opts.organize !== false) {
-        maybeAutoOrganize({ task, paths: items.map((i) => (subPath ? `${subPath}/${i.name}` : i.name)), trigger: "share", mode: forcedOrganizeMode(task, opts.organize) });
+        maybeAutoOrganize({ task, paths: items.map((i) => (subPath ? `${subPath}/${i.name}` : i.name)), trigger: "share", mode: organizeMode });
       }
-      // 任务开了「复制到 OpenList」（或这次勾了）：把刚转存进来的条目交给复制队列
-      const copyOpts = copyOptionsFor(task, opts.copy, settings);
-      if (copyOpts.enabled) {
-        enqueueCopy({
-          account: provider.account.name,
-          // 带上网盘那边给的 id：删源时靠它核对「路径上还是当初复制的那一份」
-          sources: items.map((i, idx) => ({ path: `${fullOriginPath}/${i.name}`, isDir: i.isDir, nodeId: ids[idx] })),
-          rootPath: task.originPath,
-          taskId: task.id,
-          dstDir: copyOpts.dstDir,
-          trigger: "share",
-          deleteSource: copyOpts.deleteSource,
-        });
-      }
+      enqueueCopyOf(opts.organize !== false && effectiveAutoMode(task, organizeMode, settings) === "auto");
       return { mode: "sync", generatedCount, skippedCount, invalidNames };
     } catch (err) {
       // 走到这里时转存已经成功了，只是本地 strm 没生成好：标出来，调用方才知道别再转存一遍（网盘会再复制一份）
@@ -132,8 +139,31 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
     }
   }
 
-  const result = await startTask(task.id, { trigger: "share" });
+  // 后台模式不整理（整理和全量同步同时动一个目录会互相踩），复制只读网盘，照常排上
+  enqueueCopyOf(false);
+  /**
+   * 「后台」就是不等同步：startTask 要先把远端目录树拉完才返回，115 的大目录导出要好几分钟，
+   * 一直等着的话前端的请求会先超时、报「保存失败」，其实转存早就成了（真机撞到过）。
+   * 所以只等一小会儿：起得快就照常回结果；没回来就先说「已触发后台同步」，同步接着跑，
+   * 起不来的原因 startTask 自己会记进任务历史并发通知
+   */
+  const started = startTask(task.id, { trigger: "share" });
+  const quick = await Promise.race([started.then((r) => ({ r })), sleep(asyncStartGraceMs).then(() => null)]);
+  if (!quick) {
+    started.catch((err) => log.warn({ err, taskId: task.id }, "后台同步没起来"));
+    return { mode: "async", taskId: task.id, message: "已触发后台同步，远端目录较大，还在读取" };
+  }
+  const result = quick.r;
   if (result.status !== 200) return { mode: "async", error: result.body };
   const body = result.body as { taskId?: string; message?: string };
   return { mode: "async", taskId: body.taskId, message: body.message };
+}
+
+/** 后台模式转存最多等同步起来这么久，再长就先回话（前端的请求有超时） */
+export const ASYNC_START_GRACE_MS = 8_000;
+let asyncStartGraceMs = ASYNC_START_GRACE_MS;
+
+/** 仅供测试：把等同步起来的时间调短；传 null 恢复 */
+export function __test_setAsyncStartGrace(ms: number | null): void {
+  asyncStartGraceMs = ms ?? ASYNC_START_GRACE_MS;
 }

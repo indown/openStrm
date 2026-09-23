@@ -9,7 +9,10 @@
  *       copying  盯着复制任务，全部结束后对成败。
  *     两个阶段各有各的计数器：waits（产物还没出现，等 10 轮）和 misses（任务列表里找不到，3 轮），
  *     换阶段时把对方清零，免得一个计数器两个含义。
- *   - 源目录在 OpenList 里压根不存在（挂载根填错了）第一轮就失败，不白等 10 轮。
+ *   - 源目录在 OpenList 里找不到时先从挂载根往下逐级刷新再看（OpenList 靠父目录的缓存找子目录，
+ *     网盘上刚建 / 刚改名的目录直接刷新会报找不到）；挂载根本身都没有才第一轮就失败，不白等 10 轮。
+ *   - 任务开着「把握大的直接执行」的自动整理时，登记的先压着等整理在网盘上改完名再复制（holdUntil），
+ *     整理办完提前放行；整理挪走的文件由整理那边改写队列里的路径（rewriteCopyPaths）。
  *   - 没待办时循环自己停掉，不白打接口。
  *
  * 路径换算在 ./paths.ts：网盘绝对路径 + 这个账号的挂载根 = OpenList 里的路径。
@@ -35,7 +38,13 @@ import {
 import { notify, type NotifyEvent } from "../telegram/notify.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { maybeAutoOrganize, type AutoOrganizeInput } from "../organize/auto.js";
+import fsp from "node:fs/promises";
+import path from "node:path";
+import { removeEmptyParents } from "../../lib/fs.js";
+import { matchTask } from "../life/handlers.js";
+import { mirrorDelete } from "../organize/mirror.js";
 import { providerForAccount } from "../drive/registry.js";
+import type { DriveNode } from "../drive/types.js";
 import { listTasks } from "../../db/repositories/tasks.js";
 import {
   baseName,
@@ -72,6 +81,11 @@ const MAX_WAITS = 10;
 const MAX_MISSES = 3;
 /** 刚登记的先晾一会儿：监控是一个文件一条事件，晾这一下同目录的兄弟文件就能并进同一批 */
 const SETTLE_MS = 10_000;
+/**
+ * 任务开着「把握大的直接执行」时最多等自动整理多久。整理办完会提前放行，这只是兜底：
+ * 监控的整理要攒 30 秒，一季几十集识别 + 在网盘上挪也要一两分钟
+ */
+const ORGANIZE_HOLD_MS = 10 * 60_000;
 /** 排了这么久还没复制完就不再跟踪 */
 const PENDING_MAX_AGE_MS = 7 * 24 * 3600_000;
 
@@ -107,6 +121,10 @@ interface Deps {
   removeSource: (account: string, path: string, nodeId?: string) => Promise<"removed" | "missing" | "changed" | "unsupported">;
   /** 网盘上这个目录里有哪些条目名：删源前核对目录复制全了没有 */
   listDriveChildren: (account: string, path: string) => Promise<string[]>;
+  /** 网盘上这个路径现在是哪个节点：要删源又没带节点 id 的（追更、115 转存），提交时钉住 */
+  resolveNodeId: (account: string, path: string) => Promise<string | null>;
+  /** 删源之后把本地对应的 strm / 下载文件（目录就整个目录）也删掉；本地没有返回 false */
+  removeLocalMirror: (account: string, path: string, isDir: boolean | undefined) => Promise<boolean>;
 }
 
 const realDeps: Deps = {
@@ -124,6 +142,8 @@ const realDeps: Deps = {
   organize: maybeAutoOrganize,
   removeSource: removeSourceReal,
   listDriveChildren: listDriveChildrenReal,
+  resolveNodeId: async (account, path) => (await lookupFresh(account, path))?.id ?? null,
+  removeLocalMirror: removeLocalMirrorReal,
 };
 
 let deps: Deps = { ...realDeps };
@@ -156,6 +176,11 @@ export interface CopyRequest {
   trigger: CopyTrigger;
   /** 复制成功后删掉网盘上那份（任务级开关，登记时冻结） */
   deleteSource?: boolean;
+  /**
+   * 调用方刚为这些路径排了一次会直接执行的自动整理：先压着，等整理在网盘上改完名、挪完目录再复制，
+   * 不然要么复制成整理前的样子，要么复制到一半源文件被挪走。整理办完会放行（releaseCopyHolds）
+   */
+  holdForOrganize?: boolean;
 }
 
 export interface CopyEnqueueResult {
@@ -219,10 +244,15 @@ export function enqueueCopy(req: CopyRequest): CopyEnqueueResult {
         addedAt: now,
         status: "pending",
         stage: "waiting",
-        detail: flattened ? "等着复制到 OpenList（路径不在任务目录下，平铺复制）" : "等着复制到 OpenList",
+        detail: flattened
+          ? "等着复制到 OpenList（路径不在任务目录下，平铺复制）"
+          : req.holdForOrganize
+            ? "等自动整理先在网盘上改完名再复制"
+            : "等着复制到 OpenList",
         attempts: 0,
         waits: 0,
         misses: 0,
+        ...(req.holdForOrganize ? { holdUntil: now + ORGANIZE_HOLD_MS } : {}),
       };
       if (!rec.name) continue;
       if (isDuplicate([...rows, ...fresh], rec, now)) continue;
@@ -269,14 +299,17 @@ function flushNotifications(): void {
     const names = rows.map((c) => c.name);
     const source = [...new Set(rows.map((c) => TRIGGER_LABEL[c.trigger]))].join(" / ");
     if (status === "done") {
-      void deps.notify({ type: "copy-done", names, target: rows[0].dstDir, source }).catch(() => {});
+      // 一季的文件多半在同一个目录；落在好几个目录时只写第一个再说一共几个，别让人以为全在第一个里
+      const dirs = [...new Set(rows.map((c) => c.dstDir))];
+      const target = dirs.length > 1 ? `${dirs[0]} 等 ${dirs.length} 个目录` : dirs[0];
+      void deps.notify({ type: "copy-done", names, target, source }).catch(() => {});
     } else {
       void deps.notify({ type: "copy-failed", names, detail: rows[0].detail, source }).catch(() => {});
     }
   }
 }
 
-/** OpenList 说「目录不存在」：挂载根填错了，再等下去也不会变出来 */
+/** OpenList 明确说「找不到」（不是连不上）：是挂载根填错了还是缓存没跟上，由 listSource 往上追着分 */
 function isMissingDir(err: unknown): boolean {
   return err instanceof OpenlistError && !err.transport && /not found|不存在|no such|object not found/i.test(err.message);
 }
@@ -319,18 +352,79 @@ export async function tickCopies(): Promise<void> {
     }
   }
 
-  const waiting = pending.filter((c) => c.status === "pending" && c.stage === "waiting" && now - c.addedAt >= SETTLE_MS);
+  const waiting = pending.filter(
+    (c) => c.status === "pending" && c.stage === "waiting" && now - c.addedAt >= SETTLE_MS && (c.holdUntil ?? 0) <= now,
+  );
   const copying = pending.filter((c) => c.status === "pending" && c.stage === "copying");
-  await submitReady(cfg, waiting, touched, persist);
+  await submitReady(cfg, waiting, pending, touched, persist);
   await pollSubmitted(cfg, copying, touched, persist);
   persist();
   flushNotifications();
 }
 
+/** 网盘绝对路径（所在目录 + 名字）：比较两条记录谁套着谁 */
+const fullPathOf = (c: CopyRecord): string => joinPath(c.srcDir, c.name);
+const isInside = (path: string, dir: string): boolean => path.startsWith(`${dir === "/" ? "" : dir}/`);
+
+/**
+ * 两条记录套在一起（一条是目录，另一条在它里面）时谁先谁后，免得两个 OpenList 任务同时写同一个文件：
+ * 夸克监控只报最上层的新目录，转存 / 追更却是按文件登记的，第一次存进一个新建的子目录时两边就会套上。
+ *   - 目录等它里面的先复制完：那些是按文件登记的（可能要删源），办完之后目标里已经有这个目录，目录本身就按「已存在」跳过；
+ *   - 里面的等外面已经提交的目录复制完：OpenList 已经在复制整个目录了，办完再看目标里有没有。
+ * 返回压着的原因；没套上返回 null
+ */
+function overlapHold(c: CopyRecord, pending: CopyRecord[]): string | null {
+  const me = fullPathOf(c);
+  const others = pending.filter((o) => o.id !== c.id && o.status === "pending" && o.account === c.account && !o.adopted && o.srcDir !== "");
+  const inner = others.filter((o) => isInside(fullPathOf(o), me));
+  if (inner.length > 0) return `等目录里的 ${inner.length} 个条目先复制完`;
+  const outer = others.find((o) => o.stage === "copying" && isInside(me, fullPathOf(o)));
+  if (outer) return `等上层目录「${outer.name}」先复制完`;
+  return null;
+}
+
+/**
+ * 列 OpenList 里的源目录（带 refresh，不然看的是缓存）。
+ *
+ * OpenList 找子目录靠的是**父目录的缓存**：网盘上刚建 / 刚改名的目录（转存或追更新建的子目录、
+ * 整理建的作品目录、在网盘 App 里改的名）还不在父目录的缓存里，直接刷新它会报 object not found。
+ * 所以找不到时从挂载根往下逐级刷新一遍再试一次（真机撞到过：发布目录在 115 上改了名，
+ * 下一集的复制第一轮就报「检查挂载根」）。挂载根本身都列不出来才是挂载根填错了；
+ * 挂载根在、源目录刷新完还是没有，说明它在网盘上已经不在原处了（被挪走 / 改名），按「还没出现」等着。
+ */
+async function listSource(cfg: CopyConfig, account: string, srcDir: string): Promise<{ names: string[] } | { missing: "mount" | "dir" }> {
+  try {
+    return { names: await deps.openlist.listNames(cfg, srcDir) };
+  } catch (err) {
+    if (!isMissingDir(err)) throw err;
+  }
+  const mount = cfg.mounts[account] ?? "/";
+  const chain = [mount];
+  const rest = relativeTo(mount, srcDir);
+  if (rest) {
+    const segs = rest.split("/").filter(Boolean);
+    for (let i = 1; i < segs.length; i++) chain.push(joinPath(mount, segs.slice(0, i).join("/")));
+  }
+  for (const dir of chain) {
+    try {
+      await deps.openlist.listNames(cfg, dir);
+    } catch (err) {
+      if (!isMissingDir(err)) throw err;
+      return { missing: dir === mount ? "mount" : "dir" };
+    }
+  }
+  try {
+    return { names: await deps.openlist.listNames(cfg, srcDir) };
+  } catch (err) {
+    if (!isMissingDir(err)) throw err;
+    return { missing: srcDir === mount ? "mount" : "dir" };
+  }
+}
+
 /** 阶段一：确认产物在 OpenList 里可见，然后成批提交复制 */
-async function submitReady(cfg: CopyConfig, items: CopyRecord[], touched: Set<CopyRecord>, persist: () => void): Promise<void> {
+async function submitReady(cfg: CopyConfig, items: CopyRecord[], pending: CopyRecord[], touched: Set<CopyRecord>, persist: () => void): Promise<void> {
   if (items.length === 0) return;
-  const groups = new Map<string, { srcDir: string; dstDir: string; items: CopyRecord[] }>();
+  const groups = new Map<string, { account: string; srcDir: string; dstDir: string; items: CopyRecord[] }>();
   for (const c of items) {
     touched.add(c);
     const srcDir = toOpenlistPath(cfg.mounts, c.account, c.srcDir);
@@ -338,8 +432,13 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], touched: Set<Co
       finish(c, "failed", `账号 ${c.account} 没填「在 OpenList 里的挂载根」，不知道 ${c.srcDir} 在 OpenList 的哪里`);
       continue;
     }
+    const held = overlapHold(c, pending);
+    if (held) {
+      c.detail = held;
+      continue;
+    }
     const key = JSON.stringify([srcDir, c.dstDir]);
-    const g = groups.get(key) ?? { srcDir, dstDir: c.dstDir, items: [] };
+    const g = groups.get(key) ?? { account: c.account, srcDir, dstDir: c.dstDir, items: [] };
     g.items.push(c);
     groups.set(key, g);
   }
@@ -347,20 +446,31 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], touched: Set<Co
   for (const g of groups.values()) {
     let names: string[];
     try {
-      names = await deps.openlist.listNames(cfg, g.srcDir);
+      const listed = await listSource(cfg, g.account, g.srcDir);
+      if ("missing" in listed) {
+        const mount = cfg.mounts[g.account];
+        if (listed.missing === "mount") {
+          // 挂载根填错了：等多少轮也不会出现
+          for (const c of g.items) finish(c, "failed", `OpenList 里没有挂载根 ${mount}，检查一下账号 ${c.account} 的挂载根填对没有`);
+        } else {
+          for (const c of g.items) {
+            c.waits += 1;
+            if (c.waits >= MAX_WAITS) finish(c, "failed", `刷新后 OpenList 里始终找不到 ${g.srcDir}：网盘上这个目录可能被挪走或改名了`);
+            else c.detail = `OpenList 里还看不到 ${g.srcDir}（${c.waits}/${MAX_WAITS}）`;
+          }
+        }
+        persist();
+        continue;
+      }
+      names = listed.names;
     } catch (err) {
       const msg = messageOf(err);
-      if (isMissingDir(err)) {
-        // 挂载根填错了：源目录在 OpenList 里根本不存在，等多少轮也不会出现
-        for (const c of g.items) finish(c, "failed", `OpenList 里没有 ${g.srcDir}，检查一下账号 ${c.account} 的挂载根填对没有`);
-      } else {
-        for (const c of g.items) {
-          c.attempts += 1;
-          if (c.attempts >= MAX_ATTEMPTS) finish(c, "failed", `读 OpenList 的 ${g.srcDir} 失败：${msg}`);
-          else c.detail = `读 OpenList 的 ${g.srcDir} 失败，稍后重试（${c.attempts}/${MAX_ATTEMPTS}）：${msg}`;
-        }
-        log.warn({ err }, `列 OpenList 目录失败：${g.srcDir}`);
+      for (const c of g.items) {
+        c.attempts += 1;
+        if (c.attempts >= MAX_ATTEMPTS) finish(c, "failed", `读 OpenList 的 ${g.srcDir} 失败：${msg}`);
+        else c.detail = `读 OpenList 的 ${g.srcDir} 失败，稍后重试（${c.attempts}/${MAX_ATTEMPTS}）：${msg}`;
       }
+      log.warn({ err }, `列 OpenList 目录失败：${g.srcDir}`);
       persist();
       continue;
     }
@@ -398,7 +508,30 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], touched: Set<Co
       }
       return false;
     });
-    if (todo.length === 0) {
+    // 要删源却不知道网盘节点 id 的（追更、115 转存、整理拆出来的）：现在钉住，删之前按它核对。
+    // 这一刻 OpenList 刚看见它，路径上就是要复制的这一份
+    const pinned: CopyRecord[] = [];
+    for (const c of todo) {
+      if (!c.deleteSource || c.nodeId || c.adopted) {
+        pinned.push(c);
+        continue;
+      }
+      try {
+        const id = await deps.resolveNodeId(c.account, joinPath(c.srcDir, c.name));
+        if (id) c.nodeId = id;
+        else {
+          c.deleteSource = false;
+          c.sourceKept = "提交时网盘上没找到这个路径的节点，核对不了";
+        }
+        pinned.push(c);
+      } catch (err) {
+        c.attempts += 1;
+        const msg = messageOf(err);
+        if (c.attempts >= MAX_ATTEMPTS) finish(c, "failed", `核对网盘上的源文件失败：${msg}`);
+        else c.detail = `核对网盘上的源文件失败，稍后重试（${c.attempts}/${MAX_ATTEMPTS}）：${msg}`;
+      }
+    }
+    if (pinned.length === 0) {
       persist();
       continue;
     }
@@ -407,7 +540,7 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], touched: Set<Co
     try {
       // /fs/copy 不会自己建目标目录，先建一次（已存在时 OpenList 自己会说，吞掉）
       await deps.openlist.mkdir(cfg, g.dstDir).catch(() => {});
-      const names = todo.map((c) => c.name);
+      const names = pinned.map((c) => c.name);
       const tasks = await deps.openlist.copy(cfg, g.srcDir, g.dstDir, names);
       const submittedAt = deps.now();
       /**
@@ -416,14 +549,14 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], touched: Set<Co
        * 对不上就按名字认；名字也认不出来的不当「立即完成」，留在盯任务阶段靠名字继续找。
        */
       const positional = tasks.length === names.length;
-      todo.forEach((c, i) => {
+      pinned.forEach((c, i) => {
         const task = positional ? tasks[i] : (tasks.find((t) => t.name.includes(c.name)) ?? null);
         c.submittedAt = submittedAt;
         c.waits = 0;
         c.misses = 0;
         if (tasks.length === 0) {
           // 同存储或极小文件会立即完成、一个任务都没有；OpenList 既然收下了就当办成了
-          finish(c, "done", `OpenList 已复制到 ${g.dstDir}`);
+          finish(c, "done", "复制完成");
           settled.push(c);
           return;
         }
@@ -431,10 +564,10 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], touched: Set<Co
         c.copyTaskId = task?.id;
         c.detail = task?.id ? "已提交 OpenList 复制" : "已提交 OpenList 复制（没认出任务号，按名字盯）";
       });
-      log.info(`已提交 OpenList 复制 ${todo.length} 项：${g.srcDir} → ${g.dstDir}`);
+      log.info(`已提交 OpenList 复制 ${pinned.length} 项：${g.srcDir} → ${g.dstDir}`);
     } catch (err) {
       const msg = messageOf(err);
-      for (const c of todo) {
+      for (const c of pinned) {
         c.attempts += 1;
         if (c.attempts >= MAX_ATTEMPTS) finish(c, "failed", `提交 OpenList 复制失败：${msg}`);
         else c.detail = `提交 OpenList 复制失败，稍后重试（${c.attempts}/${MAX_ATTEMPTS}）：${msg}`;
@@ -503,7 +636,7 @@ async function pollSubmitted(cfg: CopyConfig, items: CopyRecord[], touched: Set<
       finish(c, "failed", `OpenList 复制失败：${failed[0].error || "未知原因"}${suffix}`);
       continue;
     }
-    finish(c, "done", `OpenList 已复制到 ${c.dstDir}`);
+    finish(c, "done", "复制完成");
     log.info(`复制完成：${joinPath(c.srcDir, c.name)} → ${c.dstDir}`);
     await afterCopied(c, cfg);
   }
@@ -529,12 +662,47 @@ async function verifyCopied(c: CopyRecord, cfg: CopyConfig): Promise<{ ok: true 
 }
 
 
-/** 网盘上这个目录的一层子项名 */
+/**
+ * 网盘上这个路径现在是哪个节点。按父目录**绕开缓存**列一遍再按名字找：
+ * 115 按路径找文件时用的是进程内缓存 5 分钟的目录清单，刚转存进来的文件在缓存里还没有
+ * （真机撞到：转存弹框刚列过任务目录，提交复制时就钉不住节点，删源被关掉；删的时候也会说「源已不在原处」）。
+ * 目录本身按路径解析（115 的 getid 不走那份缓存），整理那边挑同名也是这么绕的
+ */
+async function lookupFresh(account: string, path: string): Promise<DriveNode | null> {
+  const provider = providerForAccount(account);
+  const name = baseName(path);
+  const dir = await provider.resolvePath(parentDir(path));
+  if (!dir || !dir.isDir || !name) return null;
+  const hit = (await provider.listDir(dir.id, undefined, { fresh: true })).find((e) => e.name === name);
+  return hit ? { id: hit.id, isDir: hit.isDir } : null;
+}
+
+/**
+ * 删源之后同步本地：只认这个网盘账号的任务（别的账号同名 originPath 的任务不能被串到）。
+ * 目录就把本地同名目录整个删掉，文件交给整理那边同一个 mirrorDelete（strm 按扩展名换算、下载的字幕等直接删）
+ */
+async function removeLocalMirrorReal(account: string, panPath: string, isDir: boolean | undefined): Promise<boolean> {
+  const tasks = listTasks().filter((t) => t.account === account);
+  const match = matchTask({ tasks }, panPath);
+  if (!match || !match.relPath) return false;
+  if (isDir !== false) {
+    const local = path.join(match.saveDir, match.relPath);
+    const stat = await fsp.stat(local).catch(() => null);
+    if (stat?.isDirectory()) {
+      await fsp.rm(local, { recursive: true, force: true });
+      await removeEmptyParents(path.dirname(local), match.saveDir);
+      return true;
+    }
+  }
+  return mirrorDelete(panPath, { tasks, settings: readAppSettings() });
+}
+
+/** 网盘上这个目录的一层子项名（同样绕开缓存：刚复制完的目录要对的是现在的样子） */
 async function listDriveChildrenReal(account: string, path: string): Promise<string[]> {
   const provider = providerForAccount(account);
-  const node = await provider.resolvePath(path);
-  if (!node) return [];
-  return (await provider.listDir(node.id)).map((e) => e.name);
+  const node = await lookupFresh(account, path);
+  if (!node || !node.isDir) return [];
+  return (await provider.listDir(node.id, undefined, { fresh: true })).map((e) => e.name);
 }
 
 /**
@@ -544,7 +712,7 @@ async function listDriveChildrenReal(account: string, path: string): Promise<str
 async function removeSourceReal(account: string, path: string, nodeId?: string): Promise<"removed" | "missing" | "changed" | "unsupported"> {
   const provider = providerForAccount(account);
   if (!provider.write) return "unsupported";
-  const node = await provider.resolvePath(path);
+  const node = await lookupFresh(account, path);
   if (!node) return "missing";
   if (nodeId && String(node.id) !== String(nodeId)) return "changed";
   await provider.write.remove({ id: node.id, path, isDir: node.isDir });
@@ -577,7 +745,10 @@ async function afterCopiedInner(c: CopyRecord, cfg: CopyConfig): Promise<void> {
     .sort((a, b) => b.task.originPath.length - a.task.originPath.length)[0];
   if (hit && hit.rel) deps.organize({ task: hit.task, paths: [hit.rel], trigger: "copy", debounce: true });
 
-  if (!c.deleteSource) return;
+  if (!c.deleteSource) {
+    if (c.sourceKept) c.detail += `；${c.sourceKept}，源文件没删`;
+    return;
+  }
   if (c.adopted || c.srcDir === "") {
     c.detail += "；这条是升级前接管的，不知道源在哪，没删";
     return;
@@ -590,8 +761,17 @@ async function afterCopiedInner(c: CopyRecord, cfg: CopyConfig): Promise<void> {
       return;
     }
     const r = await deps.removeSource(c.account, src, c.nodeId);
-    if (r === "removed") c.detail += "；网盘上那份已删";
-    else if (r === "missing") c.detail += "；源文件已不在原处，没删";
+    if (r === "removed") {
+      c.detail += "；网盘上那份已删";
+      // 本地的 strm 指着的就是刚删掉的那一份，留着就是 Emby 里一个放不了的条目。
+      // 不能指望网盘监控来收拾：115 删文件时 Provider 当场就把路径缓存清了，
+      // 随后那条删除事件（不带父目录）就对不上任何任务，被当成根目录下的文件跳过（真机撞到）
+      try {
+        if (await deps.removeLocalMirror(c.account, src, c.isDir)) c.detail += "，本地 strm 也删了";
+      } catch (err) {
+        c.detail += `，本地 strm 没删掉：${messageOf(err)}`;
+      }
+    } else if (r === "missing") c.detail += "；源文件已不在原处，没删";
     else if (r === "changed") c.detail += "；源路径上换成了别的文件，没删";
     else c.detail += "；这个网盘不支持删除，源文件没删";
   } catch (err) {
@@ -623,10 +803,11 @@ export interface CopyWatcherStatus {
   lastError: string | null;
 }
 
-export function getCopyWatcherStatus(): CopyWatcherStatus {
+/** rows：调用方已经读出来的队列，给了就不再读一遍 */
+export function getCopyWatcherStatus(rows: CopyRecord[] = listCopies()): CopyWatcherStatus {
   return {
     running: loop.running,
-    pending: listCopies().filter((c) => c.status === "pending").length,
+    pending: rows.filter((c) => c.status === "pending").length,
     lastTickAt,
     lastError: loop.lastError,
   };
@@ -663,6 +844,7 @@ export function retryCopy(id: string): CopyRecord {
   c.copyTaskId = undefined;
   c.submittedAt = undefined;
   c.doneAt = undefined;
+  c.holdUntil = undefined;
   c.addedAt = deps.now();
   saveCopies(rows);
   startCopyWatcher();

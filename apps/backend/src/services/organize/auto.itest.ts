@@ -1,0 +1,98 @@
+/**
+ * 自动整理入口和复制队列的衔接：整理起不来时，为等它而压着的复制要立刻放行。
+ *
+ *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/services/organize/auto.itest.ts
+ */
+import assert from "node:assert/strict";
+import { after, before, test } from "node:test";
+import type { AppSettings, TaskDefinition } from "@openstrm/shared";
+import { patchAppSettings, readAppSettings } from "../../db/repositories/settings.js";
+import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
+import { HttpError } from "../../lib/http-error.js";
+import { clearCopies, listCopies, saveCopies } from "../copy/queue.js";
+import { __test_flushAutoOrganize, __test_resetAutoOrganize, maybeAutoOrganize, setAutoOrganizeDeps } from "./auto.js";
+
+const task: TaskDefinition = { id: "t1", account: "acc", accountType: "115", originPath: "tv", targetPath: "tv", strmPrefix: "/mnt", organize: { mode: "auto" } };
+let baseline: { tasks: TaskDefinition[]; tmdb: AppSettings["tmdb"] };
+
+before(() => {
+  baseline = { tasks: listTasks(), tmdb: readAppSettings().tmdb };
+  replaceTasks([task]);
+  patchAppSettings({ tmdb: { apiKey: "k" } });
+});
+
+after(() => {
+  __test_resetAutoOrganize();
+  setAutoOrganizeDeps(null);
+  clearCopies();
+  replaceTasks(baseline.tasks);
+  patchAppSettings({ tmdb: baseline.tmdb });
+});
+
+test("整理建 run 失败（不是「正在整理」）：为等它压着的复制立刻放行，不干等兜底的 10 分钟", async () => {
+  const now = Date.now();
+  saveCopies([
+    {
+      id: "held",
+      account: "acc",
+      srcDir: "/tv/某剧",
+      name: "E01.mkv",
+      dstDir: "/local/media/某剧",
+      dstBase: "/local/media",
+      rootPath: "tv",
+      taskId: "t1",
+      trigger: "share",
+      addedAt: now - 1_000,
+      status: "pending",
+      stage: "waiting",
+      detail: "",
+      attempts: 0,
+      waits: 0,
+      misses: 0,
+      holdUntil: now + 600_000,
+    },
+  ]);
+  setAutoOrganizeDeps({
+    createRun: async () => {
+      throw new HttpError(400, "识别词有语法错误：第 1 行");
+    },
+  });
+  maybeAutoOrganize({ task, paths: ["某剧/E01.mkv"], trigger: "share" });
+  await __test_flushAutoOrganize();
+  assert.equal(listCopies()[0].holdUntil, undefined);
+});
+
+test("任务正有整理在跑（409）：接着压着，等重试的那一次办完再放", async () => {
+  const now = Date.now();
+  saveCopies([
+    {
+      id: "held",
+      account: "acc",
+      srcDir: "/tv/某剧",
+      name: "E01.mkv",
+      dstDir: "/local/media/某剧",
+      dstBase: "/local/media",
+      rootPath: "tv",
+      taskId: "t1",
+      trigger: "share",
+      addedAt: now - 1_000,
+      status: "pending",
+      stage: "waiting",
+      detail: "",
+      attempts: 0,
+      waits: 0,
+      misses: 0,
+      holdUntil: now + 600_000,
+    },
+  ]);
+  setAutoOrganizeDeps({
+    createRun: async () => {
+      throw new HttpError(409, "任务已有一次整理在进行中");
+    },
+    retryMs: 60_000,
+  });
+  maybeAutoOrganize({ task, paths: ["某剧/E01.mkv"], trigger: "share" });
+  await __test_flushAutoOrganize();
+  assert.equal(listCopies()[0].holdUntil, now + 600_000);
+  __test_resetAutoOrganize();
+});

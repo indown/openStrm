@@ -36,6 +36,12 @@ interface AddOfflineTaskDialogProps {
   onAdded: () => void;
 }
 
+/** OpenList 路径归一：去空白和尾斜杠、补头斜杠；空的还它空串 */
+const normOlDir = (v?: string): string => {
+  const t = (v ?? "").trim().replace(/\/+$/, "");
+  return t ? (t.startsWith("/") ? t : `/${t}`) : "";
+};
+
 /**
  * 添加云下载任务。目标位置二选一：
  *   - 同步任务的目录（可进子目录）：下载完成后由后端自动为产物生成 strm
@@ -86,10 +92,9 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
       .then((s) => {
         if (cancelled) return;
         const c = s.openlistCopy;
-        // 这个 115 账号得有挂载根，后端才算得出产物在 OpenList 里的位置
-        if (!c?.account || !c.dstDir?.trim() || !c.mounts?.[account]?.trim()) return;
-        const dst = c.dstDir.trim().replace(/\/+$/, "");
-        setOpenlistCopy({ account: c.account, dstDir: dst.startsWith("/") ? dst : `/${dst}` });
+        // 这个 115 账号得有挂载根，后端才算得出产物在 OpenList 里的位置；默认目标目录可以空着（任务上可能填了）
+        if (!c?.account || !c.mounts?.[account]?.trim()) return;
+        setOpenlistCopy({ account: c.account, dstDir: normOlDir(c.dstDir) });
       })
       .catch(() => {});
     setTasksLoading(true);
@@ -123,6 +128,15 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
   }, [open, account]);
 
   const selectedTask = useMemo(() => tasks.find((t) => t.id === taskId), [tasks, taskId]);
+  /**
+   * 复制到哪：任务目录模式按任务自己的目标目录（没填才用设置页的默认值），和后端 addOfflineTasks 一个规则；
+   * 任务开着「复制到 OpenList」时不用勾也会复制，勾选框就锁成勾上
+   */
+  const taskCopy = mode === "task" ? selectedTask?.copyToOpenlist : undefined;
+  const taskCopies = taskCopy?.enabled === true;
+  const copyBase = (mode === "task" ? normOlDir(taskCopy?.dstDir) : "") || (openlistCopy?.dstDir ?? "");
+  const copying = Boolean(openlistCopy) && (taskCopies || copyToOpenlist);
+  const copyTarget = [copyBase, ...copySegments].join("/");
   // 子目录请求只跟任务 id 和路径走，不跟任务对象的引用走（和 SaveToDriveDialog 一个道理）
   const taskAccount = selectedTask?.account;
   const taskOriginPath = selectedTask?.originPath;
@@ -148,11 +162,10 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
     };
   }, [open, mode, taskId, taskAccount, taskOriginPath, subSegments]);
 
-  // OpenList 目的地浏览：勾上「复制走」后从设置页的 dstDir 出发列子目录
-  const copyBase = openlistCopy?.dstDir;
+  // OpenList 目的地浏览：要复制时从上面算好的目标目录出发列子目录
   const copyAccount = openlistCopy?.account;
   useEffect(() => {
-    if (!open || !copyToOpenlist || !copyBase || !copyAccount) return;
+    if (!open || !copying || !copyBase || !copyAccount) return;
     let cancelled = false;
     setCopySubdirLoading(true);
     api.directory
@@ -169,7 +182,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
     return () => {
       cancelled = true;
     };
-  }, [open, copyToOpenlist, copyBase, copyAccount, copySegments]);
+  }, [open, copying, copyBase, copyAccount, copySegments]);
 
   const lineCount = urls
     .split(/\r?\n/)
@@ -189,9 +202,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
     setResults(null);
     setInvalid([]);
     try {
-      const copyDst = openlistCopy ? [openlistCopy.dstDir, ...copySegments].join("/") : "";
-      const copyOpts =
-        copyToOpenlist && openlistCopy ? { copyToOpenlist: true, ...(copySegments.length ? { copyDstDir: copyDst } : {}) } : {};
+      const copyOpts = copying && copyBase ? { copyToOpenlist: true, ...(copySegments.length ? { copyDstDir: copyTarget } : {}) } : {};
       const target =
         mode === "task"
           ? { taskId, subPath: subSegments.join("/"), generateStrm, ...copyOpts }
@@ -202,11 +213,12 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
       setResults(res.results);
       setInvalid(res.invalid);
       if (res.added > 0) {
+        const copied = copying && copyBase ? `让 OpenList 复制到 ${copyTarget}` : "";
         const suffix = !res.followup
           ? ""
           : mode === "task"
-            ? "，下载完成后会自动生成 strm"
-            : `，下载完成后会让 OpenList 复制到 ${copyDst}`;
+            ? `，下载完成后会自动生成 strm${copied ? `，并${copied}` : ""}`
+            : `，下载完成后会${copied}`;
         toast.success(`已添加 ${res.added} 个云下载任务${suffix}`);
         onAdded();
       }
@@ -264,7 +276,10 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
                   name="offlineTarget"
                   value="task"
                   checked={mode === "task"}
-                  onChange={() => setMode("task")}
+                  onChange={() => {
+                    setMode("task");
+                    setCopySegments([]);
+                  }}
                   className="mt-1"
                   disabled={tasks.length === 0 && !tasksLoading}
                 />
@@ -290,6 +305,8 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
                       onValueChange={(v) => {
                         setTaskId(v);
                         setSubSegments([]);
+                        // 复制的根跟着任务变（任务可能有自己的目标目录），在旧根下选的子目录作废
+                        setCopySegments([]);
                       }}
                     >
                       <SelectTrigger className="w-full">
@@ -374,7 +391,10 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
                   name="offlineTarget"
                   value="dir"
                   checked={mode === "dir"}
-                  onChange={() => setMode("dir")}
+                  onChange={() => {
+                    setMode("dir");
+                    setCopySegments([]);
+                  }}
                   className="mt-1"
                 />
                 <div className="flex-1 min-w-0">
@@ -408,85 +428,93 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
                 </div>
               )}
 
-              {openlistCopy && (
-                <div className="ml-6 space-y-2">
-                  <label className="flex items-start gap-2 cursor-pointer text-sm">
-                    <Checkbox
-                      checked={copyToOpenlist}
-                      onCheckedChange={(v) => {
-                        setCopyToOpenlist(v === true);
-                        setCopySegments([]);
-                      }}
-                      className="mt-0.5"
-                    />
-                    <span>
-                      下载完成后让 OpenList 复制走
-                      <span className="block text-xs text-muted-foreground">
-                        复制到 {[openlistCopy.dstDir, ...copySegments].join("/")}（根目录在设置页配置）
-                        {mode === "task" ? "；任务目录里的层级会原样带过去" : ""}
-                      </span>
-                    </span>
-                  </label>
-
-                  {copyToOpenlist && (
-                    <div className="border rounded-md overflow-hidden">
-                      <div className="flex items-center gap-1 px-3 py-2 text-xs bg-muted/40 border-b flex-wrap min-w-0">
-                        <button
-                          type="button"
-                          onClick={() => setCopySegments([])}
-                          className={`hover:text-foreground truncate max-w-[240px] ${
-                            copySegments.length === 0 ? "font-medium text-foreground cursor-default" : "underline cursor-pointer"
-                          }`}
-                          title={openlistCopy.dstDir}
-                        >
-                          {openlistCopy.dstDir}
-                        </button>
-                        {copySegments.map((seg, idx) => (
-                          <span key={idx} className="flex items-center gap-1 min-w-0">
-                            <ChevronRight className="h-3 w-3 shrink-0" />
-                            <button
-                              type="button"
-                              onClick={() => setCopySegments((prev) => prev.slice(0, idx + 1))}
-                              className={`hover:text-foreground truncate max-w-[120px] ${
-                                idx === copySegments.length - 1
-                                  ? "font-medium text-foreground cursor-default"
-                                  : "underline cursor-pointer"
-                              }`}
-                              title={seg}
-                            >
-                              {seg}
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                      <div className="max-h-[160px] overflow-auto">
-                        {copySubdirLoading ? (
-                          <div className="p-3 text-center text-xs text-muted-foreground">加载中...</div>
-                        ) : copySubdirs.length === 0 ? (
-                          <div className="p-3 text-center text-xs text-muted-foreground">此目录下没有子文件夹</div>
-                        ) : (
-                          <ul className="py-1">
-                            {copySubdirs.map((d) => (
-                              <li key={d.id}>
-                                <button
-                                  type="button"
-                                  onClick={() => setCopySegments((prev) => [...prev, d.name])}
-                                  className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left text-sm"
-                                >
-                                  <FolderOpen className="h-4 w-4 text-brand shrink-0" />
-                                  <span className="truncate">{d.name}</span>
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           </div>
+
+          {openlistCopy && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">下载完之后</label>
+              <div className="space-y-2">
+                <label className={`flex items-start gap-2 text-sm ${taskCopies ? "cursor-default" : "cursor-pointer"}`}>
+                  <Checkbox
+                    checked={copying}
+                    disabled={taskCopies || !copyBase}
+                    onCheckedChange={(v) => {
+                      setCopyToOpenlist(v === true);
+                      setCopySegments([]);
+                    }}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    下载完成后让 OpenList 复制走
+                    <span className="block text-xs text-muted-foreground">
+                      {!copyBase
+                        ? "设置页和这个任务上都没填复制目标目录，复制不了"
+                        : taskCopies
+                          ? `这个任务开着「复制到 OpenList」，下完会复制到 ${copyTarget}（在任务设置里改）；任务目录里的层级会原样带过去`
+                          : `复制到 ${copyTarget}${mode === "task" ? "；任务目录里的层级会原样带过去" : ""}`}
+                    </span>
+                  </span>
+                </label>
+
+                {copying && copyBase && (
+                  <div className="border rounded-md overflow-hidden">
+                    <div className="flex items-center gap-1 px-3 py-2 text-xs bg-muted/40 border-b flex-wrap min-w-0">
+                      <button
+                        type="button"
+                        onClick={() => setCopySegments([])}
+                        className={`hover:text-foreground truncate max-w-[240px] ${
+                          copySegments.length === 0 ? "font-medium text-foreground cursor-default" : "underline cursor-pointer"
+                        }`}
+                        title={copyBase}
+                      >
+                        {copyBase}
+                      </button>
+                      {copySegments.map((seg, idx) => (
+                        <span key={idx} className="flex items-center gap-1 min-w-0">
+                          <ChevronRight className="h-3 w-3 shrink-0" />
+                          <button
+                            type="button"
+                            onClick={() => setCopySegments((prev) => prev.slice(0, idx + 1))}
+                            className={`hover:text-foreground truncate max-w-[120px] ${
+                              idx === copySegments.length - 1
+                                ? "font-medium text-foreground cursor-default"
+                                : "underline cursor-pointer"
+                            }`}
+                            title={seg}
+                          >
+                            {seg}
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                    <div className="max-h-[160px] overflow-auto">
+                      {copySubdirLoading ? (
+                        <div className="p-3 text-center text-xs text-muted-foreground">加载中...</div>
+                      ) : copySubdirs.length === 0 ? (
+                        <div className="p-3 text-center text-xs text-muted-foreground">此目录下没有子文件夹</div>
+                      ) : (
+                        <ul className="py-1">
+                          {copySubdirs.map((d) => (
+                            <li key={d.id}>
+                              <button
+                                type="button"
+                                onClick={() => setCopySegments((prev) => [...prev, d.name])}
+                                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left text-sm"
+                              >
+                                <FolderOpen className="h-4 w-4 text-brand shrink-0" />
+                                <span className="truncate">{d.name}</span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {(results?.some((r) => !r.ok) || invalid.length > 0) && (
             <div className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs">

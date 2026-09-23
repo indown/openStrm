@@ -43,7 +43,7 @@ import {
 import { enqueueCopy, type CopyEnqueueResult, type CopyRequest } from "../copy/service.js";
 import { copyOptionsFor, normDir, resolveCopyConfig } from "../copy/paths.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
-import { maybeAutoOrganize } from "../organize/auto.js";
+import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
 import { normalizeSubPath } from "../strm/naming.js";
 import { generateStrmForSelected, type GenerateResult, type SelectedItem } from "../strm/share-strm.js";
 import { providerFor } from "../drive/registry.js";
@@ -596,6 +596,7 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
         dstDir: f.copyDstDir,
         deleteSource: copyOptionsFor(task, undefined, readAppSettings()).deleteSource,
         trigger: "offline",
+        holdForOrganize: effectiveAutoMode(task) === "auto",
       });
     }
   } catch (err) {

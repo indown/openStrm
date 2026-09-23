@@ -161,7 +161,8 @@ export function SaveToDriveDialog({
       mode,
       ...(followHint && followChecked ? { follow: { intervalMinutes: Number(followInterval) } } : {}),
       ...(mode === "sync" && organizeChecked ? { organize: true } : {}),
-      ...(mode === "sync" && copyChecked ? { copy: true } : {}),
+      // 复制只读网盘，后台模式（全量同步）也照样能排；整理会和全量同步互相踩，只在同步模式给
+      ...(copyChecked ? { copy: true } : {}),
     });
   };
 
@@ -351,17 +352,15 @@ export function SaveToDriveDialog({
             </label>
           )}
 
-          {mode === "sync" && (
-            <label className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
-              <Checkbox checked={copyChecked} onCheckedChange={(v) => setCopyChecked(v === true)} className="mt-0.5" />
-              <div>
-                <div className="text-sm font-medium">转存后复制到 OpenList</div>
-                <div className="text-xs text-muted-foreground">
-                  转存完让 OpenList 把这些条目复制到另一个存储（比如挂载的本地磁盘）。要先在设置页配好，任务上本来就开着的话不用勾。
-                </div>
+          <label className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
+            <Checkbox checked={copyChecked} onCheckedChange={(v) => setCopyChecked(v === true)} className="mt-0.5" />
+            <div>
+              <div className="text-sm font-medium">转存后复制到 OpenList</div>
+              <div className="text-xs text-muted-foreground">
+                转存完让 OpenList 把这些条目复制到另一个存储（比如挂载的本地磁盘）。要先在设置页配好，任务上本来就开着的话不用勾。
               </div>
-            </label>
-          )}
+            </div>
+          </label>
         </div>
 
         <DialogFooter>

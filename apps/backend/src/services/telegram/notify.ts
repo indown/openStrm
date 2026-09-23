@@ -203,7 +203,7 @@ function render(event: NotifyEvent): string {
     case "copy-failed": {
       const shown = event.names.slice(0, 8).map(esc).join("、");
       const more = event.names.length > 8 ? ` 等 ${event.names.length} 个` : "";
-      return `❌ <b>复制到 OpenList 失败</b>（${esc(event.source)}）\n${shown}${more}\n${esc(event.detail)}`;
+      return `❌ <b>复制到 OpenList 失败</b>（${esc(event.source)}）\n${shown}${more}\n${esc(event.detail)}\n在「云下载」页的复制队列里可以重试`;
     }
     case "follow-added": {
       const shown = event.added.slice(0, 8).map(esc).join("、");

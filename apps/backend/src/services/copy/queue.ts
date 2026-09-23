@@ -8,6 +8,7 @@
  * 随时会往同一个键里加记录，界面也可能重试或删掉某一条。所以绝不能「开头读一份、结尾整份写回」，
  * 那样会把期间别人写的东西整片抹掉。循环里的改动一律走 commitCopies（重读、按 id 合并、再写）。
  */
+import { randomUUID } from "node:crypto";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
 
@@ -60,6 +61,14 @@ export interface CopyRecord {
   submittedAt?: number;
   /** 用户点过「重试」：目标里已经有同名的时候不再当「复制过了」悄悄跳过 */
   retried?: boolean;
+  /**
+   * 等自动整理先办完（ms）：任务开着「把握大的直接执行」时，整理马上会在网盘上改名 / 挪目录，
+   * 先复制的话要么复制成整理前的样子，要么复制到一半源文件被挪走。整理办完会提前放行（releaseCopyHolds），
+   * 这个时间只是兜底
+   */
+  holdUntil?: number;
+  /** 本来要删源、提交时核对不了网盘节点而关掉了：办完时把原因写进说明 */
+  sourceKept?: string;
 }
 
 const QUEUE_KEY = KEY.copyQueue;
@@ -104,14 +113,20 @@ export function saveCopies(rows: CopyRecord[], now = Date.now()): void {
 
 /**
  * 把改过的记录合并回库：重读一份、按 id 覆盖，别人期间新加的照旧留着、删掉的不复活。
+ * added 是新拆出来的记录（整理把目录里的文件挪走了，按文件另起的），库里已经有一样的就不加。
  * 读—改—写之间没有 await，对别的 JS 代码是原子的。
  */
-export function commitCopies(changed: CopyRecord[], now = Date.now()): void {
-  if (changed.length === 0) return;
+export function commitCopies(changed: CopyRecord[], now = Date.now(), added: CopyRecord[] = []): void {
+  if (changed.length === 0 && added.length === 0) return;
   const byId = new Map(listCopies().map((r) => [r.id, r]));
   let touched = false;
   for (const c of changed) {
     if (!byId.has(c.id)) continue; // 期间被删掉了，不复活
+    byId.set(c.id, c);
+    touched = true;
+  }
+  for (const c of added) {
+    if (byId.has(c.id) || isDuplicate([...byId.values()], c, now)) continue;
     byId.set(c.id, c);
     touched = true;
   }
@@ -138,13 +153,24 @@ export function isDuplicate(rows: CopyRecord[], next: CopyRecord, now = Date.now
 
 export const hasPendingCopies = (): boolean => listCopies().some((c) => c.status === "pending");
 
+/** 整理挪过 / 改过名的一个文件，任务相对路径 */
+export interface CopyMove {
+  from: string;
+  to: string;
+}
+
 /**
  * 整理把任务下的东西改名 / 挪走之后，队列里**还没提交**的待办跟着改
  * （同 rewriteOfflineSubPaths / rewriteFollowSubPaths）。已经提交给 OpenList 的不动：
  * 源路径改了也追不回来，让它按 OpenList 的结果自然结束，用户可以重试。
  *
- * mappings 是**任务相对**的整条路径（目录或文件都行），记录里存的是网盘绝对路径，
- * 所以先脱掉 originPath、改完再拼回去；目标目录按 dstBase 重算，免得停在改名前的层级上。
+ * 路径都是**任务相对**的，记录里存的是网盘绝对路径，所以先脱掉 originPath、改完再拼回去；
+ * 目标目录按 dstBase 重算，免得停在改名前的层级上。按精确程度依次看：
+ *   1. fileMoves：这次真正挪过 / 改过名的文件。文件待办按它改到新位置（整理最常见的就是
+ *      「一集挪进作品目录、顺手改名」，所在目录没腾空，目录级的映射里根本没有它）。
+ *   2. 目录待办里有文件被挪走了：挪走的每个文件另起一条跟过去；目录本身被腾空删掉了（removed）
+ *      就不再复制它，记成跳过并说明，没腾空就留着复制剩下的。
+ *   3. mappings：腾空删掉的目录 → 里面的东西去了哪（目录级），兜住上面没点名的（比如季目录整个挪走）。
  * dryRun 只返回会受影响的相对路径。
  */
 export function rewriteCopyPaths(
@@ -153,34 +179,92 @@ export function rewriteCopyPaths(
   mappings: Array<{ from: string; to: string }>,
   dryRun = false,
   layout?: (dstBase: string, rootPath: string | undefined, srcPath: string) => string,
+  fileMoves: CopyMove[] = [],
+  removed: ReadonlySet<string> = new Set(),
+  now = Date.now(),
 ): string[] {
   const rows = listCopies();
   const root = originPath.replace(/^\/+|\/+$/g, "");
+  const absOf = (rel: string) => (root === "" ? `/${rel}` : `/${root}/${rel}`);
   const hit: string[] = [];
   const changed: CopyRecord[] = [];
+  const added: CopyRecord[] = [];
+  /** 把一条记录挪到任务相对路径 rel 上：名字、所在目录、目标目录一起改 */
+  const place = (c: CopyRecord, rel: string) => {
+    const nextAbs = absOf(rel);
+    const segs = nextAbs.split("/").filter(Boolean);
+    c.name = segs.pop() ?? c.name;
+    c.srcDir = segs.length ? `/${segs.join("/")}` : "/";
+    if (layout) c.dstDir = layout(c.dstBase, c.rootPath, nextAbs);
+  };
+  const sorted = [...mappings].sort((a, b) => b.from.length - a.from.length);
   for (const c of rows) {
     if (c.taskId !== taskId || c.status !== "pending" || c.stage !== "waiting") continue;
-    const abs = `${c.srcDir.replace(/^\/+|\/+$/g, "")}/${c.name}`;
+    const abs = `${c.srcDir}/${c.name}`.replace(/^\/+/, "").replace(/\/{2,}/g, "/");
     const rel = root === "" ? abs : abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null;
     if (rel === null) continue;
     if (dryRun) {
       hit.push(rel);
       continue;
     }
-    // 整条路径命中（文件自己被改名）或它上面某一层目录被挪走，都要跟着改
-    const m = mappings.find((x) => rel === x.from || rel.startsWith(`${x.from}/`));
+    const own = fileMoves.find((m) => m.from === rel);
+    if (own) {
+      hit.push(rel);
+      place(c, own.to);
+      changed.push(c);
+      continue;
+    }
+    const inner = fileMoves.filter((m) => m.from.startsWith(`${rel}/`));
+    if (inner.length > 0) {
+      hit.push(rel);
+      for (const m of inner) {
+        const piece: CopyRecord = {
+          ...c,
+          id: randomUUID(),
+          isDir: false,
+          // 目录的 id 对不上里面的文件；删源前在提交时重新取
+          nodeId: undefined,
+          detail: `整理把它从「${c.name}」里挪了出来，单独复制`,
+          attempts: 0,
+          waits: 0,
+          misses: 0,
+        };
+        place(piece, m.to);
+        added.push(piece);
+      }
+      if (removed.has(rel)) {
+        c.status = "skipped";
+        c.doneAt = now;
+        c.detail = `整理把「${c.name}」里的文件挪到了别处（目录已腾空删掉），已按文件分别排队复制`;
+        changed.push(c);
+      }
+      continue;
+    }
+    const m = sorted.find((x) => rel === x.from || rel.startsWith(`${x.from}/`));
     if (!m) continue;
     hit.push(rel);
-    const nextRel = rel === m.from ? m.to : `${m.to}${rel.slice(m.from.length)}`;
-    const nextAbs = root === "" ? `/${nextRel}` : `/${root}/${nextRel}`;
-    const segs = nextAbs.split("/").filter(Boolean);
-    c.name = segs.pop() ?? c.name;
-    c.srcDir = segs.length ? `/${segs.join("/")}` : "/";
-    if (layout) c.dstDir = layout(c.dstBase, c.rootPath, nextAbs);
+    place(c, rel === m.from ? m.to : `${m.to}${rel.slice(m.from.length)}`);
     changed.push(c);
   }
-  if (changed.length > 0) commitCopies(changed);
+  if (changed.length > 0 || added.length > 0) commitCopies(changed, now, added);
   return hit;
+}
+
+/**
+ * 自动整理办完了（执行完、或者这次没有要动的、或者留着等人确认）：把这个任务里
+ * 在整理开始之前登记、还压着没放的复制放行，不用干等兜底时间。
+ * 整理开始之后才登记的不放——它们要等下一次整理。返回放了几条
+ */
+export function releaseCopyHolds(taskId: string, before: number, now = Date.now()): number {
+  const changed = listCopies().filter(
+    (c) => c.taskId === taskId && c.status === "pending" && c.stage === "waiting" && (c.holdUntil ?? 0) > now && c.addedAt <= before,
+  );
+  for (const c of changed) {
+    c.holdUntil = undefined;
+    c.detail = "自动整理办完了，等着复制到 OpenList";
+  }
+  commitCopies(changed, now);
+  return changed.length;
 }
 
 /** 仅供测试 / 重置：清空队列 */

@@ -37,7 +37,7 @@ import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession, 
 import { saveSelectionToTask } from "../share/receive.js";
 import { enqueueCopy } from "../copy/service.js";
 import { copyOptionsFor } from "../copy/paths.js";
-import { maybeAutoOrganize } from "../organize/auto.js";
+import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
 import { notify, type NotifyEvent } from "../telegram/notify.js";
@@ -587,6 +587,7 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
         dstDir: copyOpts.dstDir,
         trigger: "follow",
         deleteSource: copyOpts.deleteSource,
+        holdForOrganize: effectiveAutoMode(task, undefined, settings) === "auto",
       });
     }
     void deps.notify({ type: "follow-added", name: f.name, added: received.map(baseName), generated, target: target2 }).catch(() => {});

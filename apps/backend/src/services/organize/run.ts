@@ -79,7 +79,7 @@ import { normalizePath, splitPath, type DriveNode, type DriveProvider, type Writ
 import { rewriteFollowSubPaths } from "../follow/service.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { rewriteOfflineSubPaths } from "../offline/service.js";
-import { rewriteCopyPaths } from "../copy/queue.js";
+import { releaseCopyHolds, rewriteCopyPaths, type CopyMove } from "../copy/queue.js";
 import { dstDirFor } from "../copy/paths.js";
 
 /** 整理挪完之后，复制待办的目标目录按新路径重算（层级跟着源走） */
@@ -347,6 +347,8 @@ function startJob(runId: string, work: (job: Job) => Promise<void>, onAbort?: (j
           finishedAt: Math.floor(Date.now() / 1000),
         });
       }
+      // 整理没办成：等它的复制别再干等兜底时间
+      if (run) releaseHeldCopies(run);
     })
     .finally(() => {
       jobs.delete(runId);
@@ -733,8 +735,10 @@ async function preview(job: Job, runId: string): Promise<void> {
 
 /** 自动整理：run 是 auto 模式、全是 high 且没冲突就直接执行；否则留着等人确认并通知 */
 async function afterAutoPreview(runId: string, task: TaskDefinition, mode: OrganizeRunMode, units: OrganizeUnit[], stats: OrganizeRunStats): Promise<void> {
+  const run = getRun(runId);
   if (stats.planned === 0) {
     updateRun(runId, { status: "done", finishedAt: Math.floor(Date.now() / 1000) });
+    if (run) releaseHeldCopies(run);
     return;
   }
   const sure = units.filter((u) => u.selected).every((u) => u.match?.confidence === "high");
@@ -745,6 +749,8 @@ async function afterAutoPreview(runId: string, task: TaskDefinition, mode: Organ
     }, 0);
     return;
   }
+  // 要等人确认：不知道要等多久，复制先按现在的样子走
+  if (run) releaseHeldCopies(run);
   const unsure = units.filter((u) => u.match && u.match.confidence !== "high").length + units.filter((u) => !u.match).length;
   void deps.notify({ type: "organize-review", task, runId, units: stats.units, planned: stats.planned, unsure, conflicts: stats.conflicts });
 }
@@ -1568,6 +1574,8 @@ function finishApply(job: Job, runId: string, outcome: { fatal: string | null; a
     afterApply(task, providerForTask(task, "write"), units, items);
     scheduleEmbyRefresh();
   }
+  // 路径已经改写好了，等这次整理的复制可以走了（没挪成的照原路径复制）
+  releaseHeldCopies(run);
   // 执行过就不能再改单元了，预览留在内存里的单元结构可以放掉
   if (moved > 0 || !outcome.fatal) planStates.delete(runId);
   if (!outcome.aborted) {
@@ -1632,12 +1640,33 @@ function afterApply(task: TaskDefinition, provider: DriveProvider, units: Organi
       episodeOffset: u.episodeOffset,
     });
   }
-  if (mappings.length === 0) return;
+  // 复制队列按文件跟：整理最常见的是「一集挪进作品目录、顺手改名」，所在目录没腾空，目录级映射里没有它
+  const fileMoves = movedFiles(task, items, "done");
+  if (mappings.length === 0 && fileMoves.length === 0) return;
   const rewritten =
-    rewriteFollowSubPaths(task.id, mappings).length +
-    rewriteOfflineSubPaths(task.id, mappings).length +
-    rewriteCopyPaths(task.id, task.originPath, mappings, false, copyLayout).length;
-  if (rewritten > 0) log.info({ taskId: task.id, rewritten }, "整理后改写了追更 / 云下载回执的目录");
+    (mappings.length > 0 ? rewriteFollowSubPaths(task.id, mappings).length + rewriteOfflineSubPaths(task.id, mappings).length : 0) +
+    rewriteCopyPaths(task.id, task.originPath, mappings, false, copyLayout, fileMoves, removedDirs).length;
+  if (rewritten > 0) log.info({ taskId: task.id, rewritten }, "整理后改写了追更 / 云下载回执 / 复制队列里的路径");
+}
+
+/** 这次真正挪过 / 改过名的文件（任务相对路径）；撤销时反过来：已退回的项从目标回到原处 */
+function movedFiles(task: TaskDefinition, items: OrganizeItem[], how: "done" | "reverted"): CopyMove[] {
+  return items
+    .filter((it) => (it.action === "rename" || it.action === "move") && it.status === how)
+    .map((it) =>
+      how === "done"
+        ? { from: relOf(task, it.srcPath), to: relOf(task, it.dstPath) }
+        : { from: relOf(task, it.dstPath), to: relOf(task, it.srcPath) },
+    );
+}
+
+/**
+ * 自动整理这次到头了（执行完、没有要动的、留着等人确认、失败或取消）：
+ * 在它开始之前登记、为等它而压着的复制放行。createdAt 只到秒，同一秒登记的也算进来
+ */
+function releaseHeldCopies(run: Pick<OrganizeRun, "taskId" | "createdAt">): void {
+  const n = releaseCopyHolds(run.taskId, (run.createdAt + 1) * 1000);
+  if (n > 0) log.info({ taskId: run.taskId, released: n }, "自动整理办完，放行压着的复制");
 }
 
 /**
@@ -2121,10 +2150,13 @@ function afterRevert(task: TaskDefinition, provider: DriveProvider, units: Organ
     .filter((m) => m.items.some((it) => it.status === "reverted"))
     .map((m) => ({ from: m.to, to: m.from, root: m.root }))
     .sort((a, b) => b.from.length - a.from.length);
-  if (back.length === 0) return;
-  rewriteFollowSubPaths(task.id, back);
-  rewriteOfflineSubPaths(task.id, back);
-  rewriteCopyPaths(task.id, task.originPath, back, false, copyLayout);
+  const fileMoves = movedFiles(task, items, "reverted");
+  if (back.length === 0 && fileMoves.length === 0) return;
+  if (back.length > 0) {
+    rewriteFollowSubPaths(task.id, back);
+    rewriteOfflineSubPaths(task.id, back);
+  }
+  rewriteCopyPaths(task.id, task.originPath, back, false, copyLayout, fileMoves);
   for (const m of back) if (m.root) repathMatches(provider.account.name, absOf(task, m.from), absOf(task, m.to));
 }
 
@@ -2341,6 +2373,7 @@ function finalizeIfNothingLeft(run: OrganizeRun): boolean {
     if (!items.some((it) => it.status === "done" && WORK_ACTIONS.has(it.action))) return false;
     updateRun(run.id, { status: "done", error: "", stats: computeStats(units, items, "apply"), finishedAt });
     afterApply(task, provider, units, items);
+    releaseHeldCopies(run);
   } else {
     if (items.some((it) => revertWorkItem(it))) return false;
     updateRun(run.id, { status: "reverted", error: "", stats: computeStats(units, items, "revert"), finishedAt });

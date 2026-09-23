@@ -421,6 +421,8 @@ async function exportDirResult(
   { userAgent, timeoutMs, checkIntervalMs, accountInfo, signal }: RequestCtx & { timeoutMs: number; checkIntervalMs: number },
 ): Promise<ExportDirResult> {
   const deadline = isFinite(timeoutMs) ? Date.now() + timeoutMs : Infinity;
+  const startedAt = Date.now();
+  let lastShown = "";
   while (true) {
     // 取消之后别再一秒一次地问下去：导出最长要等五分钟
     signal?.throwIfAborted();
@@ -432,6 +434,12 @@ async function exportDirResult(
       if (resp.data.export_id) {
         return resp.data;
       }
+    }
+    // 还没好：回复变了才记一笔。真机上见过一次导出一直不好（同步卡了 8 分钟以上），当时没有任何线索
+    const shown = JSON.stringify(resp ?? null).slice(0, 300);
+    if (shown !== lastShown) {
+      lastShown = shown;
+      log.debug({ exportId, waitedMs: Date.now() - startedAt, resp: shown }, "115 目录导出还没好");
     }
     
     if (Date.now() >= deadline)

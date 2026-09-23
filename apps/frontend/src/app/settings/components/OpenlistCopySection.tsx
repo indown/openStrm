@@ -16,6 +16,13 @@ import { apiErrorMessage } from "@/lib/axios";
 /** OpenList 之外的账号都是「网盘」：以后接新网盘时这里不用动（services/drive 的规矩） */
 const isDriveAccount = (a: AccountInfo): boolean => a.accountType !== "openlist";
 
+/** 挂载根输入框的示例：按网盘类型给（夸克那一行写 /115 会让人照抄错），认不出的就用账号名 */
+const MOUNT_EXAMPLE: Record<string, string> = { "115": "/115", quark: "/quark" };
+const mountExample = (a: AccountInfo): string => MOUNT_EXAMPLE[a.accountType] ?? `/${a.name}`;
+
+/** OpenList 路径拼接：中间只留一个斜杠 */
+const joinOl = (base: string, rel: string): string => `${base.replace(/\/+$/, "")}/${rel.replace(/^\/+/, "")}`.replace(/\/+$/, "") || "/";
+
 type Props = {
   value: OpenlistCopySettings;
   onChange: (next: OpenlistCopySettings) => void;
@@ -61,29 +68,56 @@ export function OpenlistCopySection({ value, onChange }: Props) {
     [olName],
   );
 
+  /**
+   * 挂载根光能打开还不够：填成了别的网盘的根（夸克那一行填了 /115）也打得开。
+   * 所以把这个账号下每个任务的目录拼上去，都得在 OpenList 里找得到，才算填对了。
+   * 目标目录不存在不要紧（第一次复制时会建），但它所在的存储得在。
+   */
   const check = async () => {
     if (!olName) return;
     setChecking(true);
     try {
-      const dirs = Object.entries(value.mounts ?? {});
-      const targets = [...dirs.map(([acc, path]) => ({ what: `${acc} 的挂载根`, path })), { what: "目标目录", path: value.dstDir ?? "" }];
-      const bad: string[] = [];
-      for (const t of targets) {
-        if (!t.path.trim()) continue;
+      const opens = async (path: string): Promise<string | null> => {
         try {
-          await api.directory.remote(olName, t.path);
+          await api.directory.remote(olName, path);
+          return null;
         } catch (err) {
-          bad.push(`${t.what}（${t.path}）：${apiErrorMessage(err, "打不开")}`);
+          return apiErrorMessage(err, "打不开");
+        }
+      };
+      // 任务列表读不出来就只查挂载根本身
+      const taskRows = await api.tasks.list().catch(() => []);
+      const bad: string[] = [];
+      const notes: string[] = [];
+      for (const [acc, raw] of Object.entries(value.mounts ?? {})) {
+        const mount = raw.trim();
+        if (!mount) continue;
+        const label = accountLabel(acc, driveAccounts.find((a) => a.name === acc)?.accountType);
+        const why = await opens(mount);
+        if (why) {
+          bad.push(`${label} 的挂载根（${mount}）：${why}`);
+          continue;
+        }
+        for (const t of taskRows.filter((row) => row.account === acc)) {
+          const p = joinOl(mount, t.originPath);
+          if (await opens(p)) bad.push(`${label} 的任务目录在 OpenList 里找不到（${p}）：挂载根多半填错了`);
         }
       }
-      if (bad.length === 0) toast.success("都能在 OpenList 里打开");
-      else toast.error(bad.join("；"));
+      const dst = (value.dstDir ?? "").trim();
+      if (dst && (await opens(dst))) {
+        const top = `/${dst.split("/").filter(Boolean)[0] ?? ""}`;
+        const why = top === "/" ? null : await opens(top);
+        if (why) bad.push(`默认目标目录（${dst}）所在的 ${top} 打不开：${why}`);
+        else notes.push(`默认目标目录 ${dst} 还不存在，第一次复制时会自动建`);
+      }
+      if (bad.length > 0) toast.error(bad.join("；"));
+      else toast.success(notes.length > 0 ? `挂载根都对得上。${notes.join("；")}` : "挂载根都对得上，目标目录也在");
     } finally {
       setChecking(false);
     }
   };
 
-  const pathField = (key: string, label: string, current: string, onPick: (v: string) => void, placeholder: string, hint?: string) => (
+  const pathField = (key: string, label: string, pickTitle: string, current: string, onPick: (v: string) => void, placeholder: string, hint?: string) => (
     <div key={key} className="flex flex-col gap-1.5">
       <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
       <InputGroup>
@@ -91,7 +125,7 @@ export function OpenlistCopySection({ value, onChange }: Props) {
         <InputGroupButton
           disabled={!olName}
           title={olName ? "从 OpenList 里选" : "先选 OpenList 账号"}
-          onClick={() => setBrowsing({ title: label, onPick: (p) => onPick(`/${p}`) })}
+          onClick={() => setBrowsing({ title: pickTitle, onPick: (p) => onPick(`/${p}`) })}
         >
           <FolderOpen />
         </InputGroupButton>
@@ -136,7 +170,7 @@ export function OpenlistCopySection({ value, onChange }: Props) {
                   : "用这个账号调 OpenList 的接口"}
           </p>
         </div>
-        {pathField("dst", "默认目标目录", value.dstDir ?? "", (v) => set({ dstDir: v.trim() }), "/local/downloads", "任务上没单独指定时复制到这里")}
+        {pathField("dst", "默认目标目录", "选择默认目标目录", value.dstDir ?? "", (v) => set({ dstDir: v.trim() }), "/local/downloads", "任务上没单独指定时复制到这里；还不存在的目录第一次复制时会自动建")}
       </div>
 
       <div className="space-y-3">
@@ -155,9 +189,10 @@ export function OpenlistCopySection({ value, onChange }: Props) {
           <p className="text-sm text-muted-foreground">还没有 115 / 夸克账号，先到「账户」页添加。</p>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {driveAccounts.map((a) =>
-              pathField(a.name, accountLabel(a.name, a.accountType), value.mounts?.[a.name] ?? "", (v) => setMount(a.name, v), "/115"),
-            )}
+            {driveAccounts.map((a) => {
+              const label = accountLabel(a.name, a.accountType);
+              return pathField(a.name, label, `选择 ${label} 的挂载根`, value.mounts?.[a.name] ?? "", (v) => setMount(a.name, v), mountExample(a));
+            })}
           </div>
         )}
         {value.srcDir && Object.keys(value.mounts ?? {}).length === 0 && (
@@ -176,7 +211,7 @@ export function OpenlistCopySection({ value, onChange }: Props) {
         <TreeSelectDialog
           open
           onOpenChange={(o) => !o && setBrowsing(null)}
-          title={`选择${browsing.title}`}
+          title={browsing.title}
           description={<>从 OpenList 账号 {olName} 的根目录里选</>}
           load={loadDirs}
           onConfirm={(path) => {

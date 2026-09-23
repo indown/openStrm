@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 import { dstDirFor } from "./paths.js";
-import { clearCopies, commitCopies, isDuplicate, listCopies, rewriteCopyPaths, saveCopies, type CopyRecord } from "./queue.js";
+import { clearCopies, commitCopies, isDuplicate, listCopies, releaseCopyHolds, rewriteCopyPaths, saveCopies, type CopyRecord } from "./queue.js";
 
 const NOW = 1_800_000_000_000;
 
@@ -136,4 +136,92 @@ test("整理挪了目录：别的任务、对不上的映射都不碰；dryRun �
   const hit = rewriteCopyPaths("t1", "/tv", [], true, layout);
   assert.deepEqual(hit, ["某剧/S01/E01.mkv"]);
   assert.equal(listCopies()[0].srcDir, "/tv/某剧/S01", "dryRun 不改");
+});
+
+test("整理把一集挪进作品目录并改名（所在目录没腾空）：按文件的挪动改，目录级映射里没有它也得跟上", () => {
+  saveCopies([rec({ id: "a", srcDir: "/tv/Show.S01.1080p", name: "Show.S01E06.mkv", dstDir: "/local/media/Show.S01.1080p" })], NOW);
+  const hit = rewriteCopyPaths(
+    "t1",
+    "/tv",
+    [], // 发布目录里还剩别的集，没腾空，没有目录级映射
+    false,
+    layout,
+    [{ from: "Show.S01.1080p/Show.S01E06.mkv", to: "某剧 (2022) [tmdbid=1]/Season 01/某剧 - S01E06.mkv" }],
+    new Set(),
+    NOW,
+  );
+  assert.deepEqual(hit, ["Show.S01.1080p/Show.S01E06.mkv"]);
+  const [c] = listCopies();
+  assert.equal(c.srcDir, "/tv/某剧 (2022) [tmdbid=1]/Season 01");
+  assert.equal(c.name, "某剧 - S01E06.mkv");
+  assert.equal(c.dstDir, "/local/media/某剧 (2022) [tmdbid=1]/Season 01");
+});
+
+test("整理把目录里的文件挪走、目录腾空删掉：目录待办记成跳过，挪走的每个文件另起一条跟过去", () => {
+  saveCopies([rec({ id: "dir", srcDir: "/tv", name: "Show.S01.1080p", isDir: true, dstDir: "/local/media", deleteSource: true, holdUntil: NOW + 60_000 })], NOW);
+  rewriteCopyPaths(
+    "t1",
+    "/tv",
+    [{ from: "Show.S01.1080p", to: "某剧 (2022) [tmdbid=1]/Season 01" }],
+    false,
+    layout,
+    [
+      { from: "Show.S01.1080p/E01.mkv", to: "某剧 (2022) [tmdbid=1]/Season 01/某剧 - S01E01.mkv" },
+      { from: "Show.S01.1080p/E02.mkv", to: "某剧 (2022) [tmdbid=1]/Season 01/某剧 - S01E02.mkv" },
+    ],
+    new Set(["Show.S01.1080p"]),
+    NOW,
+  );
+  const rows = listCopies();
+  const dir = rows.find((c) => c.id === "dir")!;
+  assert.equal(dir.status, "skipped", "目录已经腾空删掉，不能再按目录复制（目标里要是已经有 Season 01 会整个被跳过）");
+  assert.match(dir.detail, /按文件分别排队复制/);
+  const pieces = rows.filter((c) => c.id !== "dir");
+  assert.deepEqual(pieces.map((c) => c.name).sort(), ["某剧 - S01E01.mkv", "某剧 - S01E02.mkv"]);
+  for (const c of pieces) {
+    assert.equal(c.status, "pending");
+    assert.equal(c.isDir, false);
+    assert.equal(c.srcDir, "/tv/某剧 (2022) [tmdbid=1]/Season 01");
+    assert.equal(c.dstDir, "/local/media/某剧 (2022) [tmdbid=1]/Season 01");
+    assert.equal(c.deleteSource, true, "删源的意思跟着拆出来的文件走");
+    assert.equal(c.nodeId, undefined, "目录的节点 id 对不上里面的文件，提交时再钉");
+    assert.equal(c.holdUntil, NOW + 60_000, "照样压着，等整理那边放行");
+  }
+});
+
+test("目录没腾空（里面还有整理不动的东西）：挪走的文件另起，目录待办留着复制剩下的", () => {
+  saveCopies([rec({ id: "dir", srcDir: "/tv", name: "Show.S01.1080p", isDir: true, dstDir: "/local/media" })], NOW);
+  rewriteCopyPaths("t1", "/tv", [], false, layout, [{ from: "Show.S01.1080p/E01.mkv", to: "某剧/Season 01/某剧 - S01E01.mkv" }], new Set(), NOW);
+  const rows = listCopies();
+  assert.equal(rows.find((c) => c.id === "dir")!.status, "pending");
+  assert.equal(rows.find((c) => c.id !== "dir")!.name, "某剧 - S01E01.mkv");
+});
+
+test("拆出来的文件已经有一样的待办：不重复排", () => {
+  saveCopies(
+    [
+      rec({ id: "dir", srcDir: "/tv", name: "Show", isDir: true, dstDir: "/local/media" }),
+      rec({ id: "f", srcDir: "/tv/某剧/Season 01", name: "某剧 - S01E01.mkv", dstDir: "/local/media/某剧/Season 01" }),
+    ],
+    NOW,
+  );
+  rewriteCopyPaths("t1", "/tv", [], false, layout, [{ from: "Show/E01.mkv", to: "某剧/Season 01/某剧 - S01E01.mkv" }], new Set(["Show"]), NOW);
+  assert.equal(listCopies().filter((c) => c.name === "某剧 - S01E01.mkv").length, 1);
+});
+
+test("等整理的复制：整理开始之前登记的放行，开始之后才登记的接着等下一次", () => {
+  saveCopies(
+    [
+      rec({ id: "early", addedAt: NOW, holdUntil: NOW + 600_000 }),
+      rec({ id: "late", name: "E02.mkv", addedAt: NOW + 5_000, holdUntil: NOW + 600_000 }),
+      rec({ id: "other", taskId: "t2", addedAt: NOW, holdUntil: NOW + 600_000 }),
+    ],
+    NOW,
+  );
+  const n = releaseCopyHolds("t1", NOW + 1_000, NOW + 2_000);
+  assert.equal(n, 1);
+  const byId = new Map(listCopies().map((c) => [c.id, c]));
+  assert.equal(byId.get("early")!.holdUntil, undefined);
+  assert.equal(byId.get("late")!.holdUntil, NOW + 600_000);
+  assert.equal(byId.get("other")!.holdUntil, NOW + 600_000, "别的任务不碰");
 });

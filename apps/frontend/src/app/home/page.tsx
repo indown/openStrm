@@ -146,6 +146,8 @@ function HomeContent() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [startingTasks, setStartingTasks] = useState<Set<string>>(new Set());
+  /** 复制到 OpenList 的队列按任务数一下：复制中几个、失败几个（队列的详情在云下载页） */
+  const [copyStats, setCopyStats] = useState<Map<string, { pending: number; failed: number }>>(new Map());
   // 列表请求的序号：慢的旧响应不能盖掉新状态（比如启动前发出的轮询把乐观标上的 processing 改回去）
   const listSeqRef = useRef(0);
   const router = useRouter();
@@ -157,6 +159,22 @@ function HomeContent() {
   const fetchTasks = useCallback(async (silent = false) => {
     const seq = ++listSeqRef.current;
     if (!silent) setRefreshing(true);
+    // 复制队列是锦上添花：读不到就不显示，不影响任务列表
+    void api.copy
+      .list(500)
+      .then((q) => {
+        if (seq !== listSeqRef.current) return;
+        const stats = new Map<string, { pending: number; failed: number }>();
+        for (const c of q.items) {
+          if (!c.taskId || (c.status !== "pending" && c.status !== "failed")) continue;
+          const s = stats.get(c.taskId) ?? { pending: 0, failed: 0 };
+          if (c.status === "pending") s.pending++;
+          else s.failed++;
+          stats.set(c.taskId, s);
+        }
+        setCopyStats(stats);
+      })
+      .catch(() => {});
     try {
       const rows = await api.tasks.list();
       if (seq === listSeqRef.current) setData(rows);
@@ -385,6 +403,40 @@ function HomeContent() {
     </DropdownMenu>
   );
 
+  /** 开着「复制到 OpenList」的任务：一个「复制」标，队列里有在跑 / 失败的再各给一个，点开是云下载页的复制队列 */
+  const copyBadges = (task: TaskRow) => {
+    const stat = copyStats.get(task.id);
+    if (!task.copyToOpenlist?.enabled && !stat) return null;
+    const open = () => router.push("/offline#copy-queue");
+    return (
+      <>
+        {task.copyToOpenlist?.enabled && (
+          <Badge
+            variant="secondary"
+            className="shrink-0 px-1.5 py-0"
+            title={`新文件会让 OpenList 复制到 ${task.copyToOpenlist.dstDir || "设置页的默认目标目录"}${task.copyToOpenlist.deleteSource ? "，复制完删掉网盘上那份" : ""}`}
+          >
+            复制
+          </Badge>
+        )}
+        {stat && stat.pending > 0 && (
+          <button type="button" onClick={open} title="复制队列在云下载页">
+            <StatusBadge tone="info" pulse className="tabular-nums">
+              复制中 {stat.pending}
+            </StatusBadge>
+          </button>
+        )}
+        {stat && stat.failed > 0 && (
+          <button type="button" onClick={open} title="到云下载页的复制队列里重试">
+            <StatusBadge tone="danger" className="tabular-nums">
+              复制失败 {stat.failed}
+            </StatusBadge>
+          </button>
+        )}
+      </>
+    );
+  };
+
   /* ---------- 桌面：表格行 ---------- */
 
   const renderRow = (state: RowState) => {
@@ -411,6 +463,7 @@ function HomeContent() {
                   302
                 </Badge>
               )}
+              {copyBadges(task)}
             </div>
           </div>
         </TableCell>
@@ -522,6 +575,7 @@ function HomeContent() {
                   302
                 </Badge>
               )}
+              {copyBadges(task)}
             </div>
           </div>
           {stateBadge(state)}

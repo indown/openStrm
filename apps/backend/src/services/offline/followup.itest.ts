@@ -302,6 +302,21 @@ test("下到 115 默认目录：下完把产物的网盘路径交给复制队列
   });
 });
 
+test("任务开着会直接执行的自动整理：交给复制队列时说一声先等整理", async () => {
+  const tmdb = readAppSettings().tmdb;
+  replaceTasks([{ ...task, organize: { mode: "auto" } }]);
+  patchAppSettings({ tmdb: { apiKey: "k" } });
+  try {
+    await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", taskId: "t1", subPath: "S1", copyToOpenlist: true });
+    await stopOfflineWatcher();
+    pages = [[row({})]];
+    await tickFollowups();
+    assert.equal(copyCalls[0]?.holdForOrganize, true, "整理马上要在网盘上改名，先复制会复制成整理前的样子");
+  } finally {
+    patchAppSettings({ tmdb });
+  }
+});
+
 test("下到任意目录也能复制：不再限定 115 默认目录", async () => {
   const r = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", dirId: "5", copyToOpenlist: true });
   await stopOfflineWatcher();
@@ -330,6 +345,7 @@ test("下到任务目录 + 勾复制：先生成 strm，再交给复制队列", 
     dstDir: "/local/dl",
     deleteSource: false,
     trigger: "offline",
+    holdForOrganize: false,
   });
 });
 

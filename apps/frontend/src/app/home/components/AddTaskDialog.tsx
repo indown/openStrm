@@ -40,6 +40,7 @@ import {
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import { fmtWhen } from "@/lib/format";
+import { TreeSelectDialog } from "@/components/TreeSelectDialog";
 import { DirectoryTreeDialog } from "./DirectoryTreeDialog";
 import { LocalDirectoryTreeDialog } from "./LocalDirectoryTreeDialog";
 
@@ -245,6 +246,9 @@ export function AddTaskDialog({
   const [loading, setLoading] = React.useState(false);
   const [directoryDialogOpen, setDirectoryDialogOpen] = React.useState(false);
   const [localDirectoryDialogOpen, setLocalDirectoryDialogOpen] = React.useState(false);
+  /** 复制目标从哪个 OpenList 账号里选、默认目标目录是什么（设置页配的），开了「复制到 OpenList」才去读 */
+  const [copyCfg, setCopyCfg] = React.useState<{ account: string; dstDir: string } | null>(null);
+  const [copyBrowseOpen, setCopyBrowseOpen] = React.useState(false);
   /** 定时下拉选了"自定义"：表达式为空或不等于预设时也保持输入框可编辑 */
   const [customCron, setCustomCron] = React.useState(false);
 
@@ -258,6 +262,24 @@ export function AddTaskDialog({
   const strmPrefix = useWatch({ control: form.control, name: "strmPrefix" }) ?? "";
   const enable302 = useWatch({ control: form.control, name: "enable302" }) ?? false;
   const copyEnabled = useWatch({ control: form.control, name: "copyEnabled" }) ?? false;
+
+  React.useEffect(() => {
+    if (!open || !copyEnabled) return;
+    let cancelled = false;
+    api.settings
+      .get()
+      .then((s) => {
+        if (cancelled) return;
+        const c = s.openlistCopy;
+        setCopyCfg(c?.account ? { account: c.account, dstDir: (c.dstDir ?? "").trim() } : null);
+      })
+      .catch(() => {
+        if (!cancelled) setCopyCfg(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, copyEnabled]);
   const cronExpression = useWatch({ control: form.control, name: "cronExpression" }) ?? "";
   const cronPreview = useCronPreview(cronExpression);
 
@@ -624,11 +646,24 @@ export function AddTaskDialog({
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>复制到哪（可选）</FormLabel>
-                        <FormControl>
-                          <Input placeholder="不填就用设置页的默认目标目录" {...field} />
-                        </FormControl>
+                        <InputGroup>
+                          <FormControl>
+                            <InputGroupInput
+                              placeholder={copyCfg?.dstDir ? `不填就用设置页的默认目标目录（${copyCfg.dstDir}）` : "不填就用设置页的默认目标目录"}
+                              {...field}
+                            />
+                          </FormControl>
+                          <InputGroupButton
+                            type="button"
+                            disabled={!copyCfg}
+                            title={copyCfg ? `从 OpenList 账号 ${copyCfg.account} 里选` : "先在设置页选好 OpenList 账号"}
+                            onClick={() => setCopyBrowseOpen(true)}
+                          >
+                            <FolderOpen />
+                          </InputGroupButton>
+                        </InputGroup>
                         <FormDescription className="text-xs">
-                          任务目录里的层级会原样带到这个目录下面。
+                          OpenList 里的完整路径；任务目录里的层级会原样带到这个目录下面，还不存在的目录复制时会自动建。
                         </FormDescription>
                       </FormItem>
                     )}
@@ -674,6 +709,20 @@ export function AddTaskDialog({
           onOpenChange={setLocalDirectoryDialogOpen}
           onSelect={(path) => form.setValue("targetPath", path, { shouldValidate: true })}
         />
+
+        {copyCfg && (
+          <TreeSelectDialog
+            open={copyBrowseOpen}
+            onOpenChange={setCopyBrowseOpen}
+            title="选择复制目标目录"
+            description={<>从 OpenList 账号 {copyCfg.account} 的根目录里选</>}
+            load={(path) => api.directory.remote(copyCfg.account, path ? `/${path}` : "/")}
+            onConfirm={(path) => {
+              form.setValue("copyDstDir", `/${path}`, { shouldDirty: true });
+              setCopyBrowseOpen(false);
+            }}
+          />
+        )}
       </DialogContent>
     </Dialog>
   );

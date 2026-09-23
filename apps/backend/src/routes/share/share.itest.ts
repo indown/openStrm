@@ -22,6 +22,11 @@ import { DATA_DIR } from "../../paths.js";
 import { setDriveProviderFactory } from "../../services/drive/registry.js";
 import { __test_resetFollows, setFollowServiceDeps } from "../../services/follow/service.js";
 import { FakeDrive } from "../../test/fake-drive.js";
+import { patchAppSettings } from "../../db/repositories/settings.js";
+import { clearCopies, listCopies } from "../../services/copy/queue.js";
+import { stopCopyWatcher } from "../../services/copy/service.js";
+import { isTaskRunning } from "../../services/task/registry.js";
+import { __test_setAsyncStartGrace } from "../../services/share/receive.js";
 
 const a115: AccountInfo = { accountType: "115", name: "a", cookie: "c" };
 const aQuark: AccountInfo = { accountType: "quark", name: "q", cookie: "c" };
@@ -147,6 +152,62 @@ test("夸克 receive：带 token 转存，夸克给的顶层 id 直接用来列�
   const extrasId = dQuark.tree.get("/kk/Show/Extras")!.id;
   assert.ok(dQuark.log.includes(`listSubtree ${extrasId}`), `目录要按转存回来的顶层 id 列子树，实际调用：${dQuark.log.join(" | ")}`);
   assert.ok(!dQuark.log.includes("listSubtree /kk/Show/Extras"), "不该退回按路径找");
+});
+
+test("receive 到任务目录（async，后台同步）：任务开着复制时照样交给复制队列", async () => {
+  const ol: AccountInfo = { accountType: "openlist", name: "ol", account: "u", password: "p", url: "http://ol.local" };
+  replaceAccounts([a115, aQuark, ol]);
+  replaceTasks([t115, { ...tQuark, copyToOpenlist: { enabled: true, dstDir: "/local/kk" } }]);
+  patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local/media", mounts: { q: "/quark" } } });
+  dQuark.tree.addDir("/kk/Async");
+  try {
+    const qlist = await post({ action: "list", url: LINK_QUARK });
+    const e01 = (qlist.json().entries as Array<{ id: string; name: string; isDir: boolean; token?: string }>).find((e) => e.name === "E01.mkv")!;
+    const res = await post({ action: "receive", url: LINK_QUARK, taskId: "s-quark", subPath: "Async", mode: "async", items: [e01] });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.json().mode, "async");
+    const [c] = listCopies();
+    assert.ok(c, "后台模式也要排上复制，不然任务开着复制、转存时选了后台就悄悄不复制了");
+    assert.equal(c.trigger, "share");
+    assert.equal(c.srcDir, "/kk/Async");
+    assert.equal(c.name, "E01.mkv");
+    assert.equal(c.dstDir, "/local/kk/Async");
+    assert.equal(c.holdUntil, undefined, "后台模式不整理，不用等");
+  } finally {
+    await stopCopyWatcher();
+    clearCopies();
+    for (let i = 0; i < 100 && isTaskRunning("s-quark"); i++) await new Promise((r) => setTimeout(r, 50));
+    replaceAccounts([a115, aQuark]);
+    replaceTasks([t115, tQuark]);
+    patchAppSettings({ openlistCopy: baseline.settings.openlistCopy });
+  }
+});
+
+test("后台模式：同步迟迟起不来（远端目录树导出慢）也先回话，不让前端超时报「保存失败」", async () => {
+  __test_setAsyncStartGrace(50);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  // 只卡住拉远端目录树那一步（115 的整树导出偶尔几分钟不好），转存本身照常
+  dQuark.beforeCall = async () => {
+    if (dQuark.log.at(-1)?.startsWith("listSubtree")) await gate;
+  };
+  dQuark.tree.addDir("/kk/Slow");
+  try {
+    const qlist = await post({ action: "list", url: LINK_QUARK });
+    const e02 = (qlist.json().entries as Array<{ id: string; name: string; isDir: boolean; token?: string }>).find((e) => e.name === "E02.mkv")!;
+    const t0 = Date.now();
+    const res = await post({ action: "receive", url: LINK_QUARK, taskId: "s-quark", subPath: "Slow", mode: "async", items: [e02] });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.json().mode, "async");
+    assert.equal(res.json().taskId, "s-quark", "界面靠它链到任务日志");
+    assert.ok(Date.now() - t0 < 3000, "不能等同步拉完目录树才回话");
+    assert.ok(dQuark.tree.get("/kk/Slow/E02.mkv"), "转存已经成了");
+  } finally {
+    release();
+    dQuark.beforeCall = null;
+    __test_setAsyncStartGrace(null);
+    for (let i = 0; i < 100 && isTaskRunning("s-quark"); i++) await new Promise((r) => setTimeout(r, 50));
+  }
 });
 
 test("receive 的条目名字不能含 / 或是 . / ..：接口层 400，网盘不会被碰", async () => {

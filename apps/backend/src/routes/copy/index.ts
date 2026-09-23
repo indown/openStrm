@@ -18,7 +18,7 @@ export default async function (fastify: FastifyInstance) {
       items: items.slice(0, limit),
       total: items.length,
       // 队列已经读出来了，别让状态再读一遍
-      watcher: { ...getCopyWatcherStatus(), pending: items.filter((c) => c.status === "pending").length },
+      watcher: getCopyWatcherStatus(items),
     };
   });
 

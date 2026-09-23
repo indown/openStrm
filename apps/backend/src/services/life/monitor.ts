@@ -33,7 +33,7 @@ import {
 import { bumpOwnHit, findOwnOperation, getRun as getOrganizeRun } from "../../db/repositories/organize.js";
 import { enqueueCopy } from "../copy/service.js";
 import { copyOptionsFor } from "../copy/paths.js";
-import { maybeAutoOrganize } from "../organize/auto.js";
+import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
 import { providerFor } from "../drive/registry.js";
 import type { AccountIssue, ChangeCursor, ChangeEvent, ChangeKind, ChangeLog, ChangeSource, DriveProvider, ProbeResult } from "../drive/types.js";
 import { flushEmbyRefresh, getEmbyRefreshState, scheduleEmbyRefresh } from "../media-server.js";
@@ -403,6 +403,7 @@ class AccountMonitor {
                     // 监控是一个文件一条事件：删源只对「整条目复制」开（转存 / 追更 / 云下载），
                     // 不然自动整理还没来得及动那个文件，它就已经被删掉了
                     deleteSource: false,
+                    holdForOrganize: effectiveAutoMode(m.task) === "auto",
                   });
                 }
               }

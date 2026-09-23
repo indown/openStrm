@@ -33,6 +33,7 @@ import { KEY } from "../../db/keys.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { DATA_DIR } from "../../paths.js";
 import { setDriveProviderFactory } from "../drive/registry.js";
+import { clearCopies, listCopies, saveCopies } from "../copy/queue.js";
 import type { DriveProvider } from "../drive/types.js";
 import { FakeDrive } from "../../test/fake-drive.js";
 import type { TmdbDetails, TmdbEpisode, TmdbSearchResult } from "../tmdb.js";
@@ -638,6 +639,35 @@ test("自动模式：全 high 且无冲突直接执行；有拿不准的只通�
   assert.equal(ready.status, "ready");
   assert.equal(notified.filter((e) => e.type === "organize-review").length, 1);
   assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv"), "没动");
+});
+
+test("自动整理挪走 / 改名了还没提交的复制：队列里的路径跟过去（发布目录没腾空也跟），整理办完放行等它的复制", async () => {
+  replaceTasks([{ ...task, organize: { mode: "auto" } }]);
+  const base = { account: "acc", dstBase: "/local/media", rootPath: "tv", taskId: "t1", trigger: "share" as const, status: "pending" as const, stage: "waiting" as const, detail: "", attempts: 0, waits: 0, misses: 0 };
+  const held = Date.now() + 600_000;
+  saveCopies([
+    { ...base, id: "movie", srcDir: "/tv/inbox", name: "Dune.Part.Two.2024.2160p.WEB-DL.mkv", dstDir: "/local/media/inbox", addedAt: Date.now() - 1_000, holdUntil: held },
+    { ...base, id: "beef", srcDir: "/tv/inbox/BEEF.S01.1080p", name: "BEEF.S01E01.1080p.WEB-DL.mkv", dstDir: "/local/media/inbox/BEEF.S01.1080p", addedAt: Date.now() - 1_000, holdUntil: held },
+  ]);
+  try {
+    // 电影把握大：直接执行，文件挪进作品目录并改名，inbox 还在（没腾空）
+    const run = await createRun({ taskId: "t1", paths: ["inbox/Dune.Part.Two.2024.2160p.WEB-DL.mkv"], mode: "auto", trigger: "share" });
+    await untilStatus(run.id, ["done"]);
+    const movie = listCopies().find((c) => c.id === "movie")!;
+    assert.equal(movie.srcDir, "/tv/沙丘：第二部 (2024) [tmdbid=693134]");
+    assert.equal(movie.name, "沙丘：第二部 (2024) - 2160p.mkv");
+    assert.equal(movie.dstDir, "/local/media/沙丘：第二部 (2024) [tmdbid=693134]", "目标按整理后的层级摆");
+    assert.equal(movie.holdUntil, undefined, "整理办完就放行");
+
+    // 剧拿不准：留着等人确认，复制不再干等，按原路径放行
+    const run2 = await createRun({ taskId: "t1", paths: ["inbox/BEEF.S01.1080p"], mode: "auto", trigger: "share" });
+    await untilStatus(run2.id, ["ready"]);
+    const beef = listCopies().find((c) => c.id === "beef")!;
+    assert.equal(beef.srcDir, "/tv/inbox/BEEF.S01.1080p");
+    assert.equal(beef.holdUntil, undefined);
+  } finally {
+    clearCopies();
+  }
 });
 
 test("115 式：没有 walkSubtree，预览只有路径，执行时按父目录列一次拿 id", async () => {

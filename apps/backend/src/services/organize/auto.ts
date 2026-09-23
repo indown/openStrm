@@ -14,6 +14,7 @@ import { moduleLogger } from "../../lib/logger.js";
 import { DUPLICATES_DIR } from "./duplicates.js";
 import { createRun } from "./run.js";
 import { taskAutoMode } from "./settings.js";
+import { releaseCopyHolds } from "../copy/queue.js";
 
 const log = moduleLogger("organize-auto");
 
@@ -107,12 +108,19 @@ async function fire(taskId: string): Promise<void> {
       return;
     }
     log.warn({ err, taskId }, "自动整理建 run 失败");
+    // 整理起不来（识别词有语法错误之类）：为等它而压着的复制不用干等兜底时间
+    releaseCopyHolds(taskId, Date.now());
   }
 }
 
-/** 仅供测试：立刻把攒着的都发出去 */
+/**
+ * 仅供测试：立刻把攒着的都发出去。按开始时的那一批来：遇到 409 的会重新排进 pending，
+ * 边遍历边往 Map 里加会一直转下去
+ */
 export async function __test_flushAutoOrganize(): Promise<void> {
-  for (const [taskId, entry] of pending) {
+  for (const taskId of [...pending.keys()]) {
+    const entry = pending.get(taskId);
+    if (!entry) continue;
     clearTimeout(entry.timer);
     await fire(taskId);
   }

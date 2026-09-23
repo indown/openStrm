@@ -283,6 +283,10 @@ export interface CopyItem {
   attempts: number;
   waits: number;
   misses: number;
+  /** 升级时从老的云下载回执接管来的：没有网盘路径，重试不了 */
+  adopted?: boolean;
+  /** 等自动整理先办完（ms）：没到点、也没被整理放行之前不提交 */
+  holdUntil?: number;
 }
 
 export interface CopyQueue {
