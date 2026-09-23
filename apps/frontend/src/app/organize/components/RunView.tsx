@@ -21,10 +21,10 @@ import { ProgressBar } from "@/components/progress-bar";
 import { EmptyState } from "@/components/empty-state";
 import { Spinner, TableSkeleton } from "@/components/loading";
 import { api, type TaskRow } from "@/lib/api";
-import { apiErrorMessage } from "@/lib/axios";
+import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 import { accountLabel } from "@/lib/drive";
 import { fmtTime } from "@/lib/format";
-import { RUN_STATUS_META, TRIGGER_LABEL, isBusyStatus, notifyOrganizeChanged } from "@/lib/organize";
+import { RUN_STATUS_META, TRIGGER_LABEL, handPicked, isBusyStatus, notifyOrganizeChanged } from "@/lib/organize";
 import { AdjustDialog } from "./AdjustDialog";
 import { FailurePanel } from "./FailurePanel";
 import { MatchDialog } from "./MatchDialog";
@@ -255,7 +255,8 @@ export function RunView({
   const act = async (kind: "apply" | "cancel" | "revert" | "delete") => {
     setBusy(true);
     try {
-      if (kind === "apply") await api.organize.apply(runId);
+      // 带上打开时看到的那一版：之后清单被改过（比如智能体改的）后端会拒，下面重新拉一遍给人看
+      if (kind === "apply") await api.organize.apply(runId, undefined, detail?.planVersion);
       else if (kind === "cancel") await api.organize.cancel(runId);
       else if (kind === "revert") await api.organize.revert(runId);
       else {
@@ -269,7 +270,12 @@ export function RunView({
       notifyOrganizeChanged();
       await load();
     } catch (err) {
-      toastRunError(err, "操作失败", onOpenRun);
+      if (apiErrorBody(err).code === "PLAN_CHANGED") {
+        toast.warning("清单在你打开之后被改过了（可能是智能体改的），已刷新，看一眼再执行");
+        await load();
+      } else {
+        toastRunError(err, "操作失败", onOpenRun);
+      }
     } finally {
       setBusy(false);
       setConfirm(null);
@@ -308,7 +314,7 @@ export function RunView({
   const task = tasks?.find((t) => t.id === run.taskId) ?? null;
   const origin = task ? task.originPath.replace(/\/+$/, "") : "";
   const full = (p: string) => (origin ? `${origin}/${p}` : p);
-  const manualScopes = run.trigger === "manual";
+  const manualScopes = handPicked(run.trigger);
 
   return (
     <div className="space-y-4">

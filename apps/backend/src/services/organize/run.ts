@@ -13,7 +13,7 @@
  * 进行中的 run 在内存里有一个 job（中止信号 + 进度 + 日志），进程重启后 applying / planning / reverting 的 run 标成 failed，
  * 可以再 apply / revert（做完的项跳过，剩下的接着来）。
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import type {
   AppSettings,
@@ -35,6 +35,7 @@ import type {
   OrganizeRunMode,
   OrganizeRunStage,
   OrganizeRunStats,
+  OrganizeSeasonInfo,
   OrganizeSkipResult,
   OrganizeTrigger,
   OrganizeUnit,
@@ -107,6 +108,12 @@ export const ORGANIZE_LIMITS = {
   /** 内存里留的日志行数 */
   LOG_LINES: 300,
 } as const;
+
+/**
+ * 人挑的范围：手动的、智能体替人发起的。范围照手动的规则来（选的是目录、要先确认网盘上有），
+ * 其余来源给的是自动触发时新落进来的路径
+ */
+export const handPicked = (trigger: OrganizeTrigger): boolean => trigger === "manual" || trigger === "agent";
 
 /* ------------------------------- 依赖注入 ------------------------------- */
 
@@ -187,6 +194,16 @@ export function isRunBusy(runId: string): boolean {
   return jobs.has(runId);
 }
 
+/** 这次 run 的后台工作（预览 / 执行 / 撤销）什么时候结束；没有在跑的是 undefined。智能体限时等结果用 */
+export function runDone(runId: string): Promise<void> | undefined {
+  return jobs.get(runId)?.done;
+}
+
+/** 这次 run 的后台工作现在的进度（每次都读最新的） */
+export function runProgress(runId: string): OrganizeProgress | undefined {
+  return jobs.get(runId)?.progress;
+}
+
 /* ------------------------------- 小工具 ------------------------------- */
 
 const baseOf = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
@@ -204,7 +221,8 @@ function absOf(task: TaskDefinition, rel: string): string {
 }
 
 /** 网盘绝对路径 → 相对任务 originPath；和 absOf 严格互逆（段里的空格照原样留着） */
-function relOf(task: TaskDefinition, abs: string): string {
+/** 网盘绝对路径 → 相对任务 originPath；不在任务目录下的去掉开头的 / 原样给 */
+export function relOf(task: TaskDefinition, abs: string): string {
   const origin = normalizePath(task.originPath);
   const p = abs.startsWith("/") ? abs : `/${abs}`;
   if (p === origin) return "";
@@ -277,7 +295,7 @@ export async function createRun(input: CreateRunInput): Promise<OrganizeRun> {
     if (splitPath(p).some((seg) => seg === "." || seg === "..")) throw new HttpError(400, `范围路径不合法：${p}`);
   }
   const trigger = input.trigger ?? "manual";
-  if (trigger === "manual") {
+  if (handPicked(trigger)) {
     // 手动选的多个范围：套在别的范围里面的去掉（已经整个包含了）
     scopePaths = scopePaths.filter((p) => !scopePaths.some((o) => o !== p && p.startsWith(`${o}/`)));
     // 手动的范围要是网盘上真有的目录，不然要等预览失败才知道（自动整理的新增路径不在就跳过，照旧）。
@@ -399,6 +417,16 @@ function supersedeCovered(run: OrganizeRun): number {
 }
 
 /**
+ * 这个任务里范围落在给定范围之内、还等着执行的清单：在这个范围上新做一次预览，做完时会把它们作废
+ * （和 supersedeCovered 同一套规则）。智能体发起预览前先看一眼，别把人在界面上改了一半的清单作废掉
+ */
+export function readyRunsWithin(taskId: string, scope: { subPath?: string; paths?: string[] }): OrganizeRun[] {
+  const paths = [...new Set((scope.paths ?? []).map((p) => splitPath(p).join("/")).filter(Boolean))];
+  const outer = paths.length > 0 ? paths : [splitPath(scope.subPath ?? "").join("/")];
+  return listRunsByStatus(["ready"]).filter((r) => r.taskId === taskId && covers(outer, scopeListOf(r)));
+}
+
+/**
  * 启动时收拢堆在一起的「待执行」预览：同一个任务里范围被更新的那次覆盖的，留最新的一条，其余作废。
  * 每次预览完成本来就会这么收（`supersedeCovered`），这里管的是那之前留下的、和进程重启后没法再改的旧预览——
  * 待处理列表里一串「tv · 整个任务」谁也分不清，还都是按旧网盘状态算的
@@ -427,7 +455,7 @@ export function collapseStaleReadyRuns(): number {
  * 分单元时的范围：单一范围照旧；手动选的多个范围各按单一范围的规则来（见 buildUnits 的 scopes）；
  * 自动触发的新增路径按任务根分单元（新落进来的发布目录名字可靠，按目录名认）
  */
-const unitScopesOf = (run: OrganizeRun): string[] => (run.scopePaths.length === 0 ? [run.scopePath] : run.trigger === "manual" ? run.scopePaths : [""]);
+const unitScopesOf = (run: OrganizeRun): string[] => (run.scopePaths.length === 0 ? [run.scopePath] : handPicked(run.trigger) ? run.scopePaths : [""]);
 
 /**
  * 删空目录的边界：只删范围里面腾空的目录。范围本身：单一范围 / 手动选的多个范围按「像发布目录 / 季目录」判断；
@@ -435,7 +463,7 @@ const unitScopesOf = (run: OrganizeRun): string[] => (run.scopePaths.length === 
  */
 function scopeRootsOf(run: OrganizeRun, walkedDirs: string[]): ScopeRoot[] {
   if (run.scopePaths.length === 0) return [{ path: run.scopePath, removable: scopeRemovable(run) }];
-  if (run.trigger === "manual") return walkedDirs.map((p) => ({ path: p, removable: p !== "" && looksLikeReleaseDir(baseOf(p)) }));
+  if (handPicked(run.trigger)) return walkedDirs.map((p) => ({ path: p, removable: p !== "" && looksLikeReleaseDir(baseOf(p)) }));
   return walkedDirs.map((p) => ({ path: p, removable: p !== "" }));
 }
 
@@ -628,7 +656,7 @@ async function preview(job: Job, runId: string): Promise<void> {
 
   setProgress(job, "walk", 0, 0, "正在列网盘目录");
   // 手动选的多个目录列出来（和页面「N 个目录」一个说法）；自动触发的新增路径可能几十条，只报个数
-  const scopeNote = run.scopePaths.length === 0 ? "" : run.trigger === "manual" ? `（${run.scopePaths.length} 个目录：${run.scopePaths.slice(0, 5).join("、")}${run.scopePaths.length > 5 ? " 等" : ""}）` : `（${run.scopePaths.length} 个新增路径）`;
+  const scopeNote = run.scopePaths.length === 0 ? "" : handPicked(run.trigger) ? `（${run.scopePaths.length} 个目录：${run.scopePaths.slice(0, 5).join("、")}${run.scopePaths.length > 5 ? " 等" : ""}）` : `（${run.scopePaths.length} 个新增路径）`;
   jobLog(job, `开始预览：${task.originPath}${run.scopePath ? `/${run.scopePath}` : ""}${scopeNote}`);
   const walked = await walkScope(provider, task, run, signal);
   jobLog(job, `列到 ${walked.files} 个文件`);
@@ -834,96 +862,199 @@ async function listDraftTargets(runId: string, state: PlanState, drafts: UnitPla
   }
 }
 
-export async function patchUnit(runId: string, key: string, patch: OrganizeUnitPatch): Promise<OrganizeUnit> {
+/**
+ * 一次改清单。按顺序：批量勾选单元 → 还没选办法的冲突统一选一个办法 → 逐单元改 → 逐文件改；
+ * 换匹配要查的 TMDB、改完目标目录可能没列过要列的，都在前面 await 完，最后确认还能改、只重规划一次。
+ * 页面上的三种改法（patchUnit / patchUnits / patchItems）和智能体的批量修改都走这里
+ */
+export interface PlanPatch {
+  /** 批量勾选单元：全选 / 全不选 / 只选把握大的（和整理页的按钮一样；没识别出来的单元不能勾，不动它） */
+  select?: "all" | "none" | "confident";
+  /**
+   * 还没选办法、也没取消勾选的冲突统一这么办；删掉 / 覆盖不给批量选。哪些算「还没选」按落库那一刻的清单定：
+   * 等 TMDB / 列目录的时候别人（界面上的用户）刚给某个冲突选了办法或取消了勾选，不能被这里盖回去
+   */
+  conflicts?: "rename" | "duplicate";
+  /** 逐单元：换匹配、季、集偏移、勾选、记住 */
+  units?: Array<OrganizeUnitPatch & { key: string }>;
+  /**
+   * 逐文件：unitKey + srcPath（网盘绝对路径）定位——同一个字幕可能按名字前缀跟到两个单元下，两边各是各的。
+   * 勾选 / 取消勾选记在单元的 excluded 里，冲突办法记在 resolutions 里（null 是撤回，回到「留在原处」）。
+   * 取消勾选的文件规划时跳过、跟着它的字幕 / nfo 一起留下；选了办法的顺带勾回来
+   */
+  files?: Array<{ unitKey: string; srcPath: string; selected?: boolean; resolve?: OrganizeConflictResolution | null }>;
+}
+
+type FilePatch = { selected?: boolean; resolve?: OrganizeConflictResolution | null };
+
+/** 一个单元套上文件级的改动：勾选记在 excluded、冲突办法记在 resolutions（选了办法就算勾上，取消勾选撤掉办法） */
+function applyFilePatches(row: OrganizeUnit, files: Array<[string, FilePatch]>): Pick<OrganizeUnit, "excluded" | "resolutions"> {
+  const excluded = new Set(row.excluded);
+  const resolutions = { ...row.resolutions };
+  for (const [path, fp] of files) {
+    const selected = fp.resolve !== undefined ? fp.resolve !== null : fp.selected;
+    if (selected !== false) excluded.delete(path);
+    else excluded.add(path);
+    if (fp.resolve !== undefined || selected === false) {
+      if (fp.resolve) resolutions[path] = fp.resolve;
+      else delete resolutions[path];
+    }
+  }
+  return { excluded: [...excluded].sort(), resolutions };
+}
+
+/** 两个单元行在规划上有没有区别（换了匹配是新对象，按引用比就够） */
+function sameUnitRow(a: OrganizeUnit, b: OrganizeUnit): boolean {
+  return (
+    a.match === b.match &&
+    a.selected === b.selected &&
+    a.remember === b.remember &&
+    a.seasonOverride === b.seasonOverride &&
+    a.episodeOffset === b.episodeOffset &&
+    [...a.excluded].sort().join("\n") === [...b.excluded].sort().join("\n") &&
+    JSON.stringify(Object.entries(a.resolutions ?? {}).sort()) === JSON.stringify(Object.entries(b.resolutions ?? {}).sort())
+  );
+}
+
+export async function patchPlan(runId: string, input: PlanPatch): Promise<{ changed: string[] }> {
   const { state } = editableRun(runId);
-  const unit = state.units.get(key);
-  const row = getUnit(runId, key);
-  if (!unit || !row) throw new HttpError(404, "单元不存在");
   const end = beginOp(runId);
   try {
-    let picked: { match: OrganizeMatch; episodeTitles: Map<string, string> } | undefined;
-    if (patch.match && (!row.match || row.match.tmdbId !== patch.match.tmdbId || row.match.mediaType !== patch.match.mediaType)) {
+    const rows = new Map(listUnits(runId).map((r) => [r.key, r]));
+    const unitPatches = new Map<string, OrganizeUnitPatch>();
+    for (const { key, ...patch } of input.units ?? []) {
+      if (!state.units.has(key) || !rows.has(key)) throw new HttpError(404, "单元不存在");
+      unitPatches.set(key, { ...unitPatches.get(key), ...patch });
+    }
+    // 点名的文件：单元 + 路径要是现在清单里的一项（建目录 / 删空目录不属于任何单元）
+    const items = listItems(runId);
+    const known = new Set(items.filter((it) => it.unitKey !== "" && it.kind !== "dir").map((it) => JSON.stringify([it.unitKey, it.srcPath])));
+    const named = new Map<string, Map<string, FilePatch>>();
+    for (const { unitKey, srcPath, ...patch } of input.files ?? []) {
+      if (!known.has(JSON.stringify([unitKey, srcPath]))) throw new HttpError(404, "清单里没有这个文件");
+      const byPath = named.get(unitKey) ?? new Map<string, FilePatch>();
+      byPath.set(srcPath, patch);
+      named.set(unitKey, byPath);
+    }
+    /**
+     * 每个单元要套的文件级改动：批量的冲突办法只给「还没选办法、也没取消勾选」的冲突项，按传进来的清单和单元行定；
+     * 点名的文件盖过批量的（点名取消勾选的就是不要它）
+     */
+    const fileChangesOf = (list: OrganizeItem[], unitRows: Map<string, OrganizeUnit>): Map<string, Array<[string, FilePatch]>> => {
+      const byUnit = new Map<string, Map<string, FilePatch>>();
+      if (input.conflicts) {
+        for (const it of list) {
+          const row = unitRows.get(it.unitKey);
+          if (it.action !== "conflict" || !row || row.resolutions?.[it.srcPath] || row.excluded.includes(it.srcPath)) continue;
+          const byPath = byUnit.get(it.unitKey) ?? new Map<string, FilePatch>();
+          byPath.set(it.srcPath, { resolve: { how: input.conflicts } });
+          byUnit.set(it.unitKey, byPath);
+        }
+      }
+      for (const [unitKey, patches] of named) {
+        const byPath = byUnit.get(unitKey) ?? new Map<string, FilePatch>();
+        for (const [path, fp] of patches) byPath.set(path, fp);
+        byUnit.set(unitKey, byPath);
+      }
+      return new Map([...byUnit].map(([k, m]) => [k, [...m]]));
+    };
+    let filesByUnit = fileChangesOf(items, rows);
+
+    // 换匹配：按指定的 TMDB 编号重新识别（查不到就整批不改）
+    const picked = new Map<string, { match: OrganizeMatch; episodeTitles: Map<string, string> }>();
+    for (const [key, patch] of unitPatches) {
+      const row = rows.get(key)!;
+      if (!patch.match || (row.match && row.match.tmdbId === patch.match.tmdbId && row.match.mediaType === patch.match.mediaType)) continue;
       const tmdb = deps.tmdb(state.settings);
       if (!tmdb) throw new HttpError(400, "TMDB 未配置 apiKey");
       const r = await identifyUnit(
-        { unit, evidence: { known: { tmdbId: patch.match.tmdbId, mediaType: patch.match.mediaType, source: "手动指定" } }, episodeTitles: state.org.episodeTitle },
+        { unit: state.units.get(key)!, evidence: { known: { tmdbId: patch.match.tmdbId, mediaType: patch.match.mediaType, source: "手动指定" } }, episodeTitles: state.org.episodeTitle },
         tmdb,
       );
       if (!r.match) throw new HttpError(404, `TMDB 上没有 ${patch.match.mediaType} ${patch.match.tmdbId}`);
-      picked = { match: { ...r.match, candidates: row.match?.candidates ?? [] }, episodeTitles: r.episodeTitles };
+      picked.set(key, { match: { ...r.match, candidates: row.match?.candidates ?? [] }, episodeTitles: r.episodeTitles });
     }
-    // 换了匹配 / 季之后目标目录可能是没列过的：按改完的样子规划这个单元，先把目标目录列一遍，冲突检测和 mkdir 判断才准
-    const draft = applyUnitPatch(row, patch, picked?.match);
-    const draftPlan = planUnit(
-      {
-        unit,
-        match: draft.match,
-        seasonOverride: draft.seasonOverride,
-        episodeOffset: draft.episodeOffset,
-        episodeTitles: picked?.episodeTitles ?? state.episodeTitles.get(key),
-        selected: draft.selected,
-        excluded: excludedRel(state.task, draft),
-        resolutions: resolutionsRel(state.task, draft),
-      },
-      planContext(state),
-    );
-    const extra = await listDraftTargets(runId, state, [draftPlan]);
-    // 从这里到落库没有 await：先确认这次预览还能改，再从库里重读这个单元套 patch——两个 patch 交错时，后一个不能把前一个的改动盖回去
+
+    /** 一个单元行套上这次的全部改动 */
+    const nextOf = (row: OrganizeUnit): OrganizeUnit => {
+      let next = row;
+      if (input.select && row.match) {
+        next = { ...next, selected: input.select === "all" || (input.select === "confident" && row.match.confidence === "high") };
+      }
+      const up = unitPatches.get(row.key);
+      if (up) next = applyUnitPatch(next, up, picked.get(row.key)?.match);
+      const files = filesByUnit.get(row.key);
+      if (files) next = { ...next, ...applyFilePatches(next, files) };
+      return next;
+    };
+
+    // 改完之后要动的单元，目标目录可能是没列过的：按改完的样子规划一遍，先把目标目录列了，冲突检测和 mkdir 判断才准
+    const drafts: UnitPlan[] = [];
+    for (const row of rows.values()) {
+      const next = nextOf(row);
+      const unit = state.units.get(row.key);
+      if (!unit || sameUnitRow(row, next) || !next.selected || !next.match) continue;
+      drafts.push(
+        planUnit(
+          {
+            unit,
+            match: next.match,
+            seasonOverride: next.seasonOverride,
+            episodeOffset: next.episodeOffset,
+            episodeTitles: picked.get(row.key)?.episodeTitles ?? state.episodeTitles.get(row.key),
+            selected: true,
+            excluded: excludedRel(state.task, next),
+            resolutions: resolutionsRel(state.task, next),
+          },
+          planContext(state),
+        ),
+      );
+    }
+    const extra = await listDraftTargets(runId, state, drafts);
+
+    // 从这里到落库没有 await：先确认这次预览还能改，再从库里重读单元套改动——两次修改交错时，后一次不能把前一次的改动盖回去
     const current = assertStillEditable(runId, state);
-    const fresh = getUnit(runId, key);
-    if (!fresh) throw new HttpError(404, "单元不存在");
     mergeEntries(state, extra);
-    if (picked) {
-      state.episodeTitles.set(key, picked.episodeTitles);
+    for (const [key, p] of picked) {
+      state.episodeTitles.set(key, p.episodeTitles);
       state.identifyNotes.set(key, []);
     }
-    replanRun(current, state, new Map([[key, applyUnitPatch(fresh, patch, picked?.match)]]));
-    return getUnit(runId, key)!;
+    // 批量的冲突办法按这一刻的清单和单元行重新定：等的时候别人可能刚改过
+    const freshRows = listUnits(runId);
+    if (input.conflicts) filesByUnit = fileChangesOf(listItems(runId), new Map(freshRows.map((r) => [r.key, r])));
+    const changed = new Map<string, OrganizeUnit>();
+    for (const fresh of freshRows) {
+      if (!state.units.has(fresh.key)) continue;
+      const next = nextOf(fresh);
+      if (!sameUnitRow(fresh, next)) changed.set(fresh.key, next);
+    }
+    if (changed.size > 0) replanRun(current, state, changed);
+    return { changed: [...changed.keys()] };
   } finally {
     end();
   }
+}
+
+/** 预览里改一个单元：换匹配 / 季 / 集偏移 / 勾选 / 记住 */
+export async function patchUnit(runId: string, key: string, patch: OrganizeUnitPatch): Promise<OrganizeUnit> {
+  const { state } = editableRun(runId);
+  if (!state.units.has(key) || !getUnit(runId, key)) throw new HttpError(404, "单元不存在");
+  await patchPlan(runId, { units: [{ ...patch, key }] });
+  return getUnit(runId, key)!;
 }
 
 /** 批量勾选 / 取消勾选单元（全选、全不选、只选把握大的）：一次重规划，不是一个单元一次。没识别出来的单元不能勾 */
 export async function patchUnits(runId: string, keys: string[], patch: { selected?: boolean; remember?: boolean }): Promise<{ changed: number }> {
   const { state } = editableRun(runId);
   const wanted = new Set(keys);
-  const end = beginOp(runId);
-  try {
-    // 新勾上的单元：预览时没勾的不列目标目录，先列
-    const drafts: UnitPlan[] = [];
-    for (const row of listUnits(runId)) {
-      const unit = state.units.get(row.key);
-      if (!wanted.has(row.key) || !unit || !row.match || !patch.selected || row.selected) continue;
-      drafts.push(
-        planUnit(
-          { unit, match: row.match, seasonOverride: row.seasonOverride, episodeOffset: row.episodeOffset, episodeTitles: state.episodeTitles.get(row.key), selected: true, excluded: excludedRel(state.task, row), resolutions: resolutionsRel(state.task, row) },
-          planContext(state),
-        ),
-      );
-    }
-    const extra = await listDraftTargets(runId, state, drafts);
-    const current = assertStillEditable(runId, state);
-    mergeEntries(state, extra);
-    const changed = new Map<string, OrganizeUnit>();
-    for (const fresh of listUnits(runId)) {
-      if (!wanted.has(fresh.key) || !fresh.match || !state.units.has(fresh.key)) continue;
-      const next = { ...fresh, selected: patch.selected ?? fresh.selected, remember: patch.remember ?? fresh.remember };
-      if (next.selected !== fresh.selected || next.remember !== fresh.remember) changed.set(fresh.key, next);
-    }
-    if (changed.size > 0) replanRun(current, state, changed);
-    return { changed: changed.size };
-  } finally {
-    end();
-  }
+  const units = listUnits(runId)
+    .filter((r) => wanted.has(r.key) && r.match && state.units.has(r.key))
+    .map((r) => ({ key: r.key, ...(patch.selected !== undefined ? { selected: patch.selected } : {}), ...(patch.remember !== undefined ? { remember: patch.remember } : {}) }));
+  const { changed } = await patchPlan(runId, { units });
+  return { changed: changed.length };
 }
 
-/**
- * 按文件改：勾选 / 取消勾选（记在单元的 excluded 里，网盘绝对路径，重规划不丢），或者给冲突项选个办法（记在 resolutions 里）。
- * 取消勾选的文件规划时跳过、跟着它的字幕 / nfo 一起留下——冲突的两份勾掉一份，另一份就能走；
- * 选了办法的（改名保留 / 自己改名 / 挪进重复文件 / 删掉 / 覆盖）按办法规划，顺带勾回来。
- * ids 是当前清单里的项（重规划之后 id 会换，页面拿最新的清单）
- */
+/** 页面按文件改：ids 是当前清单里的项（重规划之后 id 会换，页面拿最新的清单）；不认识的 id 不管 */
 export interface ItemsPatch {
   selected?: boolean;
   /** 给冲突项选的办法；null 是撤回选择，回到「留在原处」 */
@@ -931,59 +1062,53 @@ export interface ItemsPatch {
 }
 
 export async function patchItems(runId: string, ids: string[], patch: ItemsPatch): Promise<{ changed: number }> {
-  const { state } = editableRun(runId);
+  editableRun(runId);
   const wanted = new Set(ids);
-  const end = beginOp(runId);
-  try {
-    const byUnit = new Map<string, string[]>();
-    for (const it of listItems(runId)) {
-      if (!wanted.has(it.id) || it.unitKey === "" || it.kind === "dir") continue;
-      byUnit.set(it.unitKey, [...(byUnit.get(it.unitKey) ?? []), it.srcPath]);
-    }
-    // 选了办法就算勾上（不然规划阶段先跳过了，轮不到冲突）；取消勾选就撤掉之前选的办法
-    const selected = patch.resolve !== undefined ? patch.resolve !== null : patch.selected;
-    const next = (row: OrganizeUnit): Pick<OrganizeUnit, "excluded" | "resolutions"> => {
-      const excluded = new Set(row.excluded);
-      const resolutions = { ...row.resolutions };
-      for (const p of byUnit.get(row.key) ?? []) {
-        if (selected !== false) excluded.delete(p);
-        else excluded.add(p);
-        if (patch.resolve !== undefined || selected === false) {
-          if (patch.resolve) resolutions[p] = patch.resolve;
-          else delete resolutions[p];
-        }
-      }
-      return { excluded: [...excluded].sort(), resolutions };
-    };
-    const same = (a: OrganizeUnit, b: Pick<OrganizeUnit, "excluded" | "resolutions">) =>
-      [...a.excluded].sort().join("\n") === b.excluded.join("\n") && JSON.stringify(a.resolutions ?? {}) === JSON.stringify(b.resolutions);
-    // 重新勾上 / 换了办法的文件：目标目录（含重复文件目录）可能没列过
-    const drafts: UnitPlan[] = [];
-    for (const row of listUnits(runId)) {
-      const unit = state.units.get(row.key);
-      if (!byUnit.has(row.key) || !unit || !row.match || !row.selected || selected === false) continue;
-      const draft = { ...row, ...next(row) };
-      drafts.push(
-        planUnit(
-          { unit, match: row.match, seasonOverride: row.seasonOverride, episodeOffset: row.episodeOffset, episodeTitles: state.episodeTitles.get(row.key), selected: true, excluded: excludedRel(state.task, draft), resolutions: resolutionsRel(state.task, draft) },
-          planContext(state),
-        ),
-      );
-    }
-    const extra = await listDraftTargets(runId, state, drafts);
-    const current = assertStillEditable(runId, state);
-    mergeEntries(state, extra);
-    const changed = new Map<string, OrganizeUnit>();
-    for (const fresh of listUnits(runId)) {
-      if (!byUnit.has(fresh.key) || !state.units.has(fresh.key)) continue;
-      const patched = next(fresh);
-      if (!same(fresh, patched)) changed.set(fresh.key, { ...fresh, ...patched });
-    }
-    if (changed.size > 0) replanRun(current, state, changed);
-    return { changed: changed.size };
-  } finally {
-    end();
+  const files = listItems(runId)
+    .filter((it) => wanted.has(it.id) && it.unitKey !== "" && it.kind !== "dir")
+    .map((it) => ({
+      unitKey: it.unitKey,
+      srcPath: it.srcPath,
+      ...(patch.selected !== undefined ? { selected: patch.selected } : {}),
+      ...(patch.resolve !== undefined ? { resolve: patch.resolve } : {}),
+    }));
+  const { changed } = await patchPlan(runId, { files });
+  return { changed: changed.length };
+}
+
+/**
+ * 这些单元里有没有「现在没勾、勾上就会删文件」的：用户在冲突上选过删掉 / 覆盖，后来又把整个单元取消勾选，办法还留着。
+ * 令牌把它们重新勾上就等于重新安排了删除，要删除档（整理工具和 REST 共用这条规则）
+ */
+export function unitsReviveDeletes(runId: string, keys: Iterable<string>): boolean {
+  const wanted = new Set(keys);
+  return listUnits(runId).some(
+    (u) => wanted.has(u.key) && !u.selected && Object.values(u.resolutions ?? {}).some((r) => r.how === "delete" || r.how === "replace"),
+  );
+}
+
+/**
+ * 清单内容的指纹：人点头的是哪一版，执行的就是哪一版（智能体执行前核对）。只看会改变执行结果的东西——
+ * 单元的勾选、匹配、季、偏移、排除、冲突办法，各项的动作和 src → dst；不看 id、时间、「记住」
+ */
+export function planFingerprint(runId: string, known?: { units: OrganizeUnit[]; items: OrganizeItem[] }): string {
+  const h = createHash("sha1");
+  for (const u of known?.units ?? listUnits(runId)) {
+    h.update(
+      JSON.stringify([
+        u.key,
+        u.selected,
+        u.match?.mediaType ?? null,
+        u.match?.tmdbId ?? null,
+        u.seasonOverride,
+        u.episodeOffset,
+        [...u.excluded].sort(),
+        Object.entries(u.resolutions ?? {}).sort(),
+      ]),
+    );
   }
+  for (const it of known?.items ?? listItems(runId)) h.update(JSON.stringify([it.action, it.kind, it.srcPath, it.dstPath]));
+  return h.digest("hex").slice(0, 10);
 }
 
 /* ------------------------------- 换匹配弹框的 TMDB 搜索 ------------------------------- */
@@ -1028,6 +1153,26 @@ export async function searchCandidates(q: { query: string; type?: OrganizeCandid
 }
 
 /** 按 TMDB 编号查一部：换匹配弹框里直接填编号 / 贴链接 */
+/** 按编号查一部作品：候选的样子，外加原名和剧集的每季集数（智能体核对季 / 集偏移用） */
+export async function lookupWork(
+  mediaType: OrganizeCandidate["mediaType"],
+  tmdbId: number,
+): Promise<{ candidate: OrganizeCandidate; originalTitle: string; seasons?: OrganizeSeasonInfo[] }> {
+  const tmdb = tmdbOrThrow();
+  let d: TmdbDetails | null;
+  try {
+    d = await tmdb.details(mediaType, tmdbId);
+  } catch (err) {
+    throw upstreamError(`TMDB 查询失败：${messageOf(err)}`);
+  }
+  if (!d) throw new HttpError(404, `TMDB 上没有${mediaType === "movie" ? "电影" : "剧集"} ${tmdbId}`);
+  return {
+    candidate: toPick({ id: d.id, title: d.title || d.originalTitle, year: d.year, posterUrl: d.posterUrl }, mediaType),
+    originalTitle: d.originalTitle,
+    ...(d.seasons ? { seasons: d.seasons } : {}),
+  };
+}
+
 export async function lookupCandidate(mediaType: OrganizeCandidate["mediaType"], tmdbId: number): Promise<OrganizeCandidate> {
   const tmdb = tmdbOrThrow();
   let d: TmdbDetails | null;
@@ -2225,6 +2370,8 @@ export function failureGroups(run: OrganizeRun, items: OrganizeItem[], units: Or
 function summaryOf(run: OrganizeRun, units: OrganizeUnit[], items: OrganizeItem[]): OrganizeRunSummary {
   return {
     run: withProgress(run),
+    // 待执行的清单带上指纹：页面执行时带回来，打开之后别人（智能体）改过就不执行，让人重新看一眼
+    ...(run.status === "ready" ? { planVersion: planFingerprint(run.id, { units, items }) } : {}),
     groups: failureGroups(run, items, units),
     revertable: revertability(run, items),
     applicable: applicability(run, undefined, { items, units }),
@@ -2314,7 +2461,7 @@ function attentionOf(run: OrganizeRun): OrganizeAttentionReason | null {
   // 做了一半：做过一些（用户中途取消的另算，没做过就取消是他自己不要了）、或者中途停下的（风控 / 重启）
   if (failures > 0 || (run.stats.pending > 0 && (run.stats.done > 0 || run.status === "failed"))) return "failures";
   // 自动触发的预览失败了用户看不到；手动的当场就看到了
-  if (run.status === "failed" && run.stats.items === 0 && run.trigger !== "manual") return "preview-failed";
+  if (run.status === "failed" && run.stats.items === 0 && !handPicked(run.trigger)) return "preview-failed";
   return null;
 }
 

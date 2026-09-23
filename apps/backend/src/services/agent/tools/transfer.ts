@@ -4,9 +4,10 @@
  * 分享里的文件名、标题是第三方内容：只放在数据字段里，不拼进 next / hint 这类提示句。
  */
 import { createHash } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { LRUCache } from "lru-cache";
 import { z } from "zod";
-import type { TaskDefinition } from "@openstrm/shared";
+import type { AgentToken, TaskDefinition } from "@openstrm/shared";
 import { getAccount, listAccounts } from "../../../db/repositories/accounts.js";
 import { readAppSettings } from "../../../db/repositories/settings.js";
 import { normalizeOfflineUrls } from "../../cloud-115/offline.js";
@@ -16,15 +17,17 @@ import { normalizePath, splitPath, type DriveProvider, type ShareEntry, type Sha
 import { scopeFromSelection } from "../../follow/diff.js";
 import { createFollowAfterSave } from "../../follow/service.js";
 import { addOfflineTasks, listOfflineTasks } from "../../offline/service.js";
-import { effectiveAutoMode, maybeAutoOrganize } from "../../organize/auto.js";
+import { autoOrganizeFor, effectiveAutoMode, maybeAutoOrganize } from "../../organize/auto.js";
 import { forcedOrganizeMode, saveSelectionToTask, uniqueItems } from "../../share/receive.js";
 import { isSafeItemName } from "../../strm/share-strm.js";
 import { normalizeSubPath } from "../../strm/naming.js";
+import { hasToolset } from "../access.js";
 import { REMOTE_READ, ToolError, defineTool } from "../define.js";
 import { fmtTime, openInUi, page } from "../format.js";
 import { JOB_RETENTION_MS, latestJob, startJob, viewJob, waitForJob, type Job, type JobView } from "../jobs.js";
 import { resolveTask, taskBrief } from "../resolve.js";
 import { MAX_WAIT_SECONDS } from "./core.js";
+import { organizeUiPath } from "./organize-view.js";
 
 /* ------------------------------- 小缓存 ------------------------------- */
 
@@ -210,6 +213,42 @@ export const shareInspectTool = defineTool({
     return result;
   },
 });
+
+/** 转存完交给整理时，等清单建出来最多等多久（任务上有别的整理在进行时要排队，不干等） */
+const ORGANIZE_HANDOFF_MS = 10_000;
+
+/**
+ * 转存完交给整理的那一份：等清单建出来，把 runId 带回去，agent 接着就能看清单、请用户确认。
+ * 建不起来（识别词有语法错误之类）、要排队的，照实说；转存本身不受影响。
+ * 令牌没开「整理」这组工具的（老令牌照约定不会自动多出来），下一步说成「请用户到整理页确认」，别指向它调不了的工具
+ */
+export async function organizeHandoff(
+  task: TaskDefinition,
+  since: number,
+  mode: "review" | "auto",
+  token: Pick<AgentToken, "toolsets">,
+): Promise<Record<string, unknown>> {
+  const canOrganize = hasToolset(token, "organize");
+  const inUi = "清单要用户在 OpenStrm 的「整理」页确认后才会执行（这个令牌没开「整理」这组工具）";
+  const pending = autoOrganizeFor(task.id, since);
+  if (!pending) return { state: "not_started", message: "这次没有交给整理（没有新条目落进任务目录）。" };
+  const run = await Promise.race([pending, sleep(ORGANIZE_HANDOFF_MS).then(() => "queued" as const)]);
+  if (run === "queued") {
+    return {
+      state: "queued",
+      message: "任务上有别的整理在进行，这次的排在它后面，一分钟后再建。",
+      next: canOrganize ? `稍后用 organize_list(task: "${task.id}") 找它` : inUi,
+    };
+  }
+  if (!run) return { state: "failed", message: "整理没建起来（多半是识别词有语法错误），转存本身不受影响；请用户看一眼 OpenStrm 的日志。" };
+  return {
+    runId: run.id,
+    state: run.status,
+    mode: mode === "auto" ? "把握大、没冲突的会直接执行，其余留给人确认" : "做好后等人确认",
+    next: canOrganize ? `用 organize_status(run: "${run.id}", waitSeconds: ${MAX_WAIT_SECONDS}) 等清单做好，再用 organize_detail 看` : inUi,
+    ...openInUi(organizeUiPath(run.id)),
+  };
+}
 
 /** 转存等多久：做完就直接给结果，做不完转成作业 */
 const SAVE_INLINE_WAIT_MS = 40_000;
@@ -421,11 +460,12 @@ export const shareSaveTool = defineTool({
       }
       if (extras.organize) {
         const mode = effectiveAutoMode(task, forcedOrganizeMode(task, true));
-        if (prev.received) extra.organizeSkipped = "上次的 strm 还没生成好，先用 sync_start 补上 strm，再让用户在 OpenStrm 的「整理」页整理。";
+        if (prev.received) extra.organizeSkipped = "上次的 strm 还没生成好：先用 sync_start 补上 strm，再用 organize_preview 整理这些条目。";
         else if (mode === "off") extra.organizeSkipped = "没配 TMDB，整理不了。";
         else {
+          const since = Date.now();
           maybeAutoOrganize({ task, paths: savedPaths, trigger: "share", mode: forcedOrganizeMode(task, true) });
-          extra.organize = mode === "auto" ? "已开始整理（直接执行）" : "已生成待确认的整理清单，需要用户在 OpenStrm 的「整理」页确认";
+          extra.organize = await organizeHandoff(task, since, mode, ctx.token);
           done.push("发起了整理");
         }
       }
@@ -443,6 +483,7 @@ export const shareSaveTool = defineTool({
         report({ total: items.length, message: "转存中" });
         // 不传请求的 signal：客户端断开只是不等了，建目录、转存和生成 strm 照做
         if (subPath) await ensureSubDir(target, task.originPath, subPath);
+        const since = Date.now();
         const result = await saveSelectionToTask({
           task,
           provider: target,
@@ -457,12 +498,14 @@ export const shareSaveTool = defineTool({
           result.mode === "sync"
             ? { strmGenerated: result.generatedCount, skipped: result.skippedCount, ...(result.invalidNames.length ? { invalidNames: result.invalidNames } : {}) }
             : { strmGenerated: 0, message: "转存成功，strm 交给后台同步生成" };
+        // 整理只在同步生成 strm 的那条路上发起（后台模式交给全量同步，不整理）
+        const organize = meta.organize !== "off" && result.mode === "sync" ? await organizeHandoff(task, since, meta.organize, ctx.token) : undefined;
         const follow = args.follow ? await followInput() : {};
         return {
           task: brief,
           saved: items.length,
           ...summary,
-          ...(meta.organize !== "off" ? { organize: meta.organize === "auto" ? "已交给整理（直接执行）" : "已生成待确认的整理清单" } : {}),
+          ...(organize ? { organize } : {}),
           ...(follow.follow ? { follow: { id: follow.follow.id, name: follow.follow.name, intervalMinutes: follow.follow.intervalMinutes } } : {}),
           ...(follow.followError ? { followError: follow.followError } : {}),
         };

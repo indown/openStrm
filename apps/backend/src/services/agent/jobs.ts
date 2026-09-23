@@ -6,7 +6,7 @@
  * 只在内存里：进程重启就没了，查的时候如实说。
  */
 import { randomBytes } from "node:crypto";
-import { ToolError } from "./define.js";
+import { ToolError, type ToolContext } from "./define.js";
 import { fmtTime, toFailure, type ToolFailure } from "./format.js";
 
 export type JobStatus = "running" | "done" | "failed";
@@ -140,6 +140,53 @@ export function waitFor(p: Promise<unknown>, ms: number, signal?: AbortSignal): 
     signal?.addEventListener("abort", done, { once: true });
     p.then(done, done);
   });
+}
+
+/** 等的时候隔多久取一次进度 */
+const PROGRESS_EVERY_MS = 2000;
+
+/** 等待期间推给客户端的一格进度：done 是数到哪了，total 不知道就不给 */
+export interface ProgressSnapshot {
+  done: number;
+  total?: number;
+  message?: string;
+}
+
+/**
+ * 等一个 promise，等的时候顺便推进度（客户端给了 progressToken 才真的发）：客户端能显示进度，
+ * 模型那边也看得出没卡死。隔一会儿取一次快照，数字涨了才推——规范要求同一个请求的进度值只增不减，
+ * 换阶段时从头数的那几格就不推了
+ */
+export async function waitWithProgress(
+  p: Promise<unknown>,
+  ms: number,
+  ctx: Pick<ToolContext, "signal" | "progress">,
+  snapshot: () => ProgressSnapshot | null,
+  everyMs = PROGRESS_EVERY_MS,
+): Promise<void> {
+  if (ms <= 0) return;
+  let last = -1;
+  const tick = () => {
+    const s = snapshot();
+    if (!s || !(s.done > last)) return;
+    last = s.done;
+    ctx.progress(s.done, s.total, s.message);
+  };
+  tick();
+  const timer = setInterval(tick, everyMs);
+  timer.unref?.();
+  try {
+    await waitFor(p, ms, ctx.signal);
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+/** 作业当前的进度，给 waitWithProgress 用 */
+export function jobSnapshot(job: Job): ProgressSnapshot | null {
+  const p = job.progress;
+  if (!p || p.done === undefined) return null;
+  return { done: p.done, ...(p.total !== undefined ? { total: p.total } : {}), ...(p.message ? { message: p.message } : {}) };
 }
 
 /** 测试用 */

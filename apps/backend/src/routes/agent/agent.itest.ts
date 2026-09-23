@@ -22,6 +22,9 @@ import taskRoute from "../task/index.js";
 import taskStartRoute from "../task/start.js";
 import shareRoute from "../share/index.js";
 import backupRoute from "../system/backup.js";
+import organizeRoute from "../organize/index.js";
+import followRoute from "../follow/index.js";
+import strmRoute from "../strm/index.js";
 import passwordRoute from "../auth/password.js";
 import { DEFAULT_AUTH } from "../../db/defaults.js";
 import { writeAuthPassword } from "../../db/repositories/auth.js";
@@ -46,7 +49,9 @@ before(async () => {
   registerErrorHandling(app);
   await app.register(authPlugin);
   await app.register(cronPlugin);
-  for (const route of [agentRoute, accountRoute, settingsRoute, taskRoute, taskStartRoute, shareRoute, backupRoute, passwordRoute]) await app.register(route);
+  for (const route of [agentRoute, accountRoute, settingsRoute, taskRoute, taskStartRoute, shareRoute, backupRoute, passwordRoute, organizeRoute, followRoute, strmRoute]) {
+    await app.register(route);
+  }
   await app.ready();
   session = bearer(await app.signJwt({ username: DEFAULT_AUTH.username }));
 });
@@ -76,7 +81,7 @@ test("建令牌：要当前密码（错了回 400 不回 401）；明文只回�
   assert.match(created.token, /^ostk_[A-Za-z0-9_-]{43}$/);
   assert.deepEqual(created.info.scopes, ["read", "run", "write"]);
   // 「全部」记下的是眼下的全部组：以后加的组不会自动给这个令牌
-  assert.deepEqual(created.info.toolsets, ["sync", "transfer"]);
+  assert.deepEqual(created.info.toolsets, ["sync", "transfer", "organize", "follow", "strm"]);
   assert.ok(created.token.startsWith(created.info.prefix));
 
   const list = await app.inject({ method: "GET", url: "/api/agent/tokens", headers: session });
@@ -99,7 +104,7 @@ test("改档位和工具集；撤销；全部撤销", async () => {
   assert.equal(patched.statusCode, 200, patched.body);
   const p: AgentToken = patched.json();
   assert.deepEqual(p.scopes, ["read", "write"]);
-  assert.deepEqual(p.toolsets, ["sync", "transfer"]);
+  assert.deepEqual(p.toolsets, ["sync", "transfer", "organize", "follow", "strm"]);
 
   assert.equal((await app.inject({ method: "DELETE", url: `/api/agent/tokens/${info.id}`, headers: session })).statusCode, 200);
   assert.equal((await app.inject({ method: "DELETE", url: `/api/agent/tokens/${info.id}`, headers: session })).statusCode, 404);
@@ -171,6 +176,40 @@ test("/api/share 按动作放行：download_url 不对令牌开放；只勾了�
   assert.equal(blocked.json().code, "TOOLSET_NOT_ALLOWED");
   // 任务列表是基础接口，谁都能看
   assert.equal((await app.inject({ method: "GET", url: "/api/task", headers: bearer(syncOnly) })).statusCode, 200);
+});
+
+test("整理 / 追更 / strm 的接口：按档位放行，删除类另要删除档；没勾那一组的令牌 403", async () => {
+  const all = ["sync", "transfer", "organize", "follow", "strm"];
+  const read = await create({ name: "P3 只读", scopes: ["read"], toolsets: all });
+  const daily = await create({ name: "P3 日常", scopes: ["read", "run", "write"], toolsets: all });
+  const syncOnly = await create({ name: "P3 只同步", scopes: ["read", "run", "write"], toolsets: ["sync"] });
+  const req = (token: string, method: "GET" | "POST" | "PUT" | "DELETE", url: string, payload?: Record<string, unknown>) =>
+    app.inject({ method, url, headers: bearer(token), ...(payload !== undefined ? { payload } : {}) });
+
+  assert.equal((await req(read.token, "GET", "/api/organize/attention")).statusCode, 200);
+  assert.equal((await req(read.token, "GET", "/api/follow")).statusCode, 200);
+  const create403 = await req(read.token, "POST", "/api/organize/runs", { taskId: "nope" });
+  assert.equal(create403.statusCode, 403);
+  assert.equal(create403.json().code, "INSUFFICIENT_SCOPE");
+  // 日常档过了档位这一关，任务不存在才回 404
+  assert.equal((await req(daily.token, "POST", "/api/organize/runs", { taskId: "nope" })).statusCode, 404);
+
+  // 冲突选删掉 / 覆盖、删追更、真改 strm、按网盘重建：档位不够在碰到数据之前就挡住
+  const del = await req(daily.token, "PUT", "/api/organize/runs/x/items", { ids: ["i"], resolve: { how: "delete" } });
+  assert.equal(del.statusCode, 403);
+  assert.equal(del.json().required, "danger");
+  assert.equal((await req(daily.token, "DELETE", "/api/follow/x")).statusCode, 403);
+  assert.equal((await req(read.token, "POST", "/api/strm/rewrite", { taskId: "x", dryRun: false })).statusCode, 403);
+  const rebuild = await req(daily.token, "POST", "/api/strm/regenerate", { taskId: "x", path: "a", mode: "rebuild" });
+  assert.equal(rebuild.statusCode, 403);
+  assert.equal(rebuild.json().required, "danger");
+
+  const toolset = await req(syncOnly.token, "GET", "/api/organize/attention");
+  assert.equal(toolset.statusCode, 403);
+  assert.equal(toolset.json().code, "TOOLSET_NOT_ALLOWED");
+  // 海报、模板试算、删整理记录只认会话
+  assert.equal((await req(daily.token, "POST", "/api/organize/preview-name", {})).statusCode, 403);
+  assert.equal((await req(daily.token, "DELETE", "/api/organize/runs/x")).statusCode, 403);
 });
 
 test("令牌调 REST 也扣配额：和 /mcp 同一个桶，掏空了回 429 带 retry-after（这一下不记调用记录）", async () => {

@@ -677,6 +677,14 @@ const TOUCH_INTERVAL_S = 60;
 /** 授权 id → 上次写「最近使用」的时间（秒）和 IP：和手建令牌一样，同一个 IP 60 秒内只写一次，换了 IP 立刻写 */
 const lastTouch = new Map<string, { at: number; ip: string | null }>();
 
+/**
+ * 改一个已连接客户端能用的工具组（设置页）。令牌每次都现读授权记录，改完立即生效。
+ * 新版本加了新的一组时，老连接照约定不会自动多出来，得在这里勾上
+ */
+export function updateOAuthGrantToolsets(id: string, toolsets: AgentToolset[]): boolean {
+  return db.update(oauthGrants).set({ toolsets: JSON.stringify(toolsets) }).where(eq(oauthGrants.id, id)).run().changes > 0;
+}
+
 export function deleteOAuthGrant(id: string): boolean {
   lastTouch.delete(id);
   return db.delete(oauthGrants).where(eq(oauthGrants.id, id)).run().changes > 0;

@@ -20,9 +20,9 @@ import { ShareApiError } from "../cloud-115/share.js";
 import { driveErrorToHttp } from "../drive/errors.js";
 import { ShareGoneError } from "../drive/types.js";
 import { callTool } from "./calls.js";
-import { ToolError, defineTool } from "./define.js";
-import { summarizeArgs, toFailure, uiLink } from "./format.js";
-import { __test_resetJobs, latestJob, startJob } from "./jobs.js";
+import { NeedsConfirmation, ToolError, confirmFirst, defineTool } from "./define.js";
+import { shareLinkWithoutPassword, summarizeArgs, toFailure, uiLink } from "./format.js";
+import { __test_resetJobs, latestJob, startJob, waitWithProgress } from "./jobs.js";
 import { __test_resetAgentQuota, takeAgentQuota } from "./rate-limit.js";
 
 after(() => {
@@ -167,4 +167,68 @@ test("「在 OpenStrm 里打开」：填了管理界面地址用它；没填但�
   } finally {
     writeAppSetting("agent", saved);
   }
+});
+
+test("等的时候推进度：数字涨了才推（规范要求只增不减），等到了就停；没给快照不推", async () => {
+  const sent: Array<[number, number | undefined, string | undefined]> = [];
+  const ctx = { signal: new AbortController().signal, progress: (p: number, t?: number, m?: string) => void sent.push([p, t, m]) };
+  const snaps = [{ done: 1, total: 4 }, { done: 1, total: 4 }, { done: 0, total: 9, message: "换阶段" }, { done: 3, total: 4, message: "三" }];
+  let i = 0;
+  let finish!: () => void;
+  const done = new Promise<void>((r) => (finish = r));
+  const waiting = waitWithProgress(done, 5000, ctx, () => snaps[Math.min(i++, snaps.length - 1)], 5);
+  await new Promise((r) => setTimeout(r, 60));
+  finish();
+  await waiting;
+  assert.deepEqual(sent, [
+    [1, 4, undefined],
+    [3, 4, "三"],
+  ]);
+  const quiet: unknown[] = [];
+  await waitWithProgress(Promise.resolve(), 1000, { ...ctx, progress: () => void quiet.push(1) }, () => null, 5);
+  assert.equal(quiet.length, 0);
+});
+
+test("当面确认：拒绝先判（重试时客户端没再声明 elicitation 也算数）；弹不了框就放行；弹得了、还没问过就要确认", () => {
+  const base = { token: undefined as never, signal: new AbortController().signal, progress() {} };
+  assert.throws(() => confirmFirst({ ...base, canConfirm: false, confirmation: "declined" }, "x"), (e) => e instanceof ToolError && e.code === "DECLINED");
+  assert.throws(() => confirmFirst({ ...base, canConfirm: true, confirmation: "declined" }, "x"), (e) => e instanceof ToolError && e.code === "DECLINED");
+  assert.doesNotThrow(() => confirmFirst({ ...base, canConfirm: false }, "x"));
+  assert.doesNotThrow(() => confirmFirst({ ...base, canConfirm: true, confirmation: "accepted" }, "x"));
+  assert.throws(() => confirmFirst({ ...base, canConfirm: true }, "要删 3 个"), (e) => e instanceof NeedsConfirmation && e.message === "要删 3 个");
+});
+
+const nestedTool = defineTool({
+  name: "nested_test",
+  title: "测试",
+  description: "测试用：对象数组里的 null 也当没填",
+  scope: "read",
+  toolset: null,
+  annotations: { readOnly: true, destructive: false, idempotent: true, openWorld: false },
+  input: z.object({ changes: z.array(z.object({ target: z.string(), season: z.number().optional() }).strict()) }),
+  async run(args) {
+    return args;
+  },
+});
+
+test("调一次工具：对象数组里没填的字段写成 null（严格模式的习惯）也当没填", async () => {
+  const { info: token } = createApiToken({ name: "单测嵌套", scopes: ["read"], toolsets: ["sync"], expiresAt: null });
+  const r = await callTool(nestedTool, { changes: [{ target: "u1", season: null }] }, { token, ip: "10.0.0.9" }, { signal: new AbortController().signal, progress() {} });
+  assert.deepEqual(r, { ok: true, data: { changes: [{ target: "u1" }] } });
+});
+
+test("分享链接去掉提取码：夸克的「链接 … 提取码：…」整段、115 的「码-提取码」和 ?password=，都只剩干净的链接", () => {
+  assert.equal(shareLinkWithoutPassword("链接：https://pan.quark.cn/s/abc123def456 提取码：ABCD"), "https://pan.quark.cn/s/abc123def456");
+  assert.equal(shareLinkWithoutPassword("https://pan.quark.cn/s/abc123def456?pwd=ABCD"), "https://pan.quark.cn/s/abc123def456");
+  for (const link of ["https://115.com/s/sw3abc12345-qz9k", "https://115.com/s/sw3abc12345?password=qz9k", "sw3abc12345-qz9k"]) {
+    const clean = shareLinkWithoutPassword(link);
+    assert.ok(!clean.includes("qz9k"), `${link} → ${clean}`);
+    assert.match(clean, /sw3abc12345/);
+  }
+});
+
+test("参数摘要：追更的 receiveCode、shareUrl 里的提取码也抹掉", () => {
+  const text = summarizeArgs({ shareUrl: "https://pan.quark.cn/s/abc123def456?pwd=ABCD", receiveCode: "ABCD", name: "剧" });
+  assert.ok(!text.includes("ABCD"), text);
+  assert.match(text, /abc123def456/);
 });

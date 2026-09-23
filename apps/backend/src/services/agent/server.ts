@@ -7,8 +7,22 @@
  *
  * 结果一律是 text 块里的 JSON：Open WebUI 这类客户端只读 text；不声明 outputSchema——
  * 它用的 Python SDK 客户端看到 outputSchema 就要求每个结果都带合规的 structuredContent，错误结果也会被判失败。
+ *
+ * 当面确认（工具抛 NeedsConfirmation）：回 inputRequired，里面一个 elicitation 表单；客户端弹给人看，
+ * 带着结果把同一个 tools/call 原样再发一次（2026-07-28 版的多轮往返）。只对声明了 elicitation 的新协议请求这么做：
+ * 老协议按请求无状态服务，拿不到客户端能力，SDK 的 legacy shim 发不出确认框、会直接回错，所以 canConfirm 是 false，
+ * 工具退回对话里确认。
  */
-import { McpServer, createMcpHandler, type McpHttpHandler, type ServerContext, type StandardSchemaWithJSON } from "@modelcontextprotocol/server";
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  McpServer,
+  acceptedContent,
+  createMcpHandler,
+  inputRequired,
+  type McpHttpHandler,
+  type ServerContext,
+  type StandardSchemaWithJSON,
+} from "@modelcontextprotocol/server";
 import { moduleLogger } from "../../lib/logger.js";
 import { APP_VERSION } from "../../lib/version.js";
 import { AGENT_CALLER_KEY } from "./access.js";
@@ -44,6 +58,29 @@ function sdkSchemaFor(tool: ToolDef): SdkSchema {
   return schema;
 }
 
+/** 确认表单在 inputRequests / inputResponses 里的键 */
+const CONFIRM_KEY = "confirm";
+
+/**
+ * 客户端能不能弹确认框：只有 2026-07-28 版协议的请求在 _meta 信封里带着客户端能力。
+ * elicitation 是空对象（2025-06-18 的写法）或者带 form 才算支持表单；只支持 url 模式的不算
+ */
+function canElicitForm(ctx: ServerContext): boolean {
+  const envelope = ctx.mcpReq.envelope as Record<string, unknown> | undefined;
+  const caps = envelope?.[CLIENT_CAPABILITIES_META_KEY] as { elicitation?: unknown } | undefined;
+  const e = caps?.elicitation;
+  if (!e || typeof e !== "object") return false;
+  return Object.keys(e).length === 0 || "form" in e;
+}
+
+/** 这次请求带回来的确认结果：点了确认（没把勾去掉）是 accepted；拒绝、关掉、去掉勾都是 declined；没带是还没问 */
+function confirmationOf(ctx: ServerContext): "accepted" | "declined" | undefined {
+  const responses = ctx.mcpReq.inputResponses;
+  if (!responses || !(CONFIRM_KEY in responses)) return undefined;
+  const content = acceptedContent<{ confirm?: unknown }>(responses, CONFIRM_KEY);
+  return content && content.confirm !== false ? "accepted" : "declined";
+}
+
 async function runTool(tool: ToolDef, caller: AgentCaller, args: unknown, ctx: ServerContext) {
   const progressToken = ctx.mcpReq._meta?.progressToken;
   const progress = (value: number, total?: number, message?: string) => {
@@ -55,8 +92,28 @@ async function runTool(tool: ToolDef, caller: AgentCaller, args: unknown, ctx: S
       })
       .catch(() => {});
   };
-  const outcome = await callTool(tool, args, caller, { signal: ctx.mcpReq.signal, progress });
+  const outcome = await callTool(tool, args, caller, {
+    signal: ctx.mcpReq.signal,
+    progress,
+    canConfirm: canElicitForm(ctx),
+    // 不看这次声明没声明 elicitation：确认框是上一轮弹的，这一轮带回来的拒绝不能因为少声明了一项就作废
+    confirmation: confirmationOf(ctx),
+  });
   if (outcome.ok) return { content: [{ type: "text" as const, text: JSON.stringify(outcome.data) }] };
+  if (outcome.confirm !== undefined) {
+    return inputRequired({
+      inputRequests: {
+        [CONFIRM_KEY]: inputRequired.elicit({
+          message: outcome.confirm,
+          requestedSchema: {
+            type: "object",
+            properties: { confirm: { type: "boolean", title: "确认执行", description: "去掉勾或者点拒绝就不执行", default: true } },
+            required: ["confirm"],
+          },
+        }),
+      },
+    });
+  }
   return { content: [{ type: "text" as const, text: JSON.stringify(outcome.failure) }], isError: true };
 }
 

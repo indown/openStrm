@@ -371,5 +371,759 @@
       },
       "additionalProperties": false
     }
+  },
+  {
+    "name": "organize_list",
+    "scope": "read",
+    "toolset": "organize",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "show": {
+          "type": "string",
+          "enum": [
+            "attention",
+            "recent"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "organize_status",
+    "scope": "read",
+    "toolset": "organize",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "task": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "waitSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 45
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "organize_detail",
+    "scope": "read",
+    "toolset": "organize",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "task": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "show": {
+          "type": "string",
+          "enum": [
+            "attention",
+            "all",
+            "conflicts",
+            "unsure",
+            "failed"
+          ]
+        },
+        "cursor": {
+          "type": "string",
+          "maxLength": 20
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "tmdb_search",
+    "scope": "read",
+    "toolset": "organize",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "movie",
+            "tv"
+          ]
+        },
+        "year": {
+          "type": "string",
+          "maxLength": 4
+        },
+        "tmdbId": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "organize_preview",
+    "scope": "run",
+    "toolset": "organize",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "subPath": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "paths": {
+          "minItems": 1,
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "again": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "fresh": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "organize_adjust",
+    "scope": "run",
+    "toolset": "organize",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "select": {
+          "type": "string",
+          "enum": [
+            "all",
+            "none",
+            "confident"
+          ]
+        },
+        "conflicts": {
+          "type": "string",
+          "enum": [
+            "rename",
+            "duplicate"
+          ]
+        },
+        "changes": {
+          "minItems": 1,
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "tmdbId": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "mediaType": {
+                "type": "string",
+                "enum": [
+                  "movie",
+                  "tv"
+                ]
+              },
+              "season": {
+                "type": "integer",
+                "minimum": -1,
+                "maximum": 99
+              },
+              "episodeOffset": {
+                "type": "integer",
+                "minimum": -2000,
+                "maximum": 2000
+              },
+              "remember": {
+                "type": "boolean"
+              },
+              "selected": {
+                "type": "boolean"
+              },
+              "resolve": {
+                "type": "string",
+                "enum": [
+                  "rename",
+                  "custom",
+                  "duplicate",
+                  "delete",
+                  "replace",
+                  "keep"
+                ]
+              },
+              "newName": {
+                "type": "string",
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "target"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "organize_cancel",
+    "scope": "run",
+    "toolset": "organize",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "discard": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "organize_apply",
+    "scope": "write",
+    "toolset": "organize",
+    "annotations": {
+      "readOnly": false,
+      "destructive": true,
+      "idempotent": false,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "planVersion": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "retry": {
+          "type": "boolean"
+        },
+        "retryFiles": {
+          "minItems": 1,
+          "maxItems": 200,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          }
+        },
+        "confirmDelete": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "organize_revert",
+    "scope": "write",
+    "toolset": "organize",
+    "annotations": {
+      "readOnly": false,
+      "destructive": true,
+      "idempotent": false,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string",
+          "maxLength": 100
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "organize_skip",
+    "scope": "write",
+    "toolset": "organize",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "group": {
+          "type": "string",
+          "enum": [
+            "transient",
+            "blocked",
+            "stale",
+            "rejected",
+            "mirror",
+            "lost",
+            "pending"
+          ]
+        },
+        "files": {
+          "minItems": 1,
+          "maxItems": 200,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          }
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "follow_list",
+    "scope": "read",
+    "toolset": "follow",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "follow": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "query": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "task": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "problems": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "follow_check",
+    "scope": "write",
+    "toolset": "follow",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": false,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "follow": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        }
+      },
+      "required": [
+        "follow"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "follow_update",
+    "scope": "write",
+    "toolset": "follow",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "follow": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "intervalMinutes": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 10080
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "follow"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "follow_delete",
+    "scope": "danger",
+    "toolset": "follow",
+    "annotations": {
+      "readOnly": false,
+      "destructive": true,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "follow": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        }
+      },
+      "required": [
+        "follow"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "strm_search",
+    "scope": "read",
+    "toolset": "strm",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      },
+      "required": [
+        "task",
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "strm_check",
+    "scope": "read",
+    "toolset": "strm",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "task"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "strm_verify",
+    "scope": "run",
+    "toolset": "strm",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "task"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "strm_fix",
+    "scope": "write",
+    "toolset": "strm",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "rewrite",
+            "fill"
+          ]
+        },
+        "dryRun": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "task"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "strm_rebuild",
+    "scope": "danger",
+    "toolset": "strm",
+    "annotations": {
+      "readOnly": false,
+      "destructive": true,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "task",
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "strm_delete",
+    "scope": "danger",
+    "toolset": "strm",
+    "annotations": {
+      "readOnly": false,
+      "destructive": true,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "paths": {
+          "minItems": 1,
+          "maxItems": 100,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        }
+      },
+      "required": [
+        "task",
+        "paths"
+      ],
+      "additionalProperties": false
+    }
   }
 ]

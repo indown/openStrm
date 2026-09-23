@@ -12,13 +12,18 @@ import { copyToClipboard } from "@/lib/clipboard";
 
 /** 权限预设：档位是集合，界面上只给三个常用组合 */
 export const PRESETS: Array<{ id: string; label: string; scopes: AgentScope[]; hint: string }> = [
-  { id: "read", label: "只读", scopes: ["read"], hint: "只能查看：任务、同步进度和记录、网盘目录、分享内容、云下载列表" },
-  { id: "daily", label: "日常", scopes: ["read", "run", "write"], hint: "查看，加上开始 / 取消同步、转存分享、添加云下载" },
+  { id: "read", label: "只读", scopes: ["read"], hint: "只能查看：任务、同步进度和记录、网盘目录、分享内容、云下载列表、整理清单、追更、strm 体检" },
+  {
+    id: "daily",
+    label: "日常",
+    scopes: ["read", "run", "write"],
+    hint: "查看，加上开始 / 取消同步、转存分享、添加云下载、整理（预览、改清单、执行、撤销）、追更的检查和修改、修正 strm",
+  },
   {
     id: "full",
     label: "完全",
     scopes: ["read", "run", "write", "danger"],
-    hint: "再加删除与花费类的操作。目前还没有这类工具；以后的版本加了，这个令牌不用再改就能用",
+    hint: "再加删除类的操作：删 strm、按网盘重建 strm、删追更、整理冲突选删掉 / 覆盖。客户端支持的话，调用前会弹框请你确认",
   },
 ];
 
@@ -30,6 +35,9 @@ export const SCOPE_LABEL: Record<AgentScope, string> = { read: "查看", run: "�
 export const TOOLSETS: Array<{ id: AgentToolset; label: string }> = [
   { id: "sync", label: "同步" },
   { id: "transfer", label: "转存与云下载" },
+  { id: "organize", label: "整理" },
+  { id: "follow", label: "追更" },
+  { id: "strm", label: "strm 管理" },
 ];
 
 export function presetIdOf(scopes: AgentScope[]): string {

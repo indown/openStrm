@@ -15,9 +15,9 @@ import type { DownloadProgress } from "../../task/registry.js";
 import { cancelRunningTask, getLastStartOutcome, getRunningTask, isTaskRunning, listRunningTaskIds, waitForTaskStart } from "../../task/registry.js";
 import { startTask } from "../../task/runner.js";
 import { getTaskExecution, getTaskExecutionSummary, queryTaskHistory } from "../../task-history.js";
-import { LOCAL_READ, ToolError, defineTool } from "../define.js";
+import { LOCAL_READ, ToolError, defineTool, type ToolContext } from "../define.js";
 import { accountHint, fmtTime, openInUi } from "../format.js";
-import { waitFor } from "../jobs.js";
+import { waitFor, waitWithProgress } from "../jobs.js";
 import { resolveTask, taskBrief } from "../resolve.js";
 import { MAX_WAIT_SECONDS, runningState } from "./core.js";
 
@@ -181,8 +181,9 @@ function failedFilesFromLogs(lines: string[]): FailedFileBrief[] {
   return out.reverse();
 }
 
-/** 等这个任务跑完，最多 ms；starting 阶段先等它起跑 */
-async function waitUntilDone(taskId: string, ms: number, signal: AbortSignal): Promise<void> {
+/** 等这个任务跑完，最多 ms；starting 阶段先等它起跑。跑起来之后按已完成的文件数推进度 */
+async function waitUntilDone(taskId: string, ms: number, ctx: Pick<ToolContext, "signal" | "progress">): Promise<void> {
+  const { signal } = ctx;
   const deadline = Date.now() + ms;
   if (!getRunningTask(taskId) && isTaskRunning(taskId)) {
     await waitFor(waitForTaskStart(taskId, signal), ms, signal);
@@ -195,7 +196,10 @@ async function waitUntilDone(taskId: string, ms: number, signal: AbortSignal): P
     sub = run.subject.subscribe({ complete: () => resolve(), error: () => resolve() });
   });
   try {
-    await waitFor(done, left, signal);
+    await waitWithProgress(done, left, ctx, () => {
+      const s = run.stats?.();
+      return s ? { done: s.finished, total: s.total, message: `已处理 ${s.finished}/${s.total}${s.failed ? `，失败 ${s.failed}` : ""}` } : null;
+    });
   } finally {
     sub?.unsubscribe();
   }
@@ -236,7 +240,7 @@ export const syncStatusTool = defineTool({
     const run = getRunningTask(task.id);
     const watchingThisRun = !executionId || run?.executionId === executionId || (!run && isTaskRunning(task.id));
     if (wait > 0 && watchingThisRun && isTaskRunning(task.id)) {
-      await waitUntilDone(task.id, wait, ctx.signal);
+      await waitUntilDone(task.id, wait, ctx);
       // 等的这段时间里跑完了：记录的状态变了，重新取
       record = undefined;
     }

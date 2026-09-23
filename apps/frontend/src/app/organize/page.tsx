@@ -17,7 +17,7 @@ import { TreeSelectDialog } from "@/components/TreeSelectDialog";
 import { api, type TaskRow } from "@/lib/api";
 import { accountLabel } from "@/lib/drive";
 import { apiErrorMessage } from "@/lib/axios";
-import { notifyOrganizeChanged } from "@/lib/organize";
+import { handPicked, notifyOrganizeChanged } from "@/lib/organize";
 import { AttentionList } from "./components/AttentionList";
 import { HistoryDialog } from "./components/HistoryDialog";
 import { MemoryDialog } from "./components/MemoryDialog";
@@ -157,7 +157,7 @@ function OrganizeContent() {
   /** 打开的整理读到了：任务下拉框和范围切到它的（自动整理的新增路径不往范围框里填，那是另一种范围） */
   const syncFromRun = useCallback((run: OrganizeRun) => {
     setTaskId(run.taskId);
-    setScopes(run.trigger !== "manual" ? [] : run.scopePaths.length > 0 ? run.scopePaths : run.scopePath ? [run.scopePath] : []);
+    setScopes(!handPicked(run.trigger) ? [] : run.scopePaths.length > 0 ? run.scopePaths : run.scopePath ? [run.scopePath] : []);
     setDraft("");
   }, []);
 

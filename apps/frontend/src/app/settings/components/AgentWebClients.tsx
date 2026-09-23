@@ -5,14 +5,15 @@
  *   - 公网 MCP 地址和两家的接入步骤（填了公网地址才有）；
  *   - 待批准：开着页面时每 3 秒刷一次（先来的在前，新来的不会把正要点的那行挤走）。批准要输入授权页上的配对码和当前密码：
  *     配对码证明批的是自己眼前授权页上的那一条（列表里故意不给配对码），密码和建令牌一样——批准等于发一把长期有效的钥匙；
- *   - 已连接的客户端（断开、全部断开；公网地址改过的标失效）、预注册客户端（新建时 secret 只显示一次）、连接自检。
+ *   - 已连接的客户端（改工具组、断开、全部断开；公网地址改过的标失效）、预注册客户端（新建时 secret 只显示一次）、连接自检。
  * 列表总是显示（公网地址清掉了，已连接的和预注册的也还在库里，得能看到、能断开）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Globe, Loader2, MoreHorizontal, Plus, ShieldCheck, XCircle } from "lucide-react";
 import { toast } from "sonner";
-import type { AgentOAuthState, AgentScope, AgentSelfCheckItem, OAuthClientCreated, OAuthClientInfo, OAuthGrantInfo, OAuthPendingRequest } from "@openstrm/shared";
+import type { AgentOAuthState, AgentScope, AgentSelfCheckItem, AgentToolset, OAuthClientCreated, OAuthClientInfo, OAuthGrantInfo, OAuthPendingRequest } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -34,7 +35,7 @@ import { FieldHint } from "@/components/field-hint";
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import { fmtWhen } from "@/lib/format";
-import { CopyButton, PRESETS, SCOPE_LABEL, grantedPreview, presetLabel, toolsetText } from "./agent-common";
+import { CopyButton, PRESETS, SCOPE_LABEL, TOOLSETS, grantedPreview, hasAllToolsets, presetLabel, toolsetText } from "./agent-common";
 
 const POLL_MS = 3000;
 
@@ -281,6 +282,66 @@ function ManualClientDialog({ open, onClose, onCreated }: { open: boolean; onClo
   );
 }
 
+/**
+ * 改一个已连接客户端能用的工具组：勾法和建令牌时一样，「全部」存成当时的全部组。
+ * 新版本加了一组工具，老连接照约定不会自动多出来，要在这里勾上。改完立即生效，客户端不用重连
+ */
+function GrantToolsetsDialog({ grant, onClose, onSaved }: { grant: OAuthGrantInfo; onClose: () => void; onSaved: () => void }) {
+  const [all, setAll] = useState(() => hasAllToolsets(grant.toolsets));
+  const [chosen, setChosen] = useState<AgentToolset[]>(grant.toolsets);
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.agent.updateGrantToolsets(grant.id, all ? null : chosen);
+      toast.success(`已更新「${grant.clientName}」能用的工具`);
+      onSaved();
+      onClose();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "保存失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Dialog open onOpenChange={(o) => !o && !saving && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>「{grant.clientName}」能用哪些工具</DialogTitle>
+          <DialogDescription>
+            只开需要的几组，工具少了模型选得更准。改完立即生效，客户端不用重新连接。档位（{presetLabel(grant.scopes)}）不在这里改：要换就断开后重新授权。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+          <label className="flex items-center gap-2">
+            <Checkbox checked={all} onCheckedChange={(v) => setAll(v === true)} />
+            全部
+          </label>
+          {TOOLSETS.map((t) => (
+            <label key={t.id} className="flex items-center gap-2">
+              <Checkbox
+                disabled={all}
+                checked={all || chosen.includes(t.id)}
+                onCheckedChange={(v) => setChosen((cur) => (v === true ? [...new Set([...cur, t.id])] : cur.filter((x) => x !== t.id)))}
+              />
+              {t.label}
+            </label>
+          ))}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>
+            取消
+          </Button>
+          <Button type="button" onClick={() => void save()} disabled={saving || (!all && chosen.length === 0)}>
+            {saving && <Loader2 className="size-4 animate-spin" />}
+            保存
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ClientCreatedDialog({ created, onClose }: { created: OAuthClientCreated | null; onClose: () => void }) {
   return (
     <Dialog open={created != null} onOpenChange={(o) => !o && onClose()}>
@@ -377,6 +438,7 @@ export function AgentWebClients({
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<OAuthClientCreated | null>(null);
   const [confirming, setConfirming] = useState<Confirming | null>(null);
+  const [editingGrant, setEditingGrant] = useState<OAuthGrantInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [checks, setChecks] = useState<AgentSelfCheckItem[] | null>(null);
   const [checking, setChecking] = useState(false);
@@ -614,6 +676,7 @@ export function AgentWebClients({
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => setTimeout(() => setEditingGrant(g), 0)}>改工具组</DropdownMenuItem>
                     <DropdownMenuItem variant="destructive" onSelect={() => setTimeout(() => setConfirming({ kind: "grant", grant: g }), 0)}>
                       断开
                     </DropdownMenuItem>
@@ -716,6 +779,7 @@ export function AgentWebClients({
         }}
       />
       <ClientCreatedDialog created={created} onClose={() => setCreated(null)} />
+      {editingGrant && <GrantToolsetsDialog key={editingGrant.id} grant={editingGrant} onClose={() => setEditingGrant(null)} onSaved={() => void load()} />}
       <ConfirmDialog
         open={confirming !== null}
         busy={busy}

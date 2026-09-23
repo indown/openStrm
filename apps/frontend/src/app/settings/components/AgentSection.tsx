@@ -21,7 +21,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { StatusBadge, TONE_CLASS } from "@/components/status-badge";
+import { StatusBadge, TONE_CLASS, type StatusTone } from "@/components/status-badge";
 import { FieldHint } from "@/components/field-hint";
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
@@ -61,6 +61,17 @@ function snippets(mcpUrl: string, token: string) {
 }
 
 /** MCP 地址：接口在哪儿它就在哪儿（前后端分开部署时是 NEXT_PUBLIC_API_URL 那边，不是页面自己的地址） */
+/**
+ * 一次调用的结果怎么显示：弹了确认框在等人点（CONFIRM_REQUESTED）、人在确认框里拒绝了（DECLINED）都不算失败——
+ * 前一种客户端会带着结果再调一次，那一次另记一笔
+ */
+function callOutcome(c: AgentCall): { tone: StatusTone; label: string } {
+  if (c.ok) return { tone: "success", label: "成功" };
+  if (c.error.startsWith("CONFIRM_REQUESTED")) return { tone: "neutral", label: "等确认" };
+  if (c.error.startsWith("DECLINED")) return { tone: "neutral", label: "已拒绝" };
+  return { tone: "danger", label: "失败" };
+}
+
 function mcpUrlOf(mcpPath: string): string {
   const base = (process.env.NEXT_PUBLIC_API_URL || window.location.origin).replace(/\/+$/, "");
   return `${base}${mcpPath}`;
@@ -491,12 +502,16 @@ export function AgentSection({
               <li key={c.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
                 <Bot className="size-3.5 text-muted-foreground" />
                 <span className="font-mono">{c.tool}</span>
-                <StatusBadge tone={c.ok ? "success" : "danger"}>{c.ok ? "成功" : "失败"}</StatusBadge>
+                <StatusBadge tone={callOutcome(c).tone}>{callOutcome(c).label}</StatusBadge>
                 <span className="text-muted-foreground">
                   {c.tokenName}
                   {c.ip ? `（${c.ip}）` : ""}
                 </span>
-                {!c.ok && c.error && <span className={`min-w-0 flex-1 truncate ${TONE_CLASS.danger.text}`} title={c.error}>{c.error}</span>}
+                {callOutcome(c).tone === "danger" && c.error && (
+                  <span className={`min-w-0 flex-1 truncate ${TONE_CLASS.danger.text}`} title={c.error}>
+                    {c.error}
+                  </span>
+                )}
                 <span className="ml-auto tabular-nums text-muted-foreground" title={new Date(c.at * 1000).toLocaleString("zh-CN", { hour12: false })}>
                   {fmtWhen(c.at * 1000)} · {c.durationMs} ms
                 </span>

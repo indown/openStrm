@@ -6,7 +6,7 @@
  *   - 任务已有一次整理在进行中（409）就过一分钟再试，路径合并进去。
  *   - 任何失败只记日志：自动整理是锦上添花，不能把转存 / 追更本身搞失败。
  */
-import type { OrganizeTrigger, TaskDefinition } from "@openstrm/shared";
+import type { OrganizeRun, OrganizeTrigger, TaskDefinition } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { HttpError } from "../../lib/http-error.js";
@@ -27,9 +27,14 @@ interface Pending {
   /** 合并进来的请求里只要有一个要 review，整个 run 就 review */
   mode: "review" | "auto";
   timer: NodeJS.Timeout;
+  /** 等着看建出来的是哪一条的（智能体转存完要把 runId 带回去）：建成回 run，建不成回 null */
+  waiters: Array<(run: OrganizeRun | null) => void>;
 }
 
 const pending = new Map<string, Pending>();
+
+/** 每个任务最近一次自动建出来的 run 和时间（毫秒）：攒着的已经发出去了，智能体再来问时从这里拿 */
+const lastCreated = new Map<string, { run: OrganizeRun; at: number }>();
 
 interface Deps {
   createRun: typeof createRun;
@@ -76,17 +81,25 @@ export function maybeAutoOrganize(input: AutoOrganizeInput): void {
   schedule(input.task.id, paths, input.trigger, mode, input.debounce ? deps.debounceMs : 0);
 }
 
-function schedule(taskId: string, paths: string[], trigger: OrganizeTrigger, mode: "review" | "auto", delayMs: number): void {
+function schedule(
+  taskId: string,
+  paths: string[],
+  trigger: OrganizeTrigger,
+  mode: "review" | "auto",
+  delayMs: number,
+  waiters: Pending["waiters"] = [],
+): void {
   const existing = pending.get(taskId);
   if (existing) {
     for (const p of paths) existing.paths.add(p);
     if (mode === "review") existing.mode = "review";
+    existing.waiters.push(...waiters);
     clearTimeout(existing.timer);
     existing.timer = setTimeout(() => fire(taskId), Math.max(delayMs, 0));
     existing.timer.unref?.();
     return;
   }
-  const entry: Pending = { paths: new Set(paths), trigger, mode, timer: setTimeout(() => fire(taskId), delayMs) };
+  const entry: Pending = { paths: new Set(paths), trigger, mode, timer: setTimeout(() => fire(taskId), delayMs), waiters };
   entry.timer.unref?.();
   pending.set(taskId, entry);
 }
@@ -101,16 +114,30 @@ async function fire(taskId: string): Promise<void> {
   try {
     const run = await deps.createRun({ taskId, paths, mode: entry.mode, trigger: entry.trigger });
     log.info({ taskId, runId: run.id, paths: paths.length, trigger: entry.trigger, mode: entry.mode }, "自动整理已建 run");
+    lastCreated.set(taskId, { run, at: Date.now() });
+    for (const w of entry.waiters) w(run);
   } catch (err) {
     if (err instanceof HttpError && err.status === 409) {
       log.debug({ taskId }, "任务有整理在进行中，一分钟后再试");
-      schedule(taskId, paths, entry.trigger, entry.mode, deps.retryMs);
+      schedule(taskId, paths, entry.trigger, entry.mode, deps.retryMs, entry.waiters);
       return;
     }
     log.warn({ err, taskId }, "自动整理建 run 失败");
+    for (const w of entry.waiters) w(null);
     // 整理起不来（识别词有语法错误之类）：为等它而压着的复制不用干等兜底时间
     releaseCopyHolds(taskId, Date.now());
   }
+}
+
+/**
+ * 智能体转存完想把整理清单带回去：这个任务有攒着的自动整理，就等它建出来（建成回 run，建不成回 null；
+ * 任务上有整理在进行、一分钟后才重试的，会等很久，调用方自己限时）；since（毫秒）之后已经建过，直接回那一条；都没有是 undefined
+ */
+export function autoOrganizeFor(taskId: string, since: number): Promise<OrganizeRun | null> | undefined {
+  const entry = pending.get(taskId);
+  if (entry) return new Promise((resolve) => entry.waiters.push(resolve));
+  const last = lastCreated.get(taskId);
+  return last && last.at >= since ? Promise.resolve(last.run) : undefined;
 }
 
 /**
@@ -129,4 +156,5 @@ export async function __test_flushAutoOrganize(): Promise<void> {
 export function __test_resetAutoOrganize(): void {
   for (const entry of pending.values()) clearTimeout(entry.timer);
   pending.clear();
+  lastCreated.clear();
 }

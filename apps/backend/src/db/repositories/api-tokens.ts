@@ -12,7 +12,7 @@ export const TOKEN_PREFIX = "ostk_";
 const DISPLAY_PREFIX_LEN = TOKEN_PREFIX.length + 7;
 
 export const AGENT_SCOPES: readonly AgentScope[] = ["read", "run", "write", "danger"];
-export const AGENT_TOOLSETS: readonly AgentToolset[] = ["sync", "transfer"];
+export const AGENT_TOOLSETS: readonly AgentToolset[] = ["sync", "transfer", "organize", "follow", "strm"];
 
 /** 同一个令牌多久最多写一次「最近使用」：每个请求都写库不值当 */
 const TOUCH_INTERVAL_S = 60;

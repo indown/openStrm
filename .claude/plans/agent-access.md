@@ -379,6 +379,8 @@ ingress:
 | `strm_rebuild` | danger | D, OW | 按网盘现状重建，本地多出来的 strm 会删 |
 | `strm_delete` | danger | D | 删指定的 strm |
 
+整理这几行以后面「整理工具：让 agent 看清单、改清单、确认执行」一节为准：`organize_adjust` 改放 run 档，整理组另加 `organize_list` / `organize_detail` / `organize_cancel` / `organize_skip`，`tmdb_search` 也归进整理组。
+
 **P4（可选）**：
 
 - 建 / 改同步任务（要新开一个 `config` 档）；
@@ -1224,6 +1226,447 @@ P1 做完，没提交。和上面设计不一样、或者做的时候才定下�
 - 授权页：SDK 客户端（DCR、回环回调）是密码优先的布局，批准按钮加载后是灰的、鼠标移动后才能点；终端调密码批准 → 回调 → 换令牌 → 工具 → 吊销后刷新 → 并发刷新拿同一对都通。假冒客户端（名字写 Claude、回调在别的域名）只有配对码和一句为什么，硬发密码批准回 403。
 
 **测试**：新增 `plugins/cors.test.ts`、`services/password-check.test.ts`；`oauth.test.ts` 的拓扑表和回调判断；`security-headers.test.ts` 的校验；`lib/ip.test.ts` 的地址工具；`oauth.itest.ts` 挂上真的跨域配置和 trustProxy，自检替身改成模拟本机反代追加来源，加了保存即生效、没设 TRUST_PROXY 的提示、Access 挡住、连不上、带端口、并发自检、密码批准的回调限制、Telegram 说明。后端全量 947 条全过；前后端 tsc / eslint 干净；`next build` 通过。
+
+## 整理工具：让 agent 看清单、改清单、确认执行（设计，2026-09-23，未实施）
+
+用户问：MCP 是不是没有「查看整理清单详情 / 确认整理」的接口？怎么设计能让 agent 更好地操控、简化人的操作？这一节细化 P3 里整理那几个工具，和「清单 → P3」表里整理那几行不一样的地方以这里为准。
+
+### 现状
+
+- 工具只有 P1 的 12 个，整理的一个都没有。
+- `share_save(organize: true)` 会建一份待确认的清单，结果里却只有一句「已生成待确认的整理清单，需要用户在 OpenStrm 的「整理」页确认」，没有 runId 也没有链接。清单是 agent 发起建的，它自己却看不到、也确认不了。
+- `overview` 只给 `organizePending` 一个数。
+- `/api/organize/*` 都没声明 `agentScope`，令牌直接调 REST 也是 403。
+- Telegram 的「整理待确认」只有文字、没有按钮，最后还得去整理页。
+
+所以现在每一次待确认的整理，人都要：打开整理页 → 在待处理里找到这一条 → 一部部核对识别（换匹配要自己搜 TMDB，剧集要对季 / 集偏移）→ 冲突一个个选办法 → 执行 → 等 → 看失败。
+
+### agent 能接走哪些
+
+| 整理页上人要做的 | 难在哪 | agent 能做到哪 |
+|---|---|---|
+| 找到待确认的那条 | 待处理里常常好几条 | overview / `organize_list` 直接列出来 |
+| 核对识别（认不出、把握小的） | 要对着原名搜 TMDB，比年份、比季集数 | 全部：看原名和候选、搜、比季集数、换匹配 |
+| 季 / 集偏移（绝对集数、第二季接着第一季编号） | 要算 | 全部 |
+| 冲突选办法 | 一个个点下拉 | 大部分：改名保留、挪进重复文件；删掉 / 覆盖要 danger 档 |
+| 取消勾选不该动的 | — | 全部 |
+| 确认执行 | 这一步该留给人 | 只到「把一段准确的摘要给人看、拿到同意」为止 |
+| 失败项重试 / 放弃 / 重新预览 | 要看分组 | 全部（先告诉用户） |
+| 撤销 | — | 全部（先告诉用户） |
+
+**目标**：一次整理，人只回答一个问题——「按这个执行吗？」。人看到的摘要由服务端算出来，不靠模型转述；人点头的是哪一版，执行的就是哪一版。
+
+### 工具（新工具集「整理」`organize`）
+
+| 工具 | 档 | 注解 | 做什么 |
+|---|---|---|---|
+| `organize_list` | read | RO | 默认列要人管的（和整理页「待处理」同一套规则，`listAttention`），也能按任务列历史。每条给 runId、任务、来源、范围、状态和原因、一句话概括、时间、链接 |
+| `organize_status` | read | RO | 一次整理的状态：进度、统计、能不能执行 / 撤销、失败分组和下一步、`planVersion`、`confirmText`；`waitSeconds` 等预览 / 执行 / 撤销做完 |
+| `organize_detail` | read | RO | 清单详情：要拿主意的单元排前面，把握大的折成一行；给了 `unit` 就列这个单元的文件（从哪到哪、为什么） |
+| `tmdb_search` | read | RO, OW | 按片名（可限类型、年份）搜，或按 TMDB id 查；剧集带每季集数 |
+| `organize_preview` | run | I, OW | 建预览，等 40 秒，做完直接带上清单头部。同范围已经有待确认的清单就返回它，`fresh: true` 才重来；`again: runId` 按原范围重新预览 |
+| `organize_adjust` | run | I, OW | 改清单，一次多条、只重规划一次：换匹配、季 / 集偏移、勾选单元或文件、冲突办法、记住；另有批量的「只选把握大的」「冲突统一改名保留」 |
+| `organize_cancel` | run | I | 停下进行中的预览 / 执行 / 撤销，或作废待确认的清单 |
+| `organize_apply` | write | D, OW | 执行（必须带 `planVersion`）或重试失败项；有删除项要 danger 档加 `confirmDelete`；客户端支持时当面确认 |
+| `organize_revert` | write | D, OW | 撤销；客户端支持时当面确认 |
+| `organize_skip` | write | I, OW | 放弃失败项（按组或按文件），原地改了名的先改回原名 |
+
+- 参数 `run` 都可以换成 `task`：取这个任务最近一条要人管的，没有就取最近一条。省掉一轮 list（「引用可以用名字」那条原则）。
+- **`organize_adjust` 放 run 档，不放 write**（原来 P3 表里是 write）：改清单不动网盘，和预览是一类事（都会列网盘目录、查 TMDB）。这样只有 read + run 的令牌也能把清单改好，最后由人在界面上点执行；只读客户端（ChatGPT Plus）靠 `openInUi` 走同一条路。例外：冲突选「删掉 / 覆盖」要 danger。
+- 没配 TMDB 时工具照样列出（工具清单要稳定，自建工作流会写死），preview / adjust / tmdb_search 报「没配 TMDB」。
+
+### 引用：单元 `u3`、文件 `u3.2`
+
+现在项的 id 每次重规划都换（`replaceItems` 整批删了重插，id 是 `randomUUID`）：agent 看完清单改了一处，手里其它 id 就全失效了。单元 key 和文件路径又长，还可能带零宽空格、首尾空格（`凡人修仙传/Season 1 `），让模型原样抄回来靠不住。
+
+所以对 agent 一律用短编号：
+
+- **单元**按 `listUnits` 的顺序（rootPath、key）编成 `u1…uN`。单元在预览时就定了，重规划不增不减，所以编号整个 run 都有效，进程重启也不变。
+- **文件**：单元自己的文件按网盘路径排序，编成 `u3.1…`。「覆盖」带出来的 delete 项、建目录 / 删空目录不编号，它们不能单独改。
+- 工具调用时把编号翻成 key / 路径，再翻成当前的项 id 交给服务层。不改库，也不改界面。
+
+### 清单版本 `planVersion`：点头的就是执行的
+
+- 按清单内容算一个短指纹：各单元的勾选、匹配、季、偏移、排除、冲突办法，加上各项的 src → dst 和动作。`organize_status` / `organize_detail` / `organize_adjust` 都带上它。
+- `organize_apply` 执行待执行的清单时必须带 `planVersion`，对不上就拒（`PLAN_CHANGED`），同时回新的版本和变了什么。不管是有人在界面上改过，还是 agent 后来又改了，都得重新给人看。
+- 不加迁移：按内容现算，两万项也就几毫秒。
+
+### `confirmText`：给人看的那段话由服务端写
+
+待执行的清单带一段服务端拼好的摘要，工具描述里要求「执行前把 confirmText 原样给用户看」：
+
+> 在「115 · /tv」上执行整理（转存的 3 个新增路径）：12 部作品，改名 / 移动 80 个文件，新建 6 个目录。识别：把握大 9、一般 2、手动指定 1；1 部认不出来，这次不动。冲突 2 个按「改名保留」处理。执行后自动改写 1 条追更订阅的目录。能撤销。
+
+- 里面只有数字、任务名（用户自己起的）和固定措辞，不放文件名和 TMDB 标题（第三方文本只放数据字段）。
+- 有删除项单独一句「会删掉 N 个文件（进网盘回收站，撤销退不回来）」；清单旧了（`outdated`）也说一句。
+- 当面确认弹的也是这段话。
+
+### `organize_detail` 的输出：先列要拿主意的
+
+「要拿主意」和整理页的「要处理」用同一个口径（`UnitList.tsx` 的 `rowOf`：没识别、待执行时把握不是 high、有冲突、有失败、跳过里有要看一眼的），把这条规则挪进 shared，两边共用。再加两条：有删除项、有单元说明（notes）。`why` 的取值：`unmatched` / `low` / `medium` / `conflict` / `failed` / `skipped` / `delete` / `notes`。
+
+```json
+{
+  "run": { "id": "…", "task": "115 · /tv", "status": "ready", "trigger": "share", "createdAt": "今天 13:18" },
+  "planVersion": "c41e9a07",
+  "summary": "12 部 · 80 项要动 · 新建 6 个目录 · 2 项冲突 · 0 项删除",
+  "confidence": { "high": 9, "medium": 2, "low": 1, "none": 0 },
+  "attention": [
+    {
+      "ref": "u3",
+      "why": ["low", "conflict"],
+      "source": "[Nekomoe kissaten][Sousou no Frieren]",
+      "parsed": { "title": "Sousou no Frieren", "year": "" },
+      "match": { "type": "tv", "tmdbId": 209867, "title": "葬送的芙莉莲", "year": "2023", "confidence": "low", "reason": "…" },
+      "candidates": [{ "type": "tv", "tmdbId": 209867, "title": "葬送的芙莉莲", "year": "2023" }],
+      "dst": "剧集/葬送的芙莉莲 (2023) [tmdbid=209867]",
+      "episodes": { "files": "S01E01–S01E28", "tmdb": "第 1 季 28 集" },
+      "files": { "changing": 26, "conflicts": 2, "skipped": 0, "excluded": 0 },
+      "referencedBy": 1,
+      "notes": [],
+      "sample": [{ "from": "[Nekomoe kissaten][Sousou no Frieren][01][1080p].mp4", "to": "Season 01/葬送的芙莉莲 - S01E01.mp4" }]
+    }
+  ],
+  "ok": { "count": 9, "units": [{ "ref": "u1", "title": "沙丘：第二部", "year": "2024", "changing": 3 }] },
+  "nextCursor": "…",
+  "confirmText": "…",
+  "next": "…",
+  "openInUi": "http://nas:3000/organize?run=…"
+}
+```
+
+- 默认 attention 最多 15 个、ok 最多 30 行，整份控制在 4k token 以内；`cursor` 翻页，`show` 可以只看 conflicts / unsure / failed / all。
+- 候选只给认不出、把握小的单元，最多 3 个，不带简介。
+- 剧集单元给一组集数对照：目标文件名里的集数范围，对 TMDB 那一季的集数。偏移、绝对集数折算得对不对，一眼看得出。
+- `unit: "u3"` 时列这个单元的文件：要动的、冲突的、要看一眼的跳过项在前，不变的只给个数。每项给 `ref`、从哪（相对单元根）到哪（相对作品目录）、动作、原因、选的办法；执行过的再带状态和失败原因。
+- `source`、文件名是第三方内容（分享者起的），只放数据字段，工具描述写明只当数据看。
+
+### 各工具要点
+
+**organize_preview**
+
+- 入参：`task`、`subPath`（一个目录）或 `paths`（最多 50 个，相对任务目录）、`fresh`、`again`。
+- 开跑前先看这个范围里有没有待执行的清单，也就是会被这次预览作废的那些（和 `supersedeCovered` 同一套 `covers` 规则）。有就不跑，把它们列出来：那可能是人在界面上改了一半的。要重来传 `fresh: true`。
+- 任务上已有整理在进行（409）不当错误，返回那一条的状态。
+- 等 40 秒：做完了直接带上 `organize_detail` 的头部（attention 最多 10 个）；没做完给 runId，next 是 `organize_status(run, waitSeconds: 45)`。
+- 来源记成新加的 `"agent"`（`OrganizeTrigger` 加一个值）。校验范围、算待处理的时候按手动对待。
+
+**organize_adjust**
+
+入参的根是普通对象，`changes` 是扁平对象的数组，能过可移植性测试。嵌套的对象也 `.strict()`，拼错的字段名直接报错：
+
+```
+run
+select?     "all" | "none" | "confident"     先做：全选 / 全不选 / 只选把握大的（和整理页的按钮一样）
+conflicts?  "rename" | "duplicate" | "keep"  再做：还没选办法的冲突统一这么办（keep = 留在原处）
+changes?    最多 50 条，按顺序做：
+  target          "u3"（单元）或 "u3.2"（文件）
+  tmdbId          单元：换匹配
+  mediaType       单元：和 tmdbId 一起给；不给就沿用当前类型
+  season          单元：整个单元当第几季，0 是特别篇，-1 取消
+  episodeOffset   单元：集数加减
+  remember        单元：执行后记住这次的识别
+  selected        单元：整理 / 不整理；文件：整理 / 留在原处
+  resolve         文件：rename / custom / duplicate / delete / replace / keep
+  newName         resolve 是 custom 时的目标文件名
+```
+
+- 整批先校验：编号在不在、字段和目标对不对得上、TMDB 查不查得到。有一条不行，整批都不做，报是哪一条。
+- 服务层加 `patchPlan(runId, { select, conflicts, units, files })`：TMDB、列目标目录这些 await 先做完，再确认还能改，然后一次重规划落库。现在的 `patchUnit` / `patchUnits` / `patchItems` 改成调它，界面行为不变。
+- 返回新的 planVersion、summary、confirmText，改了的单元的新匹配 / 目标目录 / 计数，还有**这次改动带出来的新冲突**：重规划是整体的，别的单元也可能被挤到。
+- 进程重启过、清单改不了（`editable: false`）：报 `NOT_EDITABLE`，hint「不改可以直接执行；要改就 organize_preview(again: run) 重新预览」。
+
+**organize_apply**
+
+- 入参：`run`、`planVersion`（待执行时必填）、`retryFiles`（点名重试 stale / rejected 的项）、`confirmDelete`（有删除项时必须等于删除项数，同 `hdhive_unlock` 的 `maxPoints`）。
+- 已经在执行、或者已经执行完了：返回当前状态，不当错误。任务开了自动整理时常见。
+- 有删除项时要 danger 档，`confirmDelete` 对得上才执行。
+- 等 40 秒：做完返回结果，没做完 next 是 `organize_status(run, waitSeconds: 45)`。结果里带「能撤销：organize_revert(run)」。
+
+**organize_status / organize_list**
+
+- 等待期间把进度（阶段、做了几个）推成 progress 通知。
+- 失败分组照 `failureGroups`：每组的数量、下一步（重试 / 放弃 / 重新预览），以及前 10 个文件的编号。
+- 被新预览取代的，说明是被哪一条取代的：找同任务里覆盖它的最新一条待执行清单。
+
+### 确认的三条路
+
+1. **对话里**（默认，所有客户端都能用）：agent 把 confirmText 给人看，再说明自己改了什么、为什么；人说「行」，它带上 planVersion 执行。
+2. **客户端当面确认**：SDK v2 有 `inputRequired.elicit`。2026-07-28 版协议走多轮往返，老协议的客户端由 SDK 里的 legacy shim 转成 `elicitation/create`（看源码是这样，落地时实测）。客户端声明了 elicitation 能力时，`organize_apply` / `organize_revert` 弹一个「执行 / 取消」表单，内容就是 confirmText。
+   - 这一步模型插不上手，是对付提示注入最硬的一道。人把工具加进客户端的允许列表后，就只剩这一次有内容的确认。
+   - 客户端没声明这个能力，就退回第 1 条。
+   - 要实测的：Claude Code 支持 elicitation，claude.ai、ChatGPT、Codex 还不知道；走 legacy shim 时工具请求在人点之前一直开着，人点得慢的话，客户端 60 秒超时和 Cloudflare 的 100 秒会不会先把它断掉。
+3. **在界面 / Telegram 里点**：所有结果都带 `openInUi`（`/organize?run=`）。只读客户端、或者人想自己看一眼时走这条：agent 把清单改好，人点「执行」。
+   - 可选：Telegram 的「整理待确认」加「✅ 执行」「🔗 打开」两个按钮。按钮里带 planVersion，对不上就提示重新看；开关默认关。
+   - 不用 agent 的自动整理也受益；agent 不在线时，人也能异步确认。
+
+### 和别的工具接上
+
+- `share_save`：转存后要整理时，最多等 10 秒让清单建出来，结果里给 `organize: { runId, state, next, openInUi }`。
+  - `maybeAutoOrganize` 要改成能拿到建出来的 run：排队中的请求挂上 resolver，建好时一起回。
+  - 任务上有别的整理在进行（409，一分钟后重试）的，回「排队中」，next 指向 `organize_list(task)`。
+  - 任务开了自动整理、而且全是把握大的，会直接执行，`organize_status` 看得到结果。
+- `overview`：`organizePending` 换成 `organize: { pending: N, runs: [最多 5 条，形状同 organize_list] }`。
+- 以后的 `follow_check`、云下载回执同样带上 runId。
+- REST：`/api/organize/*` 按上面的档位声明 `agentScope` 和 `agentToolset: "organize"`，给 n8n、脚本用；删整理记录、识别记忆、模板试算仍然只认会话。
+- 服务端说明的「用法」加一句：整理先 organize_preview / organize_detail，改好后把 confirmText 给用户看，同意了带 planVersion 调 organize_apply。
+
+### 典型对话
+
+「整理一下动漫任务，认不准的列给我看，我确认了再执行」：
+
+1. `organize_preview(task: "动漫")` → 清单头部（没做完就再用 `organize_status` 等一次）
+2. 认不出、把握小的：`tmdb_search` 0–3 次
+3. `organize_adjust` 一次：换 2 部的匹配、1 部设季、冲突统一改名保留、认不出的那部不勾
+4. 把 confirmText 给人看，再说改了哪些、为什么、哪部没动 → 人：「行」
+5. `organize_apply(run, planVersion)`（支持的客户端弹一次确认）→ `organize_status` 等结果 → 「80 项已改名，能撤销」
+
+人要做的：说一句话，最多再点一下。现在是打开整理页一部部看、一个个点。
+
+- 「转存这个分享到电视剧，整理好」：`share_inspect` → `share_save(organize: true)` 拿到 runId → 同上 3–5。
+- 「最近有要我确认的整理吗」：`overview` → `organize_detail(task: …)` → 同上。
+
+### 要改的现有代码
+
+- `services/organize/run.ts`：`patchPlan`（批量、一次重规划）；清单指纹；按 `covers` 找会被作废的待执行清单；`waitForRun` 加超时和 signal。
+- `services/organize/auto.ts`：`maybeAutoOrganize` 能拿到建出来的 run。
+- shared：`OrganizeTrigger` 加 `"agent"`；「要处理」的规则挪进 shared；`AgentToolset` 加 `"organize"`。前端设置页多一组勾选框，`TRIGGER_LABEL` 加「智能体」。
+- `services/agent/tools/organize.ts`：十个工具；`refs.ts`（编号 ↔ key / 路径 ↔ 项 id）；confirmText。
+- `services/agent/define.ts` / `server.ts`：`ToolContext` 加当面确认。客户端有 elicitation 能力时返回 inputRequired，重试时读 `inputResponses`；SDK 仍然只在 `server.ts` 出现。
+- `transfer.ts`（share_save 带 runId）、`core.ts`（overview）、`instructions.ts`。
+- `routes/organize/index.ts`：agentScope / agentToolset。
+- 工具清单快照、可移植性测试更新。
+
+### 测试
+
+- `organize.itest`（FakeDrive + 假 TMDB）：
+  - preview → detail → adjust（改完编号不变、planVersion 变了）→ 用旧 planVersion 执行被拒 → 执行 → status 等到做完 → revert；
+  - 有删除项时，没有 danger 档或 `confirmDelete` 不对都被拒；
+  - 同范围已经有待执行清单时，preview 不重跑；
+  - 进程重启（`__test_dropPlanState`）后 adjust 报 `NOT_EDITABLE`，apply 照常；
+  - share_save 带回 runId；
+  - 两千个单元的 run，detail 默认输出不超过 16 KB。
+- `refs.test`：带零宽空格、首尾空格的路径，编号来回翻得对。
+- 当面确认：用 SDK 客户端，声明和不声明 elicitation 各连一次，新旧两版协议各一次。
+
+### 分阶段
+
+1. **能看**：organize_list / status / detail、overview、share_save 带 runId、openInUi。做完这一步，agent 就能把清单讲给人听，人点链接执行。
+2. **能改、能执行**：preview、adjust（patchPlan、编号、planVersion、confirmText）、tmdb_search、apply、cancel。
+3. **善后和当面确认**：revert、skip、点名重试；elicitation；进度通知；REST 开放。
+4. 可选：Telegram 的执行按钮。
+
+### 需要拍板的
+
+1. `organize_adjust` 放 run 档（推荐），还是照原设计放 write。
+2. 执行 / 撤销的当面确认：客户端支持就总是弹（推荐）/ 只在有删除项时弹 / 不做。
+3. 老令牌和已连接的客户端不会自动多出「整理」这组（约定是「以后加的组不自动给老令牌」）：照约定办、发版说明提醒去设置页勾上（推荐）；还是这次破例，给选了「全部」的令牌补上。
+4. Telegram 的「执行」按钮这次一起做，还是以后再说。
+
+## 实施计划：P3（2026-09-23）
+
+用户说「按照你的推荐制定计划把整个 mcp 完善吧」。
+
+### 拍板
+
+1. `organize_adjust` 放 run 档。
+2. 当面确认：客户端支持就弹。用在 `organize_apply`、`organize_revert` 和所有 danger 工具上。
+   - 查 SDK 源码发现一个限制：老协议（2025 年那几版）按请求无状态服务，拿不到客户端声明的能力，SDK 的 legacy shim 发不出确认框，会直接回错。只有 2026-07-28 版协议、而且在请求的 `_meta` 里声明了 elicitation 的客户端才弹得出来。
+   - 所以做法是：看 `ctx.mcpReq.envelope` 里的客户端能力，有 elicitation 才返回 `inputRequired`；没有就退回「对话里确认 + planVersion 钉版本 + 客户端自己的工具审批」。
+   - Codex、Open WebUI 走的是老协议（P1 核实过），确认框用不上；Claude Code 用哪一版要实测。客户端升到新协议就自动用上，服务端不用再改。
+3. 老令牌照约定不自动多出新组。已连接的网页客户端原来只能断开重连才能改工具组，这次给它加「改工具组」，「去设置页勾上」才走得通。
+4. Telegram 的「执行」按钮不属于 MCP，以后再说。
+
+**范围**：P3 全部做完，只有 HDHive 的两个工具例外。
+
+- HDHive 从 2026-08-24 起要「应用 Secret + 用户 OAuth」双凭证，v2 上的个人 Key 直连已经用不了。新的中转 + OAuth 实现在本地分支 `feat/hdhive-openapi` 上，等应用审核通过再合，界面入口也用开关藏着。
+- 在 v2 上做 `hdhive_search` / `hdhive_unlock` 等于做在一条走不通的路上，所以等那个分支合进来再补，到时照原设计（`maxPoints` + 当面确认）。
+- P4（tasks 扩展、stdio 桥接、HTTP 工具出口、webhook、prompts、任务增改）照旧是可选，这次不做。
+
+### 工具集
+
+| 组 | 叫法 | 工具 |
+|---|---|---|
+| `sync` | 同步 | 已有 4 个 |
+| `transfer` | 转存与云下载 | 已有 5 个 |
+| `organize` | 整理 | `organize_list` / `organize_status` / `organize_detail` / `tmdb_search` / `organize_preview` / `organize_adjust` / `organize_cancel` / `organize_apply` / `organize_revert` / `organize_skip` |
+| `follow` | 追更 | `follow_list` / `follow_check` / `follow_update` / `follow_delete` |
+| `strm` | strm 管理 | `strm_search` / `strm_check` / `strm_verify` / `strm_fix` / `strm_rebuild` / `strm_delete` |
+
+追更单独成组，不并进「转存与云下载」：并进去的话，勾了转存的老令牌会悄悄多出改订阅、删订阅的工具。
+
+### 新工具的档位和注解
+
+| 工具 | 档 | 注解 | 备注 |
+|---|---|---|---|
+| `organize_list` / `organize_status` / `organize_detail` | read | RO | 见上一节 |
+| `tmdb_search` | read | RO, OW | 按片名搜（可限类型、年份），或按 id 查（剧集带每季集数） |
+| `organize_preview` / `organize_adjust` | run | I, OW | |
+| `organize_cancel` | run | I | 作废待确认的清单要传 `discard: true`、要 write 档、当面确认（评审后加的） |
+| `organize_apply` / `organize_revert` | write | D, OW | 当面确认；执行过的整理要重试得传 `retry: true`（评审后加的） |
+| `organize_skip` | write | I, OW | |
+| `follow_list` | read | RO | 订阅、状态、最近几次有动静的检查 |
+| `follow_check` | write（评审后从 run 改） | OW | 立即检查一次，有新增就照订阅转存（和定时检查做的一样）；暂停着的不查；40 秒内做完直接回结果，否则转成作业 |
+| `follow_update` | write | I | 改名、改间隔、暂停 / 恢复 |
+| `follow_delete` | danger | D, I | 当面确认 |
+| `strm_search` | read | RO | 按文件名找，前几个 strm 带内容和解析出的网盘路径 |
+| `strm_check` | read | RO | 体检（只读本地），慢了转作业 |
+| `strm_verify` | run | RO, OW | 到网盘核对（作业） |
+| `strm_fix` | write | I, OW | `mode: rewrite`（默认）按现在的设置修正内容，默认 `dryRun: true`；`mode: fill` 按网盘补齐缺的，不删不改 |
+| `strm_rebuild` | danger | D, I, OW | 按网盘重建，本地多出来的 strm 会删；当面确认 |
+| `strm_delete` | danger | D, I | 删指定的 strm 或目录；当面确认 |
+
+### 实施步骤
+
+1. **共享类型与工具集**：`AgentToolset` 加三组；`AGENT_TOOLSETS`；`OrganizeTrigger` 加 `"agent"`；前端的工具集叫法、预设说明（「完全」档现在有工具了）、`TRIGGER_LABEL`。
+2. **工具层基础**：
+   - `ToolContext` 加 `canConfirm` / `confirmation`，工具要确认时抛 `NeedsConfirmation`，由 `server.ts` 换成 `inputRequired`；
+   - 等待时推进度：抽一个带进度的等待，`sync_status` / `job_status` / `organize_status` 共用；
+   - 作业可取消，给 strm 校验用。
+3. **整理服务层**：
+   - `patchPlan`（批量、一次重规划），`patchUnit` / `patchUnits` / `patchItems` 改成调它；
+   - 清单指纹；找会被作废的待执行清单；`waitForRun` 加超时；
+   - `maybeAutoOrganize` 能拿到建出来的 run；
+   - `"agent"` 来源按手动对待；「要处理」的规则挪进 shared。
+4. **整理工具**：十个工具 + 编号（`refs.ts`）+ confirmText；`share_save` 带回 runId；`overview` 列出待确认的整理。
+5. **追更工具**：四个。
+6. **strm 工具**：六个。
+7. **REST 开放**：`/api/organize/*`、`/api/follow/*`、`/api/strm/*` 按档位声明 `agentScope` / `agentToolset`。
+8. **设置页**：五组工具集；预设说明；已连接的网页客户端可以改工具组（`PATCH /api/agent/oauth/grants/:id`）。
+9. **说明**：服务端说明、`USAGE_NOTES`、README。
+10. **测试**：
+    - 工具清单快照、可移植性、档位矩阵；
+    - 整理 / 追更 / strm 的 MCP 集成测试（FakeDrive + 假 TMDB）；
+    - 当面确认：新协议客户端声明 elicitation 时接受 / 拒绝各一次，老协议客户端不弹、照常执行；
+    - 编号的单测；`patchPlan` 进 `run.itest`。
+11. **收尾**：全量测试、前后端 typecheck / lint；在 scratch 库上用 SDK 客户端把新工具跑一遍。
+
+### 进度
+
+- [x] 1 共享类型与工具集
+- [x] 2 工具层基础
+- [x] 3 整理服务层
+- [x] 4 整理工具
+- [x] 5 追更工具
+- [x] 6 strm 工具
+- [x] 7 REST 开放
+- [x] 8 设置页
+- [x] 9 说明
+- [x] 10 测试
+- [x] 11 收尾
+
+### 实施记录（2026-09-23）
+
+P3 做完（HDHive 两个工具除外，见上面的范围），没提交。工具从 12 个变成 32 个，新增 20 个：整理 10、追更 4、strm 6。和计划不一样、或者做的时候才定下来的：
+
+- **文件编号用路径哈希**（`u3.9f86d081`），不是设计里的顺序号 `u3.2`。
+  - 冲突选「覆盖」会在单元里多出一个删除项（它的 srcPath 是目标位置那份），按路径排序编号的话后面的文件都会挪位；按路径哈希不受影响。
+  - 取前 8 位，单元里撞了就整个单元加长。单元编号还是顺序号 `u1…`：单元在预览时就定了，重规划不增不减。
+- **「要处理」的规则没挪进 shared**：shared 是纯类型包，放不了运行时代码。agent 层照整理页的口径（`UnitList.tsx` 的 `rowOf`）另写了一份（`organize-view.ts` 的 `whyOf`），两边的注释互相指着；另外加了两条：有删除项、待执行时有单元说明。
+- **作业可取消没做**：没有非取消不可的作业。strm 核对一次最多两万个 strm，体检只读本地，都有上限；也就没加 `job_cancel` 工具。
+- **当面确认**：确认框里是一个默认勾上的「确认执行」，去掉勾、点拒绝、关掉都算不同意（`DECLINED`）。调用记录里，弹框那一笔记成 `CONFIRM_REQUESTED`，设置页的「最近调用」显示成「等确认」「已拒绝」，不标失败。
+- **服务层**：
+  - `patchPlan` 一次重规划，页面原来的 `patchUnit` / `patchUnits` / `patchItems` 改成调它；整理原有的 77 个集成测试不改一行照样过。
+  - `planFingerprint` 按内容算，不加迁移。
+  - `readyRunsWithin` 找出会被新预览作废的待执行清单。
+  - `runDone` / `runProgress` 给 agent 限时等结果用。
+  - `maybeAutoOrganize` 能交回建出来的 run（`autoOrganizeFor`）。
+  - 来源 `"agent"` 按手动对待（`handPicked`）。
+- **`share_save` / `follow_check`**：交给整理时最多等 10 秒，结果里带 `organize: { runId, … }`；要排队（任务上有别的整理在进行）就说「排在后面」，next 指向 `organize_list`。`overview` 保留原来的 `organizePending`（自建工作流可能在读），另加 `organize` 列最近 5 条。
+- **TMDB 没配**：`tmdb_search`、`organize_preview`、换匹配直接报 `TMDB_NOT_CONFIGURED`，提示「只能用户去设置页填」，不让模型去试。
+- **进度通知**：等待时每 2 秒看一次，数字涨了才推（规范要求同一个请求只增不减），`sync_status`、`job_status`、`organize_status` 和几个发起类工具的等待都用它。
+- **REST**：`/api/organize/*`、`/api/follow/*`、`/api/strm/*` 按工具的档位声明 `agentScope` / `agentToolset`，几处做得更细：
+  - strm 修正：试算是 read，真改是 write；按网盘补齐是 write，重建是 danger；
+  - 冲突选删掉 / 覆盖、执行还有待删项的清单，都要 danger；
+  - 令牌建的整理，来源记成 `"agent"`；
+  - 删整理记录、识别记忆、模板试算、海报 / 图片只认会话。
+- **设置页**：
+  - 五组工具集，预设说明更新（「完全」档现在有工具了）。
+  - 已连接的网页客户端可以「改工具组」（`PATCH /api/agent/oauth/grants/:id`，只改工具组、不改档位，改完立即生效）。原来只能断开重连，老连接用不上新工具。
+- **README**：智能体一节改了特性、权限档、工具集的说法，加了「整理交给它」「当面确认」两条；Codex 无人值守那条加了一句，不建议放行 `organize_apply`。
+
+测试：
+
+- 新增 `routes/mcp/mcp-p3.itest.ts`（11 个），用官方 SDK 客户端走真实端口：
+  - 整理全流程、删除项闸门、服务重启后改不了、同范围预览去重、转存带回 runId、批量勾选、整批拒掉、没配 TMDB；
+  - 当面确认：新协议客户端同意 / 拒绝各一次，老协议客户端不弹；
+  - 追更、strm。
+- 新增 `organize-view.test.ts`（4 个）；`agent.test.ts`、`tools.test.ts`、`agent.itest.ts`、`oauth.itest.ts` 各补了几个。
+- 工具清单快照：只增 748 行，P1 的 12 个工具结构没动。
+- 后端全量 1062 个全过（最终代码）；前后端 tsc / eslint 干净。
+
+本机联调：全新 scratch 库起完整应用（4100），改默认密码、打开智能体接入、建完全档令牌，新老两版协议各连一次：32 个工具都列出来了，新工具在没有任务、没配 TMDB 的库上都回了说得清楚的错误，调用记录也在。设置页的「改工具组」弹框没在浏览器里看过。
+
+还要你来做的：
+
+- 真机：Claude Code / Codex / Open WebUI 连 115 或夸克真号，跑一遍「整理一下某任务，认不准的给我看 → 改 → 确认执行 → 撤销」和「转存 + 整理」。
+- 找一个用 2026-07-28 版协议、声明了 elicitation 的客户端，看确认框弹不弹得出来（Claude Code 用哪一版要实测）；走老协议 legacy shim 那条路时，人点得慢会不会被 60 秒 / 100 秒的超时断掉，现在没这条路，不用验。
+- 设置页给已有的令牌和已连接的客户端勾上「整理」「追更」「strm 管理」。
+
+发版说明要写的：
+
+- 智能体工具加了 20 个（整理 10、追更 4、strm 6）；老令牌和已连接的客户端不会自动多出这几组，要去设置页勾上。
+- `overview` 多了 `organize` 字段；`share_save` 结果里的 `organize` 从一句话变成了带 runId 的对象（自建工作流读这个字段的要改）。
+
+### P3 评审与修补（2026-09-23）
+
+用户说「review 一下」：跑了一轮 `/code-review max`，出来 15 条，逐条对着代码核实都成立，**全修**。
+
+**整理**
+
+1. **界面上执行不钉版本**：run 档令牌能改清单，而界面执行时不带版本，页面也不重拉待执行的清单；人看过之后智能体又改了，点执行就执行了改过的那版（极端情况下是重新勾上的删除）。
+   - 修：`OrganizeRunSummary` 带 `planVersion`，界面执行时带回来，对不上回 409 `PLAN_CHANGED`，页面提示并重拉；
+   - 令牌走 REST 执行待确认的清单必须带版本（`PLAN_VERSION_REQUIRED`）。
+2. **重新勾选能复活删除**：一个单元的冲突选过「删掉 / 覆盖」、后来整个单元取消勾选，办法还留着；没有删除档的令牌把它重新勾上（`select: all`、点名勾、换匹配顺带勾上）就重新安排了删除。
+   - 修：`unitsReviveDeletes`，工具和 REST（`PUT /units`、`PUT /unit`）都要删除档。
+3. **批量冲突办法用的是旧快照**：`conflicts` 的「还没选办法」是按 await 之前的快照定的；等 TMDB 的时候用户在界面上改的冲突会被盖回去。
+   - 修：到落库那一刻按最新的清单和单元行重新定，只给还没选办法、也没取消勾选的冲突项。
+4. **同一个文件挂在两个单元下时改错单元**：同一个字幕按名字前缀挂到两个单元下（Alien / Aliens）时，`patchPlan` 按路径先到先得，改到了另一个单元。
+   - 修：文件改动一律带 `unitKey`（界面按项自己的单元，智能体的编号本来就带单元），编号表改成按「单元 + 路径」。
+5. **「覆盖」带出来的删除项也编了号**：它的 srcPath 是目标位置那份，改它什么也改变不了，工具却回「改了」。
+   - 修：不编号（`replaceDeletesOf`），文件清单里给一句「要撤回就改选了覆盖的那一项」。
+6. **执行过的整理会被悄悄重试**：`organize_apply` 对执行过的整理不看 `planVersion`，直接变成重试；没东西可重试时又报错。
+   - 修：执行过的要重试必须传 `retry: true`，不传只回状态、什么都不做；拿着 `planVersion` 来的说明清单已经不是待确认的了；「没有要重试的」不当错误。
+7. **人改了一半的清单能被随手作废**：令牌走 REST 建预览 / 重新预览时绕过了「范围里有待确认清单就不重做」的检查，也没有 50 个目录的上限；`organize_cancel` 和 `organize_preview(fresh)` 随手就能作废人改了一半的清单。
+   - 修：REST 对令牌照样拦（409 `READY_PLANS_EXIST`，要 `fresh`，`fresh` 要 write）、限 50 个目录；`organize_cancel` 作废清单要 `discard: true`、write 档、当面确认；`organize_preview(fresh)` 要作废现有清单时也要 write 和当面确认。
+8. **单元说明不封顶**：绝对集数折算一个文件一条，几百集的番一页清单几百 KB。
+   - 修：只给前 3 条、每条截到 200 字，其余给 `notesMore`。
+
+**当面确认**
+
+9. **确认框里放了第三方文本**：确认框里放了目录名、订阅名（分享标题），和「只放数字、任务名和固定措辞」自相矛盾；`strm_delete` 只列前 5 个路径，夹在里面的一整个大目录看不出来。
+   - 修：确认摘要里的范围只说「整个任务 / 任务里的一个子目录 / N 个目录」；
+   - `strm_delete` / `strm_rebuild` 按本地实际数出来的说：几个目录、一共删多少个 strm（`countUnder`）；
+   - `follow_delete` 说建订阅的时间、转存到哪个任务。
+10. **拒绝会被丢掉**：确认框被拒绝后，重试那一轮的请求要是没再声明 elicitation，拒绝就被丢掉、照样执行。
+    - 修：拒绝先判，不看这一轮的声明。
+
+**追更**
+
+11. **`follow_check` 档位错了**：它会把新增转存进网盘，却是 run 档（run 的定义是「不改网盘内容」），还不管订阅暂停没暂停。
+    - 修：改成 write 档，暂停着的不查（`FOLLOW_PAUSED`，REST 也一样）。
+12. **追更接口开得太宽**：`POST /api/follow` 对令牌开着，等于在「转存」那组之外多了一个转存入口；`PUT` 能改转存目标和提取码。
+    - 修：建订阅只认会话；令牌 `PUT` 只能改名字、开关和检查间隔（`FIELD_NOT_ALLOWED`）。
+13. **提取码会泄到令牌那边**：`GET /api/follow` 把提取码原样给了令牌；`follow_list` 去提取码的写法认不出「链接 … 提取码：…」整段文字和 115 的「码-提取码」写法；令牌 `PUT` 的提取码会原样进调用记录。
+    - 修：`shareLinkWithoutPassword` 认出分享后按分享码重拼；给令牌的列表去掉 `receiveCode`；调用记录抹掉 `receiveCode` / `password` 这类字段，`shareUrl` 按链接抹。
+
+**其它**
+
+14. **strm 工具的路径规则不一致**：strm 工具自己把每段路径都 trim 了，和 strm 管理页的规则（每段原样保留）不一致。目录名后面带空格的（`Season 1 `）会查错、补错，甚至删错。
+    - 修：直接用 `manage.ts` 导出的 `normalizeRel`；顺手把 `strm_search` / `strm_fix` 返回的 strm 内容里 URL 带的账号密码抹掉。
+15. **嵌套的 null 过不了校验**：`dropNulls` 只处理最外层，`organize_adjust` 的 `changes` 里写成 null 的字段会校验失败。
+    - 修：递归处理。
+16. **老令牌收到调不了的工具提示**：转存 / 追更交给整理时，结果里的 next 指向整理工具，没开「整理」组的老令牌调不了。
+    - 修：看令牌的工具集，没开的就说「请用户在 OpenStrm 的整理页确认」。
+
+（上面按主题重排过；评审原文第 2 条「界面执行不钉版本、重新勾选复活删除」拆成了 1、2 两项，所以一共 16 项。）
+
+测试：
+
+- P3 集成测试加了 10 个修补用例，现在一共 21 个；
+- `organize-view.test.ts` 加了几条编号的单测，还有「单元说明太多只给前几条」；`agent.test.ts` 加了拒绝先判、嵌套 null、分享链接去提取码、参数摘要抹 receiveCode；
+- 工具清单快照只多了 `organize_apply.retry`、`organize_cancel.discard`，外加 `follow_check` 从 run 改成 write；
+- 原有的整理、智能体、OAuth、追更、strm、P1 MCP 测试照样全过；后端全量 1079 个全过，前后端 tsc / eslint 干净。
 
 ## 核实记录
 

@@ -55,6 +55,9 @@ export function requireAgentScope(request: FastifyRequest, scope: AgentScope): v
 export const TOOLSET_LABEL: Record<AgentToolset, string> = {
   sync: "同步",
   transfer: "转存与云下载",
+  organize: "整理",
+  follow: "追更",
+  strm: "strm 管理",
 };
 
 /** 同上，查工具集：令牌只勾了「同步」就调不了转存那一组的接口 */

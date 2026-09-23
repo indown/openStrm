@@ -25,6 +25,7 @@ import {
   getOAuthRequest,
   listManualClients,
   listOAuthGrants,
+  updateOAuthGrantToolsets,
   listPendingOAuthRequests,
   normalizePairingCode,
   toClientInfo,
@@ -68,6 +69,9 @@ function resolveToolsets(toolsets: AgentToolset[] | null | undefined): AgentTool
 }
 
 const idParams = z.object({ id: z.string().min(1) });
+
+/** 改已连接客户端的工具组：null 是全部（存成当时的全部组） */
+const grantPatchSchema = z.object({ toolsets: z.array(toolsetSchema).min(1, "至少选一组工具，或者选「全部」").nullable() });
 
 const approveSchema = z.object({
   /** 授权页上显示的配对码：证明批的就是自己眼前这一条（见 services/oauth/authorize.ts 文件头） */
@@ -200,6 +204,18 @@ export default async function (fastify: FastifyInstance) {
   });
 
   fastify.delete("/api/agent/oauth/grants", auth, async () => ({ deleted: deleteAllOAuthGrants() }));
+
+  /**
+   * 改一个已连接客户端能用的工具组：新版本加了一组工具时，老连接照约定不会自动多出来（和令牌一样），在这里勾上。
+   * 档位不给改——那是批准时按客户端要的定下的，要换档位就断开重新授权
+   */
+  fastify.patch("/api/agent/oauth/grants/:id", auth, async (request) => {
+    const { id } = parse(idParams, request.params, "params");
+    const body = parse(grantPatchSchema, request.body);
+    const toolsets = resolveToolsets(body.toolsets);
+    if (!updateOAuthGrantToolsets(id, toolsets)) throw new HttpError(404, "这个客户端已经断开了");
+    return { success: true, toolsets };
+  });
 
   /** 预注册客户端：给不会动态注册、又不能配请求头的客户端用；secret 只在这里给一次 */
   fastify.post("/api/agent/oauth/clients", auth, async (request, reply) => {

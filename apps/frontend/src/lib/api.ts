@@ -590,6 +590,9 @@ export const api = {
     denyOAuth: (id: string) => data(axiosInstance.post<{ success: boolean }>(`/api/agent/oauth/requests/${encodeURIComponent(id)}/deny`)),
     denyAllOAuth: () => data(axiosInstance.post<{ denied: number }>("/api/agent/oauth/requests/deny-all")),
     revokeGrant: (id: string) => data(axiosInstance.delete<{ success: boolean }>(`/api/agent/oauth/grants/${encodeURIComponent(id)}`)),
+    /** 改已连接客户端的工具组；null 是全部 */
+    updateGrantToolsets: (id: string, toolsets: AgentToolset[] | null) =>
+      data(axiosInstance.patch<{ success: boolean; toolsets: AgentToolset[] }>(`/api/agent/oauth/grants/${encodeURIComponent(id)}`, { toolsets })),
     revokeAllGrants: () => data(axiosInstance.delete<{ deleted: number }>("/api/agent/oauth/grants")),
     createOAuthClient: (input: { name: string; redirectUris: string[] }) => data(axiosInstance.post<OAuthClientCreated>("/api/agent/oauth/clients", input)),
     deleteOAuthClient: (id: string) => data(axiosInstance.delete<{ success: boolean }>(`/api/agent/oauth/clients/${encodeURIComponent(id)}`)),
@@ -631,7 +634,9 @@ export const api = {
     /** 换匹配弹框：按 TMDB 编号查 */
     tmdbLookup: (type: "movie" | "tv", id: number) => data(axiosInstance.get<OrganizeCandidate>(`/api/organize/tmdb/${type}/${id}`)),
     /** 不带 ids：ready 的执行全部，其它状态重试失败 / 没做的（默认只重试临时失败）；带 ids 只重试点名的项 */
-    apply: (id: string, ids?: string[]) => data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/apply`, ids ? { ids } : {})),
+    /** planVersion：执行待确认的清单时带上详情里给的，打开之后清单被改过就回 409 PLAN_CHANGED */
+    apply: (id: string, ids?: string[], planVersion?: string) =>
+      data(axiosInstance.post<OrganizeRun>(`/api/organize/runs/${encodeURIComponent(id)}/apply`, { ...(ids ? { ids } : {}), ...(planVersion ? { planVersion } : {}) })),
     /** 放弃失败项：标成「已放弃」让 run 收口；原地改了名还没挪走的先在网盘上改回原名，所以给长一点的超时 */
     skip: (id: string, ids: string[]) => data(axiosInstance.post<OrganizeSkipResult>(`/api/organize/runs/${encodeURIComponent(id)}/skip`, { ids }, { timeout: 120_000 })),
     /** 按原范围、原触发来源重新预览：返回新建的 run */

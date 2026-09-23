@@ -18,9 +18,10 @@ import { getLatestExecutions, queryTaskHistory } from "../../task-history.js";
 import { SCOPE_LABEL } from "../access.js";
 import { LOCAL_READ, ToolError, defineTool } from "../define.js";
 import { fmtTime, openInUi, page } from "../format.js";
-import { JOB_RETENTION_MS, getJob, viewJob, waitForJob } from "../jobs.js";
+import { JOB_RETENTION_MS, getJob, jobSnapshot, viewJob, waitWithProgress } from "../jobs.js";
 import { USAGE_NOTES } from "../instructions.js";
 import { taskBrief } from "../resolve.js";
+import { organizeUiPath, runBrief } from "./organize-view.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** waitSeconds 的上限：客户端普遍 60 秒超时，Cloudflare 对源站 100 秒，留足余量 */
@@ -42,7 +43,7 @@ export const overviewTool = defineTool({
   name: "overview",
   title: "总览",
   description:
-    "一眼看全 OpenStrm 的现状：版本、网盘账号、正在跑的同步、网盘监控、待处理的整理、云下载待回执、最近 24 小时失败的同步，以及当前令牌的权限。开始干活前先调它。",
+    "一眼看全 OpenStrm 的现状：版本、网盘账号、正在跑的同步、网盘监控、要人管的整理（待确认的清单、有失败的，最近 5 条）、云下载待回执、最近 24 小时失败的同步，以及当前令牌的权限。开始干活前先调它。",
   scope: "read",
   toolset: null,
   annotations: LOCAL_READ,
@@ -91,6 +92,10 @@ export const overviewTool = defineTool({
       running,
       monitor: { running: life.running },
       organizePending: attention.length,
+      // 要人管的整理（待确认的清单、有失败的……）：最近 5 条，更多用 organize_list
+      ...(attention.length
+        ? { organize: attention.slice(0, 5).map((a) => ({ ...runBrief(a.run, byId.get(a.run.taskId), { reason: a.reason }), ...openInUi(organizeUiPath(a.run.id)) })) }
+        : {}),
       // 只数「下完生成 strm」的回执；复制到 OpenList 的那种不生成 strm
       offlinePendingStrm: listFollowups().filter((f) => f.status === "pending" && (f.kind ?? "strm") === "strm").length,
       recentFailures,
@@ -163,7 +168,7 @@ export const jobStatusTool = defineTool({
     if (!job) {
       throw new ToolError("JOB_NOT_FOUND", `找不到作业 ${args.jobId}`, "作业结束超过一小时会被清掉，服务重启也会丢；需要的话重新发起。");
     }
-    await waitForJob(job, (args.waitSeconds ?? 0) * 1000, ctx.signal);
+    if (job.status === "running") await waitWithProgress(job.settled, (args.waitSeconds ?? 0) * 1000, ctx, () => jobSnapshot(job));
     return viewJob(job);
   },
 });

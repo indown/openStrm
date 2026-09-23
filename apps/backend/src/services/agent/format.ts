@@ -68,10 +68,13 @@ export function summarizeArgs(args: unknown): string {
   return text.length > MAX_ARGS_SUMMARY ? `${text.slice(0, MAX_ARGS_SUMMARY)}…` : text;
 }
 
-/** 装着分享链接的参数：工具的 link、REST /api/share 的 url */
-const SHARE_LINK_KEYS = new Set(["link", "url"]);
+/** 装着分享链接的参数：工具的 link、REST /api/share 的 url、追更的 shareUrl */
+const SHARE_LINK_KEYS = new Set(["link", "url", "shareUrl"]);
+/** 整个值就是密码 / 提取码的参数：直接抹掉 */
+const SECRET_KEYS = new Set(["receiveCode", "password", "pwd", "passcode", "currentPassword"]);
 
 function redactValue(v: unknown, key?: string): unknown {
+  if (key !== undefined && SECRET_KEYS.has(key) && v !== undefined && v !== null && v !== "") return "***";
   if (typeof v === "string") return redactText(v, key !== undefined && SHARE_LINK_KEYS.has(key));
   if (Array.isArray(v)) return v.map((x) => redactValue(x));
   if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, redactValue(x, k)]));
@@ -92,6 +95,17 @@ function redactText(text: string, isShareLink: boolean): string {
     .replace(/(提取码[:：]?\s*)[a-z0-9]{4,8}/gi, "$1***")
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s:@"]+:[^/\s@"]+@/gi, "$1***@")
     .replace(/ost[a-z]_[A-Za-z0-9_-]{8,}/g, "***");
+}
+
+/**
+ * 分享链接去掉提取码，给模型看的时候用：它用不着，也不该到处传。认出是哪家的分享就按分享码重拼一个干净的链接
+ * （库里存的可能是「链接：… 提取码：…」整段文字、115 的「码-提取码」写法）；认不出就按固定写法抹
+ */
+export function shareLinkWithoutPassword(text: string): string {
+  const ref = findShareLink(text) ?? parseShareRef(text.trim());
+  if (ref?.kind === "quark") return `https://pan.quark.cn/s/${ref.code}`;
+  if (ref?.kind === "115") return `https://115.com/s/${ref.code}`;
+  return redactText(text, true);
 }
 
 /** 本机时区的「年-月-日 时:分:秒」：给人看、给模型复述都比毫秒数合适 */

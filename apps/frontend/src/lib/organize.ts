@@ -99,6 +99,7 @@ export function failureGroupMeta(key: OrganizeFailureGroupKey, stage: OrganizeRu
 
 export const TRIGGER_LABEL: Record<OrganizeTrigger, string> = {
   manual: "手动",
+  agent: "智能体",
   share: "转存",
   follow: "追更",
   offline: "云下载",
@@ -109,10 +110,13 @@ export const TRIGGER_LABEL: Record<OrganizeTrigger, string> = {
 export const baseName = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
 export const dirName = (p: string): string => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 
+/** 人挑的范围（手动的、智能体替人发起的）：选的是目录；其余来源给的是自动触发时新落进来的路径。和后端 organize/run.ts 的 handPicked 同一个口径 */
+export const handPicked = (trigger: OrganizeTrigger): boolean => trigger === "manual" || trigger === "agent";
+
 /** run 的范围一句话：手动选的多个目录说「N 个目录」，自动触发的说「N 个新增路径」，单一范围说路径，都没有是整个任务 */
 export function scopeLabel(run: Pick<OrganizeRun, "scopePath" | "scopePaths" | "trigger">): string {
   const n = run.scopePaths.length;
-  if (n > 0) return run.trigger === "manual" ? `${n} 个目录` : `${n} 个新增路径`;
+  if (n > 0) return handPicked(run.trigger) ? `${n} 个目录` : `${n} 个新增路径`;
   return run.scopePath || "整个任务";
 }
 

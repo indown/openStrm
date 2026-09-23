@@ -23,8 +23,11 @@ export type OrganizeRunStatus =
 /** manual 手动预览；review 自动触发但只生成待确认清单；auto 自动触发且把握大的直接执行 */
 export type OrganizeRunMode = "manual" | "review" | "auto";
 
-/** 谁发起的：手动、转存、追更、云下载、网盘监控 */
-export type OrganizeTrigger = "manual" | "share" | "follow" | "offline" | "monitor" | "copy";
+/**
+ * 谁发起的：手动、智能体、转存、追更、云下载、网盘监控、复制到 OpenList。
+ * manual 和 agent 是人（或替人办事的 agent）挑的目录，范围照手动的规则来；其余是自动触发给的新增路径
+ */
+export type OrganizeTrigger = "manual" | "agent" | "share" | "follow" | "offline" | "monitor" | "copy";
 
 /** 计划项的动作；delete 只有用户在冲突上选了删除 / 覆盖才会有 */
 export type OrganizeAction = "keep" | "rename" | "move" | "mkdir" | "rmdir" | "skip" | "conflict" | "delete";
@@ -304,6 +307,11 @@ export interface OrganizeFailureGroup {
 /** GET /api/organize/runs/:id/summary 的形状：run 和按钮开关，不带单元和项；执行 / 撤销进行中页面每 2 秒拉它 */
 export interface OrganizeRunSummary {
   run: OrganizeRun;
+  /**
+   * 待执行的清单的指纹（按内容算）：执行时带回来，打开之后清单被改过（比如智能体改的）就拒绝执行，
+   * 让人重新看一眼。只有待执行的才有
+   */
+  planVersion?: string;
   /** 还等着处理的失败按下一步分组；后端算，前端只管文案和按钮 */
   groups: OrganizeFailureGroup[];
   /** 撤销这次 run 允不允许、为什么不允许；blockedBy 是挡着它的那次整理（后面的整理又动过这次挪好的文件） */

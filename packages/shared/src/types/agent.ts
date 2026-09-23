@@ -5,10 +5,10 @@
 
 /**
  * 权限档，由低到高：
- *   read    查看：任务、执行记录、网盘目录、分享内容、云下载列表
- *   run     运行：开始 / 取消同步。不改网盘内容，但会打网盘接口
- *   write   改网盘：转存分享、加云下载
- *   danger  删除与花费：删 strm、HDHive 解锁这类。默认不给
+ *   read    查看：任务、执行记录、网盘目录、分享内容、云下载列表、整理清单、追更、strm 体检
+ *   run     运行：开始 / 取消同步、整理预览和改清单、追更立即检查、strm 网盘校验。不改网盘内容，但会打网盘接口
+ *   write   改网盘：转存分享、加云下载、执行 / 撤销整理、改追更、修正 strm
+ *   danger  删除与花费：删 strm、按网盘重建 strm、删追更、整理冲突选删掉 / 覆盖。默认不给
  * 档位之间不互相包含：令牌上勾了哪几档就是哪几档。
  */
 export type AgentScope = "read" | "run" | "write" | "danger";
@@ -16,8 +16,9 @@ export type AgentScope = "read" | "run" | "write" | "danger";
 /**
  * 工具集：令牌可以只开其中几组，工具少了本地小模型选得准、上下文也省。
  * 总览、任务列表、作业进度这几个基础工具不属于任何一组，总是在。
+ *   sync 同步、transfer 转存与云下载、organize 整理（含 TMDB 搜索）、follow 追更、strm strm 管理
  */
-export type AgentToolset = "sync" | "transfer";
+export type AgentToolset = "sync" | "transfer" | "organize" | "follow" | "strm";
 
 /** 设置里的「智能体接入」一节 */
 export type AgentSettings = {

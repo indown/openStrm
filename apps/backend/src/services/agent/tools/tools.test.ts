@@ -28,8 +28,28 @@ test("只读令牌只看到只读工具", () => {
   assert.ok(!names(tools).includes("sync_start"));
 });
 
-test("日常档位看到全部 P1 工具", () => {
-  assert.deepEqual(names(toolsFor({ scopes: ["read", "run", "write"], toolsets: ["sync", "transfer"] })), names(AGENT_TOOLS));
+const ALL_TOOLSETS = ["sync", "transfer", "organize", "follow", "strm"] as const;
+
+test("日常档位看到除了删除与花费以外的全部工具；完全档位看到全部", () => {
+  const daily = names(toolsFor({ scopes: ["read", "run", "write"], toolsets: [...ALL_TOOLSETS] }));
+  assert.deepEqual(daily, names(AGENT_TOOLS.filter((t) => t.scope !== "danger")));
+  assert.deepEqual(names(toolsFor({ scopes: ["read", "run", "write", "danger"], toolsets: [...ALL_TOOLSETS] })), names(AGENT_TOOLS));
+});
+
+test("删除与花费档的工具：只给有这一档的令牌；都标破坏性", () => {
+  const danger = AGENT_TOOLS.filter((t) => t.scope === "danger");
+  assert.ok(danger.length > 0);
+  for (const t of danger) assert.equal(t.annotations.destructive, true, t.name);
+  const daily = names(toolsFor({ scopes: ["read", "run", "write"], toolsets: [...ALL_TOOLSETS] }));
+  for (const t of danger) assert.ok(!daily.includes(t.name), t.name);
+});
+
+test("每个工具都属于一组（基础工具除外），组名都在工具集列表里", () => {
+  const core = new Set(["overview", "tasks_list", "job_status"]);
+  for (const t of AGENT_TOOLS) {
+    if (core.has(t.name)) assert.equal(t.toolset, null, t.name);
+    else assert.ok(t.toolset && (ALL_TOOLSETS as readonly string[]).includes(t.toolset), t.name);
+  }
 });
 
 test("工具集只收窄分组工具，基础工具总在", () => {

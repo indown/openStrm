@@ -1102,6 +1102,30 @@ test("访问令牌、刷新令牌过期：/mcp 不认；刷新令牌过期了刷
   assert.equal(db.select().from(oauthGrants).all().length, 0);
 });
 
+test("改已连接客户端的工具组：只认会话；改完 /mcp 立刻按新的组列工具；null 是全部；断开了的回 404", async () => {
+  const { tokens } = await fullFlow({ toolsets: ["sync"] });
+  const grantId = listOAuthGrants(RESOURCE)[0].id;
+  const before = toolNames((await mcp(tokens.access_token)).json);
+  assert.ok(before.includes("sync_status") && !before.includes("organize_status"), before.join(","));
+
+  const url = `/api/agent/oauth/grants/${grantId}`;
+  const byToken = await app.inject({ method: "PATCH", url, headers: { authorization: `Bearer ${tokens.access_token}` }, payload: { toolsets: null } });
+  assert.notEqual(byToken.statusCode, 200, "令牌不能给自己加工具");
+  const empty = await app.inject({ method: "PATCH", url, headers: session, payload: { toolsets: [] } });
+  assert.equal(empty.statusCode, 400);
+
+  const patched = await app.inject({ method: "PATCH", url, headers: session, payload: { toolsets: ["sync", "organize"] } });
+  assert.equal(patched.statusCode, 200, patched.body);
+  const after = toolNames((await mcp(tokens.access_token)).json);
+  assert.ok(after.includes("organize_status") && !after.includes("share_save"), after.join(","));
+  const all = await app.inject({ method: "PATCH", url, headers: session, payload: { toolsets: null } });
+  assert.deepEqual(all.json().toolsets, ["sync", "transfer", "organize", "follow", "strm"]);
+  assert.deepEqual((await oauthState()).grants[0].toolsets, ["sync", "transfer", "organize", "follow", "strm"]);
+
+  assert.equal((await app.inject({ method: "DELETE", url, headers: session })).statusCode, 200);
+  assert.equal((await app.inject({ method: "PATCH", url, headers: session, payload: { toolsets: null } })).statusCode, 404);
+});
+
 test("断开 / 全部断开；改密码勾了撤销：手建令牌、网页客户端的授权、还没走完的授权请求一起作废", async () => {
   const a = await fullFlow();
   const grantId = listOAuthGrants(RESOURCE)[0].id;

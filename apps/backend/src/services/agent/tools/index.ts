@@ -8,6 +8,20 @@ import type { ToolDef } from "../define.js";
 import { jobStatusTool, overviewTool, tasksListTool } from "./core.js";
 import { syncCancelTool, syncHistoryTool, syncStartTool, syncStatusTool } from "./sync.js";
 import { driveBrowseTool, offlineAddTool, offlineListTool, shareInspectTool, shareSaveTool } from "./transfer.js";
+import {
+  organizeAdjustTool,
+  organizeApplyTool,
+  organizeCancelTool,
+  organizeDetailTool,
+  organizeListTool,
+  organizePreviewTool,
+  organizeRevertTool,
+  organizeSkipTool,
+  organizeStatusTool,
+  tmdbSearchTool,
+} from "./organize.js";
+import { followCheckTool, followDeleteTool, followListTool, followUpdateTool } from "./follow.js";
+import { strmCheckTool, strmDeleteTool, strmFixTool, strmRebuildTool, strmSearchTool, strmVerifyTool } from "./strm.js";
 
 export const AGENT_TOOLS: readonly ToolDef[] = [
   overviewTool,
@@ -22,6 +36,26 @@ export const AGENT_TOOLS: readonly ToolDef[] = [
   shareSaveTool,
   offlineAddTool,
   offlineListTool,
+  organizeListTool,
+  organizeStatusTool,
+  organizeDetailTool,
+  tmdbSearchTool,
+  organizePreviewTool,
+  organizeAdjustTool,
+  organizeCancelTool,
+  organizeApplyTool,
+  organizeRevertTool,
+  organizeSkipTool,
+  followListTool,
+  followCheckTool,
+  followUpdateTool,
+  followDeleteTool,
+  strmSearchTool,
+  strmCheckTool,
+  strmVerifyTool,
+  strmFixTool,
+  strmRebuildTool,
+  strmDeleteTool,
 ];
 
 /** 档位里有、工具集里也有（基础工具不属于任何一组，总在） */

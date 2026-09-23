@@ -73,7 +73,7 @@ function toRun(row: RunRow): OrganizeRun {
     scopePath: row.scopePath,
     scopePaths: parseJson<string[]>(row.scopePaths, []),
     mode: row.mode === "auto" ? "auto" : row.mode === "review" ? "review" : "manual",
-    trigger: coerce<OrganizeTrigger>(row.trigger, ["manual", "share", "follow", "offline", "monitor", "copy"], "manual"),
+    trigger: coerce<OrganizeTrigger>(row.trigger, ["manual", "agent", "share", "follow", "offline", "monitor", "copy"], "manual"),
     status: coerce(row.status, RUN_STATUSES, "failed"),
     stage: row.stage === "revert" ? "revert" : "apply",
     stats: { ...emptyStats(), ...parseJson<Partial<OrganizeRunStats>>(row.stats, {}) },

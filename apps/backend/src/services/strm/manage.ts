@@ -122,8 +122,8 @@ export interface ManagedPath {
   rel: string;
 }
 
-/** 每一段原样保留：目录名前后带空格是合法的（网盘里常见），trim 掉就找不到了 */
-function normalizeRel(input: string): string {
+/** 每一段原样保留：目录名前后带空格是合法的（网盘里常见），trim 掉就找不到了。智能体工具也用它，别自己另写一套 */
+export function normalizeRel(input: string): string {
   if (input.includes("\0")) throw new HttpError(400, "路径越出了任务目录");
   const parts = input.split("/").filter((s) => s !== "" && s !== ".");
   if (parts.some((s) => s === "..")) throw new HttpError(400, "路径越出了任务目录");
@@ -227,6 +227,47 @@ async function guarded<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
   } finally {
     busy.delete(taskId);
   }
+}
+
+/**
+ * 一组路径下有多少东西（智能体删除 / 重建前的确认框里说清是多大一片）：只数不改，数到上限就停。
+ * 目录按符号链接不跟进；不存在的单数
+ */
+export async function countUnder(
+  task: TaskDefinition,
+  rels: string[],
+  cap: number = STRM_LIMITS.WALK_ENTRIES,
+): Promise<{ dirs: number; topFiles: number; files: number; strm: number; missing: number; truncated: boolean }> {
+  /** dirs / topFiles 是点名的路径里目录、文件各几个；files / strm 是连目录里面一起数的总数 */
+  const out = { dirs: 0, topFiles: 0, files: 0, strm: 0, missing: 0, truncated: false };
+  let seen = 0;
+  for (const rel of rels) {
+    const mp = await resolveManagedPath(task, rel);
+    let st: Awaited<ReturnType<typeof fsp.lstat>>;
+    try {
+      st = await fsp.lstat(mp.full);
+    } catch {
+      out.missing++;
+      continue;
+    }
+    if (!st.isDirectory()) {
+      out.topFiles++;
+      out.files++;
+      if (extOf(mp.full) === ".strm") out.strm++;
+      continue;
+    }
+    out.dirs++;
+    for await (const e of walkTree(mp.full)) {
+      if (++seen > cap) {
+        out.truncated = true;
+        return out;
+      }
+      if (e.isDir) continue;
+      out.files++;
+      if (extOf(e.name) === ".strm") out.strm++;
+    }
+  }
+  return out;
 }
 
 /* ------------------------------- 浏览 ------------------------------- */
