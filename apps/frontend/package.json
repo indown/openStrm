@@ -1,6 +1,6 @@
 {
   "name": "@openstrm/frontend",
-  "version": "2.12.0-rc.8",
+  "version": "2.12.0",
   "description": "OpenStrm - Strm Management Platform Frontend",
   "license": "MIT",
   "private": true,
