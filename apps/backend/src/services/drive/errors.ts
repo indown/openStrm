@@ -5,7 +5,7 @@
 import axios from "axios";
 import { isAbortError, messageOf, PermanentError } from "../../lib/errors.js";
 import { HttpError, upstreamError } from "../../lib/http-error.js";
-import { Cloud115ApiError, Cloud115Error } from "../cloud-115/client.js";
+import { Cloud115ApiError, Cloud115Error, ShareBusyError } from "../cloud-115/client.js";
 import { ShareApiError } from "../cloud-115/share.js";
 import { OpenlistError } from "../openlist/client.js";
 import { QuarkError } from "../quark/client.js";
@@ -88,6 +88,10 @@ export function driveErrorToHttp(err: unknown, fallback: string): HttpError {
   if (err instanceof ShareGoneError) {
     const reason = SHARE_PASSWORD_PROBLEM.test(err.message) ? "password" : "gone";
     return upstreamError(`分享不可用：${err.message}`, { code: "SHARE_GONE", reason, errno: err.code }, err);
+  }
+  // 分享接口一时回不了话（太频繁、繁忙）：分享多半还在，单给一个码，界面不能据此标失效
+  if (err instanceof ShareBusyError) {
+    return upstreamError(`分享暂时打不开：${err.message}`, { code: "SHARE_BUSY", ...(err.errno !== undefined ? { errno: err.errno } : {}) }, err);
   }
   if (err instanceof ShareApiError) return upstreamError(`分享不可用：${err.message}`, { errno: err.errno }, err);
   if (err instanceof Cloud115Error) return upstreamError(err.message, { upstreamStatus: err.status }, err);

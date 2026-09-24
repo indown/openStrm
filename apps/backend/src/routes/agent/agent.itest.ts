@@ -194,10 +194,9 @@ test("整理 / 追更 / strm 的接口：按档位放行，删除类另要删除
   // 日常档过了档位这一关，任务不存在才回 404
   assert.equal((await req(daily.token, "POST", "/api/organize/runs", { taskId: "nope" })).statusCode, 404);
 
-  // 冲突选删掉 / 覆盖、删追更、真改 strm、按网盘重建：档位不够在碰到数据之前就挡住
-  const del = await req(daily.token, "PUT", "/api/organize/runs/x/items", { ids: ["i"], resolve: { how: "delete" } });
-  assert.equal(del.statusCode, 403);
-  assert.equal(del.json().required, "danger");
+  // 冲突选删掉 / 覆盖只是改清单，日常档过得了档位这一关（记录不存在才 404）；执行带删除项的清单才要删除档（见 mcp-p3.itest）
+  assert.equal((await req(daily.token, "PUT", "/api/organize/runs/x/items", { ids: ["i"], resolve: { how: "delete" } })).statusCode, 404);
+  // 删追更、真改 strm、按网盘重建：档位不够在碰到数据之前就挡住
   assert.equal((await req(daily.token, "DELETE", "/api/follow/x")).statusCode, 403);
   assert.equal((await req(read.token, "POST", "/api/strm/rewrite", { taskId: "x", dryRun: false })).statusCode, 403);
   const rebuild = await req(daily.token, "POST", "/api/strm/regenerate", { taskId: "x", path: "a", mode: "rebuild" });

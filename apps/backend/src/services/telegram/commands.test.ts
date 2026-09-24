@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import type { AppSettings, ResourceHit, ResourceKind, TaskDefinition, TaskExecutionSummary } from "@openstrm/shared";
+import type { AppSettings, OAuthPendingRequest, ResourceHit, ResourceKind, TaskDefinition, TaskExecutionSummary } from "@openstrm/shared";
 import type { SettledResult } from "../pansou/search.js";
 import type { BotLike, InlineKeyboard, TelegramUpdate } from "./bot.js";
 import { __test_waitSearches, handleUpdate, setCommandDeps, type CommandDeps } from "./commands.js";
@@ -15,15 +15,16 @@ type Sent = { chatId: string; text: string; buttons?: InlineKeyboard };
 const sent: Sent[] = [];
 const edited: Sent[] = [];
 const answered: string[] = [];
-/** 设了就让 editMessage 失败，description 用它 */
+/** 设了就让 editMessage 失败：和 TelegramBot 在 Bot API 回 400 时一个样，原话在 error 里（见 bot.itest.ts） */
 let editFailure: string | null = null;
+const NOT_MODIFIED = "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message";
 const bot: BotLike = {
   async sendMessage(chatId, text, opts) {
     sent.push({ chatId: String(chatId), text, buttons: opts?.buttons });
     return { ok: true, result: { message_id: 1 } };
   },
   async editMessage(chatId, _id, text, buttons) {
-    if (editFailure) return { ok: false, error_code: 400, description: editFailure };
+    if (editFailure) return { ok: false, error_code: 400, error: editFailure };
     edited.push({ chatId: String(chatId), text, buttons });
     return { ok: true };
   },
@@ -79,6 +80,20 @@ const hit = (kind: ResourceKind, i: number): ResourceHit => ({
   action: kind === "115" || kind === "quark" ? "share" : kind === "other" ? null : "offline",
 });
 
+/** 待批准的授权请求：只有这两个配对码有（不带连字符、空一格也认） */
+const pendingCodes = new Set(["WXYZ2345", "HJKLMNPQ"]);
+const oauthRequest: OAuthPendingRequest = {
+  id: "r1", clientId: "c1", clientName: "Claude", clientKind: "dcr", clientHost: null, redirectHost: "claude.ai",
+  redirectInsecure: false, redirectLoopback: false, passwordApproval: false, requestedScopes: [], ip: "1.2.3.4", createdAt: 0, expiresAt: 0,
+};
+/** 桩追更：f1 起了名；f2 没起名（名字就是分享码）；f3 名字填的是链接；f4 名字里拿不出片名 */
+const follows: Record<string, { name: string; shareCode: string }> = {
+  f1: { name: "【完结】繁花 (2023) / S1", shareCode: "swf1code001" },
+  f2: { name: "sw3xk9pq2mz", shareCode: "sw3xk9pq2mz" },
+  f3: { name: "https://115.com/s/sw3xk9pq2mz?password=ab12", shareCode: "sw3xk9pq2mz" },
+  f4: { name: " ", shareCode: "q4code" },
+};
+
 const deps: Partial<CommandDeps> = {
   settings: () => settings,
   listTasks: () => tasks,
@@ -123,9 +138,8 @@ const deps: Partial<CommandDeps> = {
     if (searchError) throw searchError;
     return searchResult;
   },
-  // 只有这一个配对码有待批准的请求（不带连字符也认）
-  findOAuthByCode: (code) => (code.toUpperCase().replace(/[\s-]/g, "") === "WXYZ2345" ? ({ id: "r1" } as never) : null),
-  followName: (id) => (id === "f1" ? "【完结】繁花 (2023) / S1" : null),
+  findOAuthByCode: (code) => (pendingCodes.has(code.toUpperCase().replace(/[\s-]/g, "")) ? oauthRequest : null),
+  shareFollow: (id) => follows[id] ?? null,
 };
 
 const msg = (text: string, o: { user?: number; chat?: number; type?: string } = {}): TelegramUpdate => ({
@@ -526,7 +540,7 @@ test("/s 结果里点序号：分享走转存那条路、磁力走云下载那�
   assert.match(sent.at(-1)!.text, /收到 1 条链接/);
 });
 
-test("私聊里直接发片名就搜；群里只认 /s；像配对码的片名照样搜，写成 XXXX-XXXX 的、或者真有待批准请求的才当配对码", async () => {
+test("私聊里直接发片名就搜；群里只认 /s；像配对码的片名照样搜，写成 XXXX-XXXX 的、数字字母混着的、或者真有待批准请求的才当配对码", async () => {
   searchConfigured = true;
   searchResult = { keyword: "繁花", complete: true, counts: {}, items: [hit("quark", 1)] };
   await searchVia(msg("繁花"));
@@ -634,7 +648,7 @@ test("搜索列表的按钮：翻页、筛选的值不对就不理；取消只�
 
   // 同一个按钮连点两下：第二次 Telegram 回 not modified，当成改好了；别的编辑失败照旧补发一条
   const sends = sent.length;
-  editFailure = "Bad Request: message is not modified: specified new message content and reply markup are exactly the same";
+  editFailure = NOT_MODIFIED;
   await handleUpdate(bot, cb(`srp:${token}:1`));
   assert.equal(sent.length, sends);
   editFailure = "Bad Request: message to edit not found";
@@ -667,4 +681,96 @@ test("/s：剩下的接不住、屏蔽词又藏了几条时，两件事都说", 
   searchResult = { keyword: "k", complete: true, counts: {}, items: [hit("other", 1)], blocked: 5 };
   await searchVia(msg("/s k"));
   assert.match(edited.at(-1)!.text, /只搜到百度、阿里这类网盘的链接.*（屏蔽词另外藏了 5 条）/);
+});
+
+test("连点两下「只看」「取消」：第二次 Telegram 回 not modified（原话在 error 里，和真客户端一样），不再补发一份", async () => {
+  searchConfigured = true;
+  searchResult = { keyword: "k", complete: true, counts: {}, items: [hit("115", 1), hit("magnet", 2)] };
+  await searchVia(msg("/s k"));
+  const buttons = edited[0].buttons!.flat();
+  const only = buttons.find((b) => b.text === "只看磁力")!;
+  const drop = buttons.find((b) => b.text === "取消")!;
+  const sends = sent.length;
+  await handleUpdate(bot, cb(only.callback_data));
+  assert.match(edited.at(-1)!.text, /1\. \[磁力\]/);
+  editFailure = NOT_MODIFIED;
+  await handleUpdate(bot, cb(only.callback_data));
+  assert.equal(sent.length, sends, "只看：不再发一份带按钮的列表");
+  editFailure = null;
+  await handleUpdate(bot, cb(drop.callback_data));
+  assert.equal(edited.at(-1)!.text, "已取消。");
+  editFailure = NOT_MODIFIED;
+  await handleUpdate(bot, cb(drop.callback_data));
+  assert.equal(sent.length, sends, "取消：不再发一条「已取消。」");
+});
+
+test("截短不劈 emoji：切口落在 emoji 中间时整个字符去掉，关键词、「在搜」、列表里都没有半个", async () => {
+  searchConfigured = true;
+  const half = /\p{Cs}/u;
+  // 标题截到 47 个单元再加省略号：第 47 个单元正好是 🎬 的前一半
+  searchResult = { keyword: "k", complete: true, counts: {}, items: [{ ...hit("quark", 1), title: `${"甲".repeat(46)}🎬第二季` }] };
+  // 关键词最多 100 个单元：第 100 个单元是 🎬 的前一半
+  await searchVia(msg(`/s ${"乙".repeat(99)}🎬`));
+  assert.deepEqual(calls, [{ fn: "searchResources", args: "乙".repeat(99) }]);
+  assert.doesNotMatch(sent[0].text, half);
+  assert.match(edited[0].text, new RegExp(`1\\. \\[夸克\\] ${"甲".repeat(46)}… · `));
+  assert.doesNotMatch(edited[0].text, half);
+});
+
+test("配对码：连着写、空一格的，数字字母混着就当配对码，过期了、打错了回「没找到」不去搜；全是字母的要真有请求才算", async () => {
+  searchConfigured = true;
+  searchResult = { keyword: "x", complete: true, counts: {}, items: [hit("quark", 1)] };
+  settings.telegram!.allowOAuthApproval = true;
+  // WXYZ2346 没有待批准的请求：过期了，或者打错了一位
+  for (const text of ["WXYZ2346", "wxyz 2346", "WXYZ-2346"]) {
+    await searchVia(msg(text));
+    assert.match(sent.at(-1)!.text, /没找到这个配对码/, text);
+  }
+  assert.equal(calls.length, 0, "一个都没拿去搜");
+  // 全是字母的配对码：真有这么一个请求，空一格也认
+  await searchVia(msg("hjkl mnpq"));
+  assert.match(sent.at(-1)!.text, /配对码对上了/);
+  assert.equal(calls.length, 0);
+  // 全是字母、又没有请求的是片名；数字字母混着但不是 4 + 4 的（Aquaman 2）也是
+  for (const text of ["SUPERMAN", "Star Wars", "Jane Eyre", "Aquaman 2"]) await searchVia(msg(text));
+  assert.deepEqual(
+    calls.map((c) => c.args),
+    ["SUPERMAN", "Star Wars", "Jane Eyre", "Aquaman 2"],
+  );
+});
+
+test("「搜替代资源」：追更名就是分享码、链接，或者拿不出片名的，不去搜，叫人用 /s 片名", async () => {
+  searchConfigured = true;
+  for (const id of ["f2", "f3", "f4"]) {
+    await searchVia(cb(`fsr:${id}`));
+    assert.match(sent.at(-1)!.text, /拿不出片名[\s\S]*<code>\/s 片名<\/code>/, id);
+  }
+  assert.equal(calls.length, 0, "分享码、链接、空的都没拿去搜");
+});
+
+test("/tasks 太长被截断时，标签照样成对、没有半个实体（路径里带 & 和 <>）", async () => {
+  const name = (i: number) => `<第 ${i} 部> 一个很长很长很长很长很长很长很长很长很长很长的剧名 & 特别篇 [4K] {tmdb-${i}}`;
+  const many: TaskDefinition[] = Array.from({ length: 20 }, (_, i) => ({
+    id: `m${i}`, account: "115", accountType: "115", strmPrefix: "/mnt", cronExpression: "0 3 * * *",
+    originPath: `/媒体 & 资源/电视剧/${name(i + 1)}/Season 1`, targetPath: `/strm/电视剧 & 动漫/${name(i + 1)}/Season 1`,
+  }));
+  setCommandDeps({ ...deps, listTasks: () => many });
+  await handleUpdate(bot, msg("/tasks"));
+  const { text } = sent[0];
+  assert.match(text, /…（已截断）$/);
+  assert.equal(text.match(/<b>/g)?.length, text.match(/<\/b>/g)?.length, "<b> 都闭合了");
+  assert.equal(text.match(/<code>/g)?.length, text.match(/<\/code>/g)?.length, "<code> 都闭合了");
+  assert.doesNotMatch(text.replace(/<\/?(?:b|code)>/g, ""), /[<>]|&(?!(?:amp|lt|gt);)/, "没有半个标签、半个实体");
+});
+
+
+test("「磁力：magnet:?…」（冒号后面没空格）当云下载链接，不拿去搜；交给 115 的只有链接本身", async () => {
+  searchConfigured = true;
+  settings.telegram!.allowOfflineAdd = true;
+  const magnet = `magnet:?xt=urn:btih:${"c".repeat(40)}`;
+  await searchVia(msg(`磁力：${magnet}`));
+  assert.equal(calls.length, 0, "没拿去搜");
+  assert.match(sent.at(-1)!.text, /收到 1 条链接/);
+  await handleUpdate(bot, cb(findButton("115 默认目录")!.callback_data));
+  assert.deepEqual(calls, [{ fn: "addOffline", args: { urls: magnet } }]);
 });

@@ -70,8 +70,13 @@ function toShareEntry(f: QuarkShareFile): ShareEntry {
 
 /* ------------------------------- 分享 ------------------------------- */
 
-const SHARE_URL = /https?:\/\/pan\.quark\.cn\/s\/([a-z0-9]+)(\?[^\s"'<>]*)?/i;
-const PASSCODE_IN_TEXT = /提取码[:：]?\s*([a-z0-9]{4,8})/i;
+/**
+ * 查询串只读到 #（往后是网页里的片段 #/list/share）、空白、引号或者第一个非 ASCII 字符为止：
+ * 链接外面包着的「」【】这类中文标点不能粘进提取码
+ */
+const SHARE_URL = /https?:\/\/pan\.quark\.cn\/s\/([a-z0-9]+)(\?[^\s"'<>#\u0080-\uffff]*)?/i;
+/** 链接后面另写的提取码（提取码 / 访问码 / 密码 / 口令，「解压密码」不算）：和 drive/registry.ts 的同名正则一样 */
+const PASSCODE_IN_TEXT = /(?:提取码|访问码|(?<!解压)密码|口令)\s*[:：]?\s*([a-z0-9]{4,8})/i;
 
 /** 只认 pan.quark.cn/s/<pwd_id>；提取码可以在 ?pwd= 里，也可以在链接后面的「提取码：xxxx」里 */
 export function parseQuarkShareLink(text: string): ShareRef | null {
@@ -81,7 +86,8 @@ export function parseQuarkShareLink(text: string): ShareRef | null {
   let password = "";
   if (m[2]) {
     const q = new URLSearchParams(m[2].slice(1));
-    password = (q.get("pwd") ?? q.get("passcode") ?? "").trim();
+    // 提取码只有字母数字：句末粘着的英文标点（「?pwd=ab12).」）不算
+    password = /^[a-z0-9]*/i.exec((q.get("pwd") ?? q.get("passcode") ?? "").trim())?.[0] ?? "";
   }
   if (!password) password = PASSCODE_IN_TEXT.exec(text)?.[1] ?? "";
   return { kind: "quark", code, password, url: `https://pan.quark.cn/s/${code}${password ? `?pwd=${password}` : ""}` };

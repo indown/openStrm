@@ -49,6 +49,7 @@ export interface TelegramResponse<T = unknown> {
   result?: T;
   error_code?: number;
   description?: string;
+  /** TelegramBot 调用失败的原因：Bot API 回 4xx / 5xx 时它的 description 在这里（description 字段反而是空的） */
   error?: string;
 }
 export interface BotCommand {
@@ -77,6 +78,18 @@ function telegramApiBase(): string {
   return (process.env.TELEGRAM_API_BASE || "https://api.telegram.org").replace(/\/+$/, "");
 }
 
+/**
+ * 发出去的字符串里孤立的代理项（半个 emoji）换成 U+FFFD：带着它 Bot API 整条拒收（strings must be encoded in UTF-8），
+ * call 又不抛错，「在搜…」这种占位消息就一直改不掉。截短的地方已经不劈字符了，这里给正文、按钮文字一起兜个底
+ */
+function wellFormed(value: unknown): unknown {
+  // u 模式按码点匹配：成对的代理项是一个字符，不算 Cs，只有落单的才换
+  if (typeof value === "string") return value.replace(/\p{Cs}/gu, "\uFFFD");
+  if (Array.isArray(value)) return value.map(wellFormed);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, wellFormed(v)]));
+  return value;
+}
+
 export class TelegramBot implements BotLike {
   private http: AxiosInstance;
 
@@ -87,7 +100,7 @@ export class TelegramBot implements BotLike {
 
   private async call<T>(method: string, data: Record<string, unknown> = {}): Promise<TelegramResponse<T>> {
     try {
-      const res = await this.http.post<TelegramResponse<T>>(`/${method}`, data);
+      const res = await this.http.post<TelegramResponse<T>>(`/${method}`, wellFormed(data));
       return res.data;
     } catch (err) {
       const body = axios.isAxiosError(err) ? (err.response?.data as { description?: string } | undefined) : undefined;

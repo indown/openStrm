@@ -65,7 +65,8 @@ export function presetScopes(preset: string): readonly AgentScope[] | undefined 
 
 /**
  * 给的档位 = 管理员选的 ∩ 客户端要的（客户端要了四档里任何一个时；什么都没要就按管理员选的），「查看」总在。
- * 客户端只要了 read，管理员手一滑选了「日常」，也不会多给
+ * 客户端只要了 read，管理员手一滑选了「日常」，也不会多给。
+ * 要多给（资源那边只报日常三档，删除与花费照规范来的客户端不会要），连上之后在设置页「改权限」里明着给
  */
 export function grantScopes(requestedScope: string, chosen: readonly AgentScope[]): AgentScope[] {
   const words = requestedScope.split(/\s+/);

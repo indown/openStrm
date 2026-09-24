@@ -387,48 +387,65 @@ export function fileView(
 
 /* ------------------------------- 失败分组 ------------------------------- */
 
-/** 每组一句「为什么、下一步做什么」：和整理页失败面板同一套说法（前端 lib/organize.ts 的 failureGroupMeta） */
-function groupText(key: OrganizeFailureGroupKey, stage: OrganizeRunStage): { label: string; hint: string } {
+/**
+ * 每组一句「为什么、下一步做什么」：和整理页失败面板同一套说法（前端 lib/organize.ts 的 failureGroupMeta）。
+ * why 是原因，how 是用工具怎么处理（要「改网盘」档）；令牌没有这一档时 how 换成请用户在整理页处理，别指向它调不了的工具
+ */
+function groupText(key: OrganizeFailureGroupKey, stage: OrganizeRunStage): { label: string; why: string; how: string } {
   if (stage === "revert") {
     switch (key) {
       case "blocked":
-        return { label: "网盘拒绝", hint: "退回时被风控或登录失效拦住：账号处理好之后继续撤销（organize_revert）" };
+        return { label: "网盘拒绝", why: "退回时被风控或登录失效拦住", how: "账号处理好之后继续撤销（organize_revert）" };
       case "transient":
-        return { label: "临时失败", hint: "退回时网络或网盘抖动：继续撤销再试一次（organize_revert）" };
+        return { label: "临时失败", why: "退回时网络或网盘抖动", how: "继续撤销再试一次（organize_revert）" };
       case "rejected":
-        return { label: "改回原名被拒", hint: "原来的名字网盘不再接受（多半是原位置又有了同名文件）：继续撤销再试，或放弃让文件留在整理后的位置" };
+        return { label: "改回原名被拒", why: "原来的名字网盘不再接受（多半是原位置又有了同名文件）", how: "继续撤销再试（organize_revert），或放弃（organize_skip）让文件留在整理后的位置" };
       case "stale":
-        return { label: "退回时找不到位置", hint: "原目录或文件的位置和记录对不上：继续撤销再试，或放弃让文件留在整理后的位置" };
+        return { label: "退回时找不到位置", why: "原目录或文件的位置和记录对不上", how: "继续撤销再试（organize_revert），或放弃（organize_skip）让文件留在整理后的位置" };
       case "lost":
-        return { label: "已找不到", hint: "文件已不在整理后的位置，或位置上是另一个文件：没法退回，只能放弃（organize_skip）" };
+        return { label: "已找不到", why: "文件已不在整理后的位置，或位置上是另一个文件", how: "没法退回，只能放弃（organize_skip）" };
       case "mirror":
-        return { label: "已退回，本地未同步", hint: "网盘已经退回原处，本地 strm 没跟上：继续撤销只补本地" };
+        return { label: "已退回，本地未同步", why: "网盘已经退回原处，本地 strm 没跟上", how: "继续撤销只补本地（organize_revert）" };
       default:
-        return { label: key, hint: "" };
+        return { label: key, why: "", how: "" };
     }
   }
   switch (key) {
     case "blocked":
-      return { label: "网盘拒绝", hint: "风控或登录失效，整理已停下：只能由用户在「账户」页处理好，之后用 organize_apply 重试" };
+      return { label: "网盘拒绝", why: "风控或登录失效，整理已停下", how: "只能由用户在「账户」页处理好，之后用 organize_apply 重试" };
     case "transient":
-      return { label: "临时失败", hint: "网络、超时或网盘抖动：执行时已自动重试过一次，用 organize_apply 再试一次多半就好" };
+      return { label: "临时失败", why: "网络、超时或网盘抖动，执行时已自动重试过一次", how: "用 organize_apply 再试一次多半就好" };
     case "stale":
-      return { label: "预览后变了", hint: "文件已不在预览时的位置、目录没了或目标位置被占：用 organize_preview(again) 按现在的网盘重新预览，或 organize_skip 放弃；重试只会再失败" };
+      return {
+        label: "预览后变了",
+        why: "文件已不在预览时的位置、目录没了或目标位置被占",
+        how: "用 organize_preview(again) 按现在的网盘重新预览，或 organize_skip 放弃；重试只会再失败",
+      };
     case "rejected":
-      return { label: "名字不被接受", hint: "网盘不接受这个名字或目标已存在：请用户改模板 / 识别词后重新预览，或 organize_skip 放弃" };
+      return { label: "名字不被接受", why: "网盘不接受这个名字或目标已存在", how: "请用户改模板 / 识别词后重新预览，或 organize_skip 放弃" };
     case "mirror":
-      return { label: "本地未同步", hint: "网盘已经改好，本地 strm 没跟上：organize_apply 重试只补本地，不碰网盘" };
+      return { label: "本地未同步", why: "网盘已经改好，本地 strm 没跟上", how: "organize_apply 重试只补本地，不碰网盘" };
     case "pending":
-      return { label: "没做完", hint: "整理中途停下了（风控、取消或进程重启），这些项还没轮到：organize_apply 接着做" };
+      return { label: "没做完", why: "整理中途停下了（风控、取消或进程重启），这些项还没轮到", how: "organize_apply 接着做" };
     case "lost":
-      return { label: "已找不到", hint: "" };
+      return { label: "已找不到", why: "", how: "" };
   }
 }
 
-export function failureViews(groups: OrganizeFailureGroup[], stage: OrganizeRunStage, items: OrganizeItem[], refs: RunRefs, task: TaskDefinition | undefined) {
+/** canAct：令牌有没有「改网盘」档（重试、放弃、撤销、重新预览都要它，重新预览另要「运行」档） */
+export function failureViews(
+  groups: OrganizeFailureGroup[],
+  stage: OrganizeRunStage,
+  items: OrganizeItem[],
+  refs: RunRefs,
+  task: TaskDefinition | undefined,
+  canAct = true,
+) {
   const byId = new Map(items.map((it) => [it.id, it]));
   return groups.map((g) => {
     const t = groupText(g.key, stage);
+    const how = canAct ? t.how : "这个令牌处理不了（没有「改网盘」档），请用户在 OpenStrm 的整理页里处理（openInUi 是链接）";
+    const hint = [t.why, how].filter(Boolean).join("：");
     const shown = g.itemIds
       .slice(0, 10)
       .map((id) => byId.get(id))
@@ -440,7 +457,8 @@ export function failureViews(groups: OrganizeFailureGroup[], stage: OrganizeRunS
       count: g.itemIds.length,
       can: [g.retry ? "retry" : "", g.skip ? "skip" : "", g.repreview ? "repreview" : ""].filter(Boolean),
       ...(g.held ? { held: g.held } : {}),
-      hint: t.hint,
+      ...(g.deletes ? { deletes: g.deletes } : {}),
+      hint,
       files: shown,
     };
   });

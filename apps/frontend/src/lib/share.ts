@@ -1,12 +1,11 @@
 import type { DriveKind } from "./api";
-import { looksLikeOfflineLink } from "./offline";
+import { looksLikeOfflineLink, splitOfflineLinks } from "./offline";
 
 /**
- * 115 不带网址的分享码：`sw` 开头、一共 11 位、全是小写字母和数字而且至少有一个数字（swzjt593ztd），可以带「-提取码」。
- * 后端的解析连任何纯字母数字的词都当 115 分享码认（`dune` 也算）；前端要判断输入的是分享还是搜索词，得比它严，
- * 不然 Swordfish、switchblade 这种英文片名会被当成分享码打开
+ * 115 不带网址的分享码：`sw` 开头、一共 11 位字母数字、至少有一个数字（swzjt593ztd），可以带「-提取码」或「?password=提取码」，
+ * 不分大小写。和后端认的写法一个口径；少一位、没有数字的都不算，不然 Swordfish、switchblade 这种英文片名会被当成分享码打开
  */
-const BARE_115_CODE = /^sw(?=[a-z0-9]*\d)[a-z0-9]{9}(?:-[a-z0-9]{4})?$/;
+const BARE_115_CODE = /^sw(?=[a-z0-9]*\d)[a-z0-9]{9}(?:-[a-z0-9]{4}|\?password=[a-z0-9]{4})?$/i;
 
 /** 从分享链接认出是哪家网盘的；认不出返回 null。网址的口径和后端 services/drive/registry.ts 的 parseShareRef 一致 */
 export function shareKindOf(url: string | null | undefined): DriveKind | null {
@@ -36,16 +35,18 @@ const OTHER_DRIVE_SHARE =
 /**
  * 输入框里打的是什么：分享（打开转存框）、磁力 / 电驴 / 下载链接（交给云下载）、认不出的链接（说一声，不去搜）、
  * 别的都当片名去搜。顶栏、⌘K、资源搜索页共用。
- * 带着「xxx://」的都不当片名：拿网址去 PanSou 搜只会「没搜到」，还会记进最近搜索
+ * 带着「xxx://」的都不当片名：拿网址去 PanSou 搜只会「没搜到」，还会记进最近搜索。
+ * 交给云下载的得真拆得出链接（splitOfflineLinks，和提交时一个拆法）：一句话后面跟着网址（「沙丘2 https://…」）拆不出，
+ * 交过去只会打开一个空的添加框，当认不出的说
  */
 export type InputKind = "share" | "offline" | "unsupported" | "search";
 
 export function inputKindOf(text: string): InputKind {
   const t = text.trim();
   if (looksLikeShare(t)) return "share";
-  if (looksLikeOfflineLink(t)) return "offline";
+  if (looksLikeOfflineLink(t)) return splitOfflineLinks(t) ? "offline" : "unsupported";
   // http(s)、ftp 的下载链接交给云下载（和 Telegram 里一样）；别家网盘的分享页不行
-  if (/(?:https?|ftp):\/\//i.test(t)) return OTHER_DRIVE_SHARE.test(t) ? "unsupported" : "offline";
+  if (/(?:https?|ftp):\/\//i.test(t)) return !OTHER_DRIVE_SHARE.test(t) && splitOfflineLinks(t) ? "offline" : "unsupported";
   if (/[a-z][a-z0-9+.-]*:\/\//i.test(t)) return "unsupported";
   return "search";
 }

@@ -12,6 +12,8 @@ export interface FakePansouRequest {
   path: string;
   headers: http.IncomingHttpHeaders;
   body: Record<string, unknown>;
+  /** 回话之前对面就断开了（调用方掐掉了这一问） */
+  aborted?: boolean;
 }
 
 /** 直接给数据（按 200 + 壳回），或者指定状态码 / 原样的 body / 延迟 */
@@ -95,7 +97,11 @@ export class FakePansou {
     req.on("end", () => {
       const url = new URL(req.url ?? "/", "http://x");
       const body = parseBody(raw);
-      this.requests.push({ method: req.method ?? "GET", path: url.pathname, headers: req.headers, body });
+      const record: FakePansouRequest = { method: req.method ?? "GET", path: url.pathname, headers: req.headers, body };
+      this.requests.push(record);
+      res.on("close", () => {
+        if (!res.writableFinished) record.aborted = true;
+      });
       void this.route(url.pathname, req, body).then((reply) => this.send(res, reply));
     });
   }

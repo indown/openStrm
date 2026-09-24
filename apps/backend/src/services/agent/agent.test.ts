@@ -15,7 +15,7 @@ import { createApiToken, deleteAllApiTokens, getApiToken, touchApiToken } from "
 import { listAgentCalls } from "../../db/repositories/agent-audit.js";
 import { readAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
-import { Cloud115ApiError } from "../cloud-115/client.js";
+import { Cloud115ApiError, ShareBusyError } from "../cloud-115/client.js";
 import { ShareApiError } from "../cloud-115/share.js";
 import { driveErrorToHttp } from "../drive/errors.js";
 import { ShareGoneError } from "../drive/types.js";
@@ -77,6 +77,10 @@ test("失败结果：转存成功后才失败的带 received 和「别再转存�
   assert.match(received.hint ?? "", /sync_start/);
 
   assert.equal(toFailure(new ShareGoneError("share not exist", 4100)).code, "SHARE_GONE");
+  // 分享接口一时回不了话：不是失效，提示过会儿再试、别换链接
+  const busy = toFailure(driveErrorToHttp(new ShareBusyError("操作过于频繁，请稍后再试"), "失败"));
+  assert.equal(busy.code, "SHARE_BUSY");
+  assert.match(busy.hint ?? "", /过几分钟再试/);
   assert.equal(toFailure(driveErrorToHttp(new ShareGoneError("wrong password", 4101), "失败")).code, "SHARE_GONE");
 
   const own = toFailure(new ToolError("BUSY", "忙", "等等", { n: 1 }));

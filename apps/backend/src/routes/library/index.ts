@@ -10,7 +10,7 @@ import {
   remove,
   update,
 } from "../../db/repositories/media-library.js";
-import { matchShareLink, parseShareRef } from "../../services/drive/registry.js";
+import { matchShareLink, parseShareText } from "../../services/drive/registry.js";
 import { enqueueOne } from "../../services/library/scrape-worker.js";
 import { normalizeTitle } from "../../services/media-title.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -45,10 +45,12 @@ export default async function (fastify: FastifyInstance) {
 
   fastify.post("/api/library", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const body = parse(createSchema, request.body);
-    const shareUrl = body.shareUrl;
 
-    const ref = parseShareRef(shareUrl);
+    // 和 /api/share 收一样的写法（转存框就是拿用户贴的原话去开的）：整段「链接：… 提取码：…」也认。
+    // 存认出来的链接（提取码拼在里面），不存那一整段：影库页、转存到任务都要按链接认网盘
+    const ref = parseShareText(body.shareUrl);
     if (!ref) throw new HttpError(400, "Invalid share url");
+    const shareUrl = ref.url;
     const shareCode = ref.code;
     const receiveCode = ref.password;
 

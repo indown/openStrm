@@ -109,10 +109,54 @@ test("集数、季的边角：第1080集不是 1080p，「S01-4K」不是第 1-4
   assert.deepEqual(titleTags("1.5  GB"), ["1.5G"]);
 });
 
-test("按词匹配的口径：全角转半角、不分大小写、去空白；标题和标签分开，不跨着对", () => {
-  assert.equal(matchKey(" ＴＣ "), "tc");
+/** 一个词对不对得上一条结果：屏蔽词、智能体的 include / exclude 都是这么对的 */
+const hits = (term: string, title: string, tags: string[] = titleTags(title)) => matchTextOf({ title, tags }).includes(matchKey(term));
+
+test("按词匹配的口径：全角转半角、不分大小写；中文词按子串、不计较空白；标题和标签分开，不跨着对", () => {
   assert.equal(matchKey("第 1 季"), "第1季");
+  assert.equal(matchKey(" ＴＣ "), matchKey("tc"), "全角、大小写、首尾空白不算");
   const text = matchTextOf({ title: "繁花.S01.2023.1080p", tags: ["1080p", "第 1 季"] });
   assert.ok(text.includes(matchKey("第1季")));
-  assert.ok(!matchTextOf({ title: "abc", tags: ["def"] }).includes("cd"), "标题末尾和标签开头拼不成词");
+  assert.ok(!matchTextOf({ title: "abc", tags: ["def"] }).includes(matchKey("cd")), "标题末尾和标签开头拼不成词");
+  assert.ok(!matchTextOf({ title: "预", tags: ["告"] }).includes(matchKey("预告")), "中文也不跨着对");
+  assert.ok(hits("预告", "沙丘2 预告片"));
+  assert.ok(hits("枪版", "沙丘2 枪 版"), "中文词不计较中间的空白");
+  assert.ok(hits("4K原盘", "沙丘2 4K原盘"), "带中文的词整个按子串对");
+});
+
+test("按词匹配：只有英文、数字的词要整段对上——不在更长的一串字母里，也不跨过空白", () => {
+  // 设置页推荐的屏蔽词「TC」不能藏掉这些
+  for (const title of ["The.Witcher.S01.2160p", "Watchmen (2009)", "Catch Me If You Can", "Hell's Kitchen S20", "Switch", "Pitch Perfect 2012", "Cat Club", "HDTC 抢先"]) {
+    assert.ok(!hits("TC", title), title);
+  }
+  // 智能体 exclude ["CAM"] 不能去掉 James Cameron 的片
+  assert.ok(!hits("CAM", "阿凡达 James Cameron 2009 1080p"));
+  assert.ok(!hits("cam", "CAMRip"));
+  // 真带着这些词的照样对上：前后是标点、空白、中文、数字都算断开
+  for (const title of ["Movie.2024.TC.x264", "沙丘2 TC版", "沙丘2TC版", "[TC]沙丘2", "Show-TC.MX", "沙丘2 ＴＣ"]) assert.ok(hits("TC", title), title);
+  assert.ok(hits("CAM", "Movie 2024 CAM x264"));
+  assert.ok(hits("YTS", "Dune.Part.Two.2024.1080p.WEBRip.x265-[YTS.MX]"));
+  assert.ok(hits("x265", "Dune.Part.Two.2024.1080p.WEBRip.x265"));
+  // 字母和数字挨着算断开：「2160」对得上 2160p，「HDR」对得上 HDR10，「S01」对得上 S01E01；同一类连着的不行
+  assert.ok(hits("2160", "Dune.2160p.WEB-DL"));
+  assert.ok(hits("HDR", "Movie HDR10 2024", []));
+  assert.ok(hits("S01", "Show.S01E01.1080p"));
+  assert.ok(!hits("216", "Dune.2160p.WEB-DL", []));
+  assert.ok(!hits("HDR", "Movie.HDRip", []));
+  // 标签也按整段对：「4K」对得上只写了 2160p 的（标签是 4K），「4k」不当成 4KHDR 里的一截也能靠标签对上
+  assert.ok(hits("4k", "沙丘2 2160p"));
+  assert.ok(hits("4K", "沙丘2 4KHDR"));
+  // 多个英文词的照样整段对，中间的空白、点、横线都算断开
+  assert.ok(hits("Dolby Vision", "Movie.Dolby.Vision.2160p"));
+  assert.ok(hits("WEB-DL", "Movie WEB DL 1080p"));
+  // 只有符号的词按子串对
+  assert.ok(hits("+", "国语+粤语"));
+});
+
+test("按词匹配：看不见的字符（零宽、韩文填充符）不算，词里、标题里夹着都一样", () => {
+  const filler = String.fromCharCode(0x3164);
+  const zeroWidth = String.fromCharCode(0x200b);
+  assert.ok(hits(`枪${filler}版`, "沙丘2 枪版"));
+  assert.ok(hits("TC", `Movie T${zeroWidth}C 2024`));
+  assert.equal(matchKey(`预${filler}告`), matchKey("预告"));
 });

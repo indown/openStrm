@@ -5,14 +5,17 @@
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/services/cloud-115/offline.test.ts
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   decodeSspData,
+  looksLikeOfflineLink,
   normalizeAddResults,
   normalizeOfflineListPage,
   normalizeOfflineTask,
   normalizeOfflineUrls,
   offlineErrorOf,
+  splitOfflineText,
 } from "./offline.js";
 
 const HASH40 = "a3755bb2a0c3298653eaf597bcc73ab932b1d1a5";
@@ -57,6 +60,65 @@ test("normalizeOfflineUrls：单行输入框把换行吃成空格的，挨着的
     urls: [`magnet:?xt=urn:btih:${HASH40}`],
     invalid: ["看看这个"],
   });
+});
+
+test("normalizeOfflineUrls：「磁力：magnet:?…」前面没空白也认；「磁力：」「下载：」这种标签、链接后面的说明都丢掉", () => {
+  const magnet = `magnet:?xt=urn:btih:${HASH40}`;
+  assert.deepEqual(normalizeOfflineUrls(`磁力：${magnet}`), { urls: [magnet], invalid: [] });
+  assert.deepEqual(normalizeOfflineUrls(`磁力:${magnet}`), { urls: [magnet], invalid: [] });
+  assert.deepEqual(normalizeOfflineUrls(`磁力：${magnet} 大小：2.1G`), { urls: [magnet], invalid: [] });
+  assert.deepEqual(normalizeOfflineUrls(`【${magnet}】`), { urls: [magnet], invalid: [] });
+  assert.deepEqual(normalizeOfflineUrls(`${magnet}，大小 2.1G`), { urls: [magnet], invalid: [] });
+  assert.deepEqual(normalizeOfflineUrls("下载：https://example.com/a.mkv 2.1G"), { urls: ["https://example.com/a.mkv"], invalid: [] });
+  assert.deepEqual(normalizeOfflineUrls("【下载】https://example.com/a.mkv（2.1G）"), { urls: ["https://example.com/a.mkv"], invalid: [] });
+  assert.deepEqual(normalizeOfflineUrls("看这里 (https://example.com/a.mkv).").urls, [], "一句话后面跟着的网址不收");
+  assert.deepEqual(normalizeOfflineUrls("(https://example.com/a.mkv)."), { urls: ["https://example.com/a.mkv"], invalid: [] });
+  // 电驴到 |/ 为止：文件名里的空格照留，后面的说明丢掉
+  const ed = "ed2k://|file|Show S01E01 1080p.mkv|1|0E7FAA0EAEB2DEE85E02964F7D93E381|/";
+  assert.deepEqual(normalizeOfflineUrls(`电驴：${ed} 大小 2.1G`), { urls: [ed], invalid: [] });
+  // 紧挨着的两条电驴（中间没空白）也拆得开
+  const ed2 = "ed2k://|file|Show S01E02.mkv|2|0E7FAA0EAEB2DEE85E02964F7D93E382|/";
+  assert.deepEqual(normalizeOfflineUrls(`${ed}${ed2}`).urls, [ed, ed2]);
+});
+
+test("normalizeOfflineUrls：磁力里 &tr=http://… 的 tracker 不拆成一条；挨着的 thunder:// 单列成认不出的", () => {
+  const withTracker = `magnet:?xt=urn:btih:${HASH40}&dn=x&tr=http://tracker.example/announce&tr=udp://t2.example:80`;
+  assert.deepEqual(normalizeOfflineUrls(withTracker), { urls: [withTracker], invalid: [] });
+  assert.deepEqual(normalizeOfflineUrls(`magnet:?xt=urn:btih:${HASH40} thunder://QUFodHRwOi8v`), {
+    urls: [`magnet:?xt=urn:btih:${HASH40}`],
+    invalid: ["thunder://QUFodHRwOi8v"],
+  });
+  // 一句话后面的 thunder:// 连同话一起列出来，后面的磁力照收
+  assert.deepEqual(normalizeOfflineUrls(`看看这个 thunder://abc magnet:?xt=urn:btih:${HASH40}`), {
+    urls: [`magnet:?xt=urn:btih:${HASH40}`],
+    invalid: ["看看这个 thunder://abc"],
+  });
+  // 网址套网址（存档站）不拆
+  assert.deepEqual(normalizeOfflineUrls("https://web.archive.org/web/2020/https://example.com/a.mkv").urls, ["https://web.archive.org/web/2020/https://example.com/a.mkv"]);
+});
+
+test("裸的 info hash：40 位十六进制、32 位 base32 都认，拆的时候和认的时候一个口径", () => {
+  const b32 = "WHFPFKOFZK6HAWYFNQDNYU3F6HVPJQEY";
+  assert.deepEqual(normalizeOfflineUrls(b32).urls, [`magnet:?xt=urn:btih:${b32.toLowerCase()}`]);
+  assert.deepEqual(splitOfflineText(`  ${b32} `), { links: [b32], junk: [] });
+  for (const text of [HASH40, HASH40.toUpperCase(), b32, ` ${b32.toLowerCase()} `, `磁力：magnet:?xt=urn:btih:${HASH40}`, "ed2k://|file|x.mkv|1|0E7FAA0EAEB2DEE85E02964F7D93E381|/"]) {
+    assert.equal(looksLikeOfflineLink(text), true, text);
+  }
+  for (const text of ["沙丘2", "Dune Part Two", "WHFPFKOFZK6HAWYFNQDNYU3F6HVPJQE", `${HASH40}0`, "https://example.com/a.mkv"]) {
+    assert.equal(looksLikeOfflineLink(text), false, text);
+  }
+});
+
+test("拆链接那一段和前端 apps/frontend/src/lib/offline.ts 里的一字不差（顶栏、云下载框和提交时拆得一样）", () => {
+  const block = (url: URL) => {
+    const src = readFileSync(url, "utf8");
+    const start = src.indexOf("/* ---- 拆链接：");
+    const end = src.indexOf("/* ---- 拆链接完 ---- */");
+    assert.ok(start >= 0 && end > start, url.pathname);
+    // 开头那行各自写着另一边的文件名，从下一行比起
+    return src.slice(src.indexOf("\n", start) + 1, end);
+  };
+  assert.equal(block(new URL("../../../../frontend/src/lib/offline.ts", import.meta.url)), block(new URL("./offline.ts", import.meta.url)));
 });
 
 const fileTask = {

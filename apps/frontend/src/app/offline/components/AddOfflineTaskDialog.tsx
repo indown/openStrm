@@ -96,11 +96,14 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account: defaultAccou
   }, [open, initialUrls]);
 
   // 打开、换账号时目标目录那一块从头来：回到任务目录，重新拉这个账号的任务和 115 的默认目录。
-  // 上一个账号的任务先清掉：新列表回来之前（或者读失败了）不能还挂着、还能选
+  // 上一个账号的任务先清掉：新列表回来之前（或者读失败了）不能还挂着、还能选；上一个账号的失败清单也清掉，
+  // 留着会让人以为是这个账号加失败的
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setTasks([]);
+    setResults(null);
+    setInvalid([]);
     setSubSegments([]);
     setDirId("");
     setDirPath("");

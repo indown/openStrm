@@ -17,7 +17,7 @@ const log = moduleLogger("pansou");
 let SEARCH_TIMEOUT_MS = 25_000;
 const CHECK_TIMEOUT_MS = 15_000;
 const HEALTH_TIMEOUT_MS = 5_000;
-const LOGIN_TIMEOUT_MS = 10_000;
+let LOGIN_TIMEOUT_MS = 10_000;
 /** JWT 提前这么久当过期，免得请求发出去的路上刚好过期 */
 const TOKEN_MARGIN_MS = 5 * 60_000;
 
@@ -117,9 +117,10 @@ const logins = new Map<string, Promise<string>>();
 /** 按整套凭据记：设置里改了密码，旧密码登出来的令牌就不再拿来用（只在内存里） */
 const tokenKey = (conn: PansouConn) => JSON.stringify([apiBase(conn), conn.username ?? "", conn.password ?? ""]);
 
-/** 测试用：搜索的超时别真等 25 秒 */
-export function __test_setSearchTimeout(ms = 25_000): void {
+/** 测试用：搜索、登录的超时别真等 25 秒、10 秒 */
+export function __test_setSearchTimeout(ms = 25_000, loginMs = 10_000): void {
   SEARCH_TIMEOUT_MS = ms;
+  LOGIN_TIMEOUT_MS = loginMs;
 }
 
 export function __test_clearPansouTokens(): void {
@@ -128,8 +129,15 @@ export function __test_clearPansouTokens(): void {
 }
 
 /**
+ * 卡在登录这一步（登录太久没回、等登录等到了期限）：PanSou 根本还没搜，不能说成「它还在后台接着搜」，
+ * 所以 kind 也不是 timeout（那种会叫人过一会儿再搜同一个词）
+ */
+const loginTimeout = () => new PansouError("unavailable", "登录 PanSou 太久没回应：看看 PanSou 是不是卡住了，过一会儿再试");
+
+/**
  * 登录拿 JWT。PanSou 的 expires_at 是秒；给毫秒的也认。
- * 不接调用方的取消信号：同一套凭据同时只登一次，别的请求在等同一个结果，第一个调用方掐了不能连累它们（登录自己有超时）
+ * 不接调用方的取消信号：同一套凭据同时只登一次，别的请求在等同一个结果，第一个调用方掐了不能连累它们（登录自己有超时）。
+ * 调用方自己等多久、取消了就走，在 call() 里管
  */
 export async function pansouLogin(conn: PansouConn): Promise<string> {
   const key = tokenKey(conn);
@@ -137,12 +145,14 @@ export async function pansouLogin(conn: PansouConn): Promise<string> {
   if (inflight) return inflight;
   const job = (async () => {
     if (!conn.username) throw new PansouError("auth", "PanSou 开了登录，到设置页「资源搜索」填用户名和密码", 401);
-    const res = await send(() =>
-      axios.post(
-        `${apiBase(conn)}/auth/login`,
-        { username: conn.username, password: conn.password ?? "" },
-        { timeout: LOGIN_TIMEOUT_MS, validateStatus: () => true, headers: { Accept: "application/json" } },
-      ),
+    const res = await send(
+      () =>
+        axios.post(
+          `${apiBase(conn)}/auth/login`,
+          { username: conn.username, password: conn.password ?? "" },
+          { timeout: LOGIN_TIMEOUT_MS, validateStatus: () => true, headers: { Accept: "application/json" } },
+        ),
+      loginTimeout,
     );
     // 只有 401 是凭据不对；403、429、5xx 和别的请求一样归类（403 是前面的防护拦的，不是密码错）
     if (res.status === 401) throw new PansouError("auth", "PanSou 的用户名或密码不对，到设置页「资源搜索」改一下", 401);
@@ -179,17 +189,56 @@ const TIMEOUT_MESSAGE = "PanSou 等太久没回应";
 /** 搜索超时的说法：它多半还在后台接着搜 */
 const SEARCH_TIMEOUT_MESSAGE = "PanSou 这一问太久没回：它多半还在后台接着搜，过半分钟再搜一次同一个词就快了";
 
-/** 发出去；连不上、超时换成 PanSouError，取消原样抛（调用方自己掐的） */
-async function send(fn: () => Promise<AxiosResponse>): Promise<AxiosResponse> {
+const requestTimeout = () => new PansouError("timeout", TIMEOUT_MESSAGE);
+
+/** 发出去；连不上、超时换成 PanSouError（超时怎么说由调用方给），取消原样抛（调用方自己掐的） */
+async function send(fn: () => Promise<AxiosResponse>, onTimeout: () => PansouError = requestTimeout): Promise<AxiosResponse> {
   try {
     return await fn();
   } catch (err) {
     if (isAbortError(err)) throw err;
     const code = axios.isAxiosError(err) ? err.code : undefined;
-    if (code === "ECONNABORTED" || code === "ETIMEDOUT") throw new PansouError("timeout", TIMEOUT_MESSAGE);
+    if (code === "ECONNABORTED" || code === "ETIMEDOUT") throw onTimeout();
     const why = code === "ECONNREFUSED" ? "连接被拒绝（地址或端口不对，或者 PanSou 没在运行）" : messageOf(err);
     throw new PansouError("unavailable", `连不上 PanSou：${why}`);
   }
+}
+
+/**
+ * 等同一套凭据共用的那次登录，但只等到自己的期限、自己被取消为止：那次登录本身不掐（别的请求还在等它，
+ * 登出来的令牌照样记下、下一次直接用），这边到点就说是登录的事
+ */
+function waitLogin(conn: PansouConn, deadline: number, signal: AbortSignal | undefined): Promise<string> {
+  const aborted = () => signal?.reason ?? new DOMException("已取消", "AbortError");
+  if (signal?.aborted) return Promise.reject(aborted());
+  return new Promise<string>((resolve, reject) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      done();
+      reject(aborted());
+    };
+    const timer = setTimeout(
+      () => {
+        done();
+        reject(loginTimeout());
+      },
+      Math.max(0, deadline - Date.now()),
+    );
+    signal?.addEventListener("abort", onAbort, { once: true });
+    pansouLogin(conn).then(
+      (token) => {
+        done();
+        resolve(token);
+      },
+      (err: unknown) => {
+        done();
+        reject(err);
+      },
+    );
+  });
 }
 
 interface CallOptions {
@@ -198,29 +247,35 @@ interface CallOptions {
   signal?: AbortSignal;
   /** health 是公开的，不用登录 */
   auth?: boolean;
+  /** 这个请求本身超时怎么说（搜索的另有说法） */
+  onTimeout?: () => PansouError;
 }
 
 /**
  * 带登录的一次请求：有令牌就带上；回 401 且配了用户名就重登一次再发一次。
- * timeout 管的是整次调用：重新登录花掉的时间也算，重发那一次只用剩下的（智能体那边整趟搜索有预算）。
+ * timeout 管的是整次调用：重新登录花掉的时间也算（等登录也只等到这个期限、调用方取消了就走），
+ * 重发那一次只用剩下的（智能体那边整趟搜索有预算）；卡在登录上的说是登录的事，不说成这个请求超时。
  * 状态码的归类（429、5xx）也在这里，调用方只剩 2xx 和少数它自己认的（检测接口的 404）
  */
 async function call(conn: PansouConn, method: "get" | "post", path: string, opts: CallOptions): Promise<AxiosResponse> {
   const url = `${apiBase(conn)}${path}`;
   const deadline = Date.now() + opts.timeout;
+  const onTimeout = opts.onTimeout ?? requestTimeout;
   const once = (token?: string) => {
     const left = deadline - Date.now();
-    if (left <= 0) return Promise.reject(new PansouError("timeout", TIMEOUT_MESSAGE));
-    return send(() =>
-      axios.request({
-        method,
-        url,
-        data: opts.data,
-        timeout: left,
-        signal: opts.signal,
-        validateStatus: () => true,
-        headers: { Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      }),
+    if (left <= 0) return Promise.reject(onTimeout());
+    return send(
+      () =>
+        axios.request({
+          method,
+          url,
+          data: opts.data,
+          timeout: left,
+          signal: opts.signal,
+          validateStatus: () => true,
+          headers: { Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        }),
+      onTimeout,
     );
   };
   const useAuth = opts.auth !== false;
@@ -233,8 +288,10 @@ async function call(conn: PansouConn, method: "get" | "post", path: string, opts
     let token = fresh && fresh !== used ? fresh : undefined;
     if (!token) {
       tokens.delete(tokenKey(conn));
-      token = await pansouLogin(conn);
+      token = await waitLogin(conn, deadline, opts.signal);
     }
+    // 登录把时间用完了：这个请求还没真发出去过（上一次被 401 拒了）
+    if (Date.now() >= deadline) throw loginTimeout();
     res = await once(token);
     if (res.status === 401) throw new PansouError("auth", "PanSou 不认 OpenStrm 的登录令牌，到设置页「资源搜索」检查一下用户名和密码", 401);
   }
@@ -285,17 +342,12 @@ export async function pansouSearch(
   opts: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<PansouSearchResult> {
   const started = Date.now();
-  let res: AxiosResponse;
-  try {
-    res = await call(conn, "post", "/search", {
-      data: { kw: q.kw, src: q.src, res: "merge", ...(q.refresh ? { refresh: true } : {}), ...(q.titleEn ? { ext: { title_en: q.titleEn } } : {}) },
-      timeout: opts.timeoutMs ?? SEARCH_TIMEOUT_MS,
-      signal: opts.signal,
-    });
-  } catch (err) {
-    if (err instanceof PansouError && err.kind === "timeout") throw new PansouError("timeout", SEARCH_TIMEOUT_MESSAGE);
-    throw err;
-  }
+  const res = await call(conn, "post", "/search", {
+    data: { kw: q.kw, src: q.src, res: "merge", ...(q.refresh ? { refresh: true } : {}), ...(q.titleEn ? { ext: { title_en: q.titleEn } } : {}) },
+    timeout: opts.timeoutMs ?? SEARCH_TIMEOUT_MS,
+    signal: opts.signal,
+    onTimeout: () => new PansouError("timeout", SEARCH_TIMEOUT_MESSAGE),
+  });
   if (res.status === 404) throw new PansouError("unavailable", "PanSou 地址不对：找不到搜索接口（/api/search）", 404);
   const data = unwrap(res);
   const merged = data.merged_by_type;

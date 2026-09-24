@@ -29,6 +29,7 @@ import agentRoute from "../agent/index.js";
 import mcpRoute from "../mcp/index.js";
 import settingsRoute from "../settings/index.js";
 import passwordRoute from "../auth/password.js";
+import telegramUsersRoute from "../telegram/users.js";
 import oauthMetadataRoute from "./metadata.js";
 import oauthRegisterRoute from "./register.js";
 import oauthAuthorizeRoute from "./authorize.js";
@@ -80,7 +81,7 @@ before(async () => {
   await app.register(securityHeadersPlugin);
   await app.register(publicHostPlugin);
   await app.register(authPlugin);
-  for (const route of [agentRoute, mcpRoute, settingsRoute, passwordRoute, oauthMetadataRoute, oauthRegisterRoute, oauthAuthorizeRoute, oauthTokenRoute]) {
+  for (const route of [agentRoute, mcpRoute, settingsRoute, passwordRoute, telegramUsersRoute, oauthMetadataRoute, oauthRegisterRoute, oauthAuthorizeRoute, oauthTokenRoute]) {
     await app.register(route);
   }
   // 代替管理界面的静态页和别的 /api：不然「公网域名下 404」是因为路由本来就不存在，测不出守卫
@@ -856,6 +857,49 @@ const tgPress = (fromId: number, data: string, updateId: number) => ({
   callback_query: { id: `q${updateId}`, from: { id: fromId, is_bot: false, first_name: "u" }, message: { message_id: 5, date: 0, chat: { id: 900, type: "group" as const } }, data },
 });
 
+test("在 Telegram 里批准网页客户端：打开要当前密码；开着的时候换机器人 / chat id / 白名单加人会自动关掉，带了密码才照开", async () => {
+  const base = { ...(readAppSettings().telegram ?? {}), botToken: "123:abc", chatId: "900", allowedUsers: [7] };
+  patchAppSettings({ telegram: { ...base, allowOAuthApproval: false } });
+  const put = (telegram: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    app.inject({ method: "PUT", url: "/api/settings", headers: session, payload: { telegram, ...extra } });
+  const approval = () => readAppSettings().telegram?.allowOAuthApproval;
+
+  const noPassword = await put({ ...base, allowOAuthApproval: true });
+  assert.equal(noPassword.statusCode, 400, noPassword.body);
+  assert.equal(noPassword.json().code, "PASSWORD_REQUIRED");
+  assert.equal((await put({ ...base, allowOAuthApproval: true }, { currentPassword: "nope" })).json().code, "WRONG_PASSWORD");
+  assert.equal(approval(), false, "没带对密码就没开");
+  const on = await put({ ...base, allowOAuthApproval: true }, { currentPassword: PASSWORD });
+  assert.equal(on.statusCode, 200, on.body);
+  assert.equal(approval(), true);
+  assert.ok(!("currentPassword" in readAppSettings()), "密码只拿来核对，不进设置");
+
+  // 开着的时候改别的开关、白名单删人：不用密码，照开
+  assert.equal((await put({ ...base, allowOAuthApproval: true, allowTaskStart: true })).statusCode, 200);
+  patchAppSettings({ telegram: { ...base, allowedUsers: [7, 8], allowOAuthApproval: true } });
+  const removed = await put({ ...base, allowedUsers: [7], allowOAuthApproval: true });
+  assert.equal(removed.json().telegramOAuthApprovalOff, undefined);
+  assert.equal(approval(), true);
+
+  // 白名单加人（设置接口、白名单接口都一样）、换 chat id：没带密码就自动关掉，结果里带提示
+  const added = await put({ ...base, allowedUsers: [7, 8], allowOAuthApproval: true });
+  assert.match(added.json().telegramOAuthApprovalOff, /自动关掉/);
+  assert.equal(approval(), false);
+  patchAppSettings({ telegram: { ...base, allowOAuthApproval: true } });
+  const viaUsers = await app.inject({ method: "POST", url: "/api/telegram/users", headers: session, payload: { userId: 9 } });
+  assert.equal(viaUsers.statusCode, 200, viaUsers.body);
+  assert.match(viaUsers.json().oauthApprovalOff, /自动关掉/);
+  assert.equal(approval(), false);
+  patchAppSettings({ telegram: { ...base, allowOAuthApproval: true } });
+  assert.match((await put({ ...base, chatId: "901", allowOAuthApproval: true })).json().telegramOAuthApprovalOff, /自动关掉/);
+  // 带了密码就照开
+  patchAppSettings({ telegram: { ...base, allowOAuthApproval: true } });
+  const moved = await put({ ...base, chatId: "901", allowOAuthApproval: true }, { currentPassword: PASSWORD });
+  assert.equal(moved.json().telegramOAuthApprovalOff, undefined);
+  assert.equal(approval(), true);
+  patchAppSettings({ telegram: { ...base, allowOAuthApproval: false } });
+});
+
 test("Telegram：通知只带「拒绝」；开关关着发配对码也不给批；开了之后发配对码才出批准按钮，按钮只对这次解锁的请求有效", async () => {
   const tg = { ...(readAppSettings().telegram ?? {}), botToken: "123:abc", chatId: "900", allowedUsers: [7] };
   patchAppSettings({ telegram: { ...tg, allowOAuthApproval: false } });
@@ -1124,6 +1168,41 @@ test("改已连接客户端的工具组：只认会话；改完 /mcp 立刻按�
 
   assert.equal((await app.inject({ method: "DELETE", url, headers: session })).statusCode, 200);
   assert.equal((await app.inject({ method: "PATCH", url, headers: session, payload: { toolsets: null } })).statusCode, 404);
+});
+
+test("改已连接客户端的档位：只要了日常的客户端批准时给不了删除档，连上之后改成完全，/mcp 立刻多出删除类工具、刷新回的 scope 跟着变；改回日常就没了", async () => {
+  const { clientId, tokens } = await fullFlow({ approveScopes: ["read", "run", "write", "danger"] });
+  assert.ok(!tokens.scope.split(" ").includes("danger"), `批准时按客户端要的收窄：${tokens.scope}`);
+  const grantId = listOAuthGrants(RESOURCE)[0].id;
+  const url = `/api/agent/oauth/grants/${grantId}`;
+  assert.ok(!toolNames((await mcp(tokens.access_token)).json).includes("strm_delete"));
+
+  assert.equal((await app.inject({ method: "PATCH", url, headers: session, payload: {} })).statusCode, 400, "档位、工具组至少给一样");
+  assert.equal((await app.inject({ method: "PATCH", url, headers: session, payload: { scopes: [] } })).statusCode, 400);
+  const byToken = await app.inject({ method: "PATCH", url, headers: { authorization: `Bearer ${tokens.access_token}` }, payload: { scopes: ["read", "run", "write", "danger"] } });
+  assert.notEqual(byToken.statusCode, 200, "令牌不能给自己提权");
+
+  const toolsetsBefore = (await oauthState()).grants[0].toolsets;
+  // 提档要当前密码：没带、带错都不改（已连接的客户端不随改密码断开，光凭会话提到删除档会比会话活得久）
+  const noPassword = await app.inject({ method: "PATCH", url, headers: session, payload: { scopes: ["run", "write", "danger"] } });
+  assert.equal(noPassword.statusCode, 400, noPassword.body);
+  const wrongPassword = await app.inject({ method: "PATCH", url, headers: session, payload: { scopes: ["run", "write", "danger"], currentPassword: "nope" } });
+  assert.equal(wrongPassword.json().code, "WRONG_PASSWORD");
+  assert.deepEqual((await oauthState()).grants[0].scopes, ["read", "run", "write"], "没改成");
+  const up = await app.inject({ method: "PATCH", url, headers: session, payload: { scopes: ["run", "write", "danger"], currentPassword: PASSWORD } });
+  assert.equal(up.statusCode, 200, up.body);
+  assert.deepEqual(up.json().scopes, ["read", "run", "write", "danger"], "查看总在");
+  assert.deepEqual(up.json().toolsets, toolsetsBefore, "只改档位，工具组不动");
+  assert.ok(toolNames((await mcp(tokens.access_token)).json).includes("strm_delete"), "改完立即生效，不用重连");
+  const refreshed = await token({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: clientId });
+  assert.equal(refreshed.statusCode, 200, refreshed.body);
+  assert.ok(refreshed.json().scope.split(" ").includes("danger"), refreshed.json().scope);
+
+  // 降档、只改工具组不用密码
+  const down = await app.inject({ method: "PATCH", url, headers: session, payload: { scopes: ["read", "run", "write"] } });
+  assert.equal(down.statusCode, 200, down.body);
+  assert.ok(!toolNames((await mcp(refreshed.json().access_token)).json).includes("strm_delete"));
+  assert.deepEqual((await oauthState()).grants[0].scopes, ["read", "run", "write"]);
 });
 
 test("断开 / 全部断开；改密码勾了撤销：手建令牌、网页客户端的授权、还没走完的授权请求一起作废", async () => {

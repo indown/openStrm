@@ -1,7 +1,8 @@
 /**
  * P3 工具的闭环：起真实端口，用官方 SDK 的客户端连 /mcp，网盘用内存假网盘，TMDB 换成桩。
  *   - 整理：预览 → 清单（要拿主意的在前）→ 改清单（编号不变、planVersion 变）→ 旧版本执行被拒 → 执行 → 撤销；
- *     删除项要 danger 档加 confirmDelete；服务重启后清单改不了但能执行；同范围预览不重做；转存带回 runId
+ *     冲突选删掉只是改清单（日常档就行），执行带删除项的清单要 danger 档加 confirmDelete，没有就交给人在整理页执行；
+ *     冲突办法只给冲突的文件；服务重启后清单改不了但能执行；同范围预览不重做；转存带回 runId
  *   - 当面确认：新协议、声明了 elicitation 的客户端弹确认框（同意 / 拒绝），老协议的照常执行
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/routes/mcp/mcp-p3.itest.ts
@@ -23,7 +24,7 @@ import { DEFAULT_AUTH } from "../../db/defaults.js";
 import { writeAuthPassword } from "../../db/repositories/auth.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { createApiToken, deleteAllApiTokens } from "../../db/repositories/api-tokens.js";
-import { __test_resetOrganize } from "../../db/repositories/organize.js";
+import { __test_resetOrganize, listItems } from "../../db/repositories/organize.js";
 import { patchAppSettings, readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { DATA_DIR } from "../../paths.js";
@@ -286,7 +287,7 @@ test("整理：预览带回清单，要拿主意的在前；改清单编号不�
   }
 });
 
-test("整理：删掉 / 覆盖要 danger 档；执行有删除项的清单要 confirmDelete", async () => {
+test("整理：日常档也能给冲突选删掉（只改清单）；执行带删除项的清单要 danger 加 confirmDelete，没有就交给人在整理页执行", async () => {
   const daily = await connect(dailyToken);
   const full = await connect(fullToken);
   try {
@@ -296,16 +297,20 @@ test("整理：删掉 / 覆盖要 danger 档；执行有删除项的清单要 co
     const files = await call(daily, "organize_detail", { run: runId, unit: beef.ref });
     const conflict = (files.data.files as Array<Record<string, any>>).find((f) => f.action === "conflict")!;
 
-    const denied = await call(daily, "organize_adjust", { run: runId, changes: [{ target: conflict.ref, resolve: "delete" }] });
-    assert.equal(denied.data.code, "INSUFFICIENT_SCOPE");
-
-    const adjusted = await call(full, "organize_adjust", { run: runId, changes: [{ target: conflict.ref, resolve: "delete" }] });
+    const adjusted = await call(daily, "organize_adjust", { run: runId, changes: [{ target: conflict.ref, resolve: "delete" }] });
     assert.equal(adjusted.isError, false, JSON.stringify(adjusted.data));
     assert.match(adjusted.data.confirmText, /会删掉 1 个文件/);
+    assert.match(adjusted.data.next, /执行不了.*整理页点执行/);
+    assert.ok(!String(adjusted.data.next).includes("organize_apply"), "没有删除档的，下一步不指向执行");
     const pv = adjusted.data.planVersion as string;
+    // 同一份清单：有删除档的看到的下一步是执行，没有的是交给人
+    assert.match((await call(full, "organize_status", { run: runId })).data.next, /organize_apply/);
+    assert.match((await call(daily, "organize_detail", { run: runId })).data.next, /整理页点执行/);
 
     const dailyApply = await call(daily, "organize_apply", { run: runId, planVersion: pv });
     assert.equal(dailyApply.data.code, "INSUFFICIENT_SCOPE");
+    assert.match(dailyApply.data.hint, /整理页里点执行.*改权限/);
+    assert.equal(dailyApply.data.openInUi, `http://nas:3000/organize?run=${runId}`);
     const noConfirm = await call(full, "organize_apply", { run: runId, planVersion: pv });
     assert.equal(noConfirm.data.code, "CONFIRM_DELETE");
     const ok = await call(full, "organize_apply", { run: runId, planVersion: pv, confirmDelete: 1 });
@@ -636,28 +641,99 @@ test("修补：界面上执行带着打开时的 planVersion，之后被智能�
   }
 });
 
-test("修补：重新勾上一个冲突选过「删掉」的单元等于重新安排删除，没有删除档的令牌不行（工具和 REST 一样）", async () => {
-  const full = await connect(fullToken);
+test("日常档选了删掉：令牌走 REST 执行要删除档，界面上执行删得掉；取消勾选会清掉选过的办法，重新勾上不会带着删除回来", async () => {
   const daily = await connect(dailyToken);
   try {
-    const { runId, beef, conflict } = await previewInbox(full);
-    assert.equal((await call(full, "organize_adjust", { run: runId, changes: [{ target: conflict.ref, resolve: "delete" }] })).isError, false);
-    const off = await call(daily, "organize_adjust", { run: runId, changes: [{ target: beef.ref, selected: false }] });
-    assert.equal(off.isError, false, "取消勾选谁都能做");
-    for (const args of [{ select: "all" }, { changes: [{ target: beef.ref, selected: true }] }]) {
+    const { runId, beef, conflict } = await previewInbox(daily);
+    assert.equal((await call(daily, "organize_adjust", { run: runId, changes: [{ target: conflict.ref, resolve: "delete" }] })).isError, false);
+
+    // 取消勾选再勾上：没撞上的办法清掉了，回来是个没选办法的冲突
+    for (const args of [{ changes: [{ target: beef.ref, selected: false }] }, { select: "all" }]) {
       const r = await call(daily, "organize_adjust", { run: runId, ...args });
-      assert.equal(r.data.code, "INSUFFICIENT_SCOPE", JSON.stringify(r.data));
+      assert.equal(r.isError, false, JSON.stringify(r.data));
     }
-    const beefKey = (await rest(session, "GET", `/api/organize/runs/${runId}`)).json().units.find((u: { rawName: string }) => u.rawName.includes("BEEF")).key;
-    const viaRest = await rest(bearer(dailyToken), "PUT", `/api/organize/runs/${runId}/units`, { keys: [beefKey], selected: true });
-    assert.equal(viaRest.statusCode, 403);
-    assert.equal(viaRest.json().required, "danger");
-    const ok = await call(full, "organize_adjust", { run: runId, select: "all" });
-    assert.equal(ok.isError, false, JSON.stringify(ok.data));
-    assert.match(ok.data.confirmText, /会删掉 1 个文件/);
+    let detail = (await rest(session, "GET", `/api/organize/runs/${runId}`)).json();
+    assert.equal(detail.run.stats.plannedDelete, 0, "重新勾上不会复活删除");
+    assert.equal(detail.run.stats.conflicts, 1);
+
+    // 再选一次删掉，走 REST 执行：令牌要删除档，界面上执行不受限
+    assert.equal((await call(daily, "organize_adjust", { run: runId, changes: [{ target: conflict.ref, resolve: "delete" }] })).isError, false);
+    detail = (await rest(session, "GET", `/api/organize/runs/${runId}`)).json();
+    assert.equal(detail.run.stats.plannedDelete, 1);
+    const tokenApply = await rest(bearer(dailyToken), "POST", `/api/organize/runs/${runId}/apply`, { planVersion: detail.planVersion });
+    assert.equal(tokenApply.statusCode, 403, tokenApply.body);
+    assert.equal(tokenApply.json().required, "danger");
+    // 挑开删除项、只执行别的：待确认的清单不许只执行几项
+    const items = listItems(runId);
+    const move = items.find((it) => it.action === "move")!;
+    const partial = await rest(bearer(dailyToken), "POST", `/api/organize/runs/${runId}/apply`, { planVersion: detail.planVersion, ids: [move.id] });
+    assert.equal(partial.statusCode, 400, partial.body);
+    assert.equal(partial.json().code, "IDS_ON_READY");
+    assert.equal((await rest(session, "POST", `/api/organize/runs/${runId}/apply`, { planVersion: detail.planVersion })).statusCode, 200);
+    await waitForRun(runId);
+    assert.equal(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv"), undefined, "人在界面上点了执行，删掉的进了回收站");
   } finally {
-    await full.close();
     await daily.close();
+  }
+});
+
+test("下一步提示看令牌的档位：只读的不指向改清单 / 执行，查看加运行的能改清单、执行交给人；全不选之后说不用执行；同一次调用里换季又选办法被拒", async () => {
+  const daily = await connect(dailyToken);
+  const read = await connect(readToken);
+  const run = await connect(runToken);
+  try {
+    const { runId, beef, conflict } = await previewInbox(daily);
+    const readNext = String((await call(read, "organize_detail", { run: runId })).data.next);
+    assert.ok(!/organize_adjust\(|organize_apply\(/.test(readNext), readNext);
+    assert.match(readNext, /整理页/);
+    const runNext = String((await call(run, "organize_detail", { run: runId })).data.next);
+    assert.match(runNext, /organize_adjust/);
+    assert.ok(!runNext.includes("organize_apply("), runNext);
+    assert.match(runNext, /整理页点执行/);
+
+    const mixed = await call(daily, "organize_adjust", { run: runId, changes: [{ target: beef.ref, season: 2 }, { target: conflict.ref, resolve: "delete" }] });
+    assert.equal(mixed.data.code, "RESOLVE_AFTER_REPLAN", JSON.stringify(mixed.data));
+
+    const none = await call(daily, "organize_adjust", { run: runId, select: "none" });
+    assert.equal(none.isError, false, JSON.stringify(none.data));
+    assert.equal(none.data.confirmText, undefined);
+    assert.match(none.data.next, /不用执行/);
+  } finally {
+    await daily.close();
+    await read.close();
+    await run.close();
+  }
+});
+
+test("冲突办法只给冲突的文件：不冲突的文件自己起名、删掉都被拒（工具和 REST 一样）；选过办法的可以改主意、撤回", async () => {
+  const client = await connect(dailyToken);
+  try {
+    const { runId, beef, conflict } = await previewInbox(client);
+    const files = await call(client, "organize_detail", { run: runId, unit: beef.ref });
+    const moving = (files.data.files as Array<Record<string, any>>).find((f) => f.action === "move" && f.ref !== conflict.ref)!;
+    for (const change of [
+      { target: moving.ref, resolve: "custom", newName: "随便起的名字" },
+      { target: moving.ref, resolve: "delete" },
+    ]) {
+      const r = await call(client, "organize_adjust", { run: runId, changes: [change] });
+      assert.equal(r.data.code, "NOT_CONFLICT", JSON.stringify(r.data));
+    }
+    const movingItem = listItems(runId).find((it) => it.action === "move" && it.kind === "video")!;
+    const viaRest = await rest(bearer(dailyToken), "PUT", `/api/organize/runs/${runId}/items`, { ids: [movingItem.id], resolve: { how: "custom", name: "随便起的名字" } });
+    assert.equal(viaRest.statusCode, 400, viaRest.body);
+    assert.equal(viaRest.json().code, "NOT_CONFLICT");
+
+    // 冲突项选了办法之后就不是 conflict 了，照样能换办法、撤回
+    for (const change of [
+      { target: conflict.ref, resolve: "rename" },
+      { target: conflict.ref, resolve: "custom", newName: "怒呛人生 - S01E01 - 另一版" },
+      { target: conflict.ref, resolve: "keep" },
+    ]) {
+      const r = await call(client, "organize_adjust", { run: runId, changes: [change] });
+      assert.equal(r.isError, false, JSON.stringify(r.data));
+    }
+  } finally {
+    await client.close();
   }
 });
 

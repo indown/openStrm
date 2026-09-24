@@ -548,8 +548,8 @@ export function RunView({
             <AlertDialogDescription>
               {confirm === "apply" &&
                 (run.status === "ready"
-                  ? `会在网盘上${plannedText(run.stats)}，本地 strm 跟着挪。Emby 会把改名后的条目当新条目，播放记录可能丢失。${run.stats.plannedDelete > 0 ? `其中 ${run.stats.plannedDelete} 个文件是你选了删除 / 覆盖的，会进网盘回收站，撤销退不回来。` : ""}${unsure > 0 ? `有 ${unsure} 部识别把握不大，建议先确认。` : ""}`
-                  : `只重试失败和没做的 ${applicable.count} 项（临时失败、风控中断、本地没跟上的），已完成的不会重做。「预览后变了」「名字不被接受」的项不在里面，在上面的面板里单独处理。`)}
+                  ? `会在网盘上${plannedText(run.stats)}，本地 strm 跟着挪。Emby 会把改名后的条目当新条目，播放记录可能丢失。${run.stats.plannedDelete > 0 ? `其中 ${run.stats.plannedDelete} 个文件是冲突选了删除 / 覆盖的，会进网盘回收站，撤销退不回来。` : ""}${unsure > 0 ? `有 ${unsure} 部识别把握不大，建议先确认。` : ""}`
+                  : `只重试失败和没做的 ${applicable.count} 项（临时失败、风控中断、本地没跟上的），已完成的不会重做。${applicable.deletes ? `其中 ${applicable.deletes} 个是删除（冲突选了删掉 / 覆盖），会在网盘上删掉，进网盘回收站，撤销退不回来。` : ""}「预览后变了」「名字不被接受」的项不在里面，在上面的面板里单独处理。`)}
               {confirm === "revert" && (reverting ? "把还没退回的项接着退回原处；已经退回的不会重做。" : "按记录把文件退回原来的位置和名字；已经被别的操作动过的项会跳过，之后可以放弃。")}
               {confirm === "delete" && "只删这条记录，网盘和本地文件都不动；删掉之后就不能撤销这次整理了。"}
             </AlertDialogDescription>

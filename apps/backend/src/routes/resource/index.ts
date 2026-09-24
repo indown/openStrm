@@ -2,11 +2,25 @@
  * 资源搜索（PanSou）：网页的一问一答、链接检测、设置页的「检查连接」。
  * 搜到的只是链接，转存 / 云下载走 /api/share 和 /api/115/offline，这里不写任何东西。
  */
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
+import { isAbortError } from "../../lib/errors.js";
+import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 import { pansouBaseUrlSchema } from "../../schemas/entities.js";
 import { checkResourceLinks, pansouStatus, searchPhase } from "../../services/pansou/search.js";
+
+/**
+ * 浏览器不等了（换了关键词、离开了页面）就掐掉还在路上的那一问。盯 reply.raw 的 close（和 lib/sse.ts 一样，
+ * POST 的请求流读完 body 就 close 了，盯它会一开始就掐）；已经回完了的那次 close 不算
+ */
+function abandonedSignal(reply: FastifyReply): AbortSignal {
+  const ac = new AbortController();
+  reply.raw.on("close", () => {
+    if (!reply.raw.writableFinished) ac.abort();
+  });
+  return ac.signal;
+}
 
 const searchSchema = z.object({
   keyword: z.string().trim().min(1, "关键词不能为空").max(100, "关键词最多 100 个字"),
@@ -36,9 +50,17 @@ export default async function (fastify: FastifyInstance) {
   fastify.post(
     "/api/resource/search",
     { preHandler: [fastify.authenticate], config: { agentScope: "read", agentToolset: "transfer" } },
-    async (request) => {
+    async (request, reply) => {
       const body = parse(searchSchema, request.body);
-      return searchPhase(body.keyword, body.phase ?? "full", { refresh: body.refresh, titleEn: body.titleEn });
+      // 只掐这一问：first 顺带发的全量预热不接这个信号，本来就是要它在后台接着跑、结果进 PanSou 的缓存
+      const signal = abandonedSignal(reply);
+      try {
+        return await searchPhase(body.keyword, body.phase ?? "full", { refresh: body.refresh, titleEn: body.titleEn, signal });
+      } catch (err) {
+        // 浏览器走了不是出错：别记成一条没料到的异常
+        if (signal.aborted && isAbortError(err)) throw new HttpError(499, "已取消", {}, { cause: err });
+        throw err;
+      }
     },
   );
 

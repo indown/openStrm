@@ -24,13 +24,15 @@ import {
   getOAuthClient,
   getOAuthRequest,
   listManualClients,
+  getOAuthGrant,
   listOAuthGrants,
-  updateOAuthGrantToolsets,
+  updateOAuthGrant,
   listPendingOAuthRequests,
   normalizePairingCode,
   toClientInfo,
 } from "../../db/repositories/oauth.js";
 import { HttpError } from "../../lib/http-error.js";
+import { moduleLogger } from "../../lib/logger.js";
 import { parse } from "../../lib/validate.js";
 import { untrustedProxySeen } from "../../plugins/public-host.js";
 import { MCP_PATH, agentEnabled } from "../../services/agent/access.js";
@@ -40,6 +42,8 @@ import { approveOAuthRequest, denyAllOAuthRequests, denyOAuthRequest, pendingReq
 import { oauthConfig, publicBaseUrl } from "../../services/oauth/config.js";
 import { redirectUriProblem } from "../../services/oauth/redirect.js";
 import { runSelfCheck } from "../../services/oauth/selfcheck.js";
+
+const log = moduleLogger("agent");
 
 // 和库里认的是同一份清单：加档位 / 工具集只改 api-tokens.ts 一处
 const scopeSchema = z.enum(AGENT_SCOPES);
@@ -70,8 +74,10 @@ function resolveToolsets(toolsets: AgentToolset[] | null | undefined): AgentTool
 
 const idParams = z.object({ id: z.string().min(1) });
 
-/** 改已连接客户端的工具组：null 是全部（存成当时的全部组） */
-const grantPatchSchema = z.object({ toolsets: z.array(toolsetSchema).min(1, "至少选一组工具，或者选「全部」").nullable() });
+/** 改已连接客户端的档位、工具组（至少给一样）：toolsets 给 null 是全部（存成当时的全部组）；提档要带当前密码 */
+const grantPatchSchema = z
+  .object({ scopes: z.array(scopeSchema).min(1, "至少选一个权限档").optional(), toolsets: toolsetsSchema, currentPassword: z.string().default("") })
+  .refine((b) => b.scopes !== undefined || b.toolsets !== undefined, { message: "scopes、toolsets 至少给一个" });
 
 const approveSchema = z.object({
   /** 授权页上显示的配对码：证明批的就是自己眼前这一条（见 services/oauth/authorize.ts 文件头） */
@@ -206,15 +212,29 @@ export default async function (fastify: FastifyInstance) {
   fastify.delete("/api/agent/oauth/grants", auth, async () => ({ deleted: deleteAllOAuthGrants() }));
 
   /**
-   * 改一个已连接客户端能用的工具组：新版本加了一组工具时，老连接照约定不会自动多出来（和令牌一样），在这里勾上。
-   * 档位不给改——那是批准时按客户端要的定下的，要换档位就断开重新授权
+   * 改一个已连接客户端的档位和工具组，改完立即生效，客户端不用重连。
+   *   - 工具组：新版本加了一组工具时，老连接照约定不会自动多出来（和令牌一样），在这里勾上；
+   *   - 档位：批准时给的不超过客户端自己要的，claude.ai、ChatGPT 只要日常三档（资源那边只报这三档），
+   *     删除与花费只能在这里给——比如要让它删东西时临时改成完全，用完改回来。
+   * 提档（多给了哪一档）要当前密码，和批准、建令牌一样：已连接的客户端不随改密码断开、刷新令牌一直能续，
+   * 光凭一个偷来的会话（它能在 Telegram 那边批出一个自己的客户端）就提到删除档，会比会话活得久。降档不用
    */
-  fastify.patch("/api/agent/oauth/grants/:id", auth, async (request) => {
+  fastify.patch("/api/agent/oauth/grants/:id", auth, async (request, reply) => {
     const { id } = parse(idParams, request.params, "params");
     const body = parse(grantPatchSchema, request.body);
-    const toolsets = resolveToolsets(body.toolsets);
-    if (!updateOAuthGrantToolsets(id, toolsets)) throw new HttpError(404, "这个客户端已经断开了");
-    return { success: true, toolsets };
+    const before = getOAuthGrant(id);
+    if (!before) throw new HttpError(404, "这个客户端已经断开了");
+    const scopes = body.scopes !== undefined ? normalizeScopes(body.scopes) : undefined;
+    if (scopes?.some((s) => !before.scopes.includes(s))) await assertCurrentPassword(request, reply, body.currentPassword);
+    const grant = updateOAuthGrant(id, {
+      ...(scopes !== undefined ? { scopes } : {}),
+      ...(body.toolsets !== undefined ? { toolsets: resolveToolsets(body.toolsets) } : {}),
+    });
+    if (!grant) throw new HttpError(404, "这个客户端已经断开了");
+    if (grant.scopes.join(" ") !== before.scopes.join(" ")) {
+      log.info({ grantId: id, client: grant.clientName, from: before.scopes, to: grant.scopes }, "改了已连接客户端的档位");
+    }
+    return { success: true, scopes: grant.scopes, toolsets: grant.toolsets };
   });
 
   /** 预注册客户端：给不会动态注册、又不能配请求头的客户端用；secret 只在这里给一次 */

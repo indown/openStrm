@@ -156,6 +156,19 @@ test("冲突选「自己改名」：目录不变、名字按填的来；没写�
   const v = items.find((i) => i.kind === "video")!;
   assert.equal(v.action, "move");
   assert.equal(v.dstPath, "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01 - 4K版.mkv");
+  assert.equal(v.resolved, true);
+});
+
+test("「自己改名」只在真撞上时用：没冲突的文件记着也按模板的名字走，办法标成没用上", () => {
+  const es = entries(["inbox/BEEF.S01E01.2160p.WEB-DL.mkv", "inbox/BEEF.S01E01.2160p.WEB-DL.chs.srt"]);
+  const [unit] = buildUnits(es, { scopePath: "", taskRootName: "root", videoExts, rules: [] });
+  const resolutions = new Map([["inbox/BEEF.S01E01.2160p.WEB-DL.mkv", { how: "custom" as const, name: "随便起的名字" }]]);
+  const p = planUnit({ unit, match: beef, seasonOverride: null, episodeOffset: 0, selected: true, resolutions }, { settings });
+  const items = finalizeItems([p], { entries: es, scopePath: "", items: p.items, cleanupEmptyDirs: true });
+  const v = items.find((i) => i.kind === "video")!;
+  assert.equal(v.dstPath, "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv");
+  assert.equal(v.resolved, undefined);
+  assert.equal(items.find((i) => i.kind === "subtitle")!.dstPath, "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.zh-CN.srt");
 });
 
 test("冲突选「挪进重复文件目录」：原来的目录层级留着，字幕跟着；源目录腾空了照样删", () => {

@@ -26,6 +26,7 @@ import { api, type HdhiveResourceItem, type HdhiveTmdbItem } from "@/lib/api";
 import { useShareDetail } from "@/hooks/use-share-detail";
 import { inputKindOf, unsupportedInputMessage } from "@/lib/share";
 import { offlineHandoffHref } from "@/lib/offline";
+import { requestResourceSearch, searchHref } from "@/lib/resource";
 import { FEATURES } from "@/lib/features";
 import { PageCrumbs } from "@/components/page-crumbs";
 import { useModKey } from "@/hooks/use-mod-key";
@@ -182,6 +183,9 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     }
   };
 
+  // 资源搜索页自己有一个大搜索框，顶栏再摆一个就重复了
+  const onSearchPage = pathname === "/search" || pathname.startsWith("/search/");
+
   /**
    * 顶栏输入框和 ⌘K 里打的字，按是什么分开走：认得的分享链接打开转存框（和以前一样）；磁力、电驴、下载链接去云下载页、
    * 添加框预填好；认不出的链接当场说一声（不拿网址去搜）；别的文字当片名，去资源搜索页搜。
@@ -198,7 +202,14 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       return;
     }
     share.setLink("");
-    router.push(kind === "offline" ? offlineHandoffHref(text) : `/search?${new URLSearchParams({ q: text })}`);
+    if (kind === "offline") {
+      router.push(offlineHandoffHref(text));
+      return;
+    }
+    // 本来就在资源搜索页（⌘K）：交给页面，和在它自己的框里按回车一样——同一个词要重搜，
+    // 换地址做不到（地址没变），还会把选着的 TMDB 候选、外文原名丢掉。页面还没加载出来才换地址
+    if (onSearchPage && requestResourceSearch(text)) return;
+    router.push(searchHref(text));
   };
   const inputKind = inputKindOf(share.link);
   const submitLabel = share.loading ? "加载中..." : inputKind === "offline" ? "云下载" : inputKind === "search" ? "搜索" : "查看";
@@ -214,8 +225,6 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     if (inputKindOf(text) !== "unsupported") setShareBoxOpen(false);
     routeInput(text);
   };
-  // 资源搜索页自己有一个大搜索框，顶栏再摆一个就重复了
-  const onSearchPage = pathname === "/search" || pathname.startsWith("/search/");
 
   const handle115UnlockedFromHdhive = (fullUrl: string) => {
     const url = (fullUrl || "").trim();

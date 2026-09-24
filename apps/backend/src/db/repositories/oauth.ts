@@ -678,11 +678,16 @@ const TOUCH_INTERVAL_S = 60;
 const lastTouch = new Map<string, { at: number; ip: string | null }>();
 
 /**
- * 改一个已连接客户端能用的工具组（设置页）。令牌每次都现读授权记录，改完立即生效。
- * 新版本加了新的一组时，老连接照约定不会自动多出来，得在这里勾上
+ * 改一个已连接客户端的档位 / 工具组（设置页）。令牌每次都现读授权记录，改完立即生效，刷新时回的 scope 也跟着变。
+ * 新版本加了新的一组时，老连接照约定不会自动多出来，得在这里勾上；档位可以超过它当初要的（管理员明着给的）
  */
-export function updateOAuthGrantToolsets(id: string, toolsets: AgentToolset[]): boolean {
-  return db.update(oauthGrants).set({ toolsets: JSON.stringify(toolsets) }).where(eq(oauthGrants.id, id)).run().changes > 0;
+export function updateOAuthGrant(id: string, patch: { scopes?: AgentScope[]; toolsets?: AgentToolset[] }): OAuthGrantRecord | undefined {
+  const set = {
+    ...(patch.scopes ? { scopes: JSON.stringify(patch.scopes) } : {}),
+    ...(patch.toolsets ? { toolsets: JSON.stringify(patch.toolsets) } : {}),
+  };
+  if (Object.keys(set).length > 0) db.update(oauthGrants).set(set).where(eq(oauthGrants.id, id)).run();
+  return getOAuthGrant(id);
 }
 
 export function deleteOAuthGrant(id: string): boolean {

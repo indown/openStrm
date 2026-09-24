@@ -38,6 +38,8 @@ export function toFailure(err: unknown): ToolFailure {
     return { error: `分享不可用：${cause.message}`, code: "SHARE_GONE", hint: "分享已失效、被取消或提取码不对，换一个链接。" };
   }
   const code = typeof http.extra.code === "string" ? http.extra.code : `HTTP_${http.status}`;
+  // 分享接口一时回不了话（太频繁、繁忙）：分享多半还在，别当成失效换链接，也别马上连着重试
+  if (code === "SHARE_BUSY") return { error: http.message, code, hint: "网盘那边说太频繁或者正忙，分享多半还在：过几分钟再试，别连着重试，也别因此换链接。" };
   const account = cause === undefined ? undefined : accountHint(accountIssueOf(undefined, cause));
   // 转存成功、后面生成 strm 失败：最要紧的是别再转存一遍
   const received = http.extra.received === true;

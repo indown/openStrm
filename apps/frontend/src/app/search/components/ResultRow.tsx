@@ -38,7 +38,7 @@ interface ResultRowProps {
   state?: LinkCheckState;
   /** 这一条要不要查有效性（115 / 夸克的分享，且设置里开着） */
   checkable: boolean;
-  observe: (key: string, url: string, el: Element | null) => void;
+  observe: (hit: Pick<ResourceHit, "key" | "url" | "password">, el: Element | null) => void;
   /** 能云下载的 115 账号；多个时「云下载」先选账号 */
   offlineAccounts: string[];
   /** 这一条的分享正在打开 */
@@ -73,6 +73,12 @@ async function copyText(text: string, what: string) {
   else toast.error("复制失败");
 }
 
+/**
+ * 从下拉菜单里打开弹框要等菜单先关掉：菜单和弹框用的是两份 Radix 遮罩层代码，菜单还没关时打开弹框，
+ * 弹框会把菜单给 body 加的 pointer-events: none 当成原样记下、关框时写回去，整页就再也点不动了
+ */
+const afterMenuClosed = (fn: () => void) => setTimeout(fn, 0);
+
 const NO_ACCOUNT: Record<string, string> = {
   "115": "还没有 115 账号：到「账户」页添加一个才能转存",
   quark: "还没有夸克账号：到「账户」页添加一个才能转存",
@@ -100,11 +106,12 @@ export const ResultRow = memo(function ResultRow({
   onShare,
   onOffline,
 }: ResultRowProps) {
+  // 跟着提取码走：后面几轮给这个分享补上了提取码，要按新的重新查
   const ref = useCallback(
     (el: HTMLDivElement | null) => {
-      if (checkable) observe(hit.key, hit.url, el);
+      if (checkable) observe({ key: hit.key, url: hit.url, password: hit.password }, el);
     },
-    [checkable, observe, hit.key, hit.url],
+    [checkable, observe, hit.key, hit.url, hit.password],
   );
   const dead = state === "bad";
   const isShare = hit.kind === "115" || hit.kind === "quark";
@@ -147,7 +154,7 @@ export const ResultRow = memo(function ResultRow({
         <DropdownMenuContent align="end">
           <DropdownMenuLabel className="text-xs text-muted-foreground">用哪个 115 账号</DropdownMenuLabel>
           {offlineAccounts.map((name) => (
-            <DropdownMenuItem key={name} onSelect={() => onOffline(hit, name)}>
+            <DropdownMenuItem key={name} onSelect={() => afterMenuClosed(() => onOffline(hit, name))}>
               {name}
             </DropdownMenuItem>
           ))}

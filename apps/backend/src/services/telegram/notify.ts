@@ -12,7 +12,7 @@ import { readAppSettings } from "../../db/repositories/settings.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { createTelegramBot, type InlineKeyboard } from "./bot.js";
 import { oauthNotifyBucket } from "../agent/rate-limit.js";
-import { esc, fmtDuration, taskLabel, type TaskRef } from "./format.js";
+import { cutText, esc, fmtDuration, taskLabel, type TaskRef } from "./format.js";
 import { FAILURE_LABEL } from "../organize/failure-kinds.js";
 
 const log = moduleLogger("telegram");
@@ -149,7 +149,7 @@ function accountAlertText(account: string, issue: AccountIssue, source: string, 
     issue === "cookie"
       ? `⚠️ <b>网盘账号需要处理</b>\n账号 <b>${esc(account)}</b> 的 cookie 已失效，同步和监控都会失败，请到「账户」页更新。`
       : `⚠️ <b>网盘账号被封控</b>\n账号 <b>${esc(account)}</b> 的访问被阻断，请稍后再试或检查账号状态。`;
-  return `${head}\n来源：${esc(source)}\n<code>${esc(reason.slice(0, 200))}</code>`;
+  return `${head}\n来源：${esc(source)}\n<code>${esc(cutText(reason, 200))}</code>`;
 }
 
 /** 连号折叠：5,6,7,9 → E05-E07、E09 */

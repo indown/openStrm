@@ -35,7 +35,6 @@ import {
   planFingerprint,
   readyRunsWithin,
   revertRun,
-  unitsReviveDeletes,
   runDone,
   runProgress,
   searchCandidates,
@@ -128,27 +127,63 @@ function itemsByUnit(items: OrganizeItem[]): Map<string, OrganizeItem[]> {
   return out;
 }
 
-/** 下一步该做什么：按状态说，工具名和参数写全，模型照着调就行 */
-function nextFor(run: OrganizeRun, s: ReturnType<typeof getRunSummary>, planVersion?: string): string {
+/**
+ * 令牌在整理上能做到哪一步：改清单、重新预览要「运行」档，执行 / 撤销 / 重试 / 放弃要「改网盘」档，执行带删除项的另要「删除与花费」档。
+ * 下一步的提示按它说：令牌看不到的工具（toolsFor 按档位注册）不能指给它，交给人在整理页做
+ */
+interface Caps {
+  adjust: boolean;
+  apply: boolean;
+  delete: boolean;
+}
+const capsOf = (ctx: Pick<ToolContext, "token">): Caps => ({
+  adjust: ctx.token.scopes.includes("run"),
+  apply: ctx.token.scopes.includes("write"),
+  delete: ctx.token.scopes.includes("danger"),
+});
+
+/** 执行不了（没有「改网盘」档，或者清单里有删除项、没有「删除与花费」档）：交给人在整理页点（界面执行有确认框，写明删几个、撤销退不回来） */
+function handOff(caps: Caps, deletes: number): string {
+  const why = !caps.apply ? "这个令牌没有「改网盘」档、执行不了" : `清单里有 ${deletes} 个删除项，这个令牌没有「删除与花费」档、执行不了`;
+  return `${why}：把 confirmText 原样告诉用户，请用户在 OpenStrm 的整理页点执行（openInUi 是链接）`;
+}
+const needsHandOff = (caps: Caps, run: OrganizeRun) => !caps.apply || (run.stats.plannedDelete > 0 && !caps.delete);
+const IN_UI = "请用户在 OpenStrm 的整理页里处理（openInUi 是链接）";
+
+/** 下一步该做什么：按状态和令牌的档位说，工具名和参数写全，模型照着调就行 */
+function nextFor(run: OrganizeRun, s: ReturnType<typeof getRunSummary>, caps: Caps, planVersion?: string): string {
   const id = run.id;
   if (BUSY.has(run.status)) return `用 organize_status(run: "${id}", waitSeconds: ${MAX_WAIT_SECONDS}) 接着等`;
   if (run.status === "ready") {
     if (run.stats.planned === 0) return "没有要动的，不用执行。";
-    const edit = s.editable
-      ? "要改就用 organize_adjust"
-      : "服务重启过，这份清单改不了：不改可以直接执行，要改就用 organize_preview(again) 重新预览";
-    return `用 organize_detail(run: "${id}") 看要拿主意的单元，${edit}；把 confirmText 原样告诉用户，同意后调 organize_apply(run: "${id}", planVersion: "${planVersion}")`;
+    const edit = !caps.adjust
+      ? "这个令牌不能改清单（没有「运行」档），要改请用户在整理页里改"
+      : s.editable
+        ? "要改就用 organize_adjust"
+        : "服务重启过，这份清单改不了：不改可以直接执行，要改就用 organize_preview(again) 重新预览";
+    const go = needsHandOff(caps, run)
+      ? handOff(caps, run.stats.plannedDelete)
+      : `把 confirmText 原样告诉用户，同意后调 organize_apply(run: "${id}", planVersion: "${planVersion}")`;
+    return `用 organize_detail(run: "${id}") 看要拿主意的单元，${edit}；${go}`;
   }
   if (run.stage === "revert") {
-    return s.revertable.ok ? `撤销停在一半：用 organize_revert(run: "${id}") 继续，退不回来的可以用 organize_skip 放弃` : "撤销做完了。";
+    if (!s.revertable.ok) return "撤销做完了。";
+    return caps.apply ? `撤销停在一半：用 organize_revert(run: "${id}") 继续，退不回来的可以用 organize_skip 放弃` : `撤销停在一半：这个令牌不能接着撤销，${IN_UI}`;
   }
-  if (s.groups.length > 0) return "有没做成的项：按 failures 里每组的 hint 处理（重试用 organize_apply，放弃用 organize_skip，先告诉用户）。";
-  if (!s.executed) return `这次预览没执行过：要整理就用 organize_preview(again: "${id}") 重新预览`;
-  return s.revertable.ok ? `做完了；要撤销用 organize_revert(run: "${id}")（先征得用户同意）` : "做完了。";
+  if (s.groups.length > 0) {
+    return caps.apply
+      ? "有没做成的项：按 failures 里每组的 hint 处理（重试用 organize_apply，放弃用 organize_skip，先告诉用户）。"
+      : `有没做成的项：这个令牌不能重试或放弃，${IN_UI}`;
+  }
+  if (!s.executed) {
+    return caps.adjust ? `这次预览没执行过：要整理就用 organize_preview(again: "${id}") 重新预览` : `这次预览没执行过：要整理${IN_UI.replace("处理", "重新预览")}`;
+  }
+  if (!s.revertable.ok) return "做完了。";
+  return caps.apply ? `做完了；要撤销用 organize_revert(run: "${id}")（先征得用户同意）` : "做完了；要撤销请用户在 OpenStrm 的整理页里撤销。";
 }
 
 /** 一次整理的状态：给 organize_status 和发起类工具共用 */
-function statusView(runId: string): Record<string, unknown> {
+function statusView(runId: string, caps: Caps): Record<string, unknown> {
   const s = getRunSummary(runId);
   const run = s.run;
   const task = taskOf(run);
@@ -175,7 +210,7 @@ function statusView(runId: string): Record<string, unknown> {
       notReverted: run.stage === "revert" ? st.notReverted : 0,
     }).filter(([, v]) => v > 0),
   );
-  const failures = failureViews(s.groups, run.stage, items, refs, task);
+  const failures = failureViews(s.groups, run.stage, items, refs, task, caps.apply);
   return {
     run: runBrief(run, task),
     ...(BUSY.has(run.status) && run.progress ? { progress: run.progress } : {}),
@@ -190,7 +225,7 @@ function statusView(runId: string): Record<string, unknown> {
     ...(failures.length ? { failures } : {}),
     ...(run.error ? { error: run.error } : {}),
     ...(run.status === "failed" || run.status === "cancelled" ? { log: run.log.slice(-5) } : {}),
-    next: nextFor(run, s, planVersion),
+    next: nextFor(run, s, caps, planVersion),
     ...openInUi(uiPath(runId)),
   };
 }
@@ -198,7 +233,7 @@ function statusView(runId: string): Record<string, unknown> {
 type DetailShow = "attention" | "all" | "conflicts" | "unsure" | "failed";
 
 /** 清单：要拿主意的单元（完整的样子）排前面，别的折成一行；或者按 show 过滤 */
-function detailView(runId: string, show: DetailShow, offset: number, pageSize = UNITS_PAGE): Record<string, unknown> {
+function detailView(runId: string, show: DetailShow, offset: number, caps: Caps, pageSize = UNITS_PAGE): Record<string, unknown> {
   const d = getRunDetail(runId);
   const run = d.run;
   const task = taskOf(run);
@@ -233,13 +268,13 @@ function detailView(runId: string, show: DetailShow, offset: number, pageSize = 
     total: list.length,
     ...(next ? { nextCursor: next } : {}),
     ...(ready && run.stats.planned > 0 ? { confirmText: confirmTextOf(run, d.units, task, d.outdated) } : {}),
-    next: nextFor(run, d, planVersion),
+    next: nextFor(run, d, caps, planVersion),
     ...openInUi(uiPath(runId)),
   };
 }
 
 /** 一个单元的文件：没做成的、冲突、删除、要动的在前，要看一眼的跳过和取消勾选的在后，不变的只给个数 */
-function unitFilesView(runId: string, ref: string, offset: number): Record<string, unknown> {
+function unitFilesView(runId: string, ref: string, offset: number, caps: Caps): Record<string, unknown> {
   const d = getRunDetail(runId);
   const run = d.run;
   const task = taskOf(run);
@@ -280,8 +315,10 @@ function unitFilesView(runId: string, ref: string, offset: number): Record<strin
     total: listed.length,
     ...(next ? { nextCursor: next } : {}),
     next: ready
-      ? `改这个单元或它的文件用 organize_adjust（changes 里 target 填单元编号 ${refs.unitRef(u.key)} 或文件编号）`
-      : nextFor(run, d),
+      ? caps.adjust
+        ? `改这个单元或它的文件用 organize_adjust（changes 里 target 填单元编号 ${refs.unitRef(u.key)} 或文件编号）`
+        : "这个令牌不能改清单（没有「运行」档），要改请用户在整理页里改"
+      : nextFor(run, d, caps),
     ...openInUi(uiPath(runId)),
   };
 }
@@ -348,7 +385,7 @@ export const organizeStatusTool = defineTool({
   async run(args, ctx) {
     const run = resolveRun(args);
     await waitRun(run.id, (args.waitSeconds ?? 0) * 1000, ctx);
-    return statusView(run.id);
+    return statusView(run.id, capsOf(ctx));
   },
 });
 
@@ -366,11 +403,11 @@ export const organizeDetailTool = defineTool({
     show: z.enum(["attention", "all", "conflicts", "unsure", "failed"]).optional().describe("attention（默认）要拿主意的在前；conflicts / unsure / failed 只看这一类；all 全部"),
     cursor: z.string().max(20).optional().describe("上一页结果里的 nextCursor"),
   }),
-  async run(args) {
+  async run(args, ctx) {
     const run = resolveRun(args);
     const offset = offsetOf(args.cursor);
-    if (args.unit?.trim()) return unitFilesView(run.id, args.unit.trim(), offset);
-    return detailView(run.id, args.show ?? "attention", offset);
+    if (args.unit?.trim()) return unitFilesView(run.id, args.unit.trim(), offset, capsOf(ctx));
+    return detailView(run.id, args.show ?? "attention", offset, capsOf(ctx));
   },
 });
 
@@ -460,7 +497,7 @@ export const organizePreviewTool = defineTool({
 
     const busy = listRunsByStatus(["planning", "applying", "reverting"]).find((r) => r.taskId === task.id);
     if (busy) {
-      return { busy: true, message: "这个任务上已经有一次整理在进行，等它结束再预览。", ...statusView(busy.id) };
+      return { busy: true, message: "这个任务上已经有一次整理在进行，等它结束再预览。", ...statusView(busy.id, capsOf(ctx)) };
     }
     const existing = readyRunsWithin(task.id, { subPath, paths });
     if (existing.length > 0) {
@@ -493,8 +530,8 @@ export const organizePreviewTool = defineTool({
         ...openInUi(uiPath(run.id)),
       };
     }
-    if (now.status === "ready") return { state: "ready", runId: run.id, ...detailView(run.id, "attention", 0) };
-    return { state: now.status, runId: run.id, ...statusView(run.id) };
+    if (now.status === "ready") return { state: "ready", runId: run.id, ...detailView(run.id, "attention", 0, capsOf(ctx)) };
+    return { state: now.status, runId: run.id, ...statusView(run.id, capsOf(ctx)) };
   },
 });
 
@@ -512,7 +549,7 @@ const changeSchema = z
     resolve: z
       .enum(["rename", "custom", "duplicate", "delete", "replace", "keep"])
       .optional()
-      .describe("文件（冲突项）：rename 改名保留、custom 自己起名（要给 newName）、duplicate 挪进重复文件目录、delete 删掉这一份、replace 覆盖目标那份、keep 撤回选过的办法（留在原处）。delete / replace 要「删除与花费」档"),
+      .describe("文件（冲突项）：rename 改名保留、custom 自己起名（要给 newName）、duplicate 挪进重复文件目录、delete 删掉这一份、replace 覆盖目标那份、keep 撤回选过的办法（留在原处）。只能给现在是冲突、或者已经选过办法的文件。选了 delete / replace 的清单，执行时要「删除与花费」档"),
     newName: z.string().max(200).optional().describe("resolve 是 custom 时的目标文件名，不带目录；没写扩展名就沿用原来的"),
   })
   .strict();
@@ -520,7 +557,7 @@ const changeSchema = z
 export const organizeAdjustTool = defineTool({
   name: "organize_adjust",
   title: "改整理清单",
-  description: `改一份待确认的整理清单，只改清单、不动网盘，一次可以改多处（只重新规划一次）：select 批量勾选单元（all 全选 / none 全不选 / confident 只选把握大的）；conflicts 把还没选办法的冲突统一改名保留（rename）或挪进重复文件目录（duplicate）；changes 逐条改单元（换匹配、季、集偏移、勾选、记住）或文件（勾选、冲突办法）。先做 select，再做 conflicts，最后按顺序做 changes；有一条不合法整批都不改。重新规划是整体的，改一处可能挤出别处的新冲突，结果里的 newConflicts 会列出来。返回新的 planVersion 和 confirmText：把改了什么、为什么和 confirmText 告诉用户，同意后再调 organize_apply。`,
+  description: `改一份待确认的整理清单，只改清单、不动网盘，一次可以改多处（只重新规划一次）：select 批量勾选单元（all 全选 / none 全不选 / confident 只选把握大的）；conflicts 把还没选办法的冲突统一改名保留（rename）或挪进重复文件目录（duplicate）；changes 逐条改单元（换匹配、季、集偏移、勾选、记住）或文件（勾选、冲突办法）。先做 select，再做 conflicts，最后按顺序做 changes；有一条不合法整批都不改。重新规划是整体的，改一处可能挤出别处的新冲突，结果里的 newConflicts 会列出来。冲突办法只能给冲突的文件，也只在真撞上时起作用；文件的去处由匹配、季、集偏移和命名模板决定。换了匹配 / 季 / 集偏移的单元，它原来选的冲突办法会清掉，同一次调用里也不能再给它选（等重新规划后看新的冲突）。选「删掉 / 覆盖」也只是写进清单：执行带删除项的清单要「删除与花费」档，没有这一档就把 confirmText 给用户看、请用户在 OpenStrm 的整理页点执行。返回新的 planVersion 和 confirmText：把改了什么、为什么和 confirmText 告诉用户，同意后再调 organize_apply。`,
   scope: "run",
   toolset: "organize",
   annotations: { readOnly: false, destructive: false, idempotent: true, openWorld: true },
@@ -548,18 +585,13 @@ export const organizeAdjustTool = defineTool({
     const itemsBefore = listItems(run.id);
     const refs = buildRefs(unitsBefore, itemsBefore);
     const unitRows = new Map(unitsBefore.map((u) => [u.key, u]));
-    const patch = toPlanPatch(args, refs, unitRows, ctx);
-    if (patch.units?.some((u) => u.match)) requireTmdb();
-    // 重新勾上一个选过「删掉 / 覆盖」的单元，等于重新安排了删除：和直接选删掉一样要删除档
-    if (!ctx.token.scopes.includes("danger") && unitsReviveDeletes(run.id, unitsSelectedBy(patch, unitsBefore))) {
-      throw new ToolError(
-        "INSUFFICIENT_SCOPE",
-        "要勾上的单元里有冲突选过「删掉 / 覆盖」的，勾上就会删文件，要「删除与花费」档，这个令牌没有",
-        "别勾这些单元，或者先把那个冲突的办法改成 rename / duplicate；也可以请用户在 OpenStrm 的整理页里处理。",
-      );
-    }
     const fileKey = (it: Pick<OrganizeItem, "unitKey" | "srcPath">) => JSON.stringify([it.unitKey, it.srcPath]);
     const conflictsBefore = new Set(itemsBefore.filter((it) => it.action === "conflict").map(fileKey));
+    // 和 patchPlan 同一条规则，先查一遍好按编号报错：现在是冲突，或者已经选过办法（改主意）
+    const canResolve = (unitKey: string, srcPath: string) =>
+      conflictsBefore.has(fileKey({ unitKey, srcPath })) || unitRows.get(unitKey)?.resolutions?.[srcPath] !== undefined;
+    const patch = toPlanPatch(args, refs, unitRows, canResolve);
+    if (patch.units?.some((u) => u.match)) requireTmdb();
 
     let changed: string[];
     try {
@@ -597,7 +629,11 @@ export const organizeAdjustTool = defineTool({
       next:
         changed.length === 0
           ? "清单没有变化。"
-          : `把改了什么、为什么和 confirmText 告诉用户；同意后调 organize_apply(run: "${run.id}", planVersion: "${planVersion}")`,
+          : d.run.stats.planned === 0
+            ? "改完清单里没有要动的了，不用执行。"
+            : needsHandOff(capsOf(ctx), d.run)
+              ? `把改了什么、为什么告诉用户；${handOff(capsOf(ctx), d.run.stats.plannedDelete)}`
+              : `把改了什么、为什么和 confirmText 告诉用户；同意后调 organize_apply(run: "${run.id}", planVersion: "${planVersion}")`,
       ...openInUi(uiPath(run.id)),
     };
   },
@@ -605,8 +641,11 @@ export const organizeAdjustTool = defineTool({
 
 type AdjustArgs = { select?: PlanPatch["select"]; conflicts?: PlanPatch["conflicts"]; changes?: Array<z.output<typeof changeSchema>> };
 
-/** 模型给的修改 → 服务层的 PlanPatch：编号翻成单元 key / 网盘路径，字段和目标对不上、档位不够的整批拒掉 */
-function toPlanPatch(args: AdjustArgs, refs: RunRefs, rows: Map<string, OrganizeUnit>, ctx: ToolContext): PlanPatch {
+/**
+ * 模型给的修改 → 服务层的 PlanPatch：编号翻成单元 key / 网盘路径，字段和目标对不上的整批拒掉。
+ * canResolve：这个文件能不能选冲突办法（现在是冲突，或者已经选过）
+ */
+function toPlanPatch(args: AdjustArgs, refs: RunRefs, rows: Map<string, OrganizeUnit>, canResolve: (unitKey: string, srcPath: string) => boolean): PlanPatch {
   const units: NonNullable<PlanPatch["units"]> = [];
   const files: NonNullable<PlanPatch["files"]> = [];
   const UNIT_FIELDS = ["tmdbId", "mediaType", "season", "episodeOffset", "remember"] as const;
@@ -643,8 +682,12 @@ function toPlanPatch(args: AdjustArgs, refs: RunRefs, rows: Map<string, Organize
       if (!name) throw new ToolError("VALIDATION", `${at}：自己起名要给 newName`);
       if (name.includes("/")) throw new ToolError("VALIDATION", `${at}：newName 不能带目录`);
     }
-    if ((c.resolve === "delete" || c.resolve === "replace") && !ctx.token.scopes.includes("danger")) {
-      throw new ToolError("INSUFFICIENT_SCOPE", `${at}：删掉 / 覆盖要「删除与花费」档，这个令牌没有`, "换成 rename 或 duplicate，或者请用户在 OpenStrm 的整理页里选。");
+    if (c.resolve !== undefined && c.resolve !== "keep" && !canResolve(file.unitKey, file.srcPath)) {
+      throw new ToolError(
+        "NOT_CONFLICT",
+        `${at}：这个文件不是冲突，不能选办法`,
+        "冲突办法只给 organize_detail 里 action 是 conflict 的文件（选过办法的可以改）；留在原处的先用 selected: true 勾回来，还冲突再选。文件的去处由匹配、季、集偏移和命名模板决定。",
+      );
     }
     if (c.resolve === undefined && c.selected === undefined) throw new ToolError("VALIDATION", `${at}：文件要给 selected 或 resolve`);
     files.push({
@@ -655,18 +698,6 @@ function toPlanPatch(args: AdjustArgs, refs: RunRefs, rows: Map<string, Organize
     });
   });
   return { ...(args.select ? { select: args.select } : {}), ...(args.conflicts ? { conflicts: args.conflicts } : {}), units, files };
-}
-
-/** 这次修改会把哪些单元勾上：批量勾选、点名勾选、换了匹配（换匹配会顺带勾上，除非同一条里说了不勾） */
-function unitsSelectedBy(patch: PlanPatch, units: OrganizeUnit[]): string[] {
-  const keys = new Set<string>();
-  if (patch.select === "all") for (const u of units) if (u.match) keys.add(u.key);
-  if (patch.select === "confident") for (const u of units) if (u.match?.confidence === "high") keys.add(u.key);
-  for (const u of patch.units ?? []) {
-    if (u.selected === true || (u.match && u.selected !== false)) keys.add(u.key);
-    if (u.selected === false) keys.delete(u.key);
-  }
-  return [...keys];
 }
 
 export const organizeCancelTool = defineTool({
@@ -684,7 +715,7 @@ export const organizeCancelTool = defineTool({
   async run(args, ctx) {
     const run = resolveRun({ run: args.run });
     if (!BUSY.has(run.status) && run.status !== "ready") {
-      return { message: "这次整理不在进行中，也不是待确认的清单，没什么可停的。", ...statusView(run.id) };
+      return { message: "这次整理不在进行中，也不是待确认的清单，没什么可停的。", ...statusView(run.id, capsOf(ctx)) };
     }
     const wasReady = run.status === "ready";
     if (wasReady) {
@@ -698,7 +729,7 @@ export const organizeCancelTool = defineTool({
     }
     cancelRun(run.id);
     await waitRun(run.id, 10_000, ctx);
-    return { message: wasReady ? "已作废这份清单。" : "已经让它停下。", ...statusView(run.id) };
+    return { message: wasReady ? "已作废这份清单。" : "已经让它停下。", ...statusView(run.id, capsOf(ctx)) };
   },
 });
 
@@ -721,14 +752,19 @@ function itemIdsOf(runId: string, fileRefs: string[]): string[] {
 }
 
 function requireDanger(ctx: ToolContext, what: string, runId: string): void {
-  if (ctx.token.scopes.includes("danger")) return;
-  throw new ToolError("INSUFFICIENT_SCOPE", `${what}，要「删除与花费」档，这个令牌没有`, "请用户在 OpenStrm 的整理页里执行（openInUi 是链接），或者给令牌加上这一档。", openInUi(uiPath(runId)));
+  if (capsOf(ctx).delete) return;
+  throw new ToolError(
+    "INSUFFICIENT_SCOPE",
+    `${what}，要「删除与花费」档，这个令牌没有`,
+    "请用户在 OpenStrm 的整理页里点执行（openInUi 是链接）；要让智能体自己执行，得请用户在 OpenStrm 设置页把这个令牌改成「完全」（网页客户端在「已连接的客户端」里点「改权限」）。",
+    openInUi(uiPath(runId)),
+  );
 }
 
 export const organizeApplyTool = defineTool({
   name: "organize_apply",
   title: "执行整理",
-  description: `按清单在网盘上改名、挪动，本地 strm 跟着走。**这会改网盘：调用前先把 confirmText 原样告诉用户，得到同意再调用。** 待确认的清单必须带 planVersion（organize_status / organize_detail / organize_adjust 给的）：清单在那之后变过就会被拒，要重新给用户看。清单里有删除项（冲突选了删掉 / 覆盖）时要「删除与花费」档，还要把 confirmDelete 填成删除项的个数。执行过的整理要重试没做成的项，传 retry: true（临时失败、没做完的默认重试），stale / rejected 的要在 retryFiles 里点名；不传就只回当前状态、什么都不做。${INLINE_WAIT_MS / 1000} 秒内做完就直接返回结果，做不完用 organize_status 等。做完的能用 organize_revert 撤销（删掉的除外）。`,
+  description: `按清单在网盘上改名、挪动，本地 strm 跟着走。**这会改网盘：调用前先把 confirmText 原样告诉用户，得到同意再调用。** 待确认的清单必须带 planVersion（organize_status / organize_detail / organize_adjust 给的）：清单在那之后变过就会被拒，要重新给用户看。清单里有删除项（冲突选了删掉 / 覆盖）时要「删除与花费」档，还要把 confirmDelete 填成删除项的个数；没有这一档就请用户在 OpenStrm 的整理页点执行。执行过的整理要重试没做成的项，传 retry: true（临时失败、没做完的默认重试），stale / rejected 的要在 retryFiles 里点名；不传就只回当前状态、什么都不做。${INLINE_WAIT_MS / 1000} 秒内做完就直接返回结果，做不完用 organize_status 等。做完的能用 organize_revert 撤销（删掉的除外）。`,
   scope: "write",
   toolset: "organize",
   annotations: { readOnly: false, destructive: true, idempotent: false, openWorld: true },
@@ -742,7 +778,7 @@ export const organizeApplyTool = defineTool({
   async run(args, ctx) {
     const run = resolveRun({ run: args.run });
     const task = taskOf(run);
-    if (run.status === "applying") return { alreadyRunning: true, ...statusView(run.id) };
+    if (run.status === "applying") return { alreadyRunning: true, ...statusView(run.id, capsOf(ctx)) };
     if (run.status === "planning") throw new ToolError("NOT_READY", "预览还没做完", `用 organize_status(run: "${run.id}", waitSeconds: ${MAX_WAIT_SECONDS}) 等它做完，给用户看过清单再执行。`);
     if (run.status === "reverting" || run.stage === "revert") throw new ToolError("REVERTING", "这次整理已经开始撤销，只能继续撤销", `用 organize_revert(run: "${run.id}")。`);
     const summary = getRunSummary(run.id);
@@ -755,7 +791,7 @@ export const organizeApplyTool = defineTool({
       if (current !== args.planVersion.trim()) {
         throw new ToolError("PLAN_CHANGED", "清单在给用户看过之后变了（界面上有人改过，或者后来又调整过）", "用 organize_detail 看现在的清单，重新告诉用户、得到同意后带新的 planVersion 再调。", { planVersion: current });
       }
-      if (run.stats.planned === 0) return { message: "没有要动的项，不用执行。", ...statusView(run.id) };
+      if (run.stats.planned === 0) return { message: "没有要动的项，不用执行。", ...statusView(run.id, capsOf(ctx)) };
       if (run.stats.plannedDelete > 0) {
         requireDanger(ctx, `这份清单会删掉 ${run.stats.plannedDelete} 个文件`, run.id);
         if (args.confirmDelete !== run.stats.plannedDelete) {
@@ -771,19 +807,22 @@ export const organizeApplyTool = defineTool({
       // 执行过、被取消了的：只在明说要重试时才动。拿着 planVersion 来的是以为清单还待确认——它已经被执行或作废了，不能悄悄变成重试
       if (args.retry !== true && !args.retryFiles?.length) {
         const why = args.planVersion ? "这份清单已经不是待确认的了" : "这次整理已经执行过";
-        return { message: `${why}（${runLine(run)}），这次什么都没做；要重试没做成的项，征得用户同意后传 retry: true。`, ...statusView(run.id) };
+        return { message: `${why}（${runLine(run)}），这次什么都没做；要重试没做成的项，征得用户同意后传 retry: true。`, ...statusView(run.id, capsOf(ctx)) };
       }
       ids = args.retryFiles?.length ? itemIdsOf(run.id, args.retryFiles) : undefined;
-      if (!ids && !summary.applicable.ok) return { message: `${summary.applicable.reason ?? "没有要重试的项"}，这次什么都没做。`, ...statusView(run.id) };
+      if (!ids && !summary.applicable.ok) return { message: `${summary.applicable.reason ?? "没有要重试的项"}，这次什么都没做。`, ...statusView(run.id, capsOf(ctx)) };
       const items = listItems(run.id);
       const wanted = ids ? new Set(ids) : null;
       const deletes = items.filter((it) => it.action === "delete" && !it.givenUp && (it.status === "failed" || it.status === "pending") && (!wanted || wanted.has(it.id))).length;
       if (deletes > 0) requireDanger(ctx, `要重试的项里有 ${deletes} 个删除`, run.id);
-      confirmFirst(ctx, `在「${taskText(task)}」上重试这次整理没做成的项（${ids ? ids.length : summary.applicable.count} 项）。`);
+      confirmFirst(
+        ctx,
+        `在「${taskText(task)}」上重试这次整理没做成的项（${ids ? ids.length : summary.applicable.count} 项）。${deletes > 0 ? `其中 ${deletes} 个是删除，进网盘回收站，撤销退不回来。` : ""}`,
+      );
     }
     await applyRun(run.id, ids);
     await waitRun(run.id, INLINE_WAIT_MS, ctx);
-    return statusView(run.id);
+    return statusView(run.id, capsOf(ctx));
   },
 });
 
@@ -797,7 +836,7 @@ export const organizeRevertTool = defineTool({
   input: z.object({ run: runArg.describe(RUN_DESC) }),
   async run(args, ctx) {
     const run = resolveRun({ run: args.run });
-    if (run.status === "reverting") return { alreadyRunning: true, ...statusView(run.id) };
+    if (run.status === "reverting") return { alreadyRunning: true, ...statusView(run.id, capsOf(ctx)) };
     const summary = getRunSummary(run.id);
     if (!summary.revertable.ok) {
       const b = summary.revertable.blockedBy;
@@ -818,7 +857,7 @@ export const organizeRevertTool = defineTool({
     );
     await revertRun(run.id);
     await waitRun(run.id, INLINE_WAIT_MS, ctx);
-    return statusView(run.id);
+    return statusView(run.id, capsOf(ctx));
   },
 });
 
@@ -837,7 +876,7 @@ export const organizeSkipTool = defineTool({
     group: z.enum(SKIP_GROUPS).optional().describe("放弃这一组（organize_status 的 failures 里的 group）"),
     files: z.array(z.string().min(1).max(60)).min(1).max(RETRY_FILES_MAX).optional().describe("放弃这些文件编号；和 group 至少给一个"),
   }),
-  async run(args) {
+  async run(args, ctx) {
     const run = resolveRun({ run: args.run });
     const ids = new Set<string>();
     if (args.group) {
@@ -861,7 +900,7 @@ export const organizeSkipTool = defineTool({
             }),
           }
         : {}),
-      ...statusView(run.id),
+      ...statusView(run.id, capsOf(ctx)),
     };
   },
 });

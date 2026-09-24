@@ -79,7 +79,7 @@ export async function mirrorRelocate(op: { oldPath: string; newPath: string; isD
 }
 
 /**
- * 网盘上删掉了一个文件（用户在整理的冲突上选了删除 / 覆盖）：本地对应的 strm / 下载文件也删掉，顺带清掉空目录。
+ * 网盘上删掉了一个文件（整理的冲突上选了删除 / 覆盖）：本地对应的 strm / 下载文件也删掉，顺带清掉空目录。
  * 本地没有就当做完
  */
 export async function mirrorDelete(panPath: string, deps: MirrorDeps): Promise<boolean> {

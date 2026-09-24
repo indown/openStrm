@@ -50,7 +50,7 @@ import {
   type SearchHit,
   type SearchHitKind,
 } from "./session.js";
-import { clamp, describeRun, esc, fmtTime, shortName, taskLabel } from "./format.js";
+import { clamp, cutText, describeRun, esc, fmtTime, shortName, taskLabel } from "./format.js";
 import type { BotCommand, BotLike, InlineKeyboard, TelegramCallbackQuery, TelegramChat, TelegramMessage, TelegramUpdate, TelegramUser } from "./bot.js";
 
 const log = moduleLogger("telegram");
@@ -139,8 +139,8 @@ export interface CommandDeps {
   resourceSearchConfigured(): boolean;
   /** 资源搜索：服务端多问几轮，拿一次性的结果（没配置、PanSou 出错都抛） */
   searchResources(keyword: string): Promise<SettledResult>;
-  /** 追更订阅的名字（通知里「搜替代资源」按钮用）；订阅没了是 null */
-  followName(id: string): string | null;
+  /** 追更订阅的名字和分享码（通知里「搜替代资源」按钮用）；订阅没了是 null */
+  shareFollow(id: string): { name: string; shareCode: string } | null;
 }
 
 /** 后端 startTask 的 message 是固定的英文句式，这里说成人话（和任务页保持一致）；个数用结构化的 total */
@@ -263,7 +263,10 @@ const realDeps: CommandDeps = {
   },
   resourceSearchConfigured: () => pansouConn() !== null,
   searchResources: (keyword) => searchSettled(keyword),
-  followName: (id) => getShareFollow(id)?.name ?? null,
+  shareFollow: (id) => {
+    const f = getShareFollow(id);
+    return f ? { name: f.name, shareCode: f.shareCode } : null;
+  },
 };
 
 let deps: CommandDeps = { ...realDeps };
@@ -326,9 +329,7 @@ async function handleMessage(bot: BotLike, msg: TelegramMessage): Promise<void> 
     return;
   }
 
-  // 配对码：写成 XXXX-XXXX 的一看就是；不带连字符的要真有这么一个待批准的请求才算——
-  // Superman、The Flash 这种八个字母的片名也凑得上配对码的字母表，不能拦下来不让搜
-  if (normalizePairingCode(text) && (/^[a-z0-9]{4}-[a-z0-9]{4}$/i.test(text) || deps.findOAuthByCode(text))) {
+  if (isPairingAttempt(text)) {
     await handlePairingCode(bot, chatId, text, settings);
     return;
   }
@@ -357,6 +358,21 @@ async function handleMessage(bot: BotLike, msg: TelegramMessage): Promise<void> 
 }
 
 /* ------------------------------- 网页客户端的配对码 ------------------------------- */
+
+/**
+ * 发来的这句是不是配对码。认成配对码的，过期了、打错了回「没找到这个配对码」，不拿去搜：
+ *   - 写成 XXXX-XXXX（授权页上的样子）：一看就是
+ *   - 连着写（WXYZ2345）或中间空一格（wxyz 2345）：数字字母混着才算，片名不会长这样；
+ *     Superman、Star Wars 这种全是字母的也凑得上配对码的字母表，照样拿去搜
+ *   - 别的写法、全是字母的：真有这么一个待批准的请求才算
+ */
+function isPairingAttempt(text: string): boolean {
+  const code = normalizePairingCode(text);
+  if (!code) return false;
+  if (/^[a-z0-9]{4}-[a-z0-9]{4}$/i.test(text)) return true;
+  if (/^[a-z0-9]{4}\s?[a-z0-9]{4}$/i.test(text) && /\d/.test(code) && /[A-Z]/.test(code)) return true;
+  return deps.findOAuthByCode(text) != null;
+}
 
 /** 配对码对上之后记一笔：请求 id → 用户发来的配对码、在哪个聊天、什么时候。批准按钮按下时要有这一笔 */
 const oauthUnlocks = new Map<string, { code: string; chatId: string; at: number }>();
@@ -845,7 +861,7 @@ const runningSearches = new Map<string, Promise<void>>();
  * 整个过程放到后台：一次要十几秒，而轮询是一条消息处理完才取下一条，等在这里的话整个机器人都不理人（别人的命令、按钮都卡住）
  */
 async function startSearch(bot: BotLike, chatId: string, userId: number, keyword: string): Promise<void> {
-  const kw = keyword.trim().slice(0, SEARCH_KEYWORD_MAX);
+  const kw = cutText(keyword.trim(), SEARCH_KEYWORD_MAX);
   if (!kw) {
     await bot.sendMessage(chatId, "用法：<code>/s 片名</code>，比如 <code>/s 沙丘2</code>");
     return;
@@ -928,13 +944,24 @@ async function finishSearch(bot: BotLike, chatId: string, userId: number, kw: st
   await edit(bot, chatId, messageId, text, buttons);
 }
 
+/**
+ * 追更名 → 搜索关键词；拿不出片名是空串。没起名的追更，名字就是分享码（也有人把链接填成名字），拿它去搜什么也搜不到。
+ * keywordFromName 自己也会把分享码、链接滤掉，这里再按这个订阅自己的分享码核一遍，不全指望它认得出
+ */
+function followKeyword(follow: { name: string; shareCode: string }): string {
+  const kw = keywordFromName(follow.name).trim();
+  if (!kw || kw.toLowerCase() === follow.shareCode.trim().toLowerCase() || /[a-z][\w+.-]*:\/\//i.test(kw)) return "";
+  return kw;
+}
+
 /* ------------------------------- 按钮回调 ------------------------------- */
 
 async function edit(bot: BotLike, chatId: string, messageId: number | undefined, text: string, buttons?: InlineKeyboard): Promise<void> {
   if (messageId != null) {
     const r = await bot.editMessage(chatId, messageId, text, buttons);
-    // 同一个按钮连点两下，第二次内容没变，Telegram 回「message is not modified」：当成改好了，别再发一条一样的
-    if (r.ok || /message is not modified/i.test(r.description ?? "")) return;
+    // 同一个按钮连点两下，第二次内容没变，Telegram 回「message is not modified」：当成改好了，别再发一条一样的。
+    // 这是个 400，TelegramBot 把原话放在 error 里，description 是空的
+    if (r.ok || /message is not modified/i.test(r.error ?? r.description ?? "")) return;
   }
   await bot.sendMessage(chatId, text, buttons ? { buttons } : undefined);
 }
@@ -1215,13 +1242,19 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
       }
       case FOLLOW_SEARCH_ACTION: {
         // 追更通知（分享失效 / 长期没更新）里的「搜替代资源」：按订阅名搜
-        const name = deps.followName(arg);
-        if (!name) {
+        const follow = deps.shareFollow(arg);
+        if (!follow) {
           await bot.answerCallback(q.id, "这个追更已经不在了", { alert: true });
           return;
         }
+        const keyword = followKeyword(follow);
+        if (!keyword) {
+          await bot.answerCallback(q.id);
+          await bot.sendMessage(chatId, "这个追更的名字里拿不出片名（没起名的追更，名字就是分享码）：用 <code>/s 片名</code> 搜一下，或者到「追更」页给它改个名字。");
+          return;
+        }
         await bot.answerCallback(q.id, "开始搜…");
-        await startSearch(bot, chatId, q.from.id, keywordFromName(name));
+        await startSearch(bot, chatId, q.from.id, keyword);
         return;
       }
       default:

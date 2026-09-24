@@ -30,9 +30,11 @@ export default function ChangePasswordPage() {
   useEffect(() => {
     setRequired(new URLSearchParams(window.location.search).get("required") === "1");
   }, []);
-  // 智能体令牌不随改密码失效：有令牌时给个选项一并撤销（怀疑泄露来改密码，多半也想收回它们）。
+  // 智能体令牌、已连接的网页客户端都不随改密码失效：有的话给个选项一并撤销（怀疑泄露来改密码，多半也想收回它们）。
+  // 只连了网页客户端、没建过令牌的也要给——提档到删除档的客户端刷新令牌一直能续。
   // 强制改默认密码时不查：那时除了改密码别的接口都进不去，也不可能有令牌
   const [agentTokens, setAgentTokens] = useState(0);
+  const [agentGrants, setAgentGrants] = useState(0);
   const [revokeTokens, setRevokeTokens] = useState(false);
   useEffect(() => {
     if (required !== false) return;
@@ -40,7 +42,12 @@ export default function ChangePasswordPage() {
       .tokens()
       .then((list) => setAgentTokens(list.length))
       .catch(() => {});
+    api.agent
+      .oauth()
+      .then((state) => setAgentGrants(state.grants.length))
+      .catch(() => {});
   }, [required]);
+  const revokeWhat = [agentTokens > 0 ? `${agentTokens} 个智能体令牌` : "", agentGrants > 0 ? `${agentGrants} 个已连接的网页客户端` : ""].filter(Boolean).join("和");
   const form = useForm<ChangePasswordForm>({
     defaultValues: { currentPassword: "", newPassword: "", confirmPassword: "" },
   });
@@ -56,7 +63,7 @@ export default function ChangePasswordPage() {
       const res = await api.auth.changePassword(values.currentPassword, values.newPassword, { revokeAgentTokens: revokeTokens });
       // 旧 token 仍然有效，但让用户用新密码走一遍登录，省得以为没生效
       toast.success(
-        res.revokedAgentTokens ? `密码已修改，${res.revokedAgentTokens} 个智能体令牌已撤销，请用新密码登录` : "密码已修改，请用新密码登录",
+        res.revokedAgentTokens ? `密码已修改，智能体令牌和网页客户端一共撤销了 ${res.revokedAgentTokens} 个，请用新密码登录` : "密码已修改，请用新密码登录",
       );
       clearToken();
       router.push("/login");
@@ -125,10 +132,10 @@ export default function ChangePasswordPage() {
             )}
           />
 
-          {agentTokens > 0 && (
+          {revokeWhat && (
             <label className="flex items-start gap-2 text-sm text-muted-foreground">
               <Checkbox className="mt-0.5" checked={revokeTokens} onCheckedChange={(v) => setRevokeTokens(v === true)} />
-              <span>同时撤销全部 {agentTokens} 个智能体令牌。改密码不会让令牌失效，怀疑泄露的话一起收回，之后在设置里重新建。</span>
+              <span>同时撤销全部 {revokeWhat}。改密码不会让它们失效，怀疑泄露的话一起收回，之后在设置里重新建、在客户端里重新连接。</span>
             </label>
           )}
 

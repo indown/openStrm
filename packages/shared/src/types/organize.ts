@@ -302,6 +302,8 @@ export interface OrganizeFailureGroup {
   skip: boolean;
   repreview: boolean;
   held: number;
+  /** 这组里的删除项（冲突选了删掉 / 覆盖）：重试会在网盘上真删、撤销退不回来，界面重试前要先说清楚 */
+  deletes: number;
 }
 
 /** GET /api/organize/runs/:id/summary 的形状：run 和按钮开关，不带单元和项；执行 / 撤销进行中页面每 2 秒拉它 */
@@ -321,8 +323,8 @@ export interface OrganizeRunSummary {
    * old 是预览超过一天（at 是预览的时间）
    */
   outdated?: { kind: "changed" | "old"; at: number; runId?: string };
-  /** 能不能（再）执行：ready 的执行全部；其它状态是重试失败 / 没做的项，count 是默认会重试的项数 */
-  applicable: { ok: boolean; reason?: string; count: number };
+  /** 能不能（再）执行：ready 的执行全部；其它状态是重试失败 / 没做的项，count 是默认会重试的项数，deletes 是其中的删除项 */
+  applicable: { ok: boolean; reason?: string; count: number; deletes?: number };
   /** 待执行的预览还能不能改（换匹配 / 季集偏移 / 勾选）：单元结构只在内存里，进程重启过就只能直接执行或重新预览 */
   editable: boolean;
   /** 执行过没有（有项被执行 / 撤销过）：待执行的预览被取消或被新的预览取代时是 false，这种 run 只能重新预览 */

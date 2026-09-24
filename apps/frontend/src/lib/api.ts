@@ -483,10 +483,15 @@ export const api = {
      * 读-改-写一个顶层分组。PUT 是按顶层键整体替换，只改组内一个字段（比如 telegram.allowTaskStart）
      * 得先把库里的其它字段带上，不然 botToken / allowedUsers 会一起被抹掉。掩码的密钥原样回传等于不改。
      */
-    patchGroup: async <K extends SettingsGroupKey>(key: K, partial: Partial<NonNullable<AppSettings[K]>>) => {
+    patchGroup: async <K extends SettingsGroupKey>(key: K, partial: Partial<NonNullable<AppSettings[K]>>, opts: { currentPassword?: string } = {}) => {
       const current = (await data(axiosInstance.get<AppSettings>("/api/settings")))[key];
       return data(
-        axiosInstance.put<{ message: string }>("/api/settings", { [key]: { ...(current ?? {}), ...partial } }),
+        // telegramOAuthApprovalOff：开着「在 Telegram 里批准网页客户端」时换了能批的人，后端把它关掉了，给的是提示语
+        axiosInstance.put<{ message: string; telegramOAuthApprovalOff?: string }>("/api/settings", {
+          [key]: { ...(current ?? {}), ...partial },
+          // 当前密码：打开「在 Telegram 里批准网页客户端」要它，后端核对完就丢，不进设置
+          ...(opts.currentPassword ? { currentPassword: opts.currentPassword } : {}),
+        }),
       );
     },
   },
@@ -598,9 +603,11 @@ export const api = {
     denyOAuth: (id: string) => data(axiosInstance.post<{ success: boolean }>(`/api/agent/oauth/requests/${encodeURIComponent(id)}/deny`)),
     denyAllOAuth: () => data(axiosInstance.post<{ denied: number }>("/api/agent/oauth/requests/deny-all")),
     revokeGrant: (id: string) => data(axiosInstance.delete<{ success: boolean }>(`/api/agent/oauth/grants/${encodeURIComponent(id)}`)),
-    /** 改已连接客户端的工具组；null 是全部 */
-    updateGrantToolsets: (id: string, toolsets: AgentToolset[] | null) =>
-      data(axiosInstance.patch<{ success: boolean; toolsets: AgentToolset[] }>(`/api/agent/oauth/grants/${encodeURIComponent(id)}`, { toolsets })),
+    /** 改已连接客户端的档位、工具组（至少给一样）；toolsets 给 null 是全部。提档（多给了哪一档）要带当前密码。改完立即生效 */
+    updateGrant: (id: string, patch: { scopes?: AgentScope[]; toolsets?: AgentToolset[] | null; currentPassword?: string }) =>
+      data(
+        axiosInstance.patch<{ success: boolean; scopes: AgentScope[]; toolsets: AgentToolset[] }>(`/api/agent/oauth/grants/${encodeURIComponent(id)}`, patch),
+      ),
     revokeAllGrants: () => data(axiosInstance.delete<{ deleted: number }>("/api/agent/oauth/grants")),
     createOAuthClient: (input: { name: string; redirectUris: string[] }) => data(axiosInstance.post<OAuthClientCreated>("/api/agent/oauth/clients", input)),
     deleteOAuthClient: (id: string) => data(axiosInstance.delete<{ success: boolean }>(`/api/agent/oauth/clients/${encodeURIComponent(id)}`)),
@@ -780,8 +787,9 @@ export const api = {
 
   telegram: {
     status: () => data(axiosInstance.get<TelegramBotStatus>("/api/telegram/bot")),
+    /** oauthApprovalOff：换了机器人 / chat id，后端把「在 Telegram 里批准网页客户端」关掉了，给的是提示语 */
     configure: (input: { botToken: string; chatId?: string }) =>
-      data(axiosInstance.post<{ success: boolean; message: string }>("/api/telegram/bot", input)),
+      data(axiosInstance.post<{ success: boolean; message: string; oauthApprovalOff?: string }>("/api/telegram/bot", input)),
     remove: () => data(axiosInstance.delete<{ success: boolean; message: string }>("/api/telegram/bot")),
     test: () => data(axiosInstance.post<{ success: boolean }>("/api/telegram/test")),
     polling: {
@@ -790,7 +798,8 @@ export const api = {
       restart: () => data(axiosInstance.put<{ success: boolean; message: string }>("/api/telegram/polling")),
     },
     users: {
-      add: (userId: string | number) => data(axiosInstance.post<{ success: boolean; message: string }>("/api/telegram/users", { userId })),
+      add: (userId: string | number) =>
+        data(axiosInstance.post<{ success: boolean; message: string; oauthApprovalOff?: string }>("/api/telegram/users", { userId })),
       remove: (userId: number) =>
         data(axiosInstance.delete<{ success: boolean; message: string }>(`/api/telegram/users?userId=${userId}`)),
     },

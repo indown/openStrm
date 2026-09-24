@@ -2,7 +2,7 @@
  * 整理与规范化命名。预览 / 执行 / 撤销都是后台作业，接口立刻返回，页面轮询 GET /runs/:id 看进度。
  *
  * 对智能体令牌开放的档位和整理工具一致：看是 read，预览和改清单是 run，执行 / 撤销 / 放弃是 write；
- * 冲突选删掉 / 覆盖、重新勾上选过删掉 / 覆盖的单元、执行带删除项的清单另要 danger；
+ * 执行带删除项的清单另要 danger。改清单时选删掉 / 覆盖不要：只是写进清单，真删在执行，界面执行有确认框、钉着 planVersion；
  * 作废待确认的清单（取消它、或者在它的范围上重新预览）要 write，令牌还得明说 fresh。删整理记录、识别记忆、模板试算只认会话。
  *
  * 执行待确认的清单时带上 planVersion（详情里给的）：打开之后清单被改过（比如智能体改的）就回 409，让人重新看一眼；令牌必须带
@@ -35,7 +35,6 @@ import {
   revertRun,
   searchCandidates,
   skipItems,
-  unitsReviveDeletes,
 } from "../../services/organize/run.js";
 import { parseRules } from "../../services/organize/rules.js";
 import { DEFAULT_TEMPLATES, resolveOrganizeSettings } from "../../services/organize/settings.js";
@@ -179,7 +178,6 @@ export default async function (fastify: FastifyInstance) {
   fastify.put("/api/organize/runs/:id/units", { preHandler: [fastify.authenticate], config: { agentScope: "run", agentToolset: "organize" } }, async (request) => {
     const { id } = parse(idParamsSchema, request.params, "params");
     const body = parse(unitsPatchSchema, request.body);
-    if (body.selected === true && isToken(request) && unitsReviveDeletes(id, body.keys)) requireAgentScope(request, "danger");
     return patchUnits(id, body.keys, { selected: body.selected, remember: body.remember });
   });
 
@@ -187,7 +185,6 @@ export default async function (fastify: FastifyInstance) {
   fastify.put("/api/organize/runs/:id/items", { preHandler: [fastify.authenticate], config: { agentScope: "run", agentToolset: "organize" } }, async (request) => {
     const { id } = parse(idParamsSchema, request.params, "params");
     const body = parse(itemsPatchSchema, request.body);
-    if (body.resolve?.how === "delete" || body.resolve?.how === "replace") requireAgentScope(request, "danger");
     return patchItems(id, body.ids, { selected: body.selected, resolve: body.resolve });
   });
 
@@ -207,9 +204,6 @@ export default async function (fastify: FastifyInstance) {
   fastify.put("/api/organize/runs/:id/unit", { preHandler: [fastify.authenticate], config: { agentScope: "run", agentToolset: "organize" } }, async (request) => {
     const { id } = parse(idParamsSchema, request.params, "params");
     const { key, ...patch } = parse(unitPatchSchema, request.body);
-    // 勾上（换匹配会顺带勾上）一个选过删掉 / 覆盖的单元，等于重新安排了删除
-    const selecting = patch.selected === true || (patch.match !== undefined && patch.selected !== false);
-    if (selecting && isToken(request) && unitsReviveDeletes(id, [key])) requireAgentScope(request, "danger");
     return patchUnit(id, key, patch);
   });
 

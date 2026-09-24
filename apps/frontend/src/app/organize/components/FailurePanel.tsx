@@ -71,7 +71,7 @@ export function FailurePanel({
   onRevert: () => void;
   onOpenRun: (id: string) => void;
 }) {
-  const [pending, setPending] = useState<{ type: "skip" | "repreview"; group: OrganizeFailureGroup } | null>(null);
+  const [pending, setPending] = useState<{ type: "skip" | "repreview" | "retry"; group: OrganizeFailureGroup } | null>(null);
   const [working, setWorkingState] = useState(false);
   const setWorking = (w: boolean) => {
     setWorkingState(w);
@@ -102,6 +102,11 @@ export function FailurePanel({
   const confirmPending = async () => {
     if (!pending) return;
     const { type, group } = pending;
+    if (type === "retry") {
+      await retry(group);
+      setPending(null);
+      return;
+    }
     setWorking(true);
     try {
       const r = await api.organize.skip(run.id, group.itemIds);
@@ -130,6 +135,13 @@ export function FailurePanel({
   };
   const pendingText = () => {
     if (!pending) return { title: "", body: "" };
+    if (pending.type === "retry") {
+      const g = pending.group;
+      return {
+        title: `重试这 ${g.itemIds.length} 项？`,
+        body: `其中 ${g.deletes} 个是删除（冲突选了删掉 / 覆盖）：重试会在网盘上把它们删掉，进网盘回收站，撤销退不回来。不想删就先看文件、再点「放弃」。`,
+      };
+    }
     const n = pending.group.itemIds.length - pending.group.held;
     const heldNote = pending.group.held > 0 ? `另有 ${pending.group.held} 项已挪回但没改回原名，不能放弃，只能继续撤销。` : "";
     if (pending.type === "repreview") {
@@ -165,7 +177,14 @@ export function FailurePanel({
                 </Button>
               )}
               {g.retry && (
-                <Button size="sm" variant={g.repreview ? "outline" : "default"} className="h-8" disabled={disabled} onClick={() => void retry(g)}>
+                <Button
+                  size="sm"
+                  variant={g.repreview ? "outline" : "default"}
+                  className="h-8"
+                  disabled={disabled}
+                  // 组里有删除项（重试会真删）就先确认；别的直接重试
+                  onClick={() => (!reverting && g.deletes > 0 ? setPending({ type: "retry", group: g }) : void retry(g))}
+                >
                   {reverting ? <Undo2 className="size-4" /> : <RotateCw className="size-4" />}
                   {reverting ? "继续撤销" : g.key === "mirror" ? "补本地" : "重试"}
                 </Button>
@@ -202,7 +221,7 @@ export function FailurePanel({
               }}
               disabled={working}
             >
-              {working ? <Loader2 className="size-4 animate-spin" /> : pending?.type === "repreview" ? "放弃并重新预览" : "放弃"}
+              {working ? <Loader2 className="size-4 animate-spin" /> : pending?.type === "repreview" ? "放弃并重新预览" : pending?.type === "retry" ? "重试" : "放弃"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

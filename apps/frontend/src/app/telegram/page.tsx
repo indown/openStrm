@@ -37,7 +37,7 @@ const PERMISSIONS: Array<{ key: keyof TelegramPermissions; label: string; hint: 
   {
     key: "allowOAuthApproval",
     label: "允许批准网页客户端的连接",
-    hint: "claude.ai、ChatGPT 这类网页客户端来连接时，把授权页上的配对码发给机器人，就能在 Telegram 里批准（只读或日常）。白名单里的人都能批，批出去的档位比上面几个开关管的多。",
+    hint: "claude.ai、ChatGPT 这类网页客户端来连接时，把授权页上的配对码发给机器人，就能在 Telegram 里批准（只读或日常）。白名单里的人都能批，批出去的档位比上面几个开关管的多，所以打开要输当前密码；换了机器人、chat id 或往白名单里加人会自动关掉。",
   },
 ];
 
@@ -70,6 +70,10 @@ export default function TelegramPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [newUserId, setNewUserId] = useState("");
   const [removeOpen, setRemoveOpen] = useState(false);
+  // 打开「允许批准网页客户端的连接」要当前密码（和在设置页批准、建令牌一样）：先弹框问
+  const [approvalOpen, setApprovalOpen] = useState(false);
+  const [approvalPassword, setApprovalPassword] = useState("");
+  const [approvalError, setApprovalError] = useState<string | null>(null);
 
   const form = useForm<ConnectValues>({
     resolver: zodResolver(connectSchema),
@@ -96,8 +100,9 @@ export default function TelegramPage() {
 
   const save = async (values: ConnectValues) => {
     try {
-      await api.telegram.configure({ botToken: values.botToken, chatId: values.chatId });
+      const res = await api.telegram.configure({ botToken: values.botToken, chatId: values.chatId });
       toast.success("已保存");
+      if (res.oauthApprovalOff) toast.warning(res.oauthApprovalOff);
       await load(true);
     } catch (err) {
       const body = apiErrorBody(err);
@@ -121,12 +126,30 @@ export default function TelegramPage() {
   /** 权限和通知开关：勾选即保存。PUT 是按组替换，patchGroup 会先把组里其它字段带上 */
   const patch = async (partial: Record<string, unknown>, okText: string) => {
     try {
-      await api.settings.patchGroup("telegram", partial);
+      const res = await api.settings.patchGroup("telegram", partial);
       toast.success(okText);
+      if (res.telegramOAuthApprovalOff) toast.warning(res.telegramOAuthApprovalOff);
       await load(true);
     } catch (err) {
       toast.error(apiErrorMessage(err, "保存失败"));
       await load(true);
+    }
+  };
+
+  const enableApproval = async () => {
+    setBusy("approval");
+    setApprovalError(null);
+    try {
+      await api.settings.patchGroup("telegram", { allowOAuthApproval: true }, { currentPassword: approvalPassword });
+      toast.success("已开启：允许批准网页客户端的连接");
+      setApprovalOpen(false);
+      setApprovalPassword("");
+      await load(true);
+    } catch (err) {
+      if (apiErrorBody(err).code === "WRONG_PASSWORD") setApprovalError("当前密码不正确");
+      else toast.error(apiErrorMessage(err, "保存失败"));
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -136,7 +159,14 @@ export default function TelegramPage() {
       toast.error("用户 id 是一串数字，给机器人发 /start 就能看到");
       return;
     }
-    await run("add-user", () => api.telegram.users.add(id), `已加入白名单：${id}`);
+    await run(
+      "add-user",
+      async () => {
+        const res = await api.telegram.users.add(id);
+        if (res.oauthApprovalOff) toast.warning(res.oauthApprovalOff);
+      },
+      `已加入白名单：${id}`,
+    );
     setNewUserId("");
   };
 
@@ -338,7 +368,14 @@ export default function TelegramPage() {
                 label={p.label}
                 description={p.hint}
                 checked={status?.permissions[p.key] === true}
-                onCheckedChange={(v) => patch({ [p.key]: v }, v ? `已开启：${p.label}` : `已关闭：${p.label}`)}
+                onCheckedChange={(v) => {
+                  if (p.key === "allowOAuthApproval" && v) {
+                    setApprovalError(null);
+                    setApprovalOpen(true);
+                    return;
+                  }
+                  void patch({ [p.key]: v }, v ? `已开启：${p.label}` : `已关闭：${p.label}`);
+                }}
               />
             ))}
           </div>
@@ -388,6 +425,48 @@ export default function TelegramPage() {
             </div>
           </div>
         </section>
+
+        <AlertDialog
+          open={approvalOpen}
+          onOpenChange={(o) => {
+            if (busy === "approval") return;
+            setApprovalOpen(o);
+            if (!o) setApprovalPassword("");
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>允许在 Telegram 里批准网页客户端</AlertDialogTitle>
+              <AlertDialogDescription>
+                批准等于发一把能一直续期的钥匙，和在设置页批准一样要再输一次密码。之后换了机器人、chat id 或往白名单里加人，这个开关会自动关掉，要用再打开。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="space-y-2">
+              <Input
+                type="password"
+                autoComplete="current-password"
+                placeholder="管理界面的登录密码"
+                value={approvalPassword}
+                onChange={(e) => setApprovalPassword(e.target.value)}
+                aria-label="当前密码"
+                aria-invalid={approvalError ? true : undefined}
+              />
+              {approvalError && <p className="text-xs text-destructive">{approvalError}</p>}
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={busy === "approval"}>取消</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  void enableApproval();
+                }}
+                disabled={busy === "approval" || !approvalPassword}
+              >
+                {busy === "approval" ? <Loader2 className="size-4 animate-spin" /> : "开启"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         <AlertDialog open={removeOpen} onOpenChange={setRemoveOpen}>
           <AlertDialogContent>

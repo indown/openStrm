@@ -8,6 +8,7 @@ import { deleteAppSetting, readAppSetting, readAppSettings, updateAppSetting } f
 import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 import { maskSecret, resolveSecret } from "../../lib/secrets.js";
+import { APPROVAL_OFF_NOTE, approvalMustTurnOff } from "../../services/oauth/telegram-approval.js";
 
 const TOKEN_PATTERN = /^\d+:[A-Za-z0-9_-]{35}$/;
 
@@ -58,16 +59,18 @@ export default async function (fastify: FastifyInstance) {
 
     const tokenChanged = botToken !== current.botToken;
     // 只覆盖这次给出的字段：白名单、权限、通知开关由别的接口维护，不能被这里重置。
-    // 在事务里重读再写，别拿上面校验 token 时的快照去覆盖这期间别的请求写进去的字段
-    updateAppSetting("telegram", (latest) => ({
-      ...(latest ?? {}),
-      botToken,
-      chatId: chatId?.trim() ?? latest?.chatId,
-    }));
+    // 在事务里重读再写，别拿上面校验 token 时的快照去覆盖这期间别的请求写进去的字段。
+    // 开着「在 Telegram 里批准网页客户端」时换了机器人 / chat id：自动关掉，要用再输密码打开（见 services/oauth/telegram-approval.ts）
+    let approvalOff = false;
+    updateAppSetting("telegram", (latest) => {
+      const next = { ...(latest ?? {}), botToken, chatId: chatId?.trim() ?? latest?.chatId };
+      approvalOff = approvalMustTurnOff(latest, next);
+      return approvalOff ? { ...next, allowOAuthApproval: false } : next;
+    });
     // 换了 token 的话在跑的轮询还拿着旧 token
     if (tokenChanged && getPollingStatus().active) await restartPolling();
 
-    return { success: true, bot: me.result, message: "已保存" };
+    return { success: true, bot: me.result, message: "已保存", ...(approvalOff ? { oauthApprovalOff: APPROVAL_OFF_NOTE } : {}) };
   });
 
   fastify.delete("/api/telegram/bot", { preHandler: [fastify.authenticate] }, async () => {

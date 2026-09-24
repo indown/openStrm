@@ -114,6 +114,8 @@ export default function OfflinePage() {
 function OfflineContent() {
   const [accounts, setAccounts] = useState<string[]>([]);
   const [accountsLoaded, setAccountsLoaded] = useState(false);
+  /** 账号列表没读到：不能当成「没有 115 账号」，交过来的链接也先别取走 */
+  const [accountsError, setAccountsError] = useState<string | null>(null);
   const [account, setAccount] = useState("");
   const [page, setPage] = useState(1);
   const [data, setData] = useState<OfflineListPage | null>(null);
@@ -138,9 +140,10 @@ function OfflineContent() {
   const wantPaste = params.get("paste") === "1";
 
   // 直接开添加框、预填链接：深链 /offline?add=<链接>，或者顶栏、⌘K 贴的磁力（链接放在 sessionStorage，地址是 ?paste=1）。
-  // 等账号回来再开（框要知道往哪个账号加）；读一次就把参数抹掉，刷新、后退不再弹
+  // 等账号读到了再开（框要知道往哪个账号加）；读一次就把参数抹掉，刷新、后退不再弹。
+  // 账号没读到时先不动：链接和参数都留着，点「重试」或者刷新页面读到了照样弹
   useEffect(() => {
-    if ((!wantAdd && !wantPaste) || !accountsLoaded) return;
+    if ((!wantAdd && !wantPaste) || !accountsLoaded || accountsError) return;
     const text = wantAdd || takeOfflineHandoff();
     router.replace("/offline");
     if (!text.trim()) return;
@@ -151,24 +154,34 @@ function OfflineContent() {
     }
     setAddUrls(text);
     setAddOpen(true);
-  }, [wantAdd, wantPaste, accountsLoaded, accounts.length, router]);
+  }, [wantAdd, wantPaste, accountsLoaded, accountsError, accounts.length, router]);
 
-  useEffect(() => {
+  const loadAccounts = useCallback(() => {
+    setAccountsLoaded(false);
     api.accounts
       .list()
       .then((list) => {
         const names = list.filter((a) => a.accountType === "115").map((a) => a.name);
         setAccounts(names);
         setAccount((prev) => (prev && names.includes(prev) ? prev : (names[0] ?? "")));
+        setAccountsError(null);
       })
-      .catch((err) => toast.error(apiErrorMessage(err, "获取账户列表失败")))
+      .catch((err) => {
+        const msg = apiErrorMessage(err, "获取账户列表失败");
+        setAccountsError(msg);
+        toast.error(msg);
+      })
       .finally(() => setAccountsLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    loadAccounts();
     // 回执只记 taskId，展示时要换成任务的网盘路径
     api.tasks
       .list()
       .then((rows) => setTaskPaths(Object.fromEntries(rows.map((t) => [t.id, t.originPath]))))
       .catch(() => {});
-  }, []);
+  }, [loadAccounts]);
 
   /** 拉列表。silent：后台轮询用，不转刷新按钮、失败也不弹提示 */
   const load = useCallback(
@@ -306,6 +319,25 @@ function OfflineContent() {
       <div className="space-y-6">
         <PageHeader icon={CloudDownload} title={PAGE_TITLE} description={PAGE_DESCRIPTION} />
         <TableSkeleton rows={4} />
+      </div>
+    );
+  }
+
+  if (accountsError) {
+    return (
+      <div className="space-y-6">
+        <PageHeader icon={CloudDownload} title={PAGE_TITLE} description={PAGE_DESCRIPTION} />
+        <EmptyState
+          icon={KeyRound}
+          title="读取账号列表失败"
+          description={accountsError}
+          action={
+            <Button variant="outline" onClick={loadAccounts}>
+              <RefreshCw className="size-4" />
+              重试
+            </Button>
+          }
+        />
       </div>
     );
   }

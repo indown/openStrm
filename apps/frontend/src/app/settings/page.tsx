@@ -160,17 +160,24 @@ const schema = z.object({
     downloadMaxConcurrent: count(1, 50),
   }),
   tmdb: z.object({ apiKey: z.string(), language: z.string() }),
-  pansou: z.object({
-    // 后面要拼 /api/…：带用户名密码、? 参数、# 的拼不对（和后端 pansouBaseUrlSchema 一样拦）
-    baseUrl: httpUrl("填 http:// 或 https:// 开头的地址，比如 http://pansou:8888").refine(
-      (v) => v === "" || !/^https?:\/\//i.test(v) || (!/[?#]/.test(v) && !/^https?:\/\/[^/]*@/i.test(v)),
-      "只填到主机、端口（或路径）为止：别带用户名密码、? 参数和 #",
-    ),
-    username: z.string(),
-    password: z.string(),
-    checkLinks: z.boolean(),
-    blockWords: z.array(z.string()).max(50, "屏蔽词最多 50 个"),
-  }),
+  pansou: z
+    .object({
+      // 后面要拼 /api/…：带用户名密码、? 参数、# 的拼不对（和后端 pansouBaseUrlSchema 一样拦）
+      baseUrl: httpUrl("填 http:// 或 https:// 开头的地址，比如 http://pansou:8888").refine(
+        (v) => v === "" || !/^https?:\/\//i.test(v) || (!/[?#]/.test(v) && !/^https?:\/\/[^/]*@/i.test(v)),
+        "只填到主机、端口（或路径）为止：别带用户名密码、? 参数和 #",
+      ),
+      username: z.string(),
+      password: z.string(),
+      checkLinks: z.boolean(),
+      blockWords: z.array(z.string()).max(50, "屏蔽词最多 50 个"),
+    })
+    // 没有地址的用户名、密码存不住：每次保存都会把这一整块发回去，后端认为地址换了（空的不算同一台），
+    // 下一次保存别的设置时就把存着的密码悄悄清掉了。库里已经是这样的（旧版本存进去的）也在这里拦下、说清楚
+    .refine((v) => v.baseUrl.trim() !== "" || (v.username.trim() === "" && v.password === ""), {
+      message: "先填 PanSou 地址；不用资源搜索的话，把下面的用户名、密码也清空",
+      path: ["baseUrl"],
+    }),
   // 入口关着时这一节不显示，原样带回去就行：看不见的字段不能拦住保存（以前存进去的地址可能没带 http://）
   hdhive: z.object({
     apiKey: z.string(),
@@ -436,11 +443,12 @@ export default function SettingsPage() {
   const saved = form.formState.defaultValues;
   /**
    * PanSou 的地址改了、密码还是存着的那份掩码：保存时后端会把存着的密码清掉（不发给没确认过的新地址），先说一声。
-   * 地址末尾的 /、误填的 /api 不算改
+   * 地址末尾的 /、误填的 /api 不算改；地址清空了不在这里说，那样存不了，地址那一栏会说为什么
    */
   const pansouPasswordDropped =
     Boolean(saved?.pansou?.password) &&
     values.pansou?.password === saved?.pansou?.password &&
+    Boolean(values.pansou?.baseUrl?.trim()) &&
     pansouServer(values.pansou?.baseUrl) !== pansouServer(saved?.pansou?.baseUrl);
 
   if (loading) {
@@ -710,10 +718,12 @@ export default function SettingsPage() {
                   </FormItem>
                 )}
               />
+              {/* 用户名、密码改了，地址那一栏的「先填 PanSou 地址」跟着重新判断：清空了它们就不再拦 */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <FormField
                   control={form.control}
                   name="pansou.username"
+                  rules={{ deps: "pansou.baseUrl" }}
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>用户名</FormLabel>
@@ -726,6 +736,7 @@ export default function SettingsPage() {
                 <FormField
                   control={form.control}
                   name="pansou.password"
+                  rules={{ deps: "pansou.baseUrl" }}
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>密码</FormLabel>

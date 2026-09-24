@@ -5,6 +5,7 @@
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/routes/resource/resource.itest.ts
  */
 import assert from "node:assert/strict";
+import http from "node:http";
 import { after, before, beforeEach, test } from "node:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { AccountInfo, AppSettings } from "@openstrm/shared";
@@ -148,4 +149,27 @@ test("搜索带 titleEn：原名交给 PanSou（ext.title_en）；太长的 400�
   assert.equal(body.blocked, 1);
   assert.deepEqual(body.counts, { quark: 1 });
   assert.equal((await post("/api/resource/search", { keyword: "k", titleEn: "x".repeat(201) })).statusCode, 400);
+});
+
+test("搜索：浏览器不等了就掐掉还在路上的那一问，first 顺带发的预热照样跑完", async () => {
+  fake.onSearch = () => ({ delayMs: 300, data: { quark: [SAMPLE.quark] } });
+  const address = await app.listen({ port: 0, host: "127.0.0.1" });
+  const req = http.request(`${address}/api/resource/search`, { method: "POST", headers: { ...session, "content-type": "application/json" } });
+  req.on("error", () => {});
+  req.end(JSON.stringify({ keyword: "沙丘2", phase: "first" }));
+  // TG 那一问和全量预热都到了 PanSou，再断开
+  for (let i = 0; i < 100 && fake.searches().length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(fake.searches().length, 2);
+  req.destroy();
+  await new Promise((r) => setTimeout(r, 450));
+  const bySrc = new Map(fake.searches().map((q) => [q.body.src, q]));
+  assert.equal(bySrc.get("tg")?.aborted, true, "这一问掐掉了");
+  assert.notEqual(bySrc.get("all")?.aborted, true, "预热没掐：它就是要在后台接着跑");
+
+  // 正常回完的不算断开
+  fake.reset();
+  fake.onSearch = () => ({ quark: [SAMPLE.quark] });
+  const ok = await post("/api/resource/search", { keyword: "沙丘2", phase: "more" });
+  assert.equal(ok.statusCode, 200, ok.body);
+  assert.notEqual(fake.searches()[0].aborted, true);
 });

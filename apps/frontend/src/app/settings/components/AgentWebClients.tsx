@@ -5,7 +5,7 @@
  *   - 公网 MCP 地址和两家的接入步骤（填了公网地址才有）；
  *   - 待批准：开着页面时每 3 秒刷一次（先来的在前，新来的不会把正要点的那行挤走）。批准要输入授权页上的配对码和当前密码：
  *     配对码证明批的是自己眼前授权页上的那一条（列表里故意不给配对码），密码和建令牌一样——批准等于发一把长期有效的钥匙；
- *   - 已连接的客户端（改工具组、断开、全部断开；公网地址改过的标失效）、预注册客户端（新建时 secret 只显示一次）、连接自检。
+ *   - 已连接的客户端（改权限：档位和工具组；断开、全部断开；公网地址改过的标失效）、预注册客户端（新建时 secret 只显示一次）、连接自检。
  * 列表总是显示（公网地址清掉了，已连接的和预注册的也还在库里，得能看到、能断开）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -35,7 +35,7 @@ import { FieldHint } from "@/components/field-hint";
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import { fmtWhen } from "@/lib/format";
-import { CopyButton, PRESETS, SCOPE_LABEL, TOOLSETS, grantedPreview, hasAllToolsets, presetLabel, toolsetText } from "./agent-common";
+import { CUSTOM, CopyButton, PRESETS, SCOPE_LABEL, TOOLSETS, grantedPreview, hasAllToolsets, presetIdOf, presetLabel, toolsetText } from "./agent-common";
 
 const POLL_MS = 3000;
 
@@ -194,6 +194,7 @@ function ApproveDialog({ req, onClose, onDone }: { req: OAuthPendingRequest | nu
             <p className="text-xs text-muted-foreground">
               实际给：{preview.map((s) => SCOPE_LABEL[s]).join("、")}
               {req.requestedScopes.length > 0 ? "（不会超过客户端自己要的）" : "（客户端没说要什么，按你选的给）"}
+              {chosen.some((s) => !preview.includes(s)) ? "。要多给，连上之后在「已连接的客户端」里点「改权限」" : ""}
             </p>
           </div>
           <div className="space-y-2">
@@ -283,22 +284,37 @@ function ManualClientDialog({ open, onClose, onCreated }: { open: boolean; onClo
 }
 
 /**
- * 改一个已连接客户端能用的工具组：勾法和建令牌时一样，「全部」存成当时的全部组。
- * 新版本加了一组工具，老连接照约定不会自动多出来，要在这里勾上。改完立即生效，客户端不用重连
+ * 改一个已连接客户端的权限：档位和工具组，勾法和建令牌时一样，「全部」存成当时的全部组。改完立即生效，客户端不用重连。
+ *   - 档位：批准时给的不超过客户端自己要的（claude.ai、ChatGPT 只要日常），删除与花费只能在这里给；
+ *   - 工具组：新版本加了一组工具，老连接照约定不会自动多出来，要在这里勾上。
  */
-function GrantToolsetsDialog({ grant, onClose, onSaved }: { grant: OAuthGrantInfo; onClose: () => void; onSaved: () => void }) {
+function GrantAccessDialog({ grant, onClose, onSaved }: { grant: OAuthGrantInfo; onClose: () => void; onSaved: () => void }) {
+  const [preset, setPreset] = useState(() => presetIdOf(grant.scopes));
   const [all, setAll] = useState(() => hasAllToolsets(grant.toolsets));
   const [chosen, setChosen] = useState<AgentToolset[]>(grant.toolsets);
+  const [password, setPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // 自定义档位（接口改出来的组合）没动就不发 scopes，原样保留
+  const chosenPreset = PRESETS.find((p) => p.id === preset);
+  const addsDanger = chosenPreset?.scopes.includes("danger") === true && !grant.scopes.includes("danger");
+  // 提档（多给了哪一档）要当前密码，和批准、建令牌一样；降档、只改工具组不用
+  const raising = chosenPreset?.scopes.some((s) => !grant.scopes.includes(s)) === true;
   const save = async () => {
     setSaving(true);
+    setPasswordError(null);
     try {
-      await api.agent.updateGrantToolsets(grant.id, all ? null : chosen);
-      toast.success(`已更新「${grant.clientName}」能用的工具`);
+      await api.agent.updateGrant(grant.id, {
+        ...(chosenPreset ? { scopes: chosenPreset.scopes } : {}),
+        toolsets: all ? null : chosen,
+        ...(raising ? { currentPassword: password } : {}),
+      });
+      toast.success(`已更新「${grant.clientName}」的权限`);
       onSaved();
       onClose();
     } catch (err) {
-      toast.error(apiErrorMessage(err, "保存失败"));
+      if (errorInfo(err).code === "WRONG_PASSWORD") setPasswordError("当前密码不正确");
+      else toast.error(apiErrorMessage(err, "保存失败"));
     } finally {
       setSaving(false);
     }
@@ -307,32 +323,78 @@ function GrantToolsetsDialog({ grant, onClose, onSaved }: { grant: OAuthGrantInf
     <Dialog open onOpenChange={(o) => !o && !saving && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>「{grant.clientName}」能用哪些工具</DialogTitle>
+          <DialogTitle className="break-all">「{grant.clientName}」的权限</DialogTitle>
           <DialogDescription>
-            只开需要的几组，工具少了模型选得更准。改完立即生效，客户端不用重新连接。档位（{presetLabel(grant.scopes)}）不在这里改：要换就断开后重新授权。
+            改完立即生效，客户端不用重新连接。多出来的工具，有的客户端要在它那边刷新一下才看得到（ChatGPT：设置 → 应用 → OpenStrm → 刷新）。
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
-          <label className="flex items-center gap-2">
-            <Checkbox checked={all} onCheckedChange={(v) => setAll(v === true)} />
-            全部
-          </label>
-          {TOOLSETS.map((t) => (
-            <label key={t.id} className="flex items-center gap-2">
-              <Checkbox
-                disabled={all}
-                checked={all || chosen.includes(t.id)}
-                onCheckedChange={(v) => setChosen((cur) => (v === true ? [...new Set([...cur, t.id])] : cur.filter((x) => x !== t.id)))}
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="grant-preset">档位</Label>
+            <Select value={preset} onValueChange={setPreset}>
+              <SelectTrigger id="grant-preset" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PRESETS.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.label}：{p.scopes.map((s) => SCOPE_LABEL[s]).join("、")}
+                  </SelectItem>
+                ))}
+                {presetIdOf(grant.scopes) === CUSTOM && <SelectItem value={CUSTOM}>自定义（保持不变）</SelectItem>}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {chosenPreset ? chosenPreset.hint : `现在的档位：${grant.scopes.map((s) => SCOPE_LABEL[s]).join("、")}`}
+            </p>
+            {addsDanger && (
+              <p className={`text-xs ${TONE_CLASS.warning.text}`}>
+                给了之后它能删文件、删追更、重建 strm；客户端弹不出确认框的话，全靠它自己先问你。只在要删东西时临时给，用完改回「日常」。
+              </p>
+            )}
+          </div>
+          {raising && (
+            <div className="space-y-2">
+              <Label htmlFor="grant-password">当前密码</Label>
+              <Input
+                id="grant-password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                aria-invalid={passwordError ? true : undefined}
+                aria-describedby="grant-password-hint"
               />
-              {t.label}
-            </label>
-          ))}
+              <p id="grant-password-hint" className={`text-xs ${passwordError ? TONE_CLASS.danger.text : "text-muted-foreground"}`}>
+                {passwordError ?? "多给权限和批准一样要再输一次密码：已连接的客户端不随改密码断开。"}
+              </p>
+            </div>
+          )}
+          <div className="space-y-2">
+            <Label>工具</Label>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+              <label className="flex items-center gap-2">
+                <Checkbox checked={all} onCheckedChange={(v) => setAll(v === true)} />
+                全部
+              </label>
+              {TOOLSETS.map((t) => (
+                <label key={t.id} className="flex items-center gap-2">
+                  <Checkbox
+                    disabled={all}
+                    checked={all || chosen.includes(t.id)}
+                    onCheckedChange={(v) => setChosen((cur) => (v === true ? [...new Set([...cur, t.id])] : cur.filter((x) => x !== t.id)))}
+                  />
+                  {t.label}
+                </label>
+              ))}
+            </div>
+          </div>
         </div>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>
             取消
           </Button>
-          <Button type="button" onClick={() => void save()} disabled={saving || (!all && chosen.length === 0)}>
+          <Button type="button" onClick={() => void save()} disabled={saving || (!all && chosen.length === 0) || (raising && !password)}>
             {saving && <Loader2 className="size-4 animate-spin" />}
             保存
           </Button>
@@ -676,7 +738,7 @@ export function AgentWebClients({
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => setTimeout(() => setEditingGrant(g), 0)}>改工具组</DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setTimeout(() => setEditingGrant(g), 0)}>改权限</DropdownMenuItem>
                     <DropdownMenuItem variant="destructive" onSelect={() => setTimeout(() => setConfirming({ kind: "grant", grant: g }), 0)}>
                       断开
                     </DropdownMenuItem>
@@ -779,7 +841,7 @@ export function AgentWebClients({
         }}
       />
       <ClientCreatedDialog created={created} onClose={() => setCreated(null)} />
-      {editingGrant && <GrantToolsetsDialog key={editingGrant.id} grant={editingGrant} onClose={() => setEditingGrant(null)} onSaved={() => void load()} />}
+      {editingGrant && <GrantAccessDialog key={editingGrant.id} grant={editingGrant} onClose={() => setEditingGrant(null)} onSaved={() => void load()} />}
       <ConfirmDialog
         open={confirming !== null}
         busy={busy}

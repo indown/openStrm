@@ -8,7 +8,17 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { FakePansou, SAMPLE } from "../../test/fake-pansou.js";
-import { PansouError, __test_clearPansouTokens, apiBase, pansouCheckLinks, pansouHealth, pansouLogin, pansouSearch, type PansouConn } from "./client.js";
+import {
+  PansouError,
+  __test_clearPansouTokens,
+  __test_setSearchTimeout,
+  apiBase,
+  pansouCheckLinks,
+  pansouHealth,
+  pansouLogin,
+  pansouSearch,
+  type PansouConn,
+} from "./client.js";
 
 const fake = new FakePansou();
 let conn: PansouConn;
@@ -159,7 +169,9 @@ test("登录：一起等同一次登录的请求里，先发起的那个取消�
   const first = pansouSearch(auth, { kw: "a", src: "all" }, { signal: ac.signal });
   const second = pansouSearch(auth, { kw: "b", src: "all" });
   setTimeout(() => ac.abort(), 80);
+  const t0 = Date.now();
   await assert.rejects(first, (err: unknown) => !(err instanceof PansouError), "掐掉的那个是取消，不是 PanSou 的错");
+  assert.ok(Date.now() - t0 < 200, "取消了就不再等那次登录回来");
   const r = await second;
   assert.equal(r.byType.quark.length, 1, "登录没被第一个调用方的取消带走");
   assert.equal(fake.requests.filter((q) => q.path === "/api/auth/login").length, 1);
@@ -178,16 +190,48 @@ test("登录：只有 401 算用户名或密码不对；403（前面的防护）
   await rejectsWith(pansouLogin({ ...auth, password: "nope" }), "auth", /用户名或密码不对/, 401);
 });
 
-test("登录：timeout 管整次调用，重新登录花掉的时间也算；登录完没时间了就不再重发", async () => {
+test("登录：timeout 管整次调用，等登录也只等到期限；卡在登录上说是登录的事，不说「还在后台接着搜」", async () => {
   fake.users = { admin: "pw" };
   fake.loginDelayMs = 400;
   fake.onSearch = () => ({});
   const auth = { ...conn, username: "admin", password: "pw" };
-  await rejectsWith(pansouSearch(auth, { kw: "x", src: "all" }, { timeoutMs: 200 }), "timeout", /还在后台接着搜/);
+  const t0 = Date.now();
+  await assert.rejects(pansouSearch(auth, { kw: "x", src: "all" }, { timeoutMs: 200 }), (err: unknown) => {
+    assert.ok(err instanceof PansouError);
+    // PanSou 根本没搜：不能归到搜索超时（那种会叫人过半分钟再搜同一个词）
+    assert.equal(err.kind, "unavailable");
+    assert.match(err.message, /登录 PanSou 太久没回应/);
+    assert.doesNotMatch(err.message, /后台接着搜/);
+    return true;
+  });
+  assert.ok(Date.now() - t0 < 350, "到期就走，不等登录回来");
   assert.equal(fake.searches().length, 1, "只有被 401 拒掉的那一次");
-  // 登录拿到的令牌照样记下：下一次直接带上
+  // 那次登录没被掐：拿到的令牌照样记下，下一次不用再登
   await pansouSearch(auth, { kw: "x", src: "all" });
   assert.equal(fake.requests.filter((q) => q.path === "/api/auth/login").length, 1);
+});
+
+test("登录：登录接口自己超时也说是登录的事（检查连接、搜索都一样）", async () => {
+  fake.users = { admin: "pw" };
+  fake.loginDelayMs = 400;
+  fake.onSearch = () => ({});
+  const auth = { ...conn, username: "admin", password: "pw" };
+  __test_setSearchTimeout(25_000, 100);
+  try {
+    await rejectsWith(pansouLogin(auth), "unavailable", /登录 PanSou 太久没回应/);
+    await rejectsWith(pansouSearch(auth, { kw: "x", src: "all" }), "unavailable", /登录 PanSou 太久没回应/);
+  } finally {
+    __test_setSearchTimeout();
+  }
+});
+
+test("搜索请求本身超时才说「还在后台接着搜」；登录过了、重发的那一次超时也算", async () => {
+  fake.users = { admin: "pw" };
+  fake.onSearch = (_b, nth) => (nth === 1 ? {} : { delayMs: 400, data: {} });
+  const auth = { ...conn, username: "admin", password: "pw" };
+  await pansouSearch(auth, { kw: "warm", src: "all" });
+  fake.revokeTokens();
+  await rejectsWith(pansouSearch(auth, { kw: "x", src: "all" }, { timeoutMs: 250 }), "timeout", /还在后台接着搜/);
 });
 
 test("PanSou 回的话：压成一行、去掉控制字符和零宽字符、截短，另外放在 upstream 里；自己的说法不带", async () => {

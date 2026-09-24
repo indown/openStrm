@@ -6,11 +6,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AxiosError } from "axios";
 import { PermanentError } from "../../lib/errors.js";
-import { Cloud115ApiError, Cloud115Error } from "../cloud-115/client.js";
+import { HttpError } from "../../lib/http-error.js";
+import { Cloud115ApiError, Cloud115Error, ShareBusyError } from "../cloud-115/client.js";
+import { ShareApiError } from "../cloud-115/share.js";
 import { OpenlistError } from "../openlist/client.js";
 import { QuarkError } from "../quark/client.js";
-import { accountIssueOf, classifyAccountIssue, driveErrorFacts } from "./errors.js";
+import { accountIssueOf, classifyAccountIssue, driveErrorFacts, driveErrorToHttp } from "./errors.js";
 import { Cloud115Provider } from "./providers/cloud115.js";
+import { ShareGoneError } from "./types.js";
 
 const p115 = new Cloud115Provider({ accountType: "115", name: "a", cookie: "c" });
 
@@ -41,4 +44,23 @@ test("accountIssueOf：路径里带 405 / cookie 的普通错误和 PermanentErr
   assert.equal(p115.classifyError(new Error("cookie 405")), null, "115 的 classifyError 只看接口层的错误");
   assert.equal(p115.classifyError(new Cloud115ApiError("115：登录超时，请重新登录。", 990001)), "auth");
   assert.equal(classifyAccountIssue("115 接口返回 405: 您的访问被阻断"), "blocked");
+});
+
+test("115 分享接口一时回不了话（太频繁、繁忙）：不是分享没了——不回 SHARE_GONE，追更也不当失效停掉", () => {
+  const busy = new ShareBusyError("操作过于频繁，请稍后再试", 911);
+  const http = driveErrorToHttp(busy, "失败");
+  assert.ok(http instanceof HttpError);
+  assert.equal(http.extra.code, "SHARE_BUSY", "资源搜索页只按 SHARE_GONE 标失效");
+  assert.equal(http.extra.reason, undefined);
+  assert.match(http.message, /暂时打不开：操作过于频繁/);
+  assert.equal(p115.classifyError(busy), null, "追更按 gone 才停：这种只是这一轮没连上");
+  assert.equal(accountIssueOf(p115, busy), null);
+  // 说着频繁、其实是登录失效的照样认成账号问题
+  assert.equal(p115.classifyError(new ShareBusyError("登录超时，请稍后重新登录", 990001)), "auth");
+  // 真没了、提取码不对的照旧
+  const gone = driveErrorToHttp(new ShareGoneError("分享已取消", 4100010), "失败");
+  assert.equal(gone.extra.code, "SHARE_GONE");
+  assert.equal(gone.extra.reason, "gone");
+  assert.equal(driveErrorToHttp(new ShareGoneError("访问码错误", 4100012), "失败").extra.reason, "password");
+  assert.equal(p115.classifyError(new ShareApiError("分享已取消", 4100010)), "gone");
 });

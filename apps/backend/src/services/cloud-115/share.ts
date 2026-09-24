@@ -3,46 +3,45 @@
  * 用于解析分享链接、获取分享目录列表、下载链接、转存到我的网盘
  */
 import type { AccountInfo } from "./client.js";
-import { shareSnap, shareDownloadUrl, shareReceive } from "./client.js";
+import { ShareBusyError, shareSnap, shareDownloadUrl, shareReceive } from "./client.js";
 
 export type { AccountInfo };
 
+/** 提取码只有字母数字：链接后面粘着的标点（「?password=u796】」「…u796)」）不算 */
+const leadingCode = (s: string): string => /^[a-z0-9]*/i.exec(s.trim())?.[0] ?? "";
+
 /** 从分享链接解析出 share_code 和 receive_code */
 export function shareExtractPayload(link: string): { share_code: string; receive_code: string } {
-  const raw = link.trim().replace(/^[/#]+|[/#]+$/g, "");
-  if (/^[a-z0-9]+$/i.test(raw)) {
-    return { share_code: raw, receive_code: "" };
+  // 首尾的 / 和 # 去掉；中间 # 往后是网页里的片段，不是分享的一部分
+  const raw = link.trim().replace(/^[/#]+|[/#]+$/g, "").replace(/#.*$/s, "");
+  // 裸分享码，或者短写法：码-提取码、码?password=提取码、码?提取码（不分大小写）。
+  // 要整段对上：以前没锚定，「码?password=提取码」会把 password 这个词当成提取码
+  const short = /^([a-z0-9]+)(?:-([a-z0-9]*)|\?(?:password=)?([a-z0-9]*))?$/i.exec(raw);
+  if (short) {
+    return { share_code: short[1], receive_code: short[2] ?? short[3] ?? "" };
   }
-  // URL 形式：https://115cdn.com/s/swhk9bx3wwq?password=sff1 或 https://115.com/s/xxx?password=yyyy
+  // URL 形式：https://115cdn.com/s/swhk9bx3wwq?password=sff1 或 https://115.com/s/xxx?password=yyyy；
+  // 路径最后一段也可能是「码-提取码」（https://115.com/s/xxx-yyyy）
   if (/^https?:\/\//i.test(raw)) {
     try {
       const u = new URL(raw);
       const pathSegments = u.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
-      const shareCode = pathSegments[pathSegments.length - 1] ?? "";
-      const receiveCode = u.searchParams.get("password") ?? "";
-      if (shareCode && /^[a-z0-9]+$/i.test(shareCode)) {
-        return { share_code: shareCode, receive_code: String(receiveCode).trim() };
+      const last = /^([a-z0-9]+)(?:-([a-z0-9]*))?$/i.exec(pathSegments[pathSegments.length - 1] ?? "");
+      if (last) {
+        return { share_code: last[1], receive_code: leadingCode(u.searchParams.get("password") ?? last[2] ?? "") };
       }
     } catch {
       // fallback to regex
     }
   }
-  // 短格式：xxx-yyyy 或 xxx?yyyy
-  const m = raw.match(/([a-z0-9]+)(?:[-?]|password=)([a-z0-9]+)?/i);
-  if (m) {
-    return {
-      share_code: m[1],
-      receive_code: (m[2] ?? "").trim(),
-    };
-  }
-  // 仅路径：取最后一个路径段为 share_code，query 中 password 为 receive_code
-  const pathMatch = raw.match(/.*\/([a-z0-9]+)(?=\?|$)/i);
+  // 仅路径：取最后一个路径段为 share_code（也可能是「码-提取码」），query 中 password 为 receive_code
+  const pathMatch = raw.match(/.*\/([a-z0-9]+)(?:-([a-z0-9]*))?(?=\?|$)/i);
   if (pathMatch) {
     const shareCode = pathMatch[1];
     const passwordMatch = raw.match(/password=([a-z0-9]+)/i);
     return {
       share_code: shareCode,
-      receive_code: passwordMatch ? passwordMatch[1].trim() : "",
+      receive_code: passwordMatch ? passwordMatch[1].trim() : (pathMatch[2] ?? ""),
     };
   }
   throw new Error("can't extract share_code from " + JSON.stringify(link));
@@ -112,7 +111,7 @@ function normalizeShareAttr(item: Record<string, unknown>): ShareAttr {
 }
 
 /**
- * 115 分享接口回了 state=false：分享已取消 / 过期、提取码不对、登录失效之类都走这里，
+ * 115 分享接口回了 state=false：分享已取消 / 过期、提取码不对、登录失效之类都走这里（太频繁、繁忙这种一时的走 client.ts 的 ShareBusyError），
  * 和网络错误（Cloud115Error）分开——追更靠这个区分"分享没了"和"这轮没连上"。
  */
 export class ShareApiError extends Error {
@@ -125,12 +124,17 @@ export class ShareApiError extends Error {
   }
 }
 
-function checkShareResponse<T extends { state?: boolean; errno?: number; error?: string }>(resp: T): T {
+/** 「一时不行」的说法：请求 / 操作过于频繁、系统繁忙、请稍后再试 */
+const SHARE_BUSY = /频繁|繁忙|稍后|稍候|过多|开小差|busy|too many|frequent/i;
+
+/** 分享接口回了 state=false / errno：分享没了、提取码不对是 ShareApiError，一时回不了话是 ShareBusyError */
+export function checkShareResponse<T extends { state?: boolean; errno?: number; error?: string }>(resp: T): T {
   if (resp.state === false || (typeof resp.errno === "number" && resp.errno !== 0)) {
-    throw new ShareApiError(
-      resp.error || `115 share API error: errno=${resp.errno}`,
-      typeof resp.errno === "number" ? resp.errno : undefined,
-    );
+    const errno = typeof resp.errno === "number" ? resp.errno : undefined;
+    const said = typeof resp.error === "string" ? resp.error.trim() : "";
+    if (!said) throw new ShareBusyError(`115 的分享接口出错了，没说原因${errno !== undefined ? `（errno ${errno}）` : ""}`, errno);
+    if (SHARE_BUSY.test(said)) throw new ShareBusyError(said, errno);
+    throw new ShareApiError(said, errno);
   }
   return resp;
 }

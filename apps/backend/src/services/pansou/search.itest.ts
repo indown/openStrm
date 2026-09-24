@@ -10,12 +10,12 @@ import { after, before, beforeEach, test } from "node:test";
 import type { AccountInfo, ShareFollow, TaskDefinition } from "@openstrm/shared";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { deleteAppSetting, writeAppSetting } from "../../db/repositories/settings.js";
-import { listShareFollows, replaceShareFollows } from "../../db/repositories/share-follows.js";
+import { listShareFollowRefs, listShareFollows, replaceShareFollows } from "../../db/repositories/share-follows.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { HttpError, UPSTREAM_ERROR_STATUS } from "../../lib/http-error.js";
 import { settingsPatchSchema } from "../../schemas/entities.js";
 import { FakePansou, SAMPLE } from "../../test/fake-pansou.js";
-import { PansouError, __test_clearPansouTokens } from "./client.js";
+import { PansouError, __test_clearPansouTokens, __test_setSearchTimeout } from "./client.js";
 import {
   __test_clearPansouCaches,
   __test_setRoundGap,
@@ -317,6 +317,59 @@ test("多轮：第二轮起出错不算失败，拿已有的回去；第一轮�
   await httpRejects(searchSettled("k2"), 429, "PANSOU_RATE_LIMITED");
 });
 
+test("多轮：第一问没问成（连不上、限流、登录不上）不算问过：过了插件的最长时间再搜，也按刚开始搜来判", async () => {
+  __test_setRoundGap(20, 60, 400);
+  try {
+    fake.onSearch = () => ({ status: 502, raw: "Bad Gateway" });
+    await httpRejects(searchSettled("k"), UPSTREAM_ERROR_STATUS, "PANSOU_UNAVAILABLE");
+    fake.onSearch = () => ({ status: 429, raw: "slow down" });
+    await httpRejects(searchSettled("k"), 429, "PANSOU_RATE_LIMITED");
+    await new Promise((r) => setTimeout(r, 450));
+    fake.onSearch = () => ({});
+    const n = fake.searches().length;
+    const r = await searchSettled("k");
+    assert.equal(r.complete, false, "插件这才开始跑：0 条不能当真没有、缓存 2 分钟");
+    assert.equal(fake.searches().length - n, 4, "0 条时问满轮数");
+  } finally {
+    __test_setRoundGap(20);
+  }
+});
+
+test("多轮：第一问超时的照样算问过（PanSou 收到了、插件在后台接着搜）：过了插件的最长时间再搜，一轮没变多就收", async () => {
+  __test_setRoundGap(20, 60, 400);
+  __test_setSearchTimeout(100);
+  try {
+    fake.onSearch = () => ({ delayMs: 300, data: {} });
+    await httpRejects(searchSettled("k"), UPSTREAM_ERROR_STATUS, "PANSOU_TIMEOUT");
+    await new Promise((r) => setTimeout(r, 450));
+    fake.onSearch = () => ({});
+    const n = fake.searches().length;
+    const r = await searchSettled("k");
+    assert.equal(r.complete, true);
+    assert.equal(fake.searches().length - n, 2);
+  } finally {
+    __test_setRoundGap(20);
+    __test_setSearchTimeout();
+  }
+});
+
+test("多轮：先开始的一趟后回来，不拿旧结果盖掉后开始的（fresh）那趟已经写好的缓存", async () => {
+  // 第一次搜索（先开始那趟的第一问）慢、只有一条；之后的都快、有两条
+  fake.onSearch = (_b, nth) => (nth === 1 ? { delayMs: 200, data: { "115": [SAMPLE.l115] } } : { "115": [SAMPLE.l115, SAMPLE.l115b] });
+  const older = searchSettled("k", { budgetMs: 50 });
+  await new Promise((r) => setTimeout(r, 30));
+  const newer = await searchSettled("k", { fresh: true });
+  assert.equal(newer.complete, true);
+  assert.equal(newer.counts["115"], 2);
+  const old = await older;
+  assert.equal(old.counts["115"], 1, "先开始那趟照样把自己的结果回给等它的人");
+  const n = fake.searches().length;
+  const cached = await searchSettled("k");
+  assert.equal(fake.searches().length, n, "走缓存");
+  assert.equal(cached.counts["115"], 2, "缓存里是后开始那趟的");
+  assert.equal(cached.complete, true);
+});
+
 test("多轮：唯一等着的取消了，紧接着再搜同一个词，不会搭上那一趟被掐掉的", async () => {
   fake.onSearch = () => ({ delayMs: 60, data: { quark: [SAMPLE.quark] } });
   const ac = new AbortController();
@@ -368,6 +421,8 @@ const follow = (over: Partial<ShareFollow>): ShareFollow => ({
 test("订过追更的分享标 followed：按网盘 + 分享码对追更表（只存了分享码的靠任务认网盘）；停掉的标 stopped；缓存命中时也现对", async () => {
   replaceTasks([{ id: "t115", account: "a", accountType: "115", originPath: "tv", targetPath: "pansou-itest", strmPrefix: "/m" }]);
   replaceShareFollows([follow({ id: "f1", shareCode: "swabc123xyz" })]);
+  // 标「已在追更」只读认分享的这几列，不把每条几百项的快照读出来
+  assert.deepEqual(listShareFollowRefs(), [{ shareUrl: "", shareCode: "swabc123xyz", taskId: "t115", enabled: true }]);
   try {
     fake.onSearch = () => ({ "115": [SAMPLE.l115, SAMPLE.l115b], quark: [SAMPLE.quark] });
     const web = await searchPhase("沙丘2", "more");
@@ -634,6 +689,26 @@ test("titleEn：作为 ext.title_en 交给 PanSou（first、预热都带）；�
   for (const b of bodies) assert.deepEqual(b.ext, { title_en: "Dune: Part Two" });
   await searchPhase("沙丘2", "more");
   assert.equal(fake.searches()[2].body.ext, undefined);
+});
+
+test("屏蔽词「TC」「CAM」只藏真带着这个词的：The Witcher、Cat Club、James Cameron 留着", async () => {
+  fake.onSearch = () => ({
+    quark: [
+      note("aaaa0001", "The.Witcher.S01.2160p"),
+      note("aaaa0002", "Cat Club (2024)"),
+      note("aaaa0003", "阿凡达 James Cameron 2009"),
+      note("aaaa0004", "沙丘2 TC版"),
+      note("aaaa0005", "Movie.2024.CAM.x264"),
+      note("aaaa0006", "沙丘2 预告片"),
+    ],
+  });
+  writeAppSetting("pansou", { baseUrl: fake.url, blockWords: ["预告", "枪版", "TC", "CAM"] });
+  const r = await searchSettled("k");
+  assert.equal(r.blocked, 3);
+  assert.deepEqual(
+    r.items.map((h) => h.title),
+    ["The.Witcher.S01.2160p", "Cat Club (2024)", "阿凡达 James Cameron 2009"],
+  );
 });
 
 test("屏蔽词的匹配口径：全角半角、大小写、空白都不计较，「第1季」也藏掉 S01 认出的标签「第 1 季」", async () => {

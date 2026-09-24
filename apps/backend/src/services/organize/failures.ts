@@ -65,7 +65,7 @@ export function classifyFailure(provider: Pick<DriveProvider, "classifyError">, 
  *   - 没做的（pending）做；失败的只重试 transient / blocked / 没分类的，stale / rejected 要用户点名（explicit）才重试
  *   - done 但本地镜像失败的重做镜像（不碰网盘）
  *   - 删空目录便宜又幂等：pending / failed / 「目录不是空的」跳过的都再来一遍；目录已经不在了（stale）的不用
- *   - 删文件（用户选了删除 / 覆盖）跟改名 / 移动一样：没做的做，done 只补本地
+ *   - 删文件（冲突上选了删除 / 覆盖）跟改名 / 移动一样：没做的做，done 只补本地；重试前界面和工具都会先说有几个删除
  */
 export function retryableItem(it: OrganizeItem, explicit = false): boolean {
   if (it.givenUp) return false;

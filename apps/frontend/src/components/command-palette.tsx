@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
+import { defaultFilter } from "cmdk";
 import {
   CloudDownload,
   Download,
@@ -62,10 +63,26 @@ type Stage = { kind: "task"; task: TaskRow; rootQuery: string } | null;
 /** 任务在面板里显示成什么样 */
 const taskLabel = (t: TaskRow) => `${t.originPath} → ${t.targetPath}`;
 
-/** 「搜资源 / 查看分享 / 云下载」那一条的 value 前缀：和别的条目的 value 撞不上 */
+/** 「搜资源 / 查看分享 / 云下载」那一条的 value：固定的，和别的条目的 value 撞不上 */
 const INPUT_ITEM = "input-action:";
 
 const INPUT_ITEM_LABEL = { share: "查看分享", offline: "云下载", unsupported: "认不出的链接", search: "搜资源" } as const;
+
+/**
+ * 输入超过这么长就不拿去给别的条目打分：cmdk 的打分是递归的，贴一整季磁力（几千字）进来，
+ * 每打一个字都要把几十个条目和它比一遍；这么长的也不会是在找页面、任务。只剩「云下载」那一条
+ */
+const FUZZY_MAX = 200;
+
+/**
+ * 面板的筛选：「搜资源 / 查看分享 / 云下载」那一条总是留着。它的 value 是固定的 INPUT_ITEM、不带输入的字：
+ * cmdk 拿没去首尾空白的输入去比、条目的 value 却去掉了空白，把输入放进 value 的话「沙丘 」这种会对不上；
+ * 几千字的一整段放进去，它的递归打分还会爆栈。别的条目照 cmdk 默认的打分
+ */
+function paletteFilter(value: string, search: string, keywords?: string[]): number {
+  if (value === INPUT_ITEM) return 1;
+  return search.length > FUZZY_MAX ? 0 : defaultFilter(value, search, keywords);
+}
 
 /**
  * ⌘K 命令面板：去哪儿、做什么、找什么，都在这一个输入框里。
@@ -102,7 +119,7 @@ export function CommandPalette({ open, onOpenChange, onOpenShare, onInput, onLog
   };
 
   /**
-   * 打了字就给一条「搜资源」，和「在 strm 里搜」是同一种写法。value 里带着输入的词，筛选时总能匹配上；
+   * 打了字就给一条「搜资源」，和「在 strm 里搜」是同一种写法。筛选时总能对上（见 paletteFilter）；
    * 不用 forceMount——强制挂上的条目不算结果，下面会同时冒出「什么都没找到」。
    * 贴的是分享、磁力的话这一条换成「查看分享」「云下载」，和顶栏输入框一样分开走。
    *
@@ -112,7 +129,7 @@ export function CommandPalette({ open, onOpenChange, onOpenShare, onInput, onLog
    */
   const inputGroup = query.trim() ? (
     <CommandGroup heading={queryKind === "search" ? "资源搜索" : "链接"}>
-      <CommandItem value={`${INPUT_ITEM}${query.trim()}`} onSelect={() => run(() => onInput(query.trim()))}>
+      <CommandItem value={INPUT_ITEM} onSelect={() => run(() => onInput(query.trim()))}>
         {queryKind === "share" ? <Share2 /> : queryKind === "offline" ? <CloudDownload /> : queryKind === "unsupported" ? <Link2Off /> : <Telescope />}
         <span className="truncate">
           {INPUT_ITEM_LABEL[queryKind]}「{query.trim()}」
@@ -127,6 +144,7 @@ export function CommandPalette({ open, onOpenChange, onOpenShare, onInput, onLog
       onOpenChange={onOpenChange}
       title="命令面板"
       description="搜索页面、任务和操作，回车执行"
+      filter={paletteFilter}
     >
       <CommandInput
         value={query}

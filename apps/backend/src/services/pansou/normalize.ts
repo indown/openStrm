@@ -9,8 +9,11 @@
  */
 import type { AccountInfo, ResourceAction, ResourceHit, ResourceKind, ResourceSearchResult, ResourceSource } from "@openstrm/shared";
 import { listAccounts } from "../../db/repositories/accounts.js";
+import { stripInvisible } from "../../lib/text.js";
+import { looksLikeOfflineLink } from "../cloud-115/offline.js";
 import { parseShareRef, providerFor, withPassword } from "../drive/registry.js";
 import type { DriveKind } from "../drive/types.js";
+import { seasonDirNumber } from "../organize/parse-name.js";
 import type { PansouLink } from "./client.js";
 import { titleTags } from "./tags.js";
 
@@ -63,11 +66,12 @@ function actionFor(kind: ResourceKind, caps: AccountCaps): ResourceAction {
 const TITLE_MAX = 300;
 
 /**
- * 标题：去掉零宽 / 控制字符和「名称：」「片名：」这类前缀（前面常带个表情，「📚名称：」），压空白；过长的截断。
+ * 标题：去掉看不见的字符（零宽、韩文填充符这类，夹在「枪<U+3164>版」「4<U+3164>K」里躲关键词的）、控制字符
+ * 和「名称：」「片名：」这类前缀（前面常带个表情，「📚名称：」），压空白；过长的截断。
  * 只在后面跟着冒号时才去，「🎬《沙丘2》」这种原样留着
  */
 export function cleanTitle(raw: string): string {
-  const t = raw
+  const t = stripInvisible(raw)
     .replace(/\p{Cf}/gu, "")
     .replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " ")
     .replace(/^[\s\p{Extended_Pictographic}\p{Mn}]*(?:资源|影片|电影|剧集|影视)?(?:名称|标题|片名|剧名)\s*[:：]\s*/u, "")
@@ -100,15 +104,39 @@ export interface NormalLink {
   password?: string;
 }
 
-const BTIH = /[?&]xt=urn:btih:([a-z0-9]{32,40})/i;
+const BTIH = /[?&]xt=urn:btih:([^&#\s]*)/i;
 const ED2K_HASH = /^ed2k:\/\/\|file\|[^|]*\|\d+\|([a-f0-9]{32})\|/i;
+const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
+
+/**
+ * 磁力的 info hash → 小写十六进制（去重键）。只认 40 位十六进制和 32 位 base32 两种写法，
+ * base32 换成十六进制：同一个种子两种写法得是同一条。长度、字符不对的是坏链接，回 null
+ */
+export function btihHex(hash: string): string | null {
+  if (/^[0-9a-f]{40}$/i.test(hash)) return hash.toLowerCase();
+  if (!/^[a-z2-7]{32}$/i.test(hash)) return null;
+  let hex = "";
+  let acc = 0;
+  let bits = 0;
+  for (const ch of hash.toLowerCase()) {
+    acc = (acc << 5) | BASE32.indexOf(ch);
+    bits += 5;
+    while (bits >= 4) {
+      bits -= 4;
+      hex += ((acc >> bits) & 0xf).toString(16);
+    }
+    acc &= (1 << bits) - 1;
+  }
+  return hex;
+}
 
 /**
  * 一条链接认成哪类、去重键是什么、给出去的链接长什么样。
  * 115 / 夸克要过 OpenStrm 自己的分享链接解析：认不出的（PanSou 说是 115、格式却对不上）降成 other，
- * 宁可少一个按钮，也别点了才报「不认识这个分享链接」
+ * 宁可少一个按钮，也别点了才报「不认识这个分享链接」。
+ * 磁力认不出 info hash 的（长度、字符不对）回 null、整条不要：115 按 hash 下载，给出去也下不了
  */
-export function normalizeLink(panType: string, url: string, password: string): NormalLink {
+export function normalizeLink(panType: string, url: string, password: string): NormalLink | null {
   const type = panType.toLowerCase();
   const raw = url.trim();
   if ((type === "115" || type === "quark") && /^https?:\/\//i.test(raw)) {
@@ -121,13 +149,12 @@ export function normalizeLink(panType: string, url: string, password: string): N
       return { kind, key: `${kind}:${ref.code}`, url: link, ...(ref.password ? { password: ref.password } : {}) };
     }
   }
-  if (type === "magnet") {
-    const m = BTIH.exec(raw);
-    if (m) {
-      // tracker 和文件名都去掉：115 按 info hash 下载用不上它们，还动辄上千字。十六进制的统一小写，base32 的原样
-      const hash = m[1].length === 40 ? m[1].toLowerCase() : m[1];
-      return { kind: "magnet", key: `magnet:${hash.toLowerCase()}`, url: `magnet:?xt=urn:btih:${hash}` };
-    }
+  if (type === "magnet" && /^magnet:\?/i.test(raw)) {
+    const hash = BTIH.exec(raw)?.[1] ?? "";
+    const hex = btihHex(hash);
+    if (!hex) return null;
+    // tracker 和文件名都去掉：115 按 info hash 下载用不上它们，还动辄上千字。十六进制的统一小写，base32 的原样
+    return { kind: "magnet", key: `magnet:${hex}`, url: `magnet:?xt=urn:btih:${hash.length === 40 ? hex : hash}` };
   }
   if (type === "ed2k" && /^ed2k:\/\//i.test(raw)) {
     const m = ED2K_HASH.exec(raw);
@@ -137,33 +164,70 @@ export function normalizeLink(panType: string, url: string, password: string): N
 }
 
 /**
- * 从作品名、目录名、追更名里拿搜索关键词：追更名「标题 / 子目录」只要标题；去掉【】[]{} 里的标签
- * （【完结】、[4K]、{tmdb-123}）和括号里的年份，这些塞进关键词只会让 PanSou 搜得更少。去完是空的就用原样。
+ * 115 不带网址的分享码：sw 开头、11 位、至少一个数字，可带「-提取码」或「?password=提取码」，不分大小写。
+ * 和前端 lib/share.ts 的 BARE_115_CODE 一样
+ */
+const BARE_115_CODE = /^sw(?=[a-z0-9]*\d)[a-z0-9]{9}(?:-[a-z0-9]{4}|\?password=[a-z0-9]{4})?$/i;
+
+/**
+ * 名字其实是链接、分享码、磁力、info hash：没起名字的追更，名字就是分享码。
+ * 和前端 lib/share.ts 的 inputKindOf 认成「不是搜索词」的那些一样（磁力、info hash 用的是同一个 looksLikeOfflineLink）
+ */
+function looksLikeLink(t: string): boolean {
+  return t.includes("://") || /pan\.quark\.cn\/s\//i.test(t) || BARE_115_CODE.test(t) || looksLikeOfflineLink(t);
+}
+
+/**
+ * 从作品名、目录名、追更名里拿搜索关键词；拿不出片名是空串（调用方据此不搜）：
+ *   - 链接、分享码不是片名（没起名字的追更，名字就是分享码）；
+ *   - 追更名「标题 / 子目录」只要标题；
+ *   - 路径（没起名字的追更拿盯着的目录当名字）去掉末尾的季目录、特别篇目录，用作品那一级；
+ *     既没去掉季目录、又不是 / 开头的原样留着：「Fate/Zero」这种片名本身带 /；
+ *   - 去掉【】[]{} 里的标签（【完结】、[4K]、{tmdb-123}）和括号里的年份，这些塞进关键词只会让 PanSou 搜得更少。去完是空的就用原样。
  * 前端 lib/resource.ts 的 keywordFromName 同一个口径
  */
 export function keywordFromName(name: string): string {
-  const head = name.split(" / ")[0].trim();
-  const cleaned = head
+  const t = name.trim();
+  if (!t || looksLikeLink(t)) return "";
+  const head = t.split(" / ")[0].trim();
+  const parts = head
+    .split("/")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  let popped = false;
+  while (parts.length > 0 && seasonDirNumber(parts[parts.length - 1]) !== null) {
+    parts.pop();
+    popped = true;
+  }
+  if (parts.length === 0) return "";
+  const title = popped || head.startsWith("/") ? parts[parts.length - 1] : head;
+  const cleaned = title
     .replace(/【[^】]*】|\[[^\]]*\]|\{[^}]*\}/g, " ")
     .replace(/[(（]\s*(?:19|20)\d{2}\s*[)）]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return (cleaned || head).slice(0, 100);
+  return (cleaned || title).slice(0, 100);
 }
 
 /**
  * 分组结果 → 去重后的列表：按 KIND_ORDER 排，同一类里保持 PanSou 的顺序。
- * 重复的留排在前面的那条，时间取两条里较新的
+ * 重复的留排在前面的那条，时间取两条里较新的；提取码只在后面那条上的，拿它的链接和提取码
  */
 export function normalizeResults(keyword: string, byType: Record<string, PansouLink[]>, caps: AccountCaps): ResourceSearchResult {
   const hits = new Map<string, ResourceHit>();
   for (const [panType, links] of Object.entries(byType)) {
     for (const link of links) {
       const n = normalizeLink(panType, link.url, link.password);
+      if (!n) continue;
       const publishedAt = cleanDate(link.datetime);
       const prev = hits.get(n.key);
       if (prev) {
         if (publishedAt && (!prev.publishedAt || publishedAt > prev.publishedAt)) prev.publishedAt = publishedAt;
+        // 同一个分享，前面那条没带提取码、后面这条带了：不拿过来的话留下的这条打开就要提取码，转存直接失败
+        if (!prev.password && n.password) {
+          prev.password = n.password;
+          prev.url = n.url;
+        }
         continue;
       }
       const title = cleanTitle(link.note);

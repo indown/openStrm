@@ -9,7 +9,9 @@ import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
  *
  * PanSou 的插件是「尽快响应，持续处理」——4 秒先回一部分，后台最长 30 秒搜完写进它的缓存，同一个词再问一次才拿得到补全的，
  * 响应里又没有「补完了没有」的标记。所以 first 出第一屏之后，隔 2 秒、3 秒、3 秒各再问一次（more，走缓存很快），
- * 连续两轮没变多就提前停。
+ * 连续两轮没变多就提前停。一条都还没有时不这么停：国内连不上 TG、插件又慢的时候，前面几轮一直是 0 条，
+ * 照 3 秒一轮问到从第一问起过了那 30 秒，0 条才算真没有（和后端多问几轮的规矩一样）；中途才有的结果，
+ * 从那一轮起照样最多问四轮。
  *
  * 新一轮的总数不少于当前的才换上去。但有人在操作时（转存框开着、往下滚过一屏）不直接换——列表会在手底下跳，
  * 点到的不是想点的那条——先攒在 pending 里，页面顶上给一条「又找到 N 条」，点了才换。
@@ -23,16 +25,18 @@ export interface ResourceSearchState {
   result: ResourceSearchResult | null;
   /** 有人在操作时攒着没换上去的那一轮 */
   pending: ResourceSearchResult | null;
-  /** 问到第几轮了（1 起，first 算第一轮） */
+  /** 问到第几轮了（1 起，first 算第一轮）；一条都还没有、或者中途才有结果时会超过 TOTAL_ROUNDS */
   round: number;
   error: string | null;
   /** 后端的错误码：PANSOU_NOT_CONFIGURED 时页面换成「去设置」 */
   errorCode: string | null;
 }
 
-/** more 那几轮离上一轮回来隔多久 */
+/** more 那几轮离上一轮回来隔多久；0 条时再往后问的每一轮都隔最后这个数 */
 const MORE_DELAYS_MS = [2_000, 3_000, 3_000];
 export const TOTAL_ROUNDS = MORE_DELAYS_MS.length + 1;
+/** PanSou 的插件在后台最长搜多久（后端 services/pansou/search.ts 的 PLUGIN_SETTLE_MS）：0 条时从第一问起问满这么久 */
+const PLUGIN_SETTLE_MS = 30_000;
 
 const IDLE: ResourceSearchState = { keyword: "", status: "idle", result: null, pending: null, round: 0, error: null, errorCode: null };
 
@@ -97,6 +101,9 @@ export function useResourceSearch(opts: { shouldHold: () => boolean }) {
       const ac = new AbortController();
       abortRef.current = ac;
       setState({ ...IDLE, keyword: kw, status: "loading", round: 1 });
+      const startedAt = Date.now();
+      /** 第几轮开始有结果（0 = 还没有）：「最多问四轮」从这一轮算起，晚来的结果也还能再补几轮 */
+      let firstHitRound = 0;
 
       const finish = () => {
         if (seq === seqRef.current) setState((s) => ({ ...s, status: "done" }));
@@ -104,7 +111,10 @@ export function useResourceSearch(opts: { shouldHold: () => boolean }) {
 
       /** done：已经问了几轮；last：目前最多的一轮有几条；flat：连续几轮没变多 */
       const more = (done: number, last: number, flat: number) => {
-        if (done >= TOTAL_ROUNDS || flat >= 2) return finish();
+        if (last > 0 && firstHitRound === 0) firstHitRound = done;
+        // 有结果了：最多问四轮、连着两轮没变多就提前停。一条都还没有：问到插件那半分钟过完
+        const settled = last > 0 ? done - firstHitRound + 1 >= TOTAL_ROUNDS || flat >= 2 : Date.now() - startedAt >= PLUGIN_SETTLE_MS;
+        if (settled) return finish();
         timerRef.current = window.setTimeout(() => {
           timerRef.current = null;
           setState((s) => (seq === seqRef.current ? { ...s, round: done + 1 } : s));
@@ -121,7 +131,7 @@ export function useResourceSearch(opts: { shouldHold: () => boolean }) {
               if (seq !== seqRef.current || axios.isCancel(err)) return;
               finish();
             });
-        }, MORE_DELAYS_MS[done - 1]);
+        }, MORE_DELAYS_MS[Math.min(done, MORE_DELAYS_MS.length) - 1]);
       };
 
       api.resource

@@ -54,6 +54,20 @@ export class Cloud115ApiError extends Error {
   }
 }
 
+/**
+ * 分享接口一时回不了话：操作太频繁、系统繁忙，或者只回了个错误码、一句话都没说（share.ts 的 checkShareResponse 认）。
+ * 不是分享没了，过一会儿再试多半就好。故意不是 ShareApiError：那个会被认成「分享没了」，追更就此停掉、资源搜索页把这条标成已失效。
+ * 算 115 的业务错误，登录失效、风控照样能按文案认出来。
+ * 放在这里不放 share.ts：两个文件绕一圈互相 import（这边经下载限流 → 网盘注册表 → 115 的 Provider 又 import 了 share.ts），
+ * 在 share.ts 里继承这个类，先加载的是这个文件时会报没初始化
+ */
+export class ShareBusyError extends Cloud115ApiError {
+  constructor(message: string, errno?: number) {
+    super(message, errno);
+    this.name = "ShareBusyError";
+  }
+}
+
 function pathOf(url: string | undefined): string {
   if (!url) return "";
   try {

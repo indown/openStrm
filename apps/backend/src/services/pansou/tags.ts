@@ -10,6 +10,7 @@
  * 字母缩写（DV、ISO、WEB、BD）要求前后不挨着字母，免得 DVD、HDRip、BDYS 被认错；中文词不要边界，
  * 但要躲开否定（「无中字」「未完结」「非原盘」）。
  */
+import { stripInvisible } from "../../lib/text.js";
 import { parseCjkNumber } from "../organize/parse-name.js";
 
 type Rule = readonly [tag: string, re: RegExp];
@@ -161,15 +162,42 @@ export function titleTags(title: string): string[] {
   return tags;
 }
 
+/* ------------------------------- 按词匹配 ------------------------------- */
+
 /**
- * 按词匹配时标题、标签、词都过这一道：全角转半角、转小写、去掉空白——
- * 屏蔽词「第1季」对得上标签「第 1 季」，全角「ＴＣ」对得上 TC。屏蔽词和智能体的 include / exclude 用同一个口径
+ * 屏蔽词、智能体的 include / exclude 按词匹配，同一个口径：词过 matchKey、结果过 matchTextOf，拿 includes 对。
+ * 全角转半角、不分大小写，看不见的字符（零宽、韩文填充符）去掉；此外按词分两种：
+ *   - 带中文等非 ASCII 字符的按子串对，空白不计较：屏蔽词「第1季」对得上标签「第 1 季」，「预告」「枪版」照旧；
+ *   - 只有 ASCII 的（TC、CAM、YTS、4K、x265）要整段对上：头尾不能和挨着的同一类字符连成一串（字母挨字母、数字挨数字），
+ *     也不能跨过空白——不然「TC」会藏掉 The Witcher、Watchmen、Cat Club，「CAM」会藏掉 James Cameron。
+ *     字母和数字挨着算断开：「2160」对得上 2160p，「HDR」对得上 HDR10，「S01」对得上 S01E01。
+ * 为了还是一个 includes 就能对，ASCII 的那一份把每串连续的字母、每串连续的数字各用 RUN 包起来（别的字符都丢掉），
+ * 词也这么包：包好的词只能对上一串一串完整的
  */
-export function matchKey(s: string): string {
-  return s.normalize("NFKC").toLowerCase().replace(/\s+/g, "");
+const RUN = "\u0001";
+
+function norm(s: string): string {
+  return stripInvisible(s).normalize("NFKC").toLowerCase();
 }
 
-/** 一条结果拿来按词匹配的文本：标题和各个标签，用 | 隔开（不让词跨着标题和标签对上） */
+/** 子串对的那一份：去掉空白 */
+function plainKey(s: string): string {
+  return norm(s).replace(/\s+/g, "");
+}
+
+/** 整段对的那一份：一串字母、一串数字各包一层 */
+function runsKey(s: string): string {
+  return (norm(s).match(/[a-z]+|[0-9]+/g) ?? []).map((run) => `${RUN}${run}${RUN}`).join("");
+}
+
+/** 一个词拿来匹配的样子。只有 ASCII、又有字母数字的按整段对；「+」这种只有符号的、带中文的按子串对 */
+export function matchKey(term: string): string {
+  const s = norm(term).replace(/\s+/g, " ").trim();
+  return /^[\x20-\x7e]+$/.test(s) && /[a-z0-9]/.test(s) ? runsKey(s) : plainKey(s);
+}
+
+/** 一条结果拿来按词匹配的文本：标题和各个标签的两份（见上），用 | 隔开，不让词跨着标题和标签对上 */
 export function matchTextOf(hit: { title: string; tags?: readonly string[] }): string {
-  return [hit.title, ...(hit.tags ?? [])].map(matchKey).join("|");
+  const parts = [hit.title, ...(hit.tags ?? [])];
+  return [...parts.map(plainKey), ...parts.map(runsKey)].join("|");
 }

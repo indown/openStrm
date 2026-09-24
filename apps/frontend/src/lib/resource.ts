@@ -2,6 +2,7 @@
  * 资源搜索页用的小工具：类型标签、来源和时间的写法、最近搜索（只存在这个浏览器里）。
  */
 import type { ResourceKind, ResourceLinkState, ResourceSource } from "@openstrm/shared";
+import { inputKindOf } from "./share";
 
 /** tab 的顺序：能转存的在前，能云下载的其次，只能复制的最后 */
 export const KIND_TABS: ResourceKind[] = ["115", "quark", "magnet", "ed2k", "other"];
@@ -42,30 +43,75 @@ export function searchHref(keyword: string): string {
   return `/search?${new URLSearchParams({ q: keyword })}`;
 }
 
-/** 季目录：拿作品名搜的时候跳过它，用上一级 */
-const SEASON_DIR = /^(?:season\s*\d+|s\d{1,2}|specials?|第[一二三四五六七八九十百零\d]+季)$/i;
+/**
+ * 在资源搜索页上从 ⌘K 搜的词交给页面自己处理，和在它的搜索框里按回车一样：同一个词重搜（地址不变，页面跟着地址搜的那一步不会跑）、
+ * 选着的 TMDB 候选和外文原名都留着。页面接了返回 true；没接（还没加载出来）返回 false，由调用方自己换地址
+ */
+export const RESOURCE_SEARCH_EVENT = "openstrm:resource-search";
+export function requestResourceSearch(keyword: string): boolean {
+  if (typeof window === "undefined") return false;
+  return !window.dispatchEvent(new CustomEvent<string>(RESOURCE_SEARCH_EVENT, { detail: keyword, cancelable: true }));
+}
 
 /**
- * 从作品名、目录名、追更名里拿搜索关键词：追更名「标题 / 子目录」只要标题；去掉【】[]{} 里的标签
- * （【完结】、[4K]、{tmdb-123}）和括号里的年份。去完是空的就用原样。
+ * 季目录、特别篇目录：Season 1、Season.01、S01、S.01、Series 2、第二季、第两季、第二部、Specials、SP、OVA、番外、特别篇。
+ * 拿作品名搜的时候跳过它们，用上一级。和后端 services/organize/parse-name.ts 的 seasonDirNumber 认的一样（Extras 不算）
+ */
+const SEASON_DIR =
+  /^(?:(?:season|s|series)[\s._-]*\d{1,2}|第(?:\d{1,2}|[一二两三四五六七八九十]+)[季部]|specials?|sp|ova|oad|特别篇|特別篇|番外篇?|season[\s._-]*0+|s0+)$/i;
+/**
+ * 看不见的字符（零宽空格、BOM、软连字符、方向控制符这类）：网盘上的名字里常夹着，判断季目录前去掉。
+ * 后端 lib/text.ts 的 stripInvisible 按 Unicode 的 Default_Ignorable_Code_Point 去，这里写成它在基本平面里的那些，
+ * 不用 \p{…}：老一点的浏览器不认这种写法，整个脚本会加载失败
+ */
+const INVISIBLE = /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFFF0-\uFFF8]/g;
+
+function isSeasonDir(name: string): boolean {
+  return SEASON_DIR.test(name.replace(INVISIBLE, "").trim());
+}
+
+/** 路径拆成段、去掉末尾的季目录；全是季目录就是空的 */
+function withoutSeasonDirs(path: string): { parts: string[]; popped: boolean } {
+  const parts = path
+    .split("/")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  let popped = false;
+  while (parts.length > 0 && isSeasonDir(parts[parts.length - 1])) {
+    parts.pop();
+    popped = true;
+  }
+  return { parts, popped };
+}
+
+/**
+ * 从作品名、目录名、追更名里拿搜索关键词，拿不出片名是空串（调用方据此不给「找资源」）：
+ *   - 链接、分享码不是片名：没起名字的追更，名字就是分享码；
+ *   - 追更名「标题 / 子目录」只要标题；
+ *   - 网盘路径（没起名字的追更拿盯着的目录当名字）去掉末尾的季目录、用作品那一级。目录名里不会有 /，
+ *     所以既没有季目录可去、又不是 / 开头的原样留着：「Fate/Zero」这种片名不能拆；
+ *   - 去掉【】[]{} 里的标签（【完结】、[4K]、{tmdb-123}）和括号里的年份，去完是空的就用原样。
  * 和后端 services/pansou/normalize.ts 的 keywordFromName 同一个口径（Telegram 的「搜替代资源」用那份）
  */
 export function keywordFromName(name: string): string {
-  const head = name.split(" / ")[0].trim();
-  const cleaned = head
+  const t = name.trim();
+  if (!t || t.includes("://") || inputKindOf(t) !== "search") return "";
+  const head = t.split(" / ")[0].trim();
+  const { parts, popped } = withoutSeasonDirs(head);
+  if (parts.length === 0) return "";
+  const title = popped || head.startsWith("/") ? parts[parts.length - 1] : head;
+  const cleaned = title
     .replace(/【[^】]*】|\[[^\]]*\]|\{[^}]*\}/g, " ")
     .replace(/[(（]\s*(?:19|20)\d{2}\s*[)）]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return (cleaned || head).slice(0, 100);
+  return (cleaned || title).slice(0, 100);
 }
 
-/** 目录路径拿关键词：末尾的季目录（Season 1、S01、第二季）跳过，用作品那一级 */
+/** 目录路径拿关键词：末尾的季目录（Season 1、S01、第二季）跳过，用作品那一级；全是季目录的拿不出，是空串 */
 export function keywordFromPath(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  let i = parts.length - 1;
-  while (i > 0 && SEASON_DIR.test(parts[i].trim())) i--;
-  return i >= 0 ? keywordFromName(parts[i]) : "";
+  const { parts } = withoutSeasonDirs(path);
+  return parts.length > 0 ? keywordFromName(parts[parts.length - 1]) : "";
 }
 
 /* ------------------------------- 标签和筛选 ------------------------------- */

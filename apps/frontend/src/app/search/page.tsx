@@ -29,11 +29,20 @@ import { ShareDetailDialog } from "@/components/ShareDetailDialog";
 import { AddOfflineTaskDialog } from "@/app/offline/components/AddOfflineTaskDialog";
 import { useShareDetail } from "@/hooks/use-share-detail";
 import { TOTAL_ROUNDS, useResourceSearch } from "@/hooks/use-resource-search";
-import { useLinkCheck } from "@/hooks/use-link-check";
+import { linkCheckKey, useLinkCheck } from "@/hooks/use-link-check";
 import { api } from "@/lib/api";
 import { inputKindOf, unsupportedInputMessage } from "@/lib/share";
 import { OFFLINE_ADD_MAX, offlineHandoffHref } from "@/lib/offline";
-import { KIND_LABEL, KIND_TABS, YEAR_FILTER, clearRecent, loadRecent, passesTagFilters, rememberRecent } from "@/lib/resource";
+import {
+  KIND_LABEL,
+  KIND_TABS,
+  RESOURCE_SEARCH_EVENT,
+  YEAR_FILTER,
+  clearRecent,
+  loadRecent,
+  passesTagFilters,
+  rememberRecent,
+} from "@/lib/resource";
 import { cn } from "@/lib/utils";
 import { ResultRow } from "./components/ResultRow";
 import { TagFilterBar } from "./components/TagFilterBar";
@@ -103,8 +112,7 @@ function SearchView() {
   const [kind, setKind] = useState<ResourceKind | null>(null);
   const [hideDead, setHideDead] = useState(false);
   const [shown, setShown] = useState(PAGE_SIZE);
-  /** picked：这次打开是「云下载所选」，加成功了清掉勾选 */
-  const [offline, setOffline] = useState<{ open: boolean; account: string; urls: string; picked?: boolean }>({ open: false, account: "", urls: "" });
+  const [offline, setOffline] = useState<{ open: boolean; account: string; urls: string }>({ open: false, account: "", urls: "" });
   /** 按标签筛：换关键词清空，换 tab 保留 */
   const [tagFilter, setTagFilter] = useState<ReadonlySet<string>>(EMPTY_SET);
   /** 磁力 / 电驴勾选的：key → 链接。换关键词清空，换 tab 保留（磁力和电驴能一起选） */
@@ -160,7 +168,7 @@ function SearchView() {
 
   /**
    * 选 TMDB 候选：名字和当前关键词不一样就按它重搜（换一个地址，带上是哪一部、年份、外文原名）；
-   * 一样就只记下选了哪部。null 是取消
+   * 一样就只记下选了哪部（外文原名也记下：这次不重搜，之后的重试、不用缓存重搜会带上它）。null 是取消
    */
   const pickTmdb = (pick: TmdbPick | null) => {
     // 「只看这一年」跟着候选走：换了、取消了都去掉，免得拿新的年份悄悄筛
@@ -176,16 +184,12 @@ function SearchView() {
     const withPick = (p: URLSearchParams) => {
       p.set("tmdb", pick.key);
       if (/^(?:19|20)\d{2}$/.test(pick.year)) p.set("year", pick.year);
+      // 原名是外文、和中文名不一样的才带：PanSou 有的插件拿它去搜英文站
+      if (original && original !== (name || q) && /[a-z]/i.test(original)) p.set("en", original);
       return p;
     };
-    if (name && name !== q) {
-      const fresh = withPick(new URLSearchParams({ q: name }));
-      // 原名是外文、和中文名不一样的才带：PanSou 有的插件拿它去搜英文站
-      if (original && original !== name && /[a-z]/i.test(original)) fresh.set("en", original);
-      router.push(`/search?${fresh}`);
-    } else {
-      router.replace(`/search?${withPick(next)}`, { scroll: false });
-    }
+    if (name && name !== q) router.push(`/search?${withPick(new URLSearchParams({ q: name }))}`);
+    else router.replace(`/search?${withPick(next)}`, { scroll: false });
   };
 
   const submit = (text: string = input) => {
@@ -227,6 +231,27 @@ function SearchView() {
     router.push(`/search?${new URLSearchParams({ q: t })}`);
   };
 
+  // ⌘K 在这一页上搜的词（lib/resource.ts 的 requestResourceSearch）：当成打进这个框里按了回车，
+  // 同一个词重搜、TMDB 候选和外文原名留着。设置还没读到时 submit 会误报「还没配置」：同一个词不用管
+  // （读到设置就按地址搜），换了词只换地址。每次渲染都是新函数，放 ref 里读最新的
+  const onPaletteSearch = (text: string) => {
+    setInput(text);
+    if (config !== null) submit(text);
+    else if (text !== q) router.push(`/search?${new URLSearchParams({ q: text })}`);
+  };
+  const paletteSearchRef = useRef(onPaletteSearch);
+  useEffect(() => {
+    paletteSearchRef.current = onPaletteSearch;
+  });
+  useEffect(() => {
+    const onRequest = (e: Event) => {
+      e.preventDefault();
+      paletteSearchRef.current((e as CustomEvent<string>).detail);
+    };
+    window.addEventListener(RESOURCE_SEARCH_EVENT, onRequest);
+    return () => window.removeEventListener(RESOURCE_SEARCH_EVENT, onRequest);
+  }, []);
+
   const result = rs.result;
   const tabs = useMemo(() => KIND_TABS.filter((k) => (result?.counts[k] ?? 0) > 0), [result]);
   // 默认落在第一个「有结果、也有账号接得住」的 tab；落定之后就钉住，后面几轮补来别的类型也不跳走
@@ -263,7 +288,7 @@ function SearchView() {
   // 地址里没年份了（浏览器后退到选候选之前）：「只看这一年」不生效，也不算选着
   const activeFilter = useMemo(() => (year ? tagFilter : withoutYear(tagFilter)), [tagFilter, year]);
   const items = useMemo(
-    () => tabHits.filter((h) => !(hideDead && linkCheck.states.get(h.key) === "bad") && passesTagFilters(h, activeFilter, year)),
+    () => tabHits.filter((h) => !(hideDead && linkCheck.states.get(linkCheckKey(h)) === "bad") && passesTagFilters(h, activeFilter, year)),
     [tabHits, hideDead, linkCheck.states, activeFilter, year],
   );
   const toggleTag = (tag: string) => {
@@ -272,6 +297,11 @@ function SearchView() {
       if (!next.delete(tag)) next.add(tag);
       return next;
     });
+    setShown(PAGE_SIZE);
+  };
+  /** 筛选条上的「清除」和列表里的「清除筛选」是同一件事：筛选清空，列表回到第一页的长度 */
+  const clearTags = () => {
+    setTagFilter(EMPTY_SET);
     setShown(PAGE_SIZE);
   };
   /** 这一类（磁力 / 电驴）当前筛选下、已经显示出来的能勾的：「全选」只选看得见的 */
@@ -299,7 +329,7 @@ function SearchView() {
     });
   };
   const deadCount = useMemo(
-    () => (result?.items ?? []).filter((h) => h.kind === active && linkCheck.states.get(h.key) === "bad").length,
+    () => (result?.items ?? []).filter((h) => h.kind === active && linkCheck.states.get(linkCheckKey(h)) === "bad").length,
     [result, active, linkCheck.states],
   );
 
@@ -310,8 +340,8 @@ function SearchView() {
       const r = await share.load(hit.url);
       setOpeningKey((k) => (k === hit.key ? null : k));
       // 用账号读一次才是准的：分享没了记成失效；提取码不对或没带的分享其实还在，记成「要提取码」
-      if (!r.ok && r.code === "SHARE_GONE") mark(hit.key, r.reason === "password" ? "locked" : "bad");
-      else if (r.ok) mark(hit.key, "ok");
+      if (!r.ok && r.code === "SHARE_GONE") mark(hit, r.reason === "password" ? "locked" : "bad");
+      else if (r.ok) mark(hit, "ok");
     },
     // share.load 每次渲染都是新函数；这里只该跟着 mark 变
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -331,7 +361,7 @@ function SearchView() {
     const urls = [...picked.values()].join("\n");
     if (offlineAccounts === null) router.push(offlineHandoffHref(urls));
     else if (offlineAccounts.length === 0) toast.error("还没有 115 账号：云下载要用 115，先到「账户」页添加一个");
-    else setOffline({ open: true, account: offlineAccounts[0], urls, picked: true });
+    else setOffline({ open: true, account: offlineAccounts[0], urls });
   };
 
   if (config === null) return <CardListSkeleton />;
@@ -466,7 +496,11 @@ function SearchView() {
 
           {total === 0 ? (
             rs.status === "refining" ? (
-              <EmptyState icon={Telescope} title="暂时没搜到，还在补充结果" description={`PanSou 还在搜（第 ${rs.round}/${TOTAL_ROUNDS} 轮）`} />
+              <EmptyState
+                icon={Telescope}
+                title="暂时没搜到，还在补充结果"
+                description={`PanSou 还在搜（第 ${rs.round} 轮）。连不上 TG、插件又慢的时候，头半分钟可能一条都没有`}
+              />
             ) : result.blocked ? (
               <EmptyState
                 icon={SearchX}
@@ -486,6 +520,17 @@ function SearchView() {
                 icon={SearchX}
                 title={`没搜到「${rs.keyword}」`}
                 description="换个说法试试：去掉年份和画质词，用别名或英文名。也可能是 PanSou 那边没配频道和插件。"
+                action={
+                  <div className="flex flex-wrap justify-center gap-2">
+                    <Button variant="outline" onClick={rs.fetchMore} title="PanSou 的插件在后台还可能补到新的：再问一次（走缓存，很快）">
+                      <RefreshCw />
+                      再取一次
+                    </Button>
+                    <Button variant="ghost" onClick={() => search(rs.keyword, { refresh: true, titleEn })}>
+                      不用缓存重搜
+                    </Button>
+                  </div>
+                }
               />
             )
           ) : (
@@ -535,7 +580,8 @@ function SearchView() {
                   {searching ? (
                     <span className="flex items-center gap-1.5" aria-live="polite">
                       <Loader2 className="size-3.5 animate-spin" />
-                      还在补充结果（第 {rs.round}/{TOTAL_ROUNDS} 轮）
+                      {/* 一条都没有时会多问几轮、中途才有结果的从那一轮起再问：轮数超过预定的那几轮时只写第几轮 */}
+                      还在补充结果（第 {rs.round > TOTAL_ROUNDS ? rs.round : `${rs.round}/${TOTAL_ROUNDS}`} 轮）
                     </span>
                   ) : (
                     <Button
@@ -571,16 +617,7 @@ function SearchView() {
                 </div>
               </div>
 
-              <TagFilterBar
-                hits={tabHits}
-                selected={activeFilter}
-                year={year}
-                onToggle={toggleTag}
-                onClear={() => {
-                  setTagFilter(EMPTY_SET);
-                  setShown(PAGE_SIZE);
-                }}
-              />
+              <TagFilterBar hits={tabHits} selected={activeFilter} year={year} onToggle={toggleTag} onClear={clearTags} />
 
               <div role="tabpanel" id="search-tabpanel" aria-labelledby={active ? `search-tab-${active}` : undefined} className="divide-y">
                 {items.slice(0, shown).map((hit) => (
@@ -592,7 +629,7 @@ function SearchView() {
                     pickable={(hit.kind === "magnet" || hit.kind === "ed2k") && hit.action === "offline"}
                     picked={picked.has(hit.key)}
                     onPickChange={pickOne}
-                    state={linkCheck.states.get(hit.key)}
+                    state={linkCheck.states.get(linkCheckKey(hit))}
                     checkable={config.checkLinks && !linkCheck.stopped && (hit.kind === "115" || hit.kind === "quark")}
                     observe={linkCheck.observe}
                     offlineAccounts={offlineAccounts ?? NO_ACCOUNTS}
@@ -605,7 +642,7 @@ function SearchView() {
                   (activeFilter.size > 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-muted-foreground">
                       这一类里没有同时符合这几个筛选的。
-                      <button type="button" className="ml-1 text-brand hover:underline" onClick={() => setTagFilter(EMPTY_SET)}>
+                      <button type="button" className="ml-1 text-brand hover:underline" onClick={clearTags}>
                         清除筛选
                       </button>
                     </div>
@@ -652,9 +689,12 @@ function SearchView() {
         accounts={offlineAccounts ?? NO_ACCOUNTS}
         initialUrls={offline.urls}
         onAdded={(added) => {
-          if (!offline.picked) return;
+          // 加成功的去掉勾选，失败的留着；单独点「云下载」加的也算，不然「云下载所选」会再交一遍（115 报重复）
           const done = new Set(added);
-          setPicked((prev) => new Map([...prev].filter(([, url]) => !done.has(url))));
+          setPicked((prev) => {
+            const next = new Map([...prev].filter(([, url]) => !done.has(url)));
+            return next.size === prev.size ? prev : next;
+          });
         }}
       />
     </div>

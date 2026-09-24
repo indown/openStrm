@@ -63,14 +63,28 @@ export function parseShareRef(text: string): ShareRef | null {
   return parseQuarkShareLink(text) ?? parse115ShareLink(text);
 }
 
-const URL_IN_TEXT = /https?:\/\/[^\s<>"'，。；）]+/gi;
-const PASSCODE_IN_TEXT = /提取码[:：]?\s*([a-z0-9]{4,8})/i;
+/**
+ * 一段话里的网址：到空白、引号、尖括号或者第一个非 ASCII 字符为止。分享链接都是 ASCII 的，
+ * 「【https://115.com/s/…?password=u796】」「链接：https://…！提取码：…」里紧跟着的中文标点不能粘进链接
+ */
+const URL_IN_TEXT = /https?:\/\/[^\s<>"'\u0080-\uffff]+/gi;
+/** 句末粘在网址后面的英文标点：「(https://…)」「…u796.」 */
+const URL_TRAILING = /[.,;!)\]}]+$/;
+/**
+ * 链接后面另写的提取码：提取码 / 访问码（115 的叫法）/ 密码 / 口令，冒号可有可无；「解压密码」是压缩包的，不算。
+ * 夸克那边 providers/quark.ts 有一份一样的（注册表 import 它，放不到一处）
+ */
+const PASSCODE_IN_TEXT = /(?:提取码|访问码|(?<!解压)密码|口令)\s*[:：]?\s*([a-z0-9]{4,8})/i;
 
-/** 提取码另外给的（Telegram 消息正文、搜索结果的 password 字段）拼进链接；链接里本来就有的不动 */
+/**
+ * 提取码另外给的（Telegram 消息正文、搜索结果的 password 字段）拼进链接；链接里本来就有的不动。
+ * 拼在 # 前面、# 往后的去掉：115 的链接常以 # 结尾，拼到片段里再解析就读不到提取码了
+ */
 export function withPassword(ref: ShareRef, password: string): ShareRef {
   if (!password || ref.password) return ref;
-  const sep = ref.url.includes("?") ? "&" : "?";
-  return { ...ref, password, url: `${ref.url}${sep}${ref.kind === "115" ? "password" : "pwd"}=${password}` };
+  const base = ref.url.split("#")[0];
+  const sep = base.includes("?") ? "&" : "?";
+  return { ...ref, password, url: `${base}${sep}${ref.kind === "115" ? "password" : "pwd"}=${password}` };
 }
 
 /**
@@ -83,8 +97,8 @@ export function parseShareText(text: string): ShareRef | null {
 
 /** 从一段话里挑出分享链接（Telegram 消息）：只认 URL，提取码可以写在链接后面的文字里 */
 export function findShareLink(text: string): ShareRef | null {
-  for (const url of text.match(URL_IN_TEXT) ?? []) {
-    const ref = parseShareRef(url);
+  for (const match of text.match(URL_IN_TEXT) ?? []) {
+    const ref = parseShareRef(match.replace(URL_TRAILING, ""));
     if (ref) return withPassword(ref, PASSCODE_IN_TEXT.exec(text)?.[1] ?? "");
   }
   return null;

@@ -10,8 +10,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { LRUCache } from "lru-cache";
 import type { PansouSettings, ResourceCheckResult, ResourceHit, ResourceLinkState, ResourceSearchResult, ResourceStatus } from "@openstrm/shared";
 import { readAppSetting } from "../../db/repositories/settings.js";
-import { listShareFollowSummaries } from "../../db/repositories/share-follows.js";
-import { getTask } from "../../db/repositories/tasks.js";
+import { listShareFollowRefs } from "../../db/repositories/share-follows.js";
+import { listTasks } from "../../db/repositories/tasks.js";
 import { isAbortError, messageOf } from "../../lib/errors.js";
 import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
@@ -117,11 +117,17 @@ async function cachedHealth(conn: PansouConn): Promise<PansouHealth | null> {
  * 停掉的（分享失效、长期没更新、手动暂停）标 stopped：搜替代资源时，原来那个分享多半也在结果里，不能说它「在追」
  */
 export function markFollowed(items: ResourceHit[]): ResourceHit[] {
-  const follows = listShareFollowSummaries();
+  const follows = listShareFollowRefs();
   if (follows.length === 0) return items;
+  // 任务表只在真有老订阅要靠它时读一次，不按订阅一条条查
+  let taskKinds: Map<string, string | undefined> | undefined;
   const states = new Map<string, "active" | "stopped">();
   for (const f of follows) {
-    const kind = (f.shareUrl ? parseShareRef(f.shareUrl)?.kind : undefined) ?? getTask(f.taskId)?.accountType;
+    let kind: string | undefined = f.shareUrl ? parseShareRef(f.shareUrl)?.kind : undefined;
+    if (!kind) {
+      taskKinds ??= new Map(listTasks().map((t) => [t.id, t.accountType]));
+      kind = taskKinds.get(f.taskId);
+    }
     if (!kind) continue;
     const key = `${kind}:${f.shareCode}`;
     // 同一个分享订了几个目录：有一个还在追就算在追
@@ -135,8 +141,8 @@ export function markFollowed(items: ResourceHit[]): ResourceHit[] {
 }
 
 /**
- * 屏蔽词：标题或标签里带任何一个就藏掉，回藏了几条。匹配口径见 tags.ts 的 matchKey（全角半角、大小写、空白都不计较），
- * 和智能体 resource_search 的 include / exclude 一样。
+ * 屏蔽词：标题或标签里带任何一个就藏掉，回藏了几条。匹配口径见 tags.ts 的 matchKey（全角半角、大小写不计较，
+ * 中文词按子串、英文数字的词要整段对上：「TC」不藏 The Witcher），和智能体 resource_search 的 include / exclude 一样。
  * 在这边滤、不交给 PanSou 的 filter.exclude：换了屏蔽词不用重搜（缓存里的原始结果现滤），也不挑 PanSou 的版本
  */
 function applyBlockWords(items: ResourceHit[], words: readonly string[]): { items: ResourceHit[]; blocked: number } {
@@ -224,13 +230,18 @@ export function __test_setRoundGap(ms: number, incompleteTtlMs = 20_000, pluginS
   PLUGIN_SETTLE_MS = pluginSettleMs;
 }
 
-type Settled = { raw: PansouSearchResult; complete: boolean };
+/** trip：第几趟问的（先开始的小）。两趟重叠时（fresh 的另起一趟），先开始、后回来的那趟不能拿旧结果盖掉缓存 */
+type Settled = { raw: PansouSearchResult; complete: boolean; trip: number };
 type RoundListener = (round: number, links: number) => void;
 
 /** 结果（PanSou 的原样，账号能力每次现算）按关键词缓存：补完了的 2 分钟，没补完的 INCOMPLETE_TTL_MS。智能体常会换个筛选条件再调一次 */
 const settledCache = new LRUCache<string, Settled>({ max: 50, ttl: 2 * 60_000 });
-/** 每个词第一次问 PanSou 的时间（fresh 从头算）：判插件是不是早就跑完了。比 PanSou 自己的缓存时间短，那边的结果还在 */
+/**
+ * 每个词第一次问到 PanSou 的时间（fresh 从头算）：判插件是不是早就跑完了。比 PanSou 自己的缓存时间短，那边的结果还在。
+ * 第一问没问成（登录不上、限流、连不上）不记：那次 PanSou 根本没搜，插件也就没在后台跑
+ */
 const firstAsked = new LRUCache<string, number>({ max: 200, ttl: 10 * 60_000 });
+let trips = 0;
 /**
  * 正在问的词：同时来的调用（智能体并行调两次、Telegram 和智能体同时搜同一个词）搭同一趟，不各问一套。
  * 等着的都走了（都取消了）才掐掉这一趟
@@ -319,17 +330,24 @@ async function askRounds(
   key: string,
   opts: { budgetMs: number; fresh: boolean; signal: AbortSignal; onRound: RoundListener },
 ): Promise<Settled> {
+  const trip = ++trips;
   const started = Date.now();
-  if (opts.fresh || !firstAsked.has(key)) firstAsked.set(key, started);
-  const since = firstAsked.get(key) ?? started;
   const deadline = started + opts.budgetMs;
+  const noteAsked = () => {
+    if (opts.fresh || !firstAsked.has(key)) firstAsked.set(key, started);
+  };
   let raw: PansouSearchResult;
   try {
     // 第一问不按预算掐（慢的实例第一问十几秒起步，掐了就整个失败）：用它自己的 25 秒，要重新登录的也算在里面
     raw = await pansouSearch(conn, { kw, src: "all", refresh: opts.fresh }, { signal: opts.signal });
   } catch (err) {
+    // 超时的那一问 PanSou 收到了、插件在后台接着搜，照样从这时算起；别的失败它根本没搜，不记——
+    // 记了的话过半分钟再搜会当插件早跑完了：一轮没变多就收工，0 条当真没有、缓存 2 分钟
+    if (err instanceof PansouError && err.kind === "timeout") noteAsked();
     throw pansouHttpError(err);
   }
+  noteAsked();
+  const since = firstAsked.get(key) ?? started;
   let links = linkCount(raw);
   opts.onRound(1, links);
   let stalls = 0;
@@ -357,8 +375,10 @@ async function askRounds(
     }
   }
   const complete = settled();
-  settledCache.set(key, { raw, complete }, complete ? {} : { ttl: INCOMPLETE_TTL_MS });
-  return { raw, complete };
+  // 后开始的一趟（fresh 另起的）已经写好了：这趟的结果更旧，照样回给等着它的人，但不盖掉缓存
+  const newer = settledCache.peek(key);
+  if (!newer || newer.trip < trip) settledCache.set(key, { raw, complete, trip }, complete ? {} : { ttl: INCOMPLETE_TTL_MS });
+  return { raw, complete, trip };
 }
 
 /* ------------------------------- 链接检测 ------------------------------- */

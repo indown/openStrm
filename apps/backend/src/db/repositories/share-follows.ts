@@ -1,4 +1,4 @@
-import { and, asc, eq, lte, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, lte, notInArray, sql } from "drizzle-orm";
 import type { ShareFollow, ShareFollowEntry, ShareFollowRun, ShareFollowStatus, ShareFollowSummary } from "@openstrm/shared";
 import { db } from "../client.js";
 import { shareFollows } from "../schema.js";
@@ -83,20 +83,26 @@ export function listShareFollows(): ShareFollow[] {
   return db.select().from(shareFollows).orderBy(asc(shareFollows.createdAt)).all().map(deserialize);
 }
 
-/** 列表页用：不把每条几百项的快照读出来再扔掉，条数让 SQLite 数 */
+/** 列表页用：不把每条几百项的快照读出来再扔掉（known 这一列不选），条数让 SQLite 数 */
 export function listShareFollowSummaries(): ShareFollowSummary[] {
+  const { known, ...columns } = getTableColumns(shareFollows);
   const rows = db
-    .select({
-      row: shareFollows,
-      knownCount: sql<number>`json_array_length(${shareFollows.known})`,
-    })
+    .select({ ...columns, knownCount: sql<number>`json_array_length(${known})` })
     .from(shareFollows)
     .orderBy(asc(shareFollows.createdAt))
     .all();
-  return rows.map(({ row, knownCount }) => {
+  return rows.map(({ knownCount, ...row }) => {
     const { known: _known, ...rest } = deserialize({ ...row, known: "[]" });
     return { ...rest, knownCount: Number(knownCount) || 0 };
   });
+}
+
+/** 资源搜索标「已在追更」用：只要认分享的这几列 */
+export function listShareFollowRefs(): Array<Pick<ShareFollow, "shareUrl" | "shareCode" | "taskId" | "enabled">> {
+  return db
+    .select({ shareUrl: shareFollows.shareUrl, shareCode: shareFollows.shareCode, taskId: shareFollows.taskId, enabled: shareFollows.enabled })
+    .from(shareFollows)
+    .all();
 }
 
 export function getShareFollow(id: string): ShareFollow | null {

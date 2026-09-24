@@ -361,8 +361,11 @@ function followView(f: ShareFollowSummary, originPath: string | null | undefined
 /** 分享失效、长期没更新而停掉的订阅：给个按订阅名去资源搜索的入口，找一个还在更的分享 */
 function AltSearchLink({ follow: f, className }: { follow: ShareFollowSummary; className?: string }) {
   if (f.enabled || (f.status !== "expired" && f.status !== "stale")) return null;
+  // 没起名字的订阅，名字是分享码或者盯着的目录：拿不出片名就不给这个入口，免得搜一串分享码
+  const keyword = keywordFromName(f.name);
+  if (!keyword) return null;
   return (
-    <Link href={searchHref(keywordFromName(f.name))} className={`flex w-fit items-center gap-1 text-xs text-brand hover:underline ${className ?? ""}`}>
+    <Link href={searchHref(keyword)} className={`flex w-fit items-center gap-1 text-xs text-brand hover:underline ${className ?? ""}`}>
       <Telescope className="size-3" />
       搜替代资源
     </Link>

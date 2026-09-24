@@ -538,7 +538,7 @@ async function listOutsideDstDirs(
   for (const p of plans) {
     for (const it of p.items) {
       if ((it.action === "rename" || it.action === "move") && !inScope(dirOf(it.dstPath))) dirs.add(dirOf(it.dstPath));
-      // 用户选了挪进重复文件目录：那边现在有什么也得知道（撞名了往后排 (2)）
+      // 冲突选了挪进重复文件目录：那边现在有什么也得知道（撞名了往后排 (2)）
       if (it.resolve === "duplicate" && !inScope(dirOf(duplicatePathFor(it.srcPath)))) dirs.add(dirOf(duplicatePathFor(it.srcPath)));
     }
   }
@@ -807,6 +807,7 @@ function applyUnitPatch(row: OrganizeUnit, patch: OrganizeUnitPatch, picked?: Or
 function replanRun(run: OrganizeRun, state: PlanState, changed: Map<string, OrganizeUnit>): void {
   const rows = new Map(listUnits(run.id).map((r) => [r.key, r]));
   const plans: UnitPlan[] = [];
+  const planned: Array<{ row: OrganizeUnit; plan: UnitPlan }> = [];
   for (const u of state.units.values()) {
     const r = changed.get(u.key) ?? rows.get(u.key);
     if (!r) continue;
@@ -823,10 +824,28 @@ function replanRun(run: OrganizeRun, state: PlanState, changed: Map<string, Orga
       },
       planContext(state),
     );
-    if (changed.has(u.key)) updateUnit(run.id, u.key, { ...r, dstRoot: plan.dstRoot, notes: [...(state.identifyNotes.get(u.key) ?? []), ...plan.notes] });
+    planned.push({ row: r, plan });
     plans.push(plan);
   }
   const all = finalizeItems(plans, { entries: state.entries, scopeRoots: state.scopeRoots, items: [], cleanupEmptyDirs: state.org.cleanupEmptyDirs });
+  // 选过的冲突办法这一轮没用上（没撞上：单元取消了勾选、别的单元让开了位置……）就清掉。挂着不清，哪天又撞上了
+  // （重新勾上、换回原来的季）会悄悄生效，其中「删掉 / 覆盖」就成了没人再看一眼的删除；撞上了但办法没成的（候选名都被占）留着
+  const used = new Set(all.filter((i) => i.resolve && (i.resolved || i.action === "conflict")).map((i) => JSON.stringify([i.unitKey, i.srcPath])));
+  for (const { row: r, plan } of planned) {
+    const entries = Object.entries(r.resolutions ?? {});
+    const kept = entries.filter(([abs]) => used.has(JSON.stringify([r.key, relOf(state.task, abs)])));
+    const pruned = kept.length !== entries.length;
+    if (changed.has(r.key)) {
+      updateUnit(run.id, r.key, {
+        ...r,
+        ...(pruned ? { resolutions: Object.fromEntries(kept) } : {}),
+        dstRoot: plan.dstRoot,
+        notes: [...(state.identifyNotes.get(r.key) ?? []), ...plan.notes],
+      });
+    } else if (pruned) {
+      updateUnit(run.id, r.key, { resolutions: Object.fromEntries(kept) });
+    }
+  }
   replaceItems(run.id, toItemRows(state.task, all));
   updateRun(run.id, { stats: computeStats(listUnits(run.id), listItems(run.id), "apply") });
 }
@@ -880,14 +899,18 @@ export interface PlanPatch {
   /**
    * 逐文件：unitKey + srcPath（网盘绝对路径）定位——同一个字幕可能按名字前缀跟到两个单元下，两边各是各的。
    * 勾选 / 取消勾选记在单元的 excluded 里，冲突办法记在 resolutions 里（null 是撤回，回到「留在原处」）。
-   * 取消勾选的文件规划时跳过、跟着它的字幕 / nfo 一起留下；选了办法的顺带勾回来
+   * 办法只能给现在是冲突、或者已经选过办法的文件：取消勾选的文件要先勾回来（还冲突再选）。
+   * 取消勾选的文件规划时跳过、跟着它的字幕 / nfo 一起留下
    */
   files?: Array<{ unitKey: string; srcPath: string; selected?: boolean; resolve?: OrganizeConflictResolution | null }>;
 }
 
 type FilePatch = { selected?: boolean; resolve?: OrganizeConflictResolution | null };
 
-/** 一个单元套上文件级的改动：勾选记在 excluded、冲突办法记在 resolutions（选了办法就算勾上，取消勾选撤掉办法） */
+/**
+ * 一个单元套上文件级的改动：勾选记在 excluded、冲突办法记在 resolutions。
+ * 选了办法的项本来就勾着（取消勾选的选不了办法，见 patchPlan）；撤回办法（null）= 留在原处，记成取消勾选；取消勾选同时撤掉办法
+ */
 function applyFilePatches(row: OrganizeUnit, files: Array<[string, FilePatch]>): Pick<OrganizeUnit, "excluded" | "resolutions"> {
   const excluded = new Set(row.excluded);
   const resolutions = { ...row.resolutions };
@@ -926,12 +949,32 @@ export async function patchPlan(runId: string, input: PlanPatch): Promise<{ chan
       if (!state.units.has(key) || !rows.has(key)) throw new HttpError(404, "单元不存在");
       unitPatches.set(key, { ...unitPatches.get(key), ...patch });
     }
+    // 换了匹配 / 季 / 集偏移的单元：文件的目标跟着变，原来给冲突选的办法对着的是旧目标（「覆盖」删的会是另一份），
+    // 一律清掉；这一批里也不许再给它选办法——还没看到新的冲突，等重新规划后再选
+    const reidentified = new Set<string>();
+    for (const [key, patch] of unitPatches) {
+      const row = rows.get(key)!;
+      const matchChanged = patch.match !== undefined && (!row.match || row.match.tmdbId !== patch.match.tmdbId || row.match.mediaType !== patch.match.mediaType);
+      const seasonChanged = patch.seasonOverride !== undefined && patch.seasonOverride !== row.seasonOverride;
+      const offsetChanged = patch.episodeOffset !== undefined && patch.episodeOffset !== row.episodeOffset;
+      if (matchChanged || seasonChanged || offsetChanged) reidentified.add(key);
+    }
     // 点名的文件：单元 + 路径要是现在清单里的一项（建目录 / 删空目录不属于任何单元）
     const items = listItems(runId);
-    const known = new Set(items.filter((it) => it.unitKey !== "" && it.kind !== "dir").map((it) => JSON.stringify([it.unitKey, it.srcPath])));
+    const fileKey = (unitKey: string, srcPath: string) => JSON.stringify([unitKey, srcPath]);
+    const known = new Set(items.filter((it) => it.unitKey !== "" && it.kind !== "dir").map((it) => fileKey(it.unitKey, it.srcPath)));
+    const conflicts = new Set(items.filter((it) => it.action === "conflict").map((it) => fileKey(it.unitKey, it.srcPath)));
     const named = new Map<string, Map<string, FilePatch>>();
     for (const { unitKey, srcPath, ...patch } of input.files ?? []) {
-      if (!known.has(JSON.stringify([unitKey, srcPath]))) throw new HttpError(404, "清单里没有这个文件");
+      if (!known.has(fileKey(unitKey, srcPath))) throw new HttpError(404, "清单里没有这个文件");
+      // 办法只给冲突项（和界面一样）；已经选过的可以改主意，撤回总可以。
+      // 不然「自己起名」能给任意文件起任意名字，别的办法也会记在单元上、等以后撞上了才生效
+      if (patch.resolve && !conflicts.has(fileKey(unitKey, srcPath)) && !rows.get(unitKey)?.resolutions?.[srcPath]) {
+        throw new HttpError(400, "只有冲突的文件能选处理办法", { code: "NOT_CONFLICT" });
+      }
+      if (patch.resolve && reidentified.has(unitKey)) {
+        throw new HttpError(400, "这部作品这次换了匹配 / 季 / 集偏移，冲突要等重新规划之后再选办法", { code: "RESOLVE_AFTER_REPLAN" });
+      }
       const byPath = named.get(unitKey) ?? new Map<string, FilePatch>();
       byPath.set(srcPath, patch);
       named.set(unitKey, byPath);
@@ -945,7 +988,7 @@ export async function patchPlan(runId: string, input: PlanPatch): Promise<{ chan
       if (input.conflicts) {
         for (const it of list) {
           const row = unitRows.get(it.unitKey);
-          if (it.action !== "conflict" || !row || row.resolutions?.[it.srcPath] || row.excluded.includes(it.srcPath)) continue;
+          if (it.action !== "conflict" || !row || reidentified.has(it.unitKey) || row.resolutions?.[it.srcPath] || row.excluded.includes(it.srcPath)) continue;
           const byPath = byUnit.get(it.unitKey) ?? new Map<string, FilePatch>();
           byPath.set(it.srcPath, { resolve: { how: input.conflicts } });
           byUnit.set(it.unitKey, byPath);
@@ -983,6 +1026,7 @@ export async function patchPlan(runId: string, input: PlanPatch): Promise<{ chan
       }
       const up = unitPatches.get(row.key);
       if (up) next = applyUnitPatch(next, up, picked.get(row.key)?.match);
+      if (reidentified.has(row.key)) next = { ...next, resolutions: {} };
       const files = filesByUnit.get(row.key);
       if (files) next = { ...next, ...applyFilePatches(next, files) };
       return next;
@@ -1074,17 +1118,6 @@ export async function patchItems(runId: string, ids: string[], patch: ItemsPatch
     }));
   const { changed } = await patchPlan(runId, { files });
   return { changed: changed.length };
-}
-
-/**
- * 这些单元里有没有「现在没勾、勾上就会删文件」的：用户在冲突上选过删掉 / 覆盖，后来又把整个单元取消勾选，办法还留着。
- * 令牌把它们重新勾上就等于重新安排了删除，要删除档（整理工具和 REST 共用这条规则）
- */
-export function unitsReviveDeletes(runId: string, keys: Iterable<string>): boolean {
-  const wanted = new Set(keys);
-  return listUnits(runId).some(
-    (u) => wanted.has(u.key) && !u.selected && Object.values(u.resolutions ?? {}).some((r) => r.how === "delete" || r.how === "replace"),
-  );
 }
 
 /**
@@ -1392,7 +1425,8 @@ async function execute(job: Job, runId: string, only: Set<string> | null): Promi
     }
   }
 
-  // 1b. 删除：只有用户在冲突上明确选了「删掉这一份」/「覆盖」的项。放在改名 / 移动之前，覆盖才腾得出位置。
+  // 1b. 删除：只有冲突上明确选了「删掉这一份」/「覆盖」的项（人在整理页选的，或者智能体改清单时选的；执行都要人点头或者删除档）。
+  //     放在改名 / 移动之前，覆盖才腾得出位置。
   //     动手前按目录清单核对名字和 id：预览之后位置上换了别的文件就不删（stale）。删掉的撤销退不回来
   const deletes = pending.filter((i) => i.action === "delete");
   for (const it of deletes) {
@@ -1820,28 +1854,32 @@ function releaseHeldCopies(run: Pick<OrganizeRun, "taskId" | "createdAt">): void
  */
 export function applicability(run: OrganizeRun, ids?: string[], known?: { items: OrganizeItem[]; units: OrganizeUnit[] }): OrganizeRunDetail["applicable"] {
   if (run.stage === "revert") return { ok: false, reason: "这次整理已经开始撤销，只能继续撤销", count: 0 };
-  if (run.status === "ready") return run.stats.planned > 0 ? { ok: true, count: run.stats.planned } : { ok: false, reason: "没有要动的项", count: 0 };
+  if (run.status === "ready") return run.stats.planned > 0 ? { ok: true, count: run.stats.planned, deletes: run.stats.plannedDelete } : { ok: false, reason: "没有要动的项", count: 0 };
   if (!["done", "failed", "cancelled"].includes(run.status)) return { ok: false, reason: `当前状态（${run.status}）不能执行`, count: 0 };
   const all = known?.items ?? listItems(run.id);
   // 从没执行过的（待执行的预览被取消 / 被新的预览取代）：所有项都是 pending，那不是「没做完」，要执行就重新预览
   if (!all.some((it) => it.attempts > 0)) return { ok: false, reason: "这次预览没有执行过；要执行请重新预览", count: 0 };
   const active = activeItemFilter(run.id, known?.units);
   const items = all.filter(active);
+  const deletesIn = (list: OrganizeItem[]) => list.filter((it) => it.action === "delete").length;
   if (ids) {
     const set = new Set(ids);
-    const count = items.filter((it) => set.has(it.id) && retryableItem(it, true)).length;
-    return count > 0 ? { ok: true, count } : { ok: false, reason: "这些项没有可以重试的", count: 0 };
+    const picked = items.filter((it) => set.has(it.id) && retryableItem(it, true));
+    return picked.length > 0 ? { ok: true, count: picked.length, deletes: deletesIn(picked) } : { ok: false, reason: "这些项没有可以重试的", count: 0 };
   }
   // 「目录不是空的」这种顺带再看一眼的 rmdir 不算有事可做，也不进按钮上的数字
   const retry = items.filter((it) => retryableItem(it) && !(it.action === "rmdir" && it.status === "skipped"));
   if (retry.length === 0) return { ok: false, reason: "没有要重试的项", count: 0 };
-  return { ok: true, count: retry.length };
+  return { ok: true, count: retry.length, deletes: deletesIn(retry) };
 }
 
 export async function applyRun(runId: string, ids?: string[]): Promise<OrganizeRun> {
   const run = getRun(runId);
   if (!run) throw new HttpError(404, "整理记录不存在");
   if (jobs.has(runId)) throw new HttpError(409, "这次整理正在进行中");
+  // 待确认的清单整份执行（人点头的、planVersion 钉着的都是整份）：只挑几项执行会把别的项留成「没做完」，
+  // 之后一个「重试」就连带执行了——比如令牌挑开删除项先执行别的，把删除留给不知情的人重试。ids 只给重试用
+  if (run.status === "ready" && ids) throw new HttpError(400, "待确认的清单要整份执行；不想动的项先取消勾选", { code: "IDS_ON_READY" });
   assertNoOps(runId);
   const can = applicability(run, ids);
   if (!can.ok) throw new HttpError(409, can.reason ?? "不能执行");
@@ -2080,7 +2118,7 @@ async function revert(job: Job, runId: string): Promise<void> {
   let fatal: string | null = null;
   bumpAttempts([...items, ...stuck].map((it) => it.id));
   jobLog(job, `开始撤销：${items.length + stuck.length} 项`);
-  // 用户选了删除 / 覆盖的项已经进了网盘回收站，这里退不回来，只说一声
+  // 冲突上选了删除 / 覆盖的项已经进了网盘回收站，这里退不回来，只说一声
   const deleted = listItems(runId).filter((it) => it.action === "delete" && it.status === "done").length;
   if (deleted > 0) jobLog(job, `其中 ${deleted} 项是删掉的文件，退不回来（在网盘回收站里找）`);
 
@@ -2347,7 +2385,10 @@ export function failureGroups(run: OrganizeRun, items: OrganizeItem[], units: Or
   const live = items.filter((it) => !it.givenUp);
   const groups: OrganizeFailureGroup[] = [];
   const push = (key: OrganizeFailureGroup["key"], list: OrganizeItem[], actions: Partial<Pick<OrganizeFailureGroup, "retry" | "skip" | "repreview">>, held = 0) => {
-    if (list.length > 0) groups.push({ key, itemIds: list.map((it) => it.id), retry: false, skip: false, repreview: false, held, ...actions });
+    if (list.length === 0) return;
+    // 撤销阶段的组里不会有删除项（删掉的退不回来，不进撤销）
+    const deletes = list.filter((it) => it.action === "delete").length;
+    groups.push({ key, itemIds: list.map((it) => it.id), retry: false, skip: false, repreview: false, held, deletes, ...actions });
   };
   if (run.stage === "apply") {
     const failed = live.filter((it) => it.status === "failed" && active(it));
