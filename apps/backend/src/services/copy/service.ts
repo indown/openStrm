@@ -383,6 +383,22 @@ function overlapHold(c: CopyRecord, pending: CopyRecord[]): string | null {
   return null;
 }
 
+const targetKey = (c: CopyRecord): string => JSON.stringify([c.dstDir, c.name]);
+
+/**
+ * 两个来源要复制成同一个目标文件：两个网盘账号里有同一集、或者同一账号两个任务目录都有它，目标目录又是同一个。
+ * 提交前的「目标里已有同名」只看得见复制完的，两边前后脚提交就是两个 OpenList 任务写同一个文件。
+ * 所以一个目标只让一个来源提交（这一轮先分进组的、或者已经在复制的那个），另一个等它办完，再按「目标里已有」跳过。
+ * 返回压着的原因；没撞上返回 null
+ */
+function sameTargetHold(c: CopyRecord, pending: CopyRecord[], claimed: Map<string, CopyRecord>): string | null {
+  const other =
+    claimed.get(targetKey(c)) ??
+    pending.find((o) => o.id !== c.id && o.status === "pending" && o.stage === "copying" && o.dstDir === c.dstDir && o.name === c.name);
+  if (!other) return null;
+  return `等另一份同名的先复制完（账号 ${other.account} 的 ${joinPath(other.srcDir, other.name)}）`;
+}
+
 /**
  * 列 OpenList 里的源目录（带 refresh，不然看的是缓存）。
  *
@@ -425,6 +441,8 @@ async function listSource(cfg: CopyConfig, account: string, srcDir: string): Pro
 async function submitReady(cfg: CopyConfig, items: CopyRecord[], pending: CopyRecord[], touched: Set<CopyRecord>, persist: () => void): Promise<void> {
   if (items.length === 0) return;
   const groups = new Map<string, { account: string; srcDir: string; dstDir: string; items: CopyRecord[] }>();
+  /** 这一轮已经分进组的目标文件：同一个目标只让一个来源提交 */
+  const claimed = new Map<string, CopyRecord>();
   for (const c of items) {
     touched.add(c);
     const srcDir = toOpenlistPath(cfg.mounts, c.account, c.srcDir);
@@ -432,11 +450,12 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], pending: CopyRe
       finish(c, "failed", `账号 ${c.account} 没填「在 OpenList 里的挂载根」，不知道 ${c.srcDir} 在 OpenList 的哪里`);
       continue;
     }
-    const held = overlapHold(c, pending);
+    const held = overlapHold(c, pending) ?? sameTargetHold(c, pending, claimed);
     if (held) {
       c.detail = held;
       continue;
     }
+    claimed.set(targetKey(c), c);
     const key = JSON.stringify([srcDir, c.dstDir]);
     const g = groups.get(key) ?? { account: c.account, srcDir, dstDir: c.dstDir, items: [] };
     g.items.push(c);

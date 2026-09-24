@@ -403,22 +403,30 @@ function HomeContent() {
     </DropdownMenu>
   );
 
-  /** 开着「复制到 OpenList」的任务：一个「复制」标，队列里有在跑 / 失败的再各给一个，点开是云下载页的复制队列 */
+  /**
+   * 开着「复制到 OpenList」的任务：一个「复制」标，队列里有在跑 / 失败的再各给一个，点开是云下载页的复制队列。
+   * 开着却复制不了（比如这个账号在设置页没填挂载根）换成警示色的「复制没生效」，点开是设置页那一节
+   */
   const copyBadges = (task: TaskRow) => {
     const stat = copyStats.get(task.id);
     if (!task.copyToOpenlist?.enabled && !stat) return null;
     const open = () => router.push("/offline#copy-queue");
     return (
       <>
-        {task.copyToOpenlist?.enabled && (
-          <Badge
-            variant="secondary"
-            className="shrink-0 px-1.5 py-0"
-            title={`新文件会让 OpenList 复制到 ${task.copyToOpenlist.dstDir || "设置页的默认目标目录"}${task.copyToOpenlist.deleteSource ? "，复制完删掉网盘上那份" : ""}`}
-          >
-            复制
-          </Badge>
-        )}
+        {task.copyToOpenlist?.enabled &&
+          (task.copyBlocked ? (
+            <button type="button" onClick={() => router.push("/settings#openlist-copy")} title={`${task.copyBlocked}。开着也不会复制，点这里去设置页`}>
+              <StatusBadge tone="warning">复制没生效</StatusBadge>
+            </button>
+          ) : (
+            <Badge
+              variant="secondary"
+              className="shrink-0 px-1.5 py-0"
+              title={`新文件会让 OpenList 复制到 ${task.copyToOpenlist.dstDir || "设置页的默认目标目录"}${task.copyToOpenlist.deleteSource ? "，复制完删掉网盘上那份" : ""}`}
+            >
+              复制
+            </Badge>
+          ))}
         {stat && stat.pending > 0 && (
           <button type="button" onClick={open} title="复制队列在云下载页">
             <StatusBadge tone="info" pulse className="tabular-nums">

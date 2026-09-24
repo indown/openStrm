@@ -392,6 +392,7 @@ class AccountMonitor {
                 maybeAutoOrganize({ task: m.task, paths: [m.relPath], trigger: "monitor", debounce: true });
                 // 整理自己造成的事件走的是上面的 ownOk 分支，进不到这里，所以不会把整理搬过的文件再复制一遍
                 const copyOpts = copyOptionsFor(m.task, undefined);
+                if (copyOpts.blocked) this.log("info", `${name} 没复制到 OpenList：${copyOpts.blocked}`);
                 if (copyOpts.enabled) {
                   enqueueCopy({
                     account: this.name,

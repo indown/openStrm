@@ -578,6 +578,7 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
     if (generated > 0) scheduleEmbyRefresh();
     maybeAutoOrganize({ task, paths: landed, trigger: "follow" });
     const copyOpts = copyOptionsFor(task, undefined);
+    if (copyOpts.blocked) log.info(`追更「${f.name}」的任务开着复制到 OpenList，但${copyOpts.blocked}，这次新增的不复制`);
     if (copyOpts.enabled) {
       enqueueCopy({
         account: provider.account.name,

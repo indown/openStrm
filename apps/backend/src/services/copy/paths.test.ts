@@ -5,7 +5,8 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { baseName, dstDirFor, joinPath, normDir, parentDir, relativeTo, toOpenlistPath } from "./paths.js";
+import type { AppSettings } from "@openstrm/shared";
+import { baseName, copyOptionsFor, copySettingsGap, dstDirFor, joinPath, normDir, parentDir, relativeTo, toOpenlistPath } from "./paths.js";
 
 test("normDir：补头斜杠、去尾斜杠、收起连着的斜杠", () => {
   assert.equal(normDir("/115"), "/115");
@@ -56,4 +57,31 @@ test("joinPath：中间只留一个斜杠", () => {
   assert.equal(joinPath("/115/", "tv"), "/115/tv");
   assert.equal(joinPath("/", "tv"), "/tv");
   assert.equal(joinPath("/115", ""), "/115");
+});
+
+const withCopy = (openlistCopy: AppSettings["openlistCopy"]) => ({ openlistCopy }) as unknown as AppSettings;
+
+test("copySettingsGap：按设置页从上到下说缺哪样；同类型的两个账号各看各的挂载根", () => {
+  assert.match(copySettingsGap("115-a", withCopy(undefined)) ?? "", /还没选 OpenList 账号/);
+  const s = withCopy({ account: "ol", dstDir: "/local", mounts: { "115-a": "/115", "115-b": "  " } });
+  assert.equal(copySettingsGap("115-a", s), null);
+  assert.match(copySettingsGap("115-b", s) ?? "", /账号 115-b 还没填「在 OpenList 里的挂载根」/, "只填了空白等于没填");
+  assert.match(copySettingsGap("夸克", s) ?? "", /账号 夸克 还没填/);
+  const noDst = withCopy({ account: "ol", mounts: { "115-a": "/115" } });
+  assert.match(copySettingsGap("115-a", noDst) ?? "", /没有目标目录/);
+  assert.equal(copySettingsGap("115-a", noDst, "/local/tv"), null, "任务上填了目标目录也行");
+});
+
+test("copyOptionsFor：要复制却配不齐就当关，blocked 说卡在哪；本来就不复制的不带 blocked", () => {
+  const s = withCopy({ account: "ol", dstDir: "/local", mounts: { "115-a": "/115" } });
+  const on = { enabled: true, deleteSource: true };
+  assert.deepEqual(copyOptionsFor({ account: "115-a", copyToOpenlist: on }, undefined, s), { enabled: true, dstDir: undefined, deleteSource: true });
+  const blocked = copyOptionsFor({ account: "115-b", copyToOpenlist: on }, undefined, s);
+  assert.equal(blocked.enabled, false);
+  assert.equal(blocked.deleteSource, false);
+  assert.match(blocked.blocked ?? "", /115-b 还没填/, "第二个 115 没填挂载根：任务开着复制也不复制，但要说出来");
+  assert.match(copyOptionsFor({ account: "115-b" }, true, s).blocked ?? "", /115-b/, "一次性勾的也算要复制");
+  assert.equal(copyOptionsFor({ account: "115-b", copyToOpenlist: on }, false, s).blocked, undefined, "这次明说不复制");
+  assert.equal(copyOptionsFor({ account: "115-b" }, undefined, s).blocked, undefined, "任务上没开");
+  assert.deepEqual(copyOptionsFor({ account: "115-a" }, true, s), { enabled: true, dstDir: undefined, deleteSource: false }, "一次性勾选不带删源");
 });

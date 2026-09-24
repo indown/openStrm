@@ -183,6 +183,26 @@ test("receive 到任务目录（async，后台同步）：任务开着复制时�
   }
 });
 
+test("这次明确勾了复制、这个账号却没填挂载根：转存前就 400，网盘不碰", async () => {
+  const ol: AccountInfo = { accountType: "openlist", name: "ol", account: "u", password: "p", url: "http://ol.local" };
+  replaceAccounts([a115, aQuark, ol]);
+  // 只给夸克填了挂载根，115 账号 a 没填
+  patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local/media", mounts: { q: "/quark" } } });
+  const receivedBefore = d115.share!.calls.receive;
+  try {
+    const list = await post({ action: "list", url: LINK_115 });
+    const readme = (list.json().entries as Array<{ id: string; name: string; isDir: boolean }>).find((e) => e.name === "readme.txt")!;
+    const res = await post({ action: "receive", url: LINK_115, taskId: "s-115", mode: "sync", items: [readme], copy: true });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.json().message, /没法复制到 OpenList：账号 a 还没填「在 OpenList 里的挂载根」/);
+    assert.equal(d115.share!.calls.receive, receivedBefore, "转存都没发起：不能转存完了才悄悄不复制");
+    assert.equal(listCopies().length, 0);
+  } finally {
+    replaceAccounts([a115, aQuark]);
+    patchAppSettings({ openlistCopy: baseline.settings.openlistCopy });
+  }
+});
+
 test("后台模式：同步迟迟起不来（远端目录树导出慢）也先回话，不让前端超时报「保存失败」", async () => {
   __test_setAsyncStartGrace(50);
   let release: () => void = () => {};

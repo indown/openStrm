@@ -6,7 +6,7 @@ import * as z from "zod";
 import { useForm, useWatch, type Control } from "react-hook-form";
 import { toast } from "sonner";
 import { FolderOpen } from "lucide-react";
-import type { TaskDefinition } from "@openstrm/shared";
+import type { OpenlistCopySettings, TaskDefinition } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -40,6 +40,7 @@ import {
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import { fmtWhen } from "@/lib/format";
+import { copyGapInDialog } from "@/lib/openlist-copy";
 import { TreeSelectDialog } from "@/components/TreeSelectDialog";
 import { DirectoryTreeDialog } from "./DirectoryTreeDialog";
 import { LocalDirectoryTreeDialog } from "./LocalDirectoryTreeDialog";
@@ -246,8 +247,11 @@ export function AddTaskDialog({
   const [loading, setLoading] = React.useState(false);
   const [directoryDialogOpen, setDirectoryDialogOpen] = React.useState(false);
   const [localDirectoryDialogOpen, setLocalDirectoryDialogOpen] = React.useState(false);
-  /** 复制目标从哪个 OpenList 账号里选、默认目标目录是什么（设置页配的），开了「复制到 OpenList」才去读 */
-  const [copyCfg, setCopyCfg] = React.useState<{ account: string; dstDir: string } | null>(null);
+  /**
+   * 设置页的「复制到 OpenList」：复制目标从哪个 OpenList 账号里选、默认目标目录、各账号的挂载根。
+   * 开了复制才去读；undefined = 还没读到或读失败，这时不下「没配好」的结论
+   */
+  const [copySettings, setCopySettings] = React.useState<OpenlistCopySettings | undefined>(undefined);
   const [copyBrowseOpen, setCopyBrowseOpen] = React.useState(false);
   /** 定时下拉选了"自定义"：表达式为空或不等于预设时也保持输入框可编辑 */
   const [customCron, setCustomCron] = React.useState(false);
@@ -262,6 +266,7 @@ export function AddTaskDialog({
   const strmPrefix = useWatch({ control: form.control, name: "strmPrefix" }) ?? "";
   const enable302 = useWatch({ control: form.control, name: "enable302" }) ?? false;
   const copyEnabled = useWatch({ control: form.control, name: "copyEnabled" }) ?? false;
+  const copyDstDir = useWatch({ control: form.control, name: "copyDstDir" }) ?? "";
 
   React.useEffect(() => {
     if (!open || !copyEnabled) return;
@@ -269,17 +274,17 @@ export function AddTaskDialog({
     api.settings
       .get()
       .then((s) => {
-        if (cancelled) return;
-        const c = s.openlistCopy;
-        setCopyCfg(c?.account ? { account: c.account, dstDir: (c.dstDir ?? "").trim() } : null);
+        if (!cancelled) setCopySettings(s.openlistCopy ?? {});
       })
       .catch(() => {
-        if (!cancelled) setCopyCfg(null);
+        if (!cancelled) setCopySettings(undefined);
       });
     return () => {
       cancelled = true;
     };
   }, [open, copyEnabled]);
+  const olAccount = copySettings?.account ?? "";
+  const copyDefaultDst = (copySettings?.dstDir ?? "").trim();
   const cronExpression = useWatch({ control: form.control, name: "cronExpression" }) ?? "";
   const cronPreview = useCronPreview(cronExpression);
 
@@ -292,6 +297,11 @@ export function AddTaskDialog({
   /** 只有本地挂载路径才拼 /账号名；http(s) 前缀靠任务反查账号 */
   const appendAccount = is302 && !prefixIsHttp;
   const encoding = pathEncodingHint(prefixIsHttp, is302);
+  /** OpenList 账号的任务没有新文件的来路（转存 / 追更 / 云下载 / 监控都只落到网盘账号上），复制开关没意义 */
+  const isOpenlistTask = accountType === "openlist";
+  /** 开着复制、却因为设置没配齐（这个账号没填挂载根之类）实际不会复制：当场说出来，不然只会「开着，什么都没发生」 */
+  const copyGap =
+    copyEnabled && account && !isOpenlistTask && copySettings ? copyGapInDialog(copySettings, account, copyDstDir, accounts) : null;
 
   // 编码没意义的场景下把它关掉，别让一个灰掉的勾继续生效
   React.useEffect(() => {
@@ -299,6 +309,13 @@ export function AddTaskDialog({
       form.setValue("enablePathEncoding", false);
     }
   }, [encoding.allowed, form]);
+
+  // 复制开关同理：选了 OpenList 账号就关掉（带着 open：重新打开时表单被重置成任务上存的值，要再看一遍）
+  React.useEffect(() => {
+    if (open && isOpenlistTask && form.getValues("copyEnabled")) {
+      form.setValue("copyEnabled", false);
+    }
+  }, [open, isOpenlistTask, form]);
 
   const setOpen = (next: boolean) => {
     if (!isControlled) setOpenState(next);
@@ -636,10 +653,16 @@ export function AddTaskDialog({
                 control={form.control}
                 name="copyEnabled"
                 label="复制到 OpenList"
-                description="转存 / 追更 / 云下载 / 监控往这个任务目录里落下新文件时，让 OpenList 把它复制到另一个存储（比如挂载的本地磁盘）。先在设置页配好 OpenList 账号、目标目录和这个网盘的挂载根。"
+                description={
+                  isOpenlistTask
+                    ? "OpenList 账号的任务用不着复制：转存、追更、云下载、监控都不会往这里落新文件。"
+                    : "转存 / 追更 / 云下载 / 监控往这个任务目录里落下新文件时，让 OpenList 把它复制到另一个存储（比如挂载的本地磁盘）。先在设置页配好 OpenList 账号、目标目录和这个网盘的挂载根。"
+                }
+                disabled={isOpenlistTask}
               />
               {copyEnabled && (
                 <div className="space-y-3 rounded-md border p-3">
+                  {copyGap && <p className="text-xs text-warning">{copyGap}。</p>}
                   <FormField
                     control={form.control}
                     name="copyDstDir"
@@ -649,14 +672,14 @@ export function AddTaskDialog({
                         <InputGroup>
                           <FormControl>
                             <InputGroupInput
-                              placeholder={copyCfg?.dstDir ? `不填就用设置页的默认目标目录（${copyCfg.dstDir}）` : "不填就用设置页的默认目标目录"}
+                              placeholder={copyDefaultDst ? `不填就用设置页的默认目标目录（${copyDefaultDst}）` : "不填就用设置页的默认目标目录"}
                               {...field}
                             />
                           </FormControl>
                           <InputGroupButton
                             type="button"
-                            disabled={!copyCfg}
-                            title={copyCfg ? `从 OpenList 账号 ${copyCfg.account} 里选` : "先在设置页选好 OpenList 账号"}
+                            disabled={!olAccount}
+                            title={olAccount ? `从 OpenList 账号 ${olAccount} 里选` : "先在设置页选好 OpenList 账号"}
                             onClick={() => setCopyBrowseOpen(true)}
                           >
                             <FolderOpen />
@@ -710,13 +733,13 @@ export function AddTaskDialog({
           onSelect={(path) => form.setValue("targetPath", path, { shouldValidate: true })}
         />
 
-        {copyCfg && (
+        {olAccount && (
           <TreeSelectDialog
             open={copyBrowseOpen}
             onOpenChange={setCopyBrowseOpen}
             title="选择复制目标目录"
-            description={<>从 OpenList 账号 {copyCfg.account} 的根目录里选</>}
-            load={(path) => api.directory.remote(copyCfg.account, path ? `/${path}` : "/")}
+            description={<>从 OpenList 账号 {olAccount} 的根目录里选</>}
+            load={(path) => api.directory.remote(olAccount, path ? `/${path}` : "/")}
             onConfirm={(path) => {
               form.setValue("copyDstDir", `/${path}`, { shouldDirty: true });
               setCopyBrowseOpen(false);

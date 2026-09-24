@@ -11,7 +11,7 @@ import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareRef } from "../drive/types.js";
 import { enqueueCopy } from "../copy/service.js";
-import { copyOptionsFor } from "../copy/paths.js";
+import { copyBlockerFor, copyOptionsFor } from "../copy/paths.js";
 import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
 import { generateStrmForSelected, type SelectedItem } from "../strm/share-strm.js";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -80,6 +80,11 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
   if (!task.targetPath || !task.strmPrefix) throw new HttpError(400, "所选任务缺少 targetPath 或 strmPrefix 配置");
   const items = uniqueItems(opts.items);
   if (items.length === 0) throw new HttpError(400, "没有要转存的条目");
+  // 这次明确勾了复制却复制不了：转存前就说清楚（同云下载），别转存完了才悄悄不复制
+  if (opts.copy === true) {
+    const why = copyBlockerFor(settings)(task);
+    if (why) throw new HttpError(400, `没法复制到 OpenList：${why}。先到设置页的「复制到 OpenList」里配好，或者这次不勾复制`);
+  }
 
   const fullOriginPath = subPath ? `${task.originPath}/${subPath}` : task.originPath;
   let targetId: string;
@@ -107,6 +112,7 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
   /** 任务开了「复制到 OpenList」（或这次勾了）：把刚转存进来的条目交给复制队列。organizing = 刚排了会直接执行的自动整理 */
   const enqueueCopyOf = (organizing: boolean) => {
     const copyOpts = copyOptionsFor(task, opts.copy, settings);
+    if (copyOpts.blocked) log.info(`任务 ${task.originPath} 开着复制到 OpenList，但${copyOpts.blocked}，这次转存的不复制`);
     if (!copyOpts.enabled) return;
     enqueueCopy({
       account: provider.account.name,

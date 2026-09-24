@@ -273,6 +273,9 @@ test("勾了复制但没配好：加任务时当场拒绝，不留回执", async
   await assert.rejects(addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", copyToOpenlist: true }), /不是 openlist 账号/);
   patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local/dl" } });
   await assert.rejects(addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", copyToOpenlist: true }), /挂载根/);
+  // 挂载根填了，可设置页和这次都没给目标目录：下完了也没地方复制，当场说
+  patchAppSettings({ openlistCopy: { account: "ol", mounts: { acc: "/115" } } });
+  await assert.rejects(addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", copyToOpenlist: true }), /没有复制目标目录/);
   assert.equal(listFollowups().length, 0, "拒绝时不该留下任何回执");
 });
 

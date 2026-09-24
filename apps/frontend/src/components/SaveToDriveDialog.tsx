@@ -20,7 +20,7 @@ import {
 import { ChevronRight, FolderOpen } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { api, type DirectoryNode, type DriveKind } from "@/lib/api";
-import { DRIVE_FULL_LABEL } from "@/lib/drive";
+import { DRIVE_FULL_LABEL, accountLabel } from "@/lib/drive";
 import { DEFAULT_FOLLOW_INTERVAL, FOLLOW_INTERVALS } from "@/lib/follow";
 import { toast } from "sonner";
 
@@ -31,6 +31,9 @@ export interface TaskOption {
   originPath: string;
   targetPath: string;
   strmPrefix?: string;
+  copyToOpenlist?: { enabled?: boolean };
+  /** 要复制到 OpenList 的话卡在哪；null = 能复制（任务列表接口带的） */
+  copyBlocked?: string | null;
 }
 
 export interface SaveToTaskChoice {
@@ -109,6 +112,14 @@ export function SaveToDriveDialog({
 
   const selectedTask = useMemo(() => tasks.find((t) => t.id === selectedTaskId), [tasks, selectedTaskId]);
   const taskInvalid = selectedTask && (!selectedTask.targetPath || !selectedTask.strmPrefix);
+  /**
+   * 「转存后复制」看所选任务：复制不了（这个账号没填挂载根之类）就灰掉并说原因，勾了后端也会拒；
+   * 任务本来就开着复制的，不勾也会复制，勾选框锁成勾上（同云下载弹框）。
+   * 只有「任务开着复制、这次却复制不了」用警示色——没用这个功能的人每次转存都看到一行黄字就成噪音了
+   */
+  const copyBlocked = selectedTask?.copyBlocked ?? null;
+  const taskWantsCopy = selectedTask?.copyToOpenlist?.enabled === true;
+  const taskCopies = taskWantsCopy && !copyBlocked;
   const subPath = subSegments.join("/");
   // 子目录请求只跟任务 id 和路径走，不跟任务对象的引用走：每次拉列表都是新对象，会把导航重置掉
   const taskAccount = selectedTask?.account;
@@ -161,8 +172,9 @@ export function SaveToDriveDialog({
       mode,
       ...(followHint && followChecked ? { follow: { intervalMinutes: Number(followInterval) } } : {}),
       ...(mode === "sync" && organizeChecked ? { organize: true } : {}),
-      // 复制只读网盘，后台模式（全量同步）也照样能排；整理会和全量同步互相踩，只在同步模式给
-      ...(copyChecked ? { copy: true } : {}),
+      // 复制只读网盘，后台模式（全量同步）也照样能排；整理会和全量同步互相踩，只在同步模式给。
+      // 勾过之后换成了复制不了 / 本来就复制的任务，这个勾就不算数
+      ...(copyChecked && !copyBlocked && !taskCopies ? { copy: true } : {}),
     });
   };
 
@@ -192,8 +204,9 @@ export function SaveToDriveDialog({
                 </SelectTrigger>
                 <SelectContent>
                   {tasks.map((t) => (
+                    // 带上账号：同类型有两个账号时，两边都可能有 /tv，光看路径分不出转存到哪个账号（同整理页）
                     <SelectItem key={t.id} value={t.id}>
-                      {t.originPath} → {t.targetPath || "(未配置)"}
+                      {accountLabel(t.account, t.accountType)} · {t.originPath} → {t.targetPath || "(未配置)"}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -352,13 +365,26 @@ export function SaveToDriveDialog({
             </label>
           )}
 
-          <label className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
-            <Checkbox checked={copyChecked} onCheckedChange={(v) => setCopyChecked(v === true)} className="mt-0.5" />
+          <label className={`flex items-start gap-2 rounded-md border p-3 ${copyBlocked || taskCopies ? "" : "cursor-pointer"}`}>
+            <Checkbox
+              checked={taskCopies || (copyChecked && !copyBlocked)}
+              onCheckedChange={(v) => setCopyChecked(v === true)}
+              disabled={Boolean(copyBlocked) || taskCopies}
+              className="mt-0.5"
+            />
             <div>
               <div className="text-sm font-medium">转存后复制到 OpenList</div>
-              <div className="text-xs text-muted-foreground">
-                转存完让 OpenList 把这些条目复制到另一个存储（比如挂载的本地磁盘）。要先在设置页配好，任务上本来就开着的话不用勾。
-              </div>
+              {copyBlocked && taskWantsCopy ? (
+                <div className="text-xs text-warning">
+                  这个任务开着「复制到 OpenList」，可是{copyBlocked}，这次不会复制。到设置页的「复制到 OpenList」里补上就好。
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">
+                  {taskCopies
+                    ? "这个任务开着「复制到 OpenList」，转存完会自动复制，不用勾。"
+                    : `转存完让 OpenList 把这些条目复制到另一个存储（比如挂载的本地磁盘）。${copyBlocked ? `现在勾不了：${copyBlocked}。` : ""}`}
+                </div>
+              )}
             </div>
           </label>
         </div>

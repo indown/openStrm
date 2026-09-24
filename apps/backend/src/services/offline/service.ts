@@ -288,10 +288,14 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
     if (!cfg.mounts[account.name]) {
       throw new HttpError(400, `账号 ${account.name} 还没填「在 OpenList 里的挂载根」，先到设置页的「复制到 OpenList」里填上`);
     }
-    // 配置齐了却还是 false，只能是没有任务（copyOptionsFor 认任务）：按全局配置走
+    // 配置齐了却还是 false：没有任务（copyOptionsFor 认任务），或者任务上、设置页都没填目标目录。
+    // 这次弹框里选了就用它，都没有就当场说，不然下完了才发现没地方复制
     copyDst = normDir(opts.copyDstDir) || cfg.dstDir;
+    if (!copyDst) throw new HttpError(400, "没有复制目标目录：任务上和设置页的「复制到 OpenList」都没填");
   } else if (copyOpts.enabled) {
     copyDst = normDir(opts.copyDstDir) || normDir(copyOpts.dstDir) || resolveCopyConfig().dstDir;
+  } else if (copyOpts.blocked && task) {
+    log.info(`任务 ${task.originPath} 开着复制到 OpenList，但${copyOpts.blocked}，这次云下载的不复制`);
   }
 
   let results: OfflineAddResult[];

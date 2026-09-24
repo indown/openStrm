@@ -19,7 +19,7 @@ import accountRoute from "./account/index.js";
 import settingsRoute from "./settings/index.js";
 import { DEFAULT_AUTH } from "../db/defaults.js";
 import { writeAuthPassword } from "../db/repositories/auth.js";
-import { readAppSettings, replaceAppSettings } from "../db/repositories/settings.js";
+import { patchAppSettings, readAppSettings, replaceAppSettings } from "../db/repositories/settings.js";
 import { deleteTask, insertTask, listTasks, replaceTasks } from "../db/repositories/tasks.js";
 import { listAccounts, replaceAccounts } from "../db/repositories/accounts.js";
 import { releaseTaskStart, reserveTaskStart } from "../services/task/registry.js";
@@ -109,6 +109,43 @@ test("GET /api/task：列表带运行状态、上次执行和下次定时", asyn
     assert.equal("logs" in again.lastRun, false, "列表里不该带日志");
   } finally {
     deleteTaskExecution(ex.id);
+  }
+});
+
+test("GET /api/task：copyBlocked 说这个任务要复制卡在哪，同类型的两个账号各看各的挂载根", async () => {
+  const before = { accounts: listAccounts(), openlistCopy: readAppSettings().openlistCopy };
+  const ol: AccountInfo = { accountType: "openlist", name: "ol", account: "u", password: "p", url: "http://ol.local" };
+  const drives: AccountInfo[] = [
+    { accountType: "115", name: "115-a", cookie: "c" },
+    { accountType: "115", name: "115-b", cookie: "c" },
+  ];
+  const base = { originPath: "/tv", targetPath: "tv", strmPrefix: "/mnt/pan" };
+  const ids = ["cb-a", "cb-b", "cb-ol"];
+  replaceAccounts([...drives, ol]);
+  patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local", mounts: { "115-a": "/115" } } });
+  insertTask({ ...base, id: "cb-a", account: "115-a", copyToOpenlist: { enabled: true } });
+  insertTask({ ...base, id: "cb-b", account: "115-b", copyToOpenlist: { enabled: true } });
+  insertTask({ ...base, id: "cb-ol", account: "ol", copyToOpenlist: { enabled: true } });
+  try {
+    const rows = (await call("GET", "/api/task")).json() as Array<{ id: string; copyBlocked: string | null }>;
+    const blocked = (id: string) => rows.find((t) => t.id === id)?.copyBlocked;
+    assert.equal(blocked("cb-a"), null, "填了挂载根的能复制");
+    assert.match(blocked("cb-b") ?? "", /账号 115-b 还没填「在 OpenList 里的挂载根」/, "另一个 115 没填，要看得出来");
+    assert.match(blocked("cb-ol") ?? "", /OpenList 账号的任务用不着复制/);
+
+    // 设置上看着都齐，OpenList 账号却被删了：照样复制不了
+    replaceAccounts(drives);
+    const again = (await call("GET", "/api/task")).json() as Array<{ id: string; copyBlocked: string | null }>;
+    assert.match(again.find((t) => t.id === "cb-a")?.copyBlocked ?? "", /OpenList 账号不存在：ol/);
+
+    // 压根没配「复制到 OpenList」：每个任务都说一句短的
+    patchAppSettings({ openlistCopy: undefined });
+    const none = (await call("GET", "/api/task")).json() as Array<{ id: string; copyBlocked: string | null }>;
+    assert.equal(none.find((t) => t.id === "cb-a")?.copyBlocked, "设置页还没选 OpenList 账号");
+  } finally {
+    for (const id of ids) deleteTask(id);
+    replaceAccounts(before.accounts);
+    patchAppSettings({ openlistCopy: before.openlistCopy });
   }
 });
 

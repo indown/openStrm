@@ -65,6 +65,8 @@ export type TaskRow = TaskDefinition & {
   lastRun: TaskExecutionSummary | null;
   /** 定时任务的下次触发时间（ISO）；没有定时是 null */
   nextRunAt: string | null;
+  /** 要复制到 OpenList 的话卡在哪（比如这个账号没填挂载根）；null = 能复制。后端按真干活时的同一套条件算 */
+  copyBlocked?: string | null;
 };
 /** 表单提交的任务字段；必填项由后端 schema 把关，这里只描述形状 */
 export type TaskInput = Partial<Omit<TaskDefinition, "id">> & { strmType?: string };

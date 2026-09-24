@@ -16,9 +16,19 @@ import { apiErrorMessage } from "@/lib/axios";
 /** OpenList 之外的账号都是「网盘」：以后接新网盘时这里不用动（services/drive 的规矩） */
 const isDriveAccount = (a: AccountInfo): boolean => a.accountType !== "openlist";
 
-/** 挂载根输入框的示例：按网盘类型给（夸克那一行写 /115 会让人照抄错），认不出的就用账号名 */
+/**
+ * 挂载根输入框的示例：按网盘类型给（夸克那一行写 /115 会让人照抄错），认不出的就用账号名。
+ * 同类型有好几个账号时也用账号名：每一行都写 /115 会让人照抄成同一个
+ */
 const MOUNT_EXAMPLE: Record<string, string> = { "115": "/115", quark: "/quark" };
-const mountExample = (a: AccountInfo): string => MOUNT_EXAMPLE[a.accountType] ?? `/${a.name}`;
+const mountExample = (a: AccountInfo, sameKindCount: number): string =>
+  sameKindCount > 1 ? `/${a.name}` : (MOUNT_EXAMPLE[a.accountType] ?? `/${a.name}`);
+
+/** 比较挂载根用：和后端 normConfigDir 一样去空白、收斜杠、去尾斜杠、补头斜杠（只剩 / 的保留） */
+const mountKey = (raw: string): string => {
+  const t = raw.trim().replace(/\/{2,}/g, "/").replace(/(.)\/+$/, "$1");
+  return t && !t.startsWith("/") ? `/${t}` : t;
+};
 
 /** OpenList 路径拼接：中间只留一个斜杠 */
 const joinOl = (base: string, rel: string): string => `${base.replace(/\/+$/, "")}/${rel.replace(/^\/+/, "")}`.replace(/\/+$/, "") || "/";
@@ -62,6 +72,28 @@ export function OpenlistCopySection({ value, onChange }: Props) {
   const olName = value.account ?? "";
   const olMissing = olName !== "" && accounts !== null && !olAccounts.some((a) => a.name === olName);
 
+  /**
+   * 两个账号填了同一个挂载根：不同的网盘账号在 OpenList 里挂在不同的位置，填成一样的话
+   * 复制会到另一个账号里找文件——两边路径碰巧一样时就复制成了别人的那份，开了删源还会删掉这边的原件。
+   * 账号名 → 和它撞的其他账号名。「检查这些目录」查不出这个：两边目录结构一样时每条路径都打得开
+   */
+  const mountClashes = (() => {
+    const byMount = new Map<string, string[]>();
+    for (const [acc, raw] of Object.entries(value.mounts ?? {})) {
+      const key = mountKey(raw);
+      // 删掉的账号留下的旧行页面上看不到、也改不了，不拿它来报撞车
+      if (!key || !driveAccounts.some((a) => a.name === acc)) continue;
+      byMount.set(key, [...(byMount.get(key) ?? []), acc]);
+    }
+    const clashes = new Map<string, string[]>();
+    for (const names of byMount.values()) {
+      if (names.length < 2) continue;
+      for (const n of names) clashes.set(n, names.filter((o) => o !== n));
+    }
+    return clashes;
+  })();
+  const labelOf = (acc: string): string => accountLabel(acc, driveAccounts.find((a) => a.name === acc)?.accountType);
+
   /** 从 OpenList 的根目录起浏览，给挂载根 / 目标目录选路径 */
   const loadDirs = useCallback(
     (path: string) => (olName ? api.directory.remote(olName, path ? `/${path}` : "/") : Promise.resolve([])),
@@ -89,10 +121,16 @@ export function OpenlistCopySection({ value, onChange }: Props) {
       const taskRows = await api.tasks.list().catch(() => []);
       const bad: string[] = [];
       const notes: string[] = [];
+      const reported = new Set<string>();
+      for (const [acc, others] of mountClashes) {
+        if (reported.has(acc)) continue;
+        [acc, ...others].forEach((n) => reported.add(n));
+        bad.push(`${[acc, ...others].map(labelOf).join("、")} 填了同一个挂载根（${mountKey(value.mounts?.[acc] ?? "")}）`);
+      }
       for (const [acc, raw] of Object.entries(value.mounts ?? {})) {
         const mount = raw.trim();
         if (!mount) continue;
-        const label = accountLabel(acc, driveAccounts.find((a) => a.name === acc)?.accountType);
+        const label = labelOf(acc);
         const why = await opens(mount);
         if (why) {
           bad.push(`${label} 的挂载根（${mount}）：${why}`);
@@ -117,7 +155,16 @@ export function OpenlistCopySection({ value, onChange }: Props) {
     }
   };
 
-  const pathField = (key: string, label: string, pickTitle: string, current: string, onPick: (v: string) => void, placeholder: string, hint?: string) => (
+  const pathField = (
+    key: string,
+    label: string,
+    pickTitle: string,
+    current: string,
+    onPick: (v: string) => void,
+    placeholder: string,
+    hint?: string,
+    warning?: string,
+  ) => (
     <div key={key} className="flex flex-col gap-1.5">
       <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
       <InputGroup>
@@ -131,6 +178,7 @@ export function OpenlistCopySection({ value, onChange }: Props) {
         </InputGroupButton>
       </InputGroup>
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {warning && <p className="text-xs text-warning">{warning}</p>}
     </div>
   );
 
@@ -191,7 +239,12 @@ export function OpenlistCopySection({ value, onChange }: Props) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {driveAccounts.map((a) => {
               const label = accountLabel(a.name, a.accountType);
-              return pathField(a.name, label, `选择 ${label} 的挂载根`, value.mounts?.[a.name] ?? "", (v) => setMount(a.name, v), mountExample(a));
+              const sameKind = driveAccounts.filter((b) => b.accountType === a.accountType).length;
+              const clash = mountClashes.get(a.name);
+              const warning = clash
+                ? `和 ${clash.map(labelOf).join("、")} 填的是同一个挂载根。不同的网盘账号在 OpenList 里挂在不同的位置，除非它们本来就是同一个账号，否则复制会到别的账号里找文件`
+                : undefined;
+              return pathField(a.name, label, `选择 ${label} 的挂载根`, value.mounts?.[a.name] ?? "", (v) => setMount(a.name, v), mountExample(a, sameKind), undefined, warning);
             })}
           </div>
         )}

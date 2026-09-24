@@ -870,3 +870,78 @@ test("一轮办完的落在好几个目录：通知里写第一个目录再说�
   assert.equal(done.length, 1);
   assert.match(done[0].target, /^\/local\/media\/某剧\/S0[12] 等 2 个目录$/);
 });
+
+/* ------------------------------- 同类型的多个账号 ------------------------------- */
+
+/** 第二个 115 账号，OpenList 里挂在 /115-b */
+function withSecond115(): void {
+  replaceAccounts([drive, { accountType: "115", name: "acc2", cookie: "c2" }, olAccount]);
+  patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local/media", mounts: { acc: "/115", acc2: "/115-b" } } });
+}
+
+test("两个 115 账号：各按自己的挂载根找源目录，分开提交", async () => {
+  withSecond115();
+  enqueueCopy({ account: "acc", sources: ["/tv/A/E01.mkv"], rootPath: "/tv", trigger: "monitor" });
+  enqueueCopy({ account: "acc2", sources: ["/剧集/B/E01.mkv"], rootPath: "/剧集", trigger: "monitor" });
+  await stopCopyWatcher();
+  now += 30_000;
+  names = { "/115/tv/A": ["E01.mkv"], "/115-b/剧集/B": ["E01.mkv"] };
+  copyResultQueue = [[olTask({ id: "a" })], [olTask({ id: "b" })]];
+  await tickCopies();
+  assert.deepEqual(
+    copyCalls.map((c) => [c.srcDir, c.dstDir]).sort(),
+    [
+      ["/115-b/剧集/B", "/local/media/B"],
+      ["/115/tv/A", "/local/media/A"],
+    ],
+  );
+  assert.ok(listCopies().every((c) => c.stage === "copying"));
+});
+
+test("两个账号里有同一集、目标又是同一个：只提交一份，另一份等它复制完再按「目标里已有」跳过", async () => {
+  withSecond115();
+  enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "follow" });
+  enqueueCopy({ account: "acc2", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "follow" });
+  await stopCopyWatcher();
+  now += 30_000;
+  names = { "/115/tv/某剧/S01": ["E01.mkv"], "/115-b/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
+  copyResult = [olTask({ id: "t1" })];
+  await tickCopies();
+  assert.equal(copyCalls.length, 1, "两份一起提交就是两个 OpenList 任务写同一个文件");
+  const first = listCopies().find((c) => c.stage === "copying")!;
+  const second = listCopies().find((c) => c.stage === "waiting")!;
+  assert.match(second.detail, new RegExp(`等另一份同名的先复制完（账号 ${first.account} 的 /tv/某剧/S01/E01.mkv）`));
+
+  // 还在复制：另一份接着等
+  tasks = { undone: [olTask({ id: "t1", progress: 50 })], done: [] };
+  await tickCopies();
+  assert.equal(copyCalls.length, 1);
+
+  // 复制完了，目标里有了：另一份按「已存在」跳过，不再提交
+  names["/local/media/某剧/S01"] = ["E01.mkv"];
+  tasks = { undone: [], done: [olTask({ id: "t1", state: 2, endedAt: now })] };
+  await tickCopies();
+  await tickCopies();
+  assert.equal(copyCalls.length, 1);
+  const byId = new Map(listCopies().map((c) => [c.id, c]));
+  assert.equal(byId.get(first.id)?.status, "done");
+  assert.equal(byId.get(second.id)?.status, "skipped");
+});
+
+test("同一个目标在复制的那份失败了：另一份接着提交", async () => {
+  withSecond115();
+  enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "follow" });
+  enqueueCopy({ account: "acc2", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "follow" });
+  await stopCopyWatcher();
+  now += 30_000;
+  names = { "/115/tv/某剧/S01": ["E01.mkv"], "/115-b/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
+  copyResultQueue = [[olTask({ id: "t1" })], [olTask({ id: "t2" })]];
+  await tickCopies();
+  const first = listCopies().find((c) => c.stage === "copying")!;
+  tasks = { undone: [], done: [olTask({ id: "t1", state: 7, error: "磁盘空间不足", endedAt: now })] };
+  await tickCopies();
+  await tickCopies();
+  assert.equal(copyCalls.length, 2, "先提交的那份失败了，目标还空着，另一份要顶上");
+  assert.notEqual(copyCalls[1].srcDir, copyCalls[0].srcDir);
+  assert.equal(listCopies().find((c) => c.id === first.id)?.status, "failed");
+});

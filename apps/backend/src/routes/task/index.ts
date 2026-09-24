@@ -5,6 +5,7 @@ import type { TaskDefinition } from "@openstrm/shared";
 import { deleteTask, insertTask, listTasks, updateTask } from "../../db/repositories/tasks.js";
 import { isTaskRunning, listRunningTaskIds } from "../../services/task/registry.js";
 import { getLatestExecutions } from "../../services/task-history.js";
+import { copyBlockerFor } from "../../services/copy/paths.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 import { taskInputSchema, taskPatchSchema } from "../../schemas/entities.js";
@@ -27,11 +28,14 @@ export default async function (fastify: FastifyInstance) {
     const running = new Set(listRunningTaskIds());
     const latest = getLatestExecutions();
     const nextRuns = new Map(fastify.cron.listJobs().map((j) => [j.taskId, j.nextRun]));
+    // 要复制的话卡在哪（null = 能复制）：开着复制却没配齐时列表上要看得出来，转存弹框的勾选框也按它
+    const copyBlocked = copyBlockerFor();
     return listTasks().map((task) => ({
       ...task,
       status: running.has(task.id) ? "processing" : "pending",
       lastRun: latest.get(task.id) ?? null,
       nextRunAt: nextRuns.get(task.id) ?? null,
+      copyBlocked: copyBlocked(task),
     }));
   });
 
