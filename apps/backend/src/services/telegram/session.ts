@@ -22,6 +22,19 @@ export interface BrowseState {
   page: number;
 }
 
+/** 搜索结果里这里接得住的几类：分享去转存，磁力 / 电驴去云下载 */
+export type SearchHitKind = "115" | "quark" | "magnet" | "ed2k";
+
+export interface SearchHit {
+  kind: SearchHitKind;
+  url: string;
+  title: string;
+  /** 本机时区的年-月-日，没有就不给 */
+  date?: string;
+  /** 这个分享订过追更：active 还在追，stopped 停了（失效、停更或暂停） */
+  followed?: "active" | "stopped";
+}
+
 export type PendingAction =
   | { kind: "offline"; urls: string[]; browse?: BrowseState }
   | {
@@ -32,6 +45,21 @@ export type PendingAction =
       /** 分享根目录下的条目；token 是夸克转存要的 share_fid_token */
       items: Array<{ id: string; name: string; isDir: boolean; token?: string }>;
       browse?: BrowseState;
+    }
+  | {
+      /** 资源搜索的结果列表：点序号再走转存 / 云下载那两条路（各自再建自己的 pending） */
+      kind: "search";
+      keyword: string;
+      /** 每类只留了前几条；表头显示的是搜到的总数 */
+      hits: SearchHit[];
+      totals: Partial<Record<SearchHitKind, number>>;
+      /** 设置里的屏蔽词藏了几条 */
+      blocked?: number;
+      /** 只看某一类；null 是全部 */
+      filter: SearchHitKind | null;
+      page: number;
+      /** 搜索列表不浏览目录；写上是为了在联合类型上照样能读 .browse */
+      browse?: undefined;
     };
 
 export interface Pending {

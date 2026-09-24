@@ -54,7 +54,7 @@ export function requireAgentScope(request: FastifyRequest, scope: AgentScope): v
 
 export const TOOLSET_LABEL: Record<AgentToolset, string> = {
   sync: "同步",
-  transfer: "转存与云下载",
+  transfer: "搜资源、转存与云下载",
   organize: "整理",
   follow: "追更",
   strm: "strm 管理",

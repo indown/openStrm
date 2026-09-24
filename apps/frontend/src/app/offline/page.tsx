@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ChevronLeft,
   ChevronRight,
@@ -58,6 +59,7 @@ import {
   type OfflineTaskState,
 } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
+import { takeOfflineHandoff } from "@/lib/offline";
 import { AddOfflineTaskDialog } from "./components/AddOfflineTaskDialog";
 import { CopyQueuePanel } from "./components/CopyQueuePanel";
 
@@ -93,7 +95,23 @@ function fmtRate(bytesPerSec: number): string {
 const PAGE_TITLE = "云下载";
 const PAGE_DESCRIPTION = "把磁力、ed2k、http 链接交给 115 在云端下载；下载到同步任务的目录时，完成后自动生成 strm";
 
+/** 静态导出下 useSearchParams 必须包在 Suspense 里（和任务页、strm 管理一样） */
 export default function OfflinePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="space-y-6">
+          <PageHeader icon={CloudDownload} title={PAGE_TITLE} description={PAGE_DESCRIPTION} />
+          <TableSkeleton rows={4} />
+        </div>
+      }
+    >
+      <OfflineContent />
+    </Suspense>
+  );
+}
+
+function OfflineContent() {
   const [accounts, setAccounts] = useState<string[]>([]);
   const [accountsLoaded, setAccountsLoaded] = useState(false);
   const [account, setAccount] = useState("");
@@ -105,6 +123,8 @@ export default function OfflinePage() {
   const [taskPaths, setTaskPaths] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [addOpen, setAddOpen] = useState(false);
+  /** 深链带过来、要预填进添加框的链接；框关了就清掉，下次点「添加」是空的 */
+  const [addUrls, setAddUrls] = useState<string | undefined>();
   const [deleteTarget, setDeleteTarget] = useState<{ hashes: string[]; label: string } | null>(null);
   const [deleteFiles, setDeleteFiles] = useState(false);
   const [clearTarget, setClearTarget] = useState<{ flag: number; label: string } | null>(null);
@@ -112,6 +132,26 @@ export default function OfflinePage() {
   const [restarting, setRestarting] = useState<Set<string>>(new Set());
   // 列表请求的序号：切账号 / 翻页时慢的旧响应不能盖掉新的
   const seqRef = useRef(0);
+  const router = useRouter();
+  const params = useSearchParams();
+  const wantAdd = params.get("add") ?? "";
+  const wantPaste = params.get("paste") === "1";
+
+  // 直接开添加框、预填链接：深链 /offline?add=<链接>，或者顶栏、⌘K 贴的磁力（链接放在 sessionStorage，地址是 ?paste=1）。
+  // 等账号回来再开（框要知道往哪个账号加）；读一次就把参数抹掉，刷新、后退不再弹
+  useEffect(() => {
+    if ((!wantAdd && !wantPaste) || !accountsLoaded) return;
+    const text = wantAdd || takeOfflineHandoff();
+    router.replace("/offline");
+    if (!text.trim()) return;
+    if (accounts.length === 0) {
+      // 本来就在这一页时页面不会有变化：说一声，别让链接悄悄没了
+      toast.error("还没有 115 账号：云下载要用 115，先到「账户」页添加一个");
+      return;
+    }
+    setAddUrls(text);
+    setAddOpen(true);
+  }, [wantAdd, wantPaste, accountsLoaded, accounts.length, router]);
 
   useEffect(() => {
     api.accounts
@@ -564,7 +604,24 @@ export default function OfflinePage() {
         </div>
       )}
 
-      <AddOfflineTaskDialog open={addOpen} onOpenChange={setAddOpen} account={account} onAdded={() => void load(true)} />
+      <AddOfflineTaskDialog
+        open={addOpen}
+        onOpenChange={(open) => {
+          setAddOpen(open);
+          if (!open) setAddUrls(undefined);
+        }}
+        account={account}
+        accounts={accounts}
+        initialUrls={addUrls}
+        onAdded={(_, used) => {
+          // 框里另选了账号：列表跟过去，不然刚加的在别的账号下，看着像没加上、再加一遍
+          if (used !== account) {
+            setAccount(used);
+            setPage(1);
+            setSelected(new Set());
+          } else void load(true);
+        }}
+      />
 
       <AlertDialog
         open={deleteTarget != null}

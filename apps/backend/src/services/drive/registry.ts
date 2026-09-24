@@ -66,10 +66,19 @@ export function parseShareRef(text: string): ShareRef | null {
 const URL_IN_TEXT = /https?:\/\/[^\s<>"'，。；）]+/gi;
 const PASSCODE_IN_TEXT = /提取码[:：]?\s*([a-z0-9]{4,8})/i;
 
-function withPassword(ref: ShareRef, password: string): ShareRef {
+/** 提取码另外给的（Telegram 消息正文、搜索结果的 password 字段）拼进链接；链接里本来就有的不动 */
+export function withPassword(ref: ShareRef, password: string): ShareRef {
   if (!password || ref.password) return ref;
   const sep = ref.url.includes("?") ? "&" : "?";
   return { ...ref, password, url: `${ref.url}${sep}${ref.kind === "115" ? "password" : "pwd"}=${password}` };
+}
+
+/**
+ * 用户贴进来的：可能就是链接（或 115 的裸分享码），也可能是「链接：… 提取码：…」一整段。
+ * 先按一段话找链接，找不到再整个当链接解析
+ */
+export function parseShareText(text: string): ShareRef | null {
+  return findShareLink(text) ?? parseShareRef(text.trim());
 }
 
 /** 从一段话里挑出分享链接（Telegram 消息）：只认 URL，提取码可以写在链接后面的文字里 */
@@ -91,7 +100,7 @@ export interface ShareMatch {
  * 指定了 account 就只看它。认不出或没有账号返回 null。
  */
 export function matchShareLink(text: string, opts: { account?: string; accounts?: AccountInfo[] } = {}): ShareMatch | null {
-  const ref = parseShareRef(text);
+  const ref = parseShareText(text);
   if (!ref) return null;
   const provider = shareProviderForRef(ref, opts);
   return provider ? { provider, ref } : null;
@@ -115,7 +124,7 @@ export const UNKNOWN_SHARE_LINK = "不认识这个分享链接，目前支持 11
 export function shareForLink(text: string, opts: { account?: string } = {}): ShareMatch {
   const hit = matchShareLink(text, opts);
   if (hit) return hit;
-  const ref = parseShareRef(text);
+  const ref = parseShareText(text);
   if (!ref) throw new HttpError(400, UNKNOWN_SHARE_LINK);
   if (opts.account) throw new HttpError(400, `账号 ${opts.account} 打不开${KIND_LABEL[ref.kind]}的分享`);
   throw new HttpError(400, `这是${KIND_LABEL[ref.kind]}的分享，请先到「账户」页添加一个${KIND_LABEL[ref.kind]}账号`);

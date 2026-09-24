@@ -14,7 +14,7 @@ export const AGENT_INSTRUCTIONS = `OpenStrm 把网盘（115 / 夸克 / OpenList�
 
 概念：账号 → 同步任务（网盘目录 → 本地 strm 目录）→ 执行记录。转存分享、115 云下载都落到某个任务的目录里，并自动生成 strm；追更订阅定时转存分享里的新增。整理 = 按 TMDB 在网盘上改名归档：先预览出清单，人确认后执行，做过的能撤销。
 
-用法：先用 overview 了解现状；任务、账号可以直接用名称引用。整理：organize_preview / organize_detail 看清单，认不准的用 tmdb_search 找、organize_adjust 改，把 confirmText 原样给用户看，同意后带 planVersion 调 organize_apply。句柄在服务重启后失效，失效就重新发起。`;
+用法：先用 overview 了解现状；任务、账号可以直接用名称引用。找资源：resource_search 搜 → share_inspect 看内容 → 用户同意后 share_save / offline_add。整理：organize_preview / organize_detail 看清单，认不准的用 tmdb_search 找、organize_adjust 改，把 confirmText 原样给用户看，同意后带 planVersion 调 organize_apply。句柄在服务重启后失效，失效就重新发起。`;
 
 /** overview 结果里带的使用须知：给不读服务端说明的客户端 */
 export const USAGE_NOTES = [

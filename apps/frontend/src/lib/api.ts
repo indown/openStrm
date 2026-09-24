@@ -34,6 +34,9 @@ import type {
   OrganizeTemplatePreview,
   OrganizeUnit,
   OrganizeUnitPatch,
+  ResourceCheckResult,
+  ResourceSearchResult,
+  ResourceStatus,
   ShareFollowRun,
   ShareFollowSummary,
   StrmAllPostersResult,
@@ -170,7 +173,10 @@ export type SaveToTaskChoice = {
 export interface TmdbSearchResult {
   id: number;
   mediaType: string;
+  /** 按设置的语言本地化的标题（zh-CN 下是译名） */
   title: string;
+  /** 原名 */
+  originalTitle?: string;
   year: string;
   posterUrl: string;
   overview: string;
@@ -727,8 +733,28 @@ export const api = {
   },
 
   tmdb: {
-    search: (query: string, language?: string) =>
-      data(axiosInstance.post<TmdbSearchResult[]>("/api/library/tmdb/search", { query, language })),
+    search: (query: string, language?: string, signal?: AbortSignal) =>
+      data(axiosInstance.post<TmdbSearchResult[]>("/api/library/tmdb/search", { query, language }, { signal })),
+  },
+
+  /** 资源搜索（PanSou）：一次搜索分几问——first 出第一屏，more 隔几秒再问把插件补完的拿回来 */
+  resource: {
+    /** titleEn：选了 TMDB 候选时带的外文原名，后端交给 PanSou 认它的插件 */
+    search: (keyword: string, phase: "first" | "more", opts: { refresh?: boolean; signal?: AbortSignal; titleEn?: string } = {}) =>
+      data(
+        axiosInstance.post<ResourceSearchResult>(
+          "/api/resource/search",
+          { keyword, phase, ...(opts.refresh ? { refresh: true } : {}), ...(opts.titleEn ? { titleEn: opts.titleEn } : {}) },
+          // PanSou 冷查询要 5～8 秒，频道多时更久：后端给它 25 秒
+          { timeout: 35_000, signal: opts.signal },
+        ),
+      ),
+    /** 最多 10 条；后端只认 115 / 夸克的分享 */
+    check: (urls: string[], signal?: AbortSignal) =>
+      data(axiosInstance.post<ResourceCheckResult>("/api/resource/check", { urls }, { timeout: 20_000, signal })),
+    /** 设置页的「检查连接」：用表单里还没保存的值，密码是掩码就用库里的 */
+    status: (input: { baseUrl?: string; username?: string; password?: string }) =>
+      data(axiosInstance.post<ResourceStatus>("/api/resource/status", input, { timeout: 20_000 })),
   },
 
   hdhive: {

@@ -1,11 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { patchAppSettings, readAppSettings } from "../../db/repositories/settings.js";
 import { HttpError } from "../../lib/http-error.js";
-import { maskSettings, unmaskSettingsPatch } from "../../lib/secrets.js";
+import { isMasked, maskSettings, unmaskSettingsPatch } from "../../lib/secrets.js";
 import { parse } from "../../lib/validate.js";
 import { settingsPatchSchema } from "../../schemas/entities.js";
 import { invalidatePublicHost, requestHosts } from "../../plugins/public-host.js";
 import { normalizeHost } from "../../services/oauth/config.js";
+import { samePansouServer } from "../../services/pansou/search.js";
 
 export default async function (fastify: FastifyInstance) {
   // 密钥只给末 4 位；表单原样提交掩码值等于不改（见 lib/secrets.ts）
@@ -27,7 +28,12 @@ export default async function (fastify: FastifyInstance) {
         "公网地址就是你现在打开管理界面用的域名。要继续在这个域名上用管理界面，打开「这个域名也用来打开管理界面」；要让它只给智能体用，换个地址（比如局域网地址）打开管理界面再关，不然保存完这个页面自己就打不开了",
       );
     }
-    patchAppSettings(unmaskSettingsPatch(patch, readAppSettings()));
+    const current = readAppSettings();
+    // PanSou 换了地址而密码还是掩码：存着的密码不跟着发给新地址（和「检查连接」同一个规矩），清掉，要用就重新填
+    if (patch.pansou && isMasked(patch.pansou.password) && !samePansouServer(patch.pansou.baseUrl, current.pansou?.baseUrl)) {
+      patch.pansou = { ...patch.pansou, password: "" };
+    }
+    patchAppSettings(unmaskSettingsPatch(patch, current));
     // 公网守卫缓存着公网地址和共用开关：清掉，保存完马上按新的来（紧接着点自检也不会看到旧的）
     invalidatePublicHost();
     return { message: "ok" };

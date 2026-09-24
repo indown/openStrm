@@ -116,6 +116,14 @@ test("提取码不对 → 500 且说明分享不可用；指定了打不开的�
   const wrong = await post({ action: "info", url: "https://115.com/s/abc?password=0000" });
   assert.equal(wrong.statusCode, 500);
   assert.match(wrong.json().message, /分享不可用/);
+  assert.equal(wrong.json().code, "SHARE_GONE");
+  assert.equal(wrong.json().reason, "password", "提取码不对：分享其实还在，界面标「要提取码」而不是「已失效」");
+  const gone = await post({ action: "info", url: "https://115.com/s/nosuch?password=1234" });
+  assert.equal(gone.json().code, "SHARE_GONE");
+  assert.equal(gone.json().reason, "gone");
+  // 整段分享文字（链接后面跟着提取码）也认得出
+  const pasted = await post({ action: "info", url: "链接：https://115.com/s/abc 提取码：1234 复制这段打开" });
+  assert.equal(pasted.statusCode, 200, pasted.body);
   const other = await post({ action: "info", url: LINK_115, account: "q" });
   assert.equal(other.statusCode, 400);
 });

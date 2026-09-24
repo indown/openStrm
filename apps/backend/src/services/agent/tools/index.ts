@@ -22,6 +22,7 @@ import {
 } from "./organize.js";
 import { followCheckTool, followDeleteTool, followListTool, followUpdateTool } from "./follow.js";
 import { strmCheckTool, strmDeleteTool, strmFixTool, strmRebuildTool, strmSearchTool, strmVerifyTool } from "./strm.js";
+import { resourceSearchTool } from "./resource.js";
 
 export const AGENT_TOOLS: readonly ToolDef[] = [
   overviewTool,
@@ -56,6 +57,7 @@ export const AGENT_TOOLS: readonly ToolDef[] = [
   strmFixTool,
   strmRebuildTool,
   strmDeleteTool,
+  resourceSearchTool,
 ];
 
 /** 档位里有、工具集里也有（基础工具不属于任何一组，总在） */

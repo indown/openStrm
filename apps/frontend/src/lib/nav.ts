@@ -10,6 +10,7 @@ import {
   Radar,
   Rss,
   Settings,
+  Telescope,
   type LucideIcon,
 } from "lucide-react";
 import { FEATURES } from "@/lib/features";
@@ -33,6 +34,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { title: "整理", url: "/organize", icon: FolderTree },
       // 影库入口暂时隐藏（lib/features.ts）；直接访问 /library 仍可用
       ...(FEATURES.libraryEntry ? [{ title: "影库", url: "/library", icon: Library }] : []),
+      // 搜到、转存、追更是一条线：放在追更前面
+      { title: "资源搜索", url: "/search", icon: Telescope },
       { title: "追更", url: "/follow", icon: Rss },
       { title: "云下载", url: "/offline", icon: CloudDownload },
       { title: "网盘监控", url: "/life", icon: Radar },

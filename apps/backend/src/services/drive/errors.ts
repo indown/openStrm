@@ -73,12 +73,22 @@ export function accountIssueOf(provider: Pick<DriveProvider, "classifyError"> | 
   return null;
 }
 
+/**
+ * 分享打不开是因为提取码（错了、没带）还是分享本身没了：界面上前者是「提取码不对或缺」，后者才是「已失效」。
+ * 资源搜索的有效性检测（PanSou 回的说明）也按它认
+ */
+export const SHARE_PASSWORD_PROBLEM = /提取码|访问码|密码|口令|passcode|password|\bpwd\b/i;
+
 /** 包成 HttpError 时原始错误挂在 cause 上：要按错误类型再判断的调用方（智能体工具的账号提示）还拿得到 */
 export function driveErrorToHttp(err: unknown, fallback: string): HttpError {
   if (err instanceof HttpError) return err;
   const cause = { cause: err };
   if (err instanceof RemoteDirNotFoundError) return new HttpError(404, err.message, {}, cause);
-  if (err instanceof ShareGoneError) return upstreamError(`分享不可用：${err.message}`, { errno: err.code }, err);
+  // code 给界面认：资源搜索页据此标失效（别的 5xx 可能是账号问题，不能当失效）；提取码的问题另说，那种分享其实还在
+  if (err instanceof ShareGoneError) {
+    const reason = SHARE_PASSWORD_PROBLEM.test(err.message) ? "password" : "gone";
+    return upstreamError(`分享不可用：${err.message}`, { code: "SHARE_GONE", reason, errno: err.code }, err);
+  }
   if (err instanceof ShareApiError) return upstreamError(`分享不可用：${err.message}`, { errno: err.errno }, err);
   if (err instanceof Cloud115Error) return upstreamError(err.message, { upstreamStatus: err.status }, err);
   if (err instanceof QuarkError) return upstreamError(err.message, { upstreamStatus: err.status, code: err.code }, err);

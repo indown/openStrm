@@ -11,7 +11,7 @@ import type { AgentToken, TaskDefinition } from "@openstrm/shared";
 import { getAccount, listAccounts } from "../../../db/repositories/accounts.js";
 import { readAppSettings } from "../../../db/repositories/settings.js";
 import { normalizeOfflineUrls } from "../../cloud-115/offline.js";
-import { KIND_LABEL, UNKNOWN_SHARE_LINK, assertSameKind, findShareLink, parseShareRef, providerFor, providerForTask, shareProviderForRef } from "../../drive/registry.js";
+import { KIND_LABEL, UNKNOWN_SHARE_LINK, assertSameKind, parseShareText, providerFor, providerForTask, shareProviderForRef } from "../../drive/registry.js";
 import { listWholeShareDir } from "../../drive/share-walk.js";
 import { normalizePath, splitPath, type DriveProvider, type ShareEntry, type ShareRef } from "../../drive/types.js";
 import { scopeFromSelection } from "../../follow/diff.js";
@@ -126,7 +126,7 @@ export const driveBrowseTool = defineTool({
 /* ------------------------------- 分享 ------------------------------- */
 
 function parseLink(link: string): ShareRef {
-  const ref = findShareLink(link) ?? parseShareRef(link.trim());
+  const ref = parseShareText(link);
   if (!ref) throw new ToolError("BAD_LINK", UNKNOWN_SHARE_LINK, "把分享链接原样传进来（带提取码的话一起带上）。");
   return ref;
 }

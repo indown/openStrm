@@ -15,6 +15,7 @@ import type { AppSettings, OAuthPendingRequest, TaskDefinition, TaskExecutionSum
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { listTasks } from "../../db/repositories/tasks.js";
 import { listAccounts } from "../../db/repositories/accounts.js";
+import { getShareFollow } from "../../db/repositories/share-follows.js";
 import { getAllTaskHistory, getLatestExecutions, getTaskHistory } from "../task-history.js";
 import { cancelRunningTask, getRunningTask, listRunningTaskIds } from "../task/registry.js";
 import { startTask } from "../task/runner.js";
@@ -32,12 +33,23 @@ import { KIND_LABEL, findShareLink, providerFor, providerForTask, shareForLink }
 import { AGENT_TOOLSETS } from "../../db/repositories/api-tokens.js";
 import { findPendingOAuthRequestByCode, getOAuthRequest, normalizePairingCode } from "../../db/repositories/oauth.js";
 import { approveOAuthRequest, denyOAuthRequest, pendingRequestInfo, presetScopes, type ApproveResult } from "../oauth/authorize.js";
-import { OAUTH_APPROVE_ACTION, OAUTH_DENY_ACTION, oauthRequestText } from "./notify.js";
+import { FOLLOW_SEARCH_ACTION, OAUTH_APPROVE_ACTION, OAUTH_DENY_ACTION, oauthRequestText } from "./notify.js";
 import type { DriveKind } from "../drive/types.js";
 import { listWholeShareDir } from "../drive/share-walk.js";
 import { saveSelectionToTask } from "../share/receive.js";
+import { keywordFromName } from "../pansou/normalize.js";
+import { PANSOU_NOT_CONFIGURED, pansouConn, searchSettled, type SettledResult } from "../pansou/search.js";
 import { moduleLogger } from "../../lib/logger.js";
-import { createPending, peekPending, takePending, updatePending, type BrowseState, type PendingAction } from "./session.js";
+import {
+  createPending,
+  peekPending,
+  takePending,
+  updatePending,
+  type BrowseState,
+  type PendingAction,
+  type SearchHit,
+  type SearchHitKind,
+} from "./session.js";
 import { clamp, describeRun, esc, fmtTime, shortName, taskLabel } from "./format.js";
 import type { BotCommand, BotLike, InlineKeyboard, TelegramCallbackQuery, TelegramChat, TelegramMessage, TelegramUpdate, TelegramUser } from "./bot.js";
 
@@ -49,6 +61,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "status", description: "正在运行的任务与监控状态" },
   { command: "history", description: "最近的执行记录" },
   { command: "offline", description: "最近的云下载" },
+  { command: "s", description: "搜资源：/s 片名" },
   { command: "cancel", description: "取消正在运行的任务" },
   { command: "id", description: "查看自己的用户 id" },
   { command: "help", description: "使用说明" },
@@ -122,6 +135,12 @@ export interface CommandDeps {
   denyOAuth(requestId: string): boolean;
   /** 批准通知的原文（改消息时保留），请求没了就是 null */
   oauthRequestText(requestId: string): string | null;
+  /** 资源搜索（PanSou）配没配 */
+  resourceSearchConfigured(): boolean;
+  /** 资源搜索：服务端多问几轮，拿一次性的结果（没配置、PanSou 出错都抛） */
+  searchResources(keyword: string): Promise<SettledResult>;
+  /** 追更订阅的名字（通知里「搜替代资源」按钮用）；订阅没了是 null */
+  followName(id: string): string | null;
 }
 
 /** 后端 startTask 的 message 是固定的英文句式，这里说成人话（和任务页保持一致）；个数用结构化的 total */
@@ -242,6 +261,9 @@ const realDeps: CommandDeps = {
     const r = getOAuthRequest(requestId);
     return r ? oauthRequestText(pendingRequestInfo(r)) : null;
   },
+  resourceSearchConfigured: () => pansouConn() !== null,
+  searchResources: (keyword) => searchSettled(keyword),
+  followName: (id) => getShareFollow(id)?.name ?? null,
 };
 
 let deps: CommandDeps = { ...realDeps };
@@ -297,13 +319,16 @@ async function handleMessage(bot: BotLike, msg: TelegramMessage): Promise<void> 
   if (!text) return;
 
   if (text.startsWith("/")) {
-    // 群里的命令带 @botname
-    const cmd = text.split(/\s+/)[0].replace(/@\S+$/, "").toLowerCase();
-    await handleCommand(bot, chatId, cmd);
+    // 群里的命令带 @botname；命令后面的是参数（/s 片名）
+    const head = text.split(/\s+/)[0];
+    const cmd = head.replace(/@\S+$/, "").toLowerCase();
+    await handleCommand(bot, chatId, cmd, text.slice(head.length).trim(), msg.from!.id);
     return;
   }
 
-  if (normalizePairingCode(text)) {
+  // 配对码：写成 XXXX-XXXX 的一看就是；不带连字符的要真有这么一个待批准的请求才算——
+  // Superman、The Flash 这种八个字母的片名也凑得上配对码的字母表，不能拦下来不让搜
+  if (normalizePairingCode(text) && (/^[a-z0-9]{4}-[a-z0-9]{4}$/i.test(text) || deps.findOAuthByCode(text))) {
     await handlePairingCode(bot, chatId, text, settings);
     return;
   }
@@ -323,7 +348,12 @@ async function handleMessage(bot: BotLike, msg: TelegramMessage): Promise<void> 
     await bot.sendMessage(chatId, "不认识这种链接。能收的有：115 / 夸克分享链接、磁力、ed2k、http(s)、ftp。");
     return;
   }
-  await bot.sendMessage(chatId, "直接把 115 / 夸克分享链接或磁力/ed2k 链接发给我，或者用 /help 看看能做什么。");
+  // 私聊里直接发片名就是搜：配了资源搜索才这样。群里只认 /s，免得群里每句话都去搜一次
+  if (msg.chat.type === "private" && deps.resourceSearchConfigured() && text.length <= SEARCH_KEYWORD_MAX) {
+    await startSearch(bot, chatId, msg.from!.id, text);
+    return;
+  }
+  await bot.sendMessage(chatId, "直接把 115 / 夸克分享链接或磁力/ed2k 链接发给我，搜资源用 /s 片名，或者用 /help 看看能做什么。");
 }
 
 /* ------------------------------- 网页客户端的配对码 ------------------------------- */
@@ -366,7 +396,7 @@ export function __test_resetOAuthUnlocks(): void {
 
 /* ------------------------------- 命令 ------------------------------- */
 
-async function handleCommand(bot: BotLike, chatId: string, cmd: string): Promise<void> {
+async function handleCommand(bot: BotLike, chatId: string, cmd: string, args: string, userId: number): Promise<void> {
   switch (cmd) {
     case "/start":
     case "/help":
@@ -385,6 +415,9 @@ async function handleCommand(bot: BotLike, chatId: string, cmd: string): Promise
       return sendOffline(bot, chatId);
     case "/cancel":
       return sendCancelMenu(bot, chatId);
+    case "/s":
+    case "/search":
+      return startSearch(bot, chatId, userId, args);
     default:
       await bot.sendMessage(chatId, `不认识的命令 ${esc(cmd)}，用 /help 看看有哪些。`);
   }
@@ -406,6 +439,7 @@ function helpText(settings: AppSettings): string {
     "/status 正在跑的任务、云下载回执、网盘监控",
     "/history 最近的执行记录",
     "/offline 最近的云下载",
+    `/s 片名 搜网盘分享和磁力（${deps.resourceSearchConfigured() ? "私聊里直接发片名也行" : "要先在设置页配置资源搜索"}）`,
     "/cancel 取消正在运行的任务",
     "/id 查看 chat id",
   ].join("\n");
@@ -654,6 +688,9 @@ async function finishShare(
 
 /* ------------------------------- 目的地浏览（云下载 / 转存共用） ------------------------------- */
 
+/** 会浏览目的地的两种动作；搜索结果列表不浏览目录 */
+type BrowsableAction = Exclude<PendingAction, { kind: "search" }>;
+
 const BROWSE_PAGE_SIZE = 10;
 
 function browsePerm(settings: AppSettings, kind: "offline" | "share"): string | null {
@@ -666,7 +703,7 @@ function browsePerm(settings: AppSettings, kind: "offline" | "share"): string | 
 /** 浏览界面：往哪放 + 子目录按钮（分页，按序号回调）+ 就放这里 / 返回 / 取消 */
 function renderBrowse(
   token: string,
-  action: PendingAction,
+  action: BrowsableAction,
   /** 浏览的根：任务的 originPath，或 OpenList 目的地浏览的 dstDir */
   root: string,
   browse: BrowseState,
@@ -707,7 +744,7 @@ async function showBrowse(
   chatId: string,
   messageId: number | undefined,
   token: string,
-  action: PendingAction,
+  action: BrowsableAction,
   task: TaskDefinition,
   segments: string[],
 ): Promise<void> {
@@ -724,7 +761,7 @@ async function showCopyBrowse(
   chatId: string,
   messageId: number | undefined,
   token: string,
-  action: PendingAction,
+  action: BrowsableAction,
   base: string,
   segments: string[],
 ): Promise<void> {
@@ -735,12 +772,169 @@ async function showCopyBrowse(
   await edit(bot, chatId, messageId, text, buttons);
 }
 
+/* ------------------------------- 资源搜索 ------------------------------- */
+
+/** 关键词最多多长：和网页、接口同一个上限 */
+const SEARCH_KEYWORD_MAX = 100;
+/** 结果列表一页几条；每类最多留几条（按钮的回调里只放序号，列表存在 pending 里） */
+const SEARCH_PAGE_SIZE = 8;
+const SEARCH_PER_KIND = 15;
+const SEARCH_KINDS: SearchHitKind[] = ["115", "quark", "magnet", "ed2k"];
+const SEARCH_KIND_LABEL: Record<SearchHitKind, string> = { "115": "115", quark: "夸克", magnet: "磁力", ed2k: "电驴" };
+const FOLLOWED_LABEL = { active: "已在追更", stopped: "追更已停" } as const;
+
+type SearchAction = Extract<PendingAction, { kind: "search" }>;
+
+const isSearchKind = (k: string): k is SearchHitKind => (SEARCH_KINDS as string[]).includes(k);
+
+/** 本机时区的年-月-日 */
+function ymd(iso: string | undefined): string | undefined {
+  if (!iso) return undefined;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return undefined;
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** 结果列表：序号 + 类型 + 标题 + 日期，下面是序号按钮、只看某类、翻页、取消 */
+function renderSearch(token: string, s: SearchAction): { text: string; buttons: InlineKeyboard } {
+  const kinds = SEARCH_KINDS.filter((k) => s.hits.some((h) => h.kind === k));
+  const list = s.hits.map((hit, index) => ({ hit, index })).filter(({ hit }) => !s.filter || hit.kind === s.filter);
+  const pages = Math.max(1, Math.ceil(list.length / SEARCH_PAGE_SIZE));
+  const page = Math.min(Math.max(0, s.page), pages - 1);
+  const start = page * SEARCH_PAGE_SIZE;
+  const shown = list.slice(start, start + SEARCH_PAGE_SIZE);
+  // 表头是搜到的总数；每类只留了前 SEARCH_PER_KIND 条，留少了就说一声
+  const clipped = kinds.some((k) => (s.totals[k] ?? 0) > SEARCH_PER_KIND);
+  const lines = [
+    `🔍 <b>${esc(s.keyword)}</b> · ${kinds.map((k) => `${SEARCH_KIND_LABEL[k]} ${s.totals[k] ?? 0}`).join(" · ")}`,
+    ...(clipped ? [`每类只列前 ${SEARCH_PER_KIND} 条，全部的到网页「资源搜索」页看。`] : []),
+    ...(s.blocked ? [`屏蔽词藏了 ${s.blocked} 条。`] : []),
+    "",
+    ...shown.map(
+      ({ hit }, i) =>
+        `${start + i + 1}. [${SEARCH_KIND_LABEL[hit.kind]}] ${esc(shortName(hit.title || hit.url, 48))}${hit.date ? ` · ${hit.date}` : ""}${hit.followed ? ` · <i>${FOLLOWED_LABEL[hit.followed]}</i>` : ""}`,
+    ),
+  ];
+  if (pages > 1) lines.push("", `第 ${page + 1}/${pages} 页`);
+  lines.push("", "点序号：分享会先列出内容、再选转存到哪；磁力、电驴交给 115 云下载。");
+  const buttons: InlineKeyboard = [];
+  for (let i = 0; i < shown.length; i += 4) {
+    buttons.push(shown.slice(i, i + 4).map(({ index }, j) => ({ text: `${start + i + j + 1}`, callback_data: `srh:${token}:${index}` })));
+  }
+  if (kinds.length > 1 || s.filter) {
+    const row: InlineKeyboard[number] = kinds
+      .filter((k) => k !== s.filter)
+      .map((k) => ({ text: `只看${SEARCH_KIND_LABEL[k]}`, callback_data: `srf:${token}:${k}` }));
+    if (s.filter) row.unshift({ text: "全部", callback_data: `srf:${token}:all` });
+    buttons.push(row);
+  }
+  const pager: InlineKeyboard[number] = [];
+  if (page > 0) pager.push({ text: "⬅️ 上一页", callback_data: `srp:${token}:${page - 1}` });
+  if (page < pages - 1) pager.push({ text: "➡️ 下一页", callback_data: `srp:${token}:${page + 1}` });
+  if (pager.length > 0) buttons.push(pager);
+  buttons.push([{ text: "取消", callback_data: `drop:${token}` }]);
+  return { text: clamp(lines.join("\n")), buttons };
+}
+
+/** 各聊天正在跑的搜索：同一个聊天一次只搜一个，免得连发几条就同时压给 PanSou 好几轮 */
+const runningSearches = new Map<string, Promise<void>>();
+
+/**
+ * 搜一次：先回「在搜」，服务端多问几轮拿到结果后改成列表。点序号再走转存 / 云下载那两条现成的路，权限开关由它们各自查。
+ * 整个过程放到后台：一次要十几秒，而轮询是一条消息处理完才取下一条，等在这里的话整个机器人都不理人（别人的命令、按钮都卡住）
+ */
+async function startSearch(bot: BotLike, chatId: string, userId: number, keyword: string): Promise<void> {
+  const kw = keyword.trim().slice(0, SEARCH_KEYWORD_MAX);
+  if (!kw) {
+    await bot.sendMessage(chatId, "用法：<code>/s 片名</code>，比如 <code>/s 沙丘2</code>");
+    return;
+  }
+  if (!deps.resourceSearchConfigured()) {
+    await bot.sendMessage(chatId, `${esc(PANSOU_NOT_CONFIGURED)}。`);
+    return;
+  }
+  if (runningSearches.has(chatId)) {
+    await bot.sendMessage(chatId, "上一个搜索还没出结果，等它出来再搜下一个。");
+    return;
+  }
+  const job = (async () => {
+    const first = await bot.sendMessage(chatId, `🔍 在搜「${esc(kw)}」…PanSou 边搜边补，要十来秒。`);
+    await finishSearch(bot, chatId, userId, kw, first.result?.message_id);
+  })()
+    .catch((err: unknown) => log.error({ err, chatId }, "资源搜索的结果没发出去"))
+    .finally(() => runningSearches.delete(chatId));
+  runningSearches.set(chatId, job);
+}
+
+/** 测试用：等后台的搜索都跑完 */
+export async function __test_waitSearches(): Promise<void> {
+  await Promise.all([...runningSearches.values()]);
+}
+
+/**
+ * 结果 → 列表。只列这里接得住的：四类里有账号的那几类（没 115 账号的，115 分享和磁力点了也只会报「先加账号」）；
+ * 每类留前 SEARCH_PER_KIND 条，一类多了不把后面几类挤没
+ */
+async function finishSearch(bot: BotLike, chatId: string, userId: number, kw: string, messageId: number | undefined): Promise<void> {
+  let result: SettledResult;
+  try {
+    result = await deps.searchResources(kw);
+  } catch (err) {
+    // 报错里可能带着 PanSou 回的原话：截短，别让一条消息超过 Telegram 的长度上限
+    await edit(bot, chatId, messageId, `❌ 搜索失败：${esc(shortName(err instanceof Error ? err.message : String(err), 300))}`);
+    return;
+  }
+  const { items } = result;
+  const blocked = result.blocked ?? 0;
+  const hits: SearchHit[] = [];
+  const totals: SearchAction["totals"] = {};
+  const unusable: string[] = [];
+  for (const kind of SEARCH_KINDS) {
+    const ofKind = items.filter((h) => h.kind === kind);
+    if (ofKind.length === 0) continue;
+    if (ofKind[0].action === null) {
+      unusable.push(`${SEARCH_KIND_LABEL[kind]} ${ofKind.length} 条`);
+      continue;
+    }
+    totals[kind] = ofKind.length;
+    for (const h of ofKind.slice(0, SEARCH_PER_KIND)) {
+      const date = ymd(h.publishedAt);
+      hits.push({ kind, url: h.url, title: h.title, ...(date ? { date } : {}), ...(h.followed ? { followed: h.followed } : {}) });
+    }
+  }
+  if (hits.length === 0) {
+    // 屏蔽词另外藏掉的也说一声：不然人以为能用的就只有这些
+    const alsoBlocked = blocked > 0 ? `（屏蔽词另外藏了 ${blocked} 条）` : "";
+    let text: string;
+    if (unusable.length > 0) {
+      text = `「${esc(kw)}」搜到 ${unusable.join("、")}，但还没有接得住的账号：115 分享和磁力、电驴要 115 账号，夸克分享要夸克账号。先到 OpenStrm 的「账户」页加一个，或者到网页的「资源搜索」页复制链接。${alsoBlocked}`;
+    } else if (items.length > 0) {
+      text = `「${esc(kw)}」只搜到百度、阿里这类网盘的链接，这里接不住；到网页的「资源搜索」页能看到、复制。${alsoBlocked}`;
+    } else if (blocked > 0) {
+      text = `「${esc(kw)}」搜到的 ${blocked} 条都被屏蔽词藏掉了：到 OpenStrm 设置页「资源搜索」看看屏蔽词。`;
+    } else if (!result.complete) {
+      // 国内连不上 TG、插件又慢的时候，前几轮一直是 0 条：插件跑完以后再问才算数
+      text = `还没搜到「${esc(kw)}」：PanSou 的插件可能还没搜完，过半分钟再发一次同一个词；还是没有再换个说法（去掉年份、用别名或英文名）。`;
+    } else {
+      text = `没搜到「${esc(kw)}」：换个说法（去掉年份、用别名或英文名）再试。`;
+    }
+    await edit(bot, chatId, messageId, text);
+    return;
+  }
+  const action: SearchAction = { kind: "search", keyword: kw, hits, totals, ...(blocked ? { blocked } : {}), filter: null, page: 0 };
+  const token = createPending(chatId, userId, action);
+  const { text, buttons } = renderSearch(token, action);
+  await edit(bot, chatId, messageId, text, buttons);
+}
+
 /* ------------------------------- 按钮回调 ------------------------------- */
 
 async function edit(bot: BotLike, chatId: string, messageId: number | undefined, text: string, buttons?: InlineKeyboard): Promise<void> {
   if (messageId != null) {
     const r = await bot.editMessage(chatId, messageId, text, buttons);
-    if (r.ok) return;
+    // 同一个按钮连点两下，第二次内容没变，Telegram 回「message is not modified」：当成改好了，别再发一条一样的
+    if (r.ok || /message is not modified/i.test(r.description ?? "")) return;
   }
   await bot.sendMessage(chatId, text, buttons ? { buttons } : undefined);
 }
@@ -803,6 +997,12 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
         return;
       }
       case "drop": {
+        // 群里别人点「取消」不能把你的操作弄没（和选目录、搜索结果的按钮一样）
+        const pending = peekPending(arg);
+        if (pending && pending.userId !== q.from.id) {
+          await bot.answerCallback(q.id, "这不是你发起的操作", { alert: true });
+          return;
+        }
         takePending(arg);
         await bot.answerCallback(q.id);
         await edit(bot, chatId, messageId, "已取消。");
@@ -848,7 +1048,7 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
         // 只看不取：选完任务还要逐层进目录，token 要一直用到「就放这里」。
         // 顺带修掉一个老毛病：以前先 take 再验用户，白名单里别人一点就把你的操作弄没了
         const pending = peekPending(token);
-        if (!pending || pending.action.kind !== kind) {
+        if (!pending || pending.action.kind === "search" || pending.action.kind !== kind) {
           await bot.answerCallback(q.id, "已过期，请重新发一次链接", { alert: true });
           return;
         }
@@ -963,6 +1163,65 @@ async function handleCallback(bot: BotLike, q: TelegramCallbackQuery): Promise<v
         await bot.answerCallback(q.id, "读取目录…");
         if (copyBase != null) await showCopyBrowse(bot, chatId, messageId, token, pending.action, copyBase, segments);
         else await showBrowse(bot, chatId, messageId, token, pending.action, task!, segments);
+        return;
+      }
+      case "srh":
+      case "srp":
+      case "srf": {
+        const [token, value = ""] = arg.split(":");
+        // 只看不取：一个结果列表可以点好几条
+        const pending = peekPending(token);
+        if (!pending || pending.action.kind !== "search") {
+          await bot.answerCallback(q.id, "已过期，请重新搜一次", { alert: true });
+          return;
+        }
+        if (pending.userId !== q.from.id) {
+          await bot.answerCallback(q.id, "这不是你发起的搜索", { alert: true });
+          return;
+        }
+        const search = pending.action;
+        if (action === "srh") {
+          const hit = search.hits[Number(value)];
+          if (!hit) {
+            await bot.answerCallback(q.id, "列表变了，重新搜一次");
+            return;
+          }
+          await bot.answerCallback(q.id);
+          // 转存 / 云下载各走各的路：权限开关、选目录都在那边
+          if (hit.kind === "115" || hit.kind === "quark") await beginShare(bot, chatId, q.from.id, hit.url, settings);
+          else await beginOffline(bot, chatId, q.from.id, [hit.url], settings);
+          return;
+        }
+        let next: SearchAction;
+        if (action === "srf") {
+          if (value !== "all" && !isSearchKind(value)) {
+            await bot.answerCallback(q.id);
+            return;
+          }
+          next = { ...search, filter: value === "all" ? null : value, page: 0 };
+        } else {
+          const page = Number(value);
+          if (!Number.isInteger(page) || page < 0) {
+            await bot.answerCallback(q.id);
+            return;
+          }
+          next = { ...search, page };
+        }
+        updatePending(token, next);
+        const { text, buttons } = renderSearch(token, next);
+        await bot.answerCallback(q.id);
+        await edit(bot, chatId, messageId, text, buttons);
+        return;
+      }
+      case FOLLOW_SEARCH_ACTION: {
+        // 追更通知（分享失效 / 长期没更新）里的「搜替代资源」：按订阅名搜
+        const name = deps.followName(arg);
+        if (!name) {
+          await bot.answerCallback(q.id, "这个追更已经不在了", { alert: true });
+          return;
+        }
+        await bot.answerCallback(q.id, "开始搜…");
+        await startSearch(bot, chatId, q.from.id, keywordFromName(name));
         return;
       }
       default:

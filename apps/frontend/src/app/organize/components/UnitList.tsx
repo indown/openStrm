@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import Image from "next/image";
-import { AlertTriangle, CheckCheck, ChevronDown, ChevronRight, ExternalLink, Film, Loader2, Search, SlidersHorizontal, Tv } from "lucide-react";
+import Link from "next/link";
+import { AlertTriangle, CheckCheck, ChevronDown, ChevronRight, ExternalLink, Film, Loader2, Search, SlidersHorizontal, Telescope, Tv } from "lucide-react";
 import type { OrganizeConflictChoice, OrganizeItem, OrganizeRunStage, OrganizeUnit, OrganizeUnitCounts, OrganizeUnitPatch } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -10,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status-badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ACTION_META, CONFIDENCE_META, CONFLICT_CHOICES, CONFLICT_LABEL, ERROR_KIND_META, baseName, dirName } from "@/lib/organize";
+import { keywordFromName, searchHref } from "@/lib/resource";
 import { useRunItems } from "./helpers";
 
 const NO_COUNTS: OrganizeUnitCounts = { total: 0, changing: 0, conflicts: 0, skipped: 0, keep: 0, failed: 0, done: 0, reverted: 0, excluded: 0 };
@@ -230,6 +232,8 @@ function UnitCard({
   const m = unit.match;
   const conf = CONFIDENCE_META[m?.confidence ?? "none"];
   const tmdbUrl = m ? `https://www.themoviedb.org/${m.mediaType}/${m.tmdbId}` : "";
+  // 找资源按认出来的片名搜（TMDB 上的中文名最好搜），没认出来就用从文件名里拆出来的
+  const searchKeyword = keywordFromName(m?.title || unit.parsedTitle || unit.rawName);
 
   return (
     <div className={`rounded-xl border bg-card p-4 ${unit.selected ? "" : "opacity-60"}`}>
@@ -310,6 +314,14 @@ function UnitCard({
               </label>
             )}
           </>
+        )}
+        {searchKeyword && (
+          <Button asChild variant="ghost" size="sm" className="h-8 text-muted-foreground">
+            <Link href={searchHref(searchKeyword)} title={`到资源搜索页搜「${searchKeyword}」：缺集、想换个画质时用`}>
+              <Telescope className="size-4" />
+              找资源
+            </Link>
+          </Button>
         )}
         <button type="button" className="ml-auto flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => setOpen((v) => !v)}>
           {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}

@@ -6,7 +6,8 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
-import { __test_resetNotify, classifyAccountIssue, notify, setNotifySender } from "./notify.js";
+import type { InlineKeyboard } from "./bot.js";
+import { __test_resetNotify, classifyAccountIssue, notify, setButtonSender, setNotifySender } from "./notify.js";
 
 const baseline = readAppSettings();
 const sent: Array<{ chatId: string; text: string }> = [];
@@ -123,4 +124,22 @@ test("启动失败带着网盘自己认出的账号问题：夸克的 require lo
   assert.equal(await notify({ type: "task-start-failed", task: quarkTask, reason: "读取夸克网盘目录失败：夸克 /file/sort 失败：require login [guest]", trigger: "cron", issue: "cookie" }), true);
   assert.match(sent.at(-1)!.text, /网盘账号需要处理[\s\S]*夸克号/);
   assert.equal(await notify({ type: "task-start-failed", task: quarkTask, reason: "读取夸克网盘目录失败：夸克 /file/sort 失败：require login [guest]", trigger: "cron", issue: "cookie" }), false, "同一账号同一原因一小时只发一次");
+});
+
+test("追更失效 / 停更：配了资源搜索就带「搜替代资源」按钮，没配就是普通通知", async () => {
+  const withButtons: Array<{ text: string; buttons: InlineKeyboard }> = [];
+  setButtonSender(async (_chatId, text, buttons) => void withButtons.push({ text, buttons }));
+  try {
+    assert.equal(await notify({ type: "follow-expired", id: "f1", name: "繁花", reason: "分享已取消" }), true);
+    assert.equal(withButtons.length, 0);
+    assert.match(sent.at(-1)!.text, /追更已停止/);
+
+    replaceAppSettings({ ...baseline, telegram: { botToken: "t", chatId: "-100" }, pansou: { baseUrl: "http://pansou" } });
+    assert.equal(await notify({ type: "follow-stale", id: "f2", name: "繁花", days: 30 }), true);
+    assert.equal(withButtons.length, 1);
+    assert.match(withButtons[0].text, /追更已暂停/);
+    assert.deepEqual(withButtons[0].buttons, [[{ text: "🔍 搜替代资源", callback_data: "fsr:f2" }]]);
+  } finally {
+    setButtonSender(null);
+  }
 });

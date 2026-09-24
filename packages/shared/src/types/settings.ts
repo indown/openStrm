@@ -104,7 +104,22 @@ export type AppSettings = {
   update?: UpdateSettings;
   /** 智能体接入：MCP 端点开关、生成跳转链接用的管理界面地址 */
   agent?: AgentSettings;
+  /** 资源搜索：对接用户自己部署的 PanSou */
+  pansou?: PansouSettings;
 } & Record<string, unknown>;
+
+/** 资源搜索：对接用户自己部署的 PanSou（网盘分享和磁力的搜索服务）。baseUrl 空着 = 功能关 */
+export type PansouSettings = {
+  /** 如 http://pansou:8888；带网页的版本填站点地址也行（网页和 /api 同源） */
+  baseUrl?: string;
+  /** PanSou 开了登录（AUTH_ENABLED）才填 */
+  username?: string;
+  password?: string;
+  /** 自动检测看得见的分享链接是否还有效（经 PanSou 的检测接口）；不填当开 */
+  checkLinks?: boolean;
+  /** 屏蔽词：标题或标签里带任何一个（不分大小写）的结果不显示。网页、Telegram、智能体都生效 */
+  blockWords?: string[];
+};
 
 /**
  * 检查更新：问一次 GitHub 的发布接口，比一下版本号。

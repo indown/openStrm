@@ -5,21 +5,25 @@
  */
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import type { AppSettings, TaskDefinition, TaskExecutionSummary } from "@openstrm/shared";
+import type { AppSettings, ResourceHit, ResourceKind, TaskDefinition, TaskExecutionSummary } from "@openstrm/shared";
+import type { SettledResult } from "../pansou/search.js";
 import type { BotLike, InlineKeyboard, TelegramUpdate } from "./bot.js";
-import { handleUpdate, setCommandDeps, type CommandDeps } from "./commands.js";
+import { __test_waitSearches, handleUpdate, setCommandDeps, type CommandDeps } from "./commands.js";
 import { __test_clearPending } from "./session.js";
 
 type Sent = { chatId: string; text: string; buttons?: InlineKeyboard };
 const sent: Sent[] = [];
 const edited: Sent[] = [];
 const answered: string[] = [];
+/** 设了就让 editMessage 失败，description 用它 */
+let editFailure: string | null = null;
 const bot: BotLike = {
   async sendMessage(chatId, text, opts) {
     sent.push({ chatId: String(chatId), text, buttons: opts?.buttons });
     return { ok: true, result: { message_id: 1 } };
   },
   async editMessage(chatId, _id, text, buttons) {
+    if (editFailure) return { ok: false, error_code: 400, description: editFailure };
     edited.push({ chatId: String(chatId), text, buttons });
     return { ok: true };
   },
@@ -48,6 +52,32 @@ let subdirTree: Record<string, string[]> = {};
 let subdirError: Error | null = null;
 /** 桩 OpenList 目录树：完整路径 → 子目录名 */
 let olDirTree: Record<string, string[]> = {};
+/** 资源搜索的桩：配没配、搜出来什么、要不要出错 */
+let searchConfigured = false;
+let searchResult: SettledResult = { keyword: "", complete: true, counts: {}, items: [] };
+let searchError: Error | null = null;
+/** 设了就让搜索卡在这里，放行了才出结果 */
+let searchGate: Promise<void> | null = null;
+
+const hit = (kind: ResourceKind, i: number): ResourceHit => ({
+  key: `${kind}:${i}`,
+  kind,
+  panType: kind === "other" ? "baidu" : kind,
+  panLabel: kind === "other" ? "百度" : kind,
+  url:
+    kind === "115"
+      ? `https://115.com/s/sw${String(i).padStart(9, "0")}?password=ab12`
+      : kind === "quark"
+        ? `https://pan.quark.cn/s/q${i}`
+        : kind === "magnet"
+          ? `magnet:?xt=urn:btih:${String(i).padStart(40, "a")}`
+          : `https://pan.baidu.com/s/${i}`,
+  title: `片 ${i}`,
+  publishedAt: "2025-01-02T12:00:00Z",
+  source: { type: "tg", name: "chan" },
+  // 桩账号里 115、夸克都有：分享能转存、磁力能云下载；别家网盘什么也做不了
+  action: kind === "115" || kind === "quark" ? "share" : kind === "other" ? null : "offline",
+});
 
 const deps: Partial<CommandDeps> = {
   settings: () => settings,
@@ -86,6 +116,16 @@ const deps: Partial<CommandDeps> = {
     calls.push({ fn: "listOpenlistDirs", args: path });
     return olDirTree[path] ?? [];
   },
+  resourceSearchConfigured: () => searchConfigured,
+  searchResources: async (keyword) => {
+    calls.push({ fn: "searchResources", args: keyword });
+    if (searchGate) await searchGate;
+    if (searchError) throw searchError;
+    return searchResult;
+  },
+  // 只有这一个配对码有待批准的请求（不带连字符也认）
+  findOAuthByCode: (code) => (code.toUpperCase().replace(/[\s-]/g, "") === "WXYZ2345" ? ({ id: "r1" } as never) : null),
+  followName: (id) => (id === "f1" ? "【完结】繁花 (2023) / S1" : null),
 };
 
 const msg = (text: string, o: { user?: number; chat?: number; type?: string } = {}): TelegramUpdate => ({
@@ -116,6 +156,11 @@ beforeEach(() => {
   subdirTree = { "": ["某剧", "另一部"], "某剧": ["Season 1"], "某剧/Season 1": [] };
   subdirError = null;
   olDirTree = {};
+  searchConfigured = false;
+  searchResult = { keyword: "", complete: true, counts: {}, items: [] };
+  searchError = null;
+  searchGate = null;
+  editFailure = null;
   __test_clearPending();
   setCommandDeps(deps);
 });
@@ -372,4 +417,254 @@ test("其它文本：不认识的链接和闲聊各有提示；/help 说明当�
   assert.match(sent[2].text, /未开启，到 Telegram 页打开/);
   await handleUpdate(bot, msg("/id"));
   assert.match(sent[3].text, /<code>42<\/code>/);
+});
+
+test("/s：没带关键词给用法；没配资源搜索说去设置，不发请求", async () => {
+  await handleUpdate(bot, msg("/s"));
+  assert.match(sent[0].text, /用法/);
+  await handleUpdate(bot, msg("/s 沙丘2"));
+  assert.match(sent[1].text, /还没配置资源搜索/);
+  assert.equal(calls.length, 0);
+});
+
+/** 发一条消息 / 点一个按钮，再等后台的搜索跑完 */
+async function searchVia(update: TelegramUpdate): Promise<void> {
+  await handleUpdate(bot, update);
+  await __test_waitSearches();
+}
+
+test("/s：先回「在搜」，结果出来改成列表；只列接得住的几类；序号、下一页、只看某类", async () => {
+  searchConfigured = true;
+  searchResult = {
+    keyword: "沙丘2",
+    complete: true,
+    counts: {},
+    items: [...Array.from({ length: 6 }, (_, i) => hit("115", i)), ...Array.from({ length: 4 }, (_, i) => hit("magnet", i + 10)), hit("other", 99)],
+  };
+  await searchVia(msg("/s 沙丘2"));
+  assert.match(sent[0].text, /在搜「沙丘2」/);
+  assert.deepEqual(calls, [{ fn: "searchResources", args: "沙丘2" }]);
+  const list = edited[0];
+  assert.match(list.text, /🔍 <b>沙丘2<\/b> · 115 6 · 磁力 4\n\n/);
+  assert.match(list.text, /1\. \[115\] 片 0 · 2025-01-0\d/);
+  assert.doesNotMatch(list.text, /片 99/, "别家网盘在 Telegram 里什么也做不了，不列");
+  assert.doesNotMatch(list.text, /每类只列前/);
+  assert.match(list.text, /第 1\/2 页/);
+  const texts = list.buttons!.flat().map((b) => b.text);
+  assert.deepEqual(texts.slice(0, 8), ["1", "2", "3", "4", "5", "6", "7", "8"]);
+  assert.ok(texts.includes("只看115") && texts.includes("只看磁力") && texts.includes("➡️ 下一页") && texts.includes("取消"));
+
+  await handleUpdate(bot, cb(list.buttons!.flat().find((b) => b.text === "➡️ 下一页")!.callback_data));
+  assert.match(edited[1].text, /9\. \[磁力\] 片 12/);
+  assert.match(edited[1].text, /第 2\/2 页/);
+  await handleUpdate(bot, cb(list.buttons!.flat().find((b) => b.text === "只看磁力")!.callback_data));
+  assert.match(edited[2].text, /1\. \[磁力\] 片 10/);
+  assert.doesNotMatch(edited[2].text, /\[115\]/);
+  assert.ok(edited[2].buttons!.flat().some((b) => b.text === "全部"));
+});
+
+test("/s：每类只留前 15 条、表头是搜到的总数，一类多了不把后面几类挤没；没账号接得住的那几类不列", async () => {
+  searchConfigured = true;
+  const many = (kind: ResourceKind, n: number, from: number, usable = true) =>
+    Array.from({ length: n }, (_, i) => ({ ...hit(kind, from + i), ...(usable ? {} : { action: null }) }));
+  searchResult = { keyword: "三体", complete: true, counts: {}, items: [...many("115", 70, 0), ...many("quark", 30, 100), ...many("magnet", 20, 200)] };
+  await searchVia(msg("/s 三体"));
+  const all = edited.at(-1)!;
+  assert.match(all.text, /🔍 <b>三体<\/b> · 115 70 · 夸克 30 · 磁力 20\n每类只列前 15 条/);
+  assert.match(all.text, /第 1\/6 页/, "三类各 15 条，一页 8 条");
+  assert.deepEqual(
+    all.buttons!.flat().filter((b) => b.text.startsWith("只看")).map((b) => b.text),
+    ["只看115", "只看夸克", "只看磁力"],
+  );
+  await handleUpdate(bot, cb(all.buttons!.flat().find((b) => b.text === "只看磁力")!.callback_data));
+  assert.match(edited.at(-1)!.text, /1\. \[磁力\] 片 200/);
+  assert.match(edited.at(-1)!.text, /第 1\/2 页/);
+
+  // 只有夸克账号：115 分享和磁力点了只会报「先加账号」，不列
+  searchResult = { ...searchResult, items: [...many("115", 70, 0, false), ...many("quark", 3, 100), ...many("magnet", 20, 200, false)] };
+  await searchVia(msg("/s 三体"));
+  assert.match(edited.at(-1)!.text, /🔍 <b>三体<\/b> · 夸克 3\n\n1\. \[夸克\]/);
+  assert.doesNotMatch(edited.at(-1)!.text, /\[115\]|\[磁力\]/);
+  assert.ok(!edited.at(-1)!.buttons!.flat().some((b) => b.text.startsWith("只看")));
+
+  searchResult = { ...searchResult, items: [...many("115", 70, 0, false), ...many("magnet", 2, 200, false)] };
+  await searchVia(msg("/s 三体"));
+  assert.match(edited.at(-1)!.text, /搜到 115 70 条、磁力 2 条，但还没有接得住的账号/);
+});
+
+test("/s 结果里点序号：分享走转存那条路、磁力走云下载那条路，各自的开关照查；同一个列表能点好几次；别人点不了；订过追更的标出来", async () => {
+  searchConfigured = true;
+  searchResult = {
+    keyword: "k",
+    complete: true,
+    counts: {},
+    items: [{ ...hit("115", 1), followed: "active" }, { ...hit("quark", 3), followed: "stopped" }, hit("magnet", 2)],
+  };
+  settings.telegram!.allowedUsers = [42, 43];
+  await searchVia(msg("/s k"));
+  assert.match(edited[0].text, /1\. \[115\] 片 1 · 2025-01-0\d · <i>已在追更<\/i>/);
+  assert.match(edited[0].text, /2\. \[夸克\] 片 3 · 2025-01-0\d · <i>追更已停<\/i>/);
+  assert.doesNotMatch(edited[0].text, /3\. .*追更/);
+  const buttons = edited[0].buttons!.flat();
+  const one = buttons.find((b) => b.text === "1")!;
+  const three = buttons.find((b) => b.text === "3")!;
+
+  await handleUpdate(bot, cb(one.callback_data, { user: 43 }));
+  assert.equal(answered.at(-1), "这不是你发起的搜索");
+  await handleUpdate(bot, cb(one.callback_data));
+  assert.match(sent.at(-1)!.text, /分享转存功能未开启/);
+  settings.telegram!.allowShareReceive = true;
+  calls.length = 0;
+  await handleUpdate(bot, cb(one.callback_data));
+  assert.deepEqual(calls, [{ fn: "shareInfo", args: hit("115", 1).url }]);
+  assert.match(sent.at(-1)!.text, /📦 <b>剧集合集<\/b>/);
+
+  await handleUpdate(bot, cb(three.callback_data));
+  assert.match(sent.at(-1)!.text, /云下载功能未开启/);
+  settings.telegram!.allowOfflineAdd = true;
+  await handleUpdate(bot, cb(three.callback_data));
+  assert.match(sent.at(-1)!.text, /收到 1 条链接/);
+});
+
+test("私聊里直接发片名就搜；群里只认 /s；像配对码的片名照样搜，写成 XXXX-XXXX 的、或者真有待批准请求的才当配对码", async () => {
+  searchConfigured = true;
+  searchResult = { keyword: "繁花", complete: true, counts: {}, items: [hit("quark", 1)] };
+  await searchVia(msg("繁花"));
+  assert.deepEqual(calls, [{ fn: "searchResources", args: "繁花" }]);
+  calls.length = 0;
+  await searchVia(msg("繁花", { chat: -100, type: "supergroup" }));
+  assert.equal(calls.length, 0);
+  assert.match(sent.at(-1)!.text, /搜资源用 \/s 片名/);
+  await searchVia(msg("/s@openstrm_bot 繁花", { chat: -100, type: "supergroup" }));
+  assert.deepEqual(calls, [{ fn: "searchResources", args: "繁花" }]);
+
+  // Superman、The Flash 都凑得上配对码的字母表
+  calls.length = 0;
+  await searchVia(msg("Superman"));
+  await searchVia(msg("The Flash"));
+  assert.deepEqual(
+    calls.map((c) => c.args),
+    ["Superman", "The Flash"],
+  );
+  await searchVia(msg("ABCD-2345"));
+  assert.match(sent.at(-1)!.text, /Telegram 里批准网页客户端没开/);
+  await searchVia(msg("wxyz 2345"));
+  assert.match(sent.at(-1)!.text, /Telegram 里批准网页客户端没开/, "不带连字符，但真有这么一个请求");
+  assert.equal(calls.length, 2);
+});
+
+test("/s：搜索放在后台，不挡住别的消息；同一个聊天上一个没出结果不开新的，别的聊天不受影响", async () => {
+  searchConfigured = true;
+  let release!: () => void;
+  searchGate = new Promise((r) => (release = r));
+  searchResult = { keyword: "沙丘2", complete: true, counts: {}, items: [hit("quark", 1)] };
+  await handleUpdate(bot, msg("/s 沙丘2"));
+  assert.match(sent.at(-1)!.text, /在搜「沙丘2」/);
+  assert.equal(edited.length, 0, "还没出结果");
+  await handleUpdate(bot, msg("/ping"));
+  assert.match(sent.at(-1)!.text, /Pong/);
+  await handleUpdate(bot, msg("/s 别的"));
+  assert.match(sent.at(-1)!.text, /上一个搜索还没出结果/);
+  settings.telegram!.allowedUsers = [42, 43];
+  await handleUpdate(bot, msg("/s 另一个", { user: 43 }));
+  assert.match(sent.at(-1)!.text, /在搜「另一个」/);
+
+  release();
+  await __test_waitSearches();
+  assert.equal(edited.length, 2);
+  assert.match(edited[0].text, /片 1/);
+  assert.deepEqual(
+    calls.filter((c) => c.fn === "searchResources").map((c) => c.args),
+    ["沙丘2", "另一个"],
+  );
+  searchGate = null;
+  await searchVia(msg("/s 别的"));
+  assert.equal(calls.filter((c) => c.fn === "searchResources").length, 3, "出了结果就能再搜");
+});
+
+test("/s：搜索出错、只有别家网盘、没搜到各有说法；追更通知里的「搜替代资源」按订阅名搜", async () => {
+  searchConfigured = true;
+  searchError = new Error("连不上 PanSou：连接被拒绝");
+  await searchVia(msg("/s 沙丘2"));
+  assert.match(edited[0].text, /❌ 搜索失败：连不上 PanSou/);
+  searchError = null;
+  searchResult = { keyword: "x", complete: true, counts: {}, items: [hit("other", 1)] };
+  await searchVia(msg("/s x"));
+  assert.match(edited[1].text, /只搜到百度、阿里这类网盘的链接/);
+  searchResult = { keyword: "y", complete: true, counts: {}, items: [] };
+  await searchVia(msg("/s y"));
+  assert.match(edited[2].text, /^没搜到「y」/);
+  // 插件还没跑完的 0 条：不说「没搜到」，叫人过半分钟再发
+  searchResult = { keyword: "z", complete: false, counts: {}, items: [] };
+  await searchVia(msg("/s z"));
+  assert.match(edited[3].text, /^还没搜到「z」.*过半分钟再发一次/);
+  // PanSou 回的原话很长：截短，整条消息不会超过 Telegram 的上限
+  searchError = new Error(`PanSou：${"很长的报错".repeat(2000)}`);
+  await searchVia(msg("/s w"));
+  assert.match(edited[4].text, /^❌ 搜索失败：PanSou：很长的报错/);
+  assert.ok(edited[4].text.length < 400, String(edited[4].text.length));
+  searchError = null;
+
+  calls.length = 0;
+  await searchVia(cb("fsr:f1"));
+  assert.deepEqual(calls, [{ fn: "searchResources", args: "繁花" }], "订阅名「标题 / 子目录」只拿标题搜，标签和年份去掉");
+  await searchVia(cb("fsr:nosuch"));
+  assert.equal(answered.at(-1), "这个追更已经不在了");
+});
+
+test("搜索列表的按钮：翻页、筛选的值不对就不理；取消只有发起人能点；连点两下不重发一份；选目录那几个按钮不认搜索的 token", async () => {
+  searchConfigured = true;
+  settings.telegram!.allowedUsers = [42, 43];
+  searchResult = { keyword: "k", complete: true, counts: {}, items: Array.from({ length: 10 }, (_, i) => hit("115", i)) };
+  await searchVia(msg("/s k"));
+  const token = edited[0].buttons!.flat().find((b) => b.text === "取消")!.callback_data.split(":")[1];
+
+  const edits = edited.length;
+  for (const data of [`srp:${token}:x`, `srp:${token}:-1`, `srp:${token}:1.5`, `srf:${token}:baidu`, `srf:${token}:`]) {
+    await handleUpdate(bot, cb(data));
+  }
+  assert.equal(edited.length, edits, "不认的值不改列表");
+  await handleUpdate(bot, cb(`srp:${token}:99`));
+  assert.match(edited.at(-1)!.text, /第 2\/2 页/, "页码超了画最后一页");
+
+  for (const data of [`ofl:${token}:t1`, `shr:${token}:t1`, `nav:${token}:up`, `go:${token}:x`]) {
+    await handleUpdate(bot, cb(data));
+    assert.equal(answered.at(-1), "已过期，请重新发一次链接", data);
+  }
+
+  // 同一个按钮连点两下：第二次 Telegram 回 not modified，当成改好了；别的编辑失败照旧补发一条
+  const sends = sent.length;
+  editFailure = "Bad Request: message is not modified: specified new message content and reply markup are exactly the same";
+  await handleUpdate(bot, cb(`srp:${token}:1`));
+  assert.equal(sent.length, sends);
+  editFailure = "Bad Request: message to edit not found";
+  await handleUpdate(bot, cb(`srp:${token}:0`));
+  assert.equal(sent.length, sends + 1);
+  editFailure = null;
+
+  await handleUpdate(bot, cb(`drop:${token}`, { user: 43 }));
+  assert.equal(answered.at(-1), "这不是你发起的操作");
+  await handleUpdate(bot, cb(`srp:${token}:1`));
+  assert.match(edited.at(-1)!.text, /第 2\/2 页/, "别人点取消，列表还在");
+  await handleUpdate(bot, cb(`drop:${token}`));
+  assert.equal(edited.at(-1)!.text, "已取消。");
+  await handleUpdate(bot, cb(`srp:${token}:0`));
+  assert.equal(answered.at(-1), "已过期，请重新搜一次");
+});
+
+test("/s：屏蔽词藏了几条写在表头下面；全被藏掉时说是屏蔽词藏的，不说没搜到", async () => {
+  searchConfigured = true;
+  searchResult = { keyword: "k", complete: true, counts: {}, items: [hit("quark", 1)], blocked: 3 };
+  await searchVia(msg("/s k"));
+  assert.match(edited.at(-1)!.text, /🔍 <b>k<\/b> · 夸克 1\n屏蔽词藏了 3 条。/);
+  searchResult = { keyword: "k", complete: true, counts: {}, items: [], blocked: 4 };
+  await searchVia(msg("/s k"));
+  assert.match(edited.at(-1)!.text, /搜到的 4 条都被屏蔽词藏掉了/);
+});
+
+test("/s：剩下的接不住、屏蔽词又藏了几条时，两件事都说", async () => {
+  searchConfigured = true;
+  searchResult = { keyword: "k", complete: true, counts: {}, items: [hit("other", 1)], blocked: 5 };
+  await searchVia(msg("/s k"));
+  assert.match(edited.at(-1)!.text, /只搜到百度、阿里这类网盘的链接.*（屏蔽词另外藏了 5 条）/);
 });

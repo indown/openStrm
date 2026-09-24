@@ -428,7 +428,7 @@ function settleFailure(f: ShareFollow, error: string, kind: FailKind): ShareFoll
   if (kind === "share" && streak >= FOLLOW.EXPIRE_STREAK) {
     updateShareFollow(f.id, { status: "expired", enabled: false, lastError: error, errorStreak: streak, lastCheckedAt: now, recent });
     log.warn(`追更「${f.name}」的分享已失效，停止：${error}`);
-    void deps.notify({ type: "follow-expired", name: f.name, reason: error }).catch(() => {});
+    void deps.notify({ type: "follow-expired", id: f.id, name: f.name, reason: error }).catch(() => {});
     return run;
   }
   updateShareFollow(f.id, {
@@ -599,7 +599,7 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
   }
   if (stale) {
     log.info(`追更「${f.name}」${FOLLOW.STALE_DAYS} 天没有更新，自动暂停`);
-    void deps.notify({ type: "follow-stale", name: f.name, days: FOLLOW.STALE_DAYS }).catch(() => {});
+    void deps.notify({ type: "follow-stale", id: f.id, name: f.name, days: FOLLOW.STALE_DAYS }).catch(() => {});
   }
   return run;
 }

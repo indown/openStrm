@@ -16,7 +16,7 @@ export type AgentScope = "read" | "run" | "write" | "danger";
 /**
  * 工具集：令牌可以只开其中几组，工具少了本地小模型选得准、上下文也省。
  * 总览、任务列表、作业进度这几个基础工具不属于任何一组，总是在。
- *   sync 同步、transfer 转存与云下载、organize 整理（含 TMDB 搜索）、follow 追更、strm strm 管理
+ *   sync 同步、transfer 搜资源、转存与云下载、organize 整理（含 TMDB 搜索）、follow 追更、strm strm 管理
  */
 export type AgentToolset = "sync" | "transfer" | "organize" | "follow" | "strm";
 

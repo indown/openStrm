@@ -33,6 +33,7 @@ const SETTING_SECRETS: Array<[string, string]> = [
   ["tmdb", "apiKey"],
   ["hdhive", "apiKey"],
   ["telegram", "botToken"],
+  ["pansou", "password"],
 ];
 
 type Groups = Record<string, unknown>;

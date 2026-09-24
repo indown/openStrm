@@ -316,14 +316,22 @@ export function normalizeAddResults(data: unknown, urls: string[]): OfflineAddRe
 
 const SUPPORTED_SCHEME = /^(magnet:\?|ed2k:\/\/|https?:\/\/|ftp:\/\/)/i;
 const INFO_HASH = /^(?:[0-9a-f]{40}|[a-z2-7]{32})$/i;
+/**
+ * 一行里挨着好几条磁力 / 电驴：单行输入框会把粘进来的换行吃成空格。只在这两种链接开头前的空白处断开——
+ * 电驴的文件名里本来就可能有空格，http 链接前面带句话的（「沙丘2 https://…」）也不该拆出一条去下载
+ */
+const JOINED_LINK = /\s+(?=magnet:\?|ed2k:\/\/)/i;
 
 /**
- * 把用户贴进来的一坨文本整理成可提交的链接：按行拆、去空白、去重；
+ * 把用户贴进来的一坨文本整理成可提交的链接：按行拆（一行里挨着的几条磁力 / 电驴也拆开）、去空白、去重；
  * 裸的 info_hash 补成磁力链（p115client 也是这么等价的）；
  * 其它协议（thunder:// 之类）115 不收，单独列出来告诉用户。
  */
 export function normalizeOfflineUrls(input: string | string[]): { urls: string[]; invalid: string[] } {
-  const lines = (Array.isArray(input) ? input : input.split(/\r?\n/)).map((s) => s.trim()).filter(Boolean);
+  const lines = (Array.isArray(input) ? input : input.split(/\r?\n/))
+    .flatMap((s) => s.split(JOINED_LINK))
+    .map((s) => s.trim())
+    .filter(Boolean);
   const urls: string[] = [];
   const invalid: string[] = [];
   const seen = new Set<string>();

@@ -367,6 +367,7 @@ ingress:
 | `tmdb_search` | read | RO, OW | TMDB 搜索（片名、年份、类型） |
 | `hdhive_search` | read | RO, OW | HDHive 资源列表（带解锁要花的积分、是否已拥有）；没配置 HDHive 时不列出这个工具 |
 | `hdhive_unlock` | danger | D, I, OW | 解锁，扣积分；必须带 `maxPoints`，实际要花的比它多就拒绝 |
+| `resource_search` | read | RO, OW | 通过自己部署的 PanSou 按片名搜网盘分享和磁力，归 transfer 组（界面上这一组从「转存与云下载」改叫「搜资源、转存与云下载」）。2026-09-23 随资源搜索加的（设计见 resource-search.md 第 5 节）；`hdhive_search` 那种「按名字找资源」的用例由它承担 |
 | `organize_preview` | run | OW | 建一次整理预览，返回 runId（只读网盘和 TMDB） |
 | `organize_status` | read | RO | 预览 / 执行 / 撤销的进度和结果；`waitSeconds`；单元分页，可只看「把握小 / 冲突 / 失败」 |
 | `organize_adjust` | write | I | 换匹配、改季、设集偏移、勾选、给冲突选办法；选「删掉 / 覆盖」要 danger 档 |
@@ -384,7 +385,7 @@ ingress:
 **P4（可选）**：
 
 - 建 / 改同步任务（要新开一个 `config` 档）；
-- MCP prompts（把「找片入库」这类流程做成客户端里的斜杠命令）。
+- MCP prompts（把「找片入库」这类流程做成客户端里的斜杠命令）。「找片入库」（`find_and_save`）2026-09-23 随资源搜索 P2 做了，见 resource-search.md 5.5 和「P2 实施记录」。
 
 工具总数 30 个左右。按档位过滤后，只读令牌只看到十来个。
 
@@ -1488,7 +1489,7 @@ changes?    最多 50 条，按顺序做：
 | 组 | 叫法 | 工具 |
 |---|---|---|
 | `sync` | 同步 | 已有 4 个 |
-| `transfer` | 转存与云下载 | 已有 5 个 |
+| `transfer` | 转存与云下载（资源搜索加进来以后叫「搜资源、转存与云下载」） | 已有 5 个 |
 | `organize` | 整理 | `organize_list` / `organize_status` / `organize_detail` / `tmdb_search` / `organize_preview` / `organize_adjust` / `organize_cancel` / `organize_apply` / `organize_revert` / `organize_skip` |
 | `follow` | 追更 | `follow_list` / `follow_check` / `follow_update` / `follow_delete` |
 | `strm` | strm 管理 | `strm_search` / `strm_check` / `strm_verify` / `strm_fix` / `strm_rebuild` / `strm_delete` |

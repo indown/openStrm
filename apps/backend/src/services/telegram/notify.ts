@@ -49,10 +49,10 @@ export type NotifyEvent =
   | { type: "follow-added"; name: string; added: string[]; generated: number; target: string }
   /** 追更连续几次检查失败；按订阅 id 一小时只说一次 */
   | { type: "follow-failed"; id: string; name: string; detail: string }
-  /** 分享已经打不开了，订阅已停 */
-  | { type: "follow-expired"; name: string; reason: string }
+  /** 分享已经打不开了，订阅已停；id 给「搜替代资源」按钮用 */
+  | { type: "follow-expired"; id: string; name: string; reason: string }
   /** 太久没更新，订阅已自动暂停 */
-  | { type: "follow-stale"; name: string; days: number }
+  | { type: "follow-stale"; id: string; name: string; days: number }
   /** OpenStrm 有新版本（默认关，同一个版本只推一次） */
   | { type: "update-available"; version: string; current: string; url: string }
   /** Emby 把新条目收进媒体库了；groups 为空表示这批太多、只报总数 */
@@ -291,6 +291,8 @@ export async function notifySecurityAlert(text: string): Promise<boolean> {
 /** 按钮的回调数据前缀：`oaa:<请求 id>:<read|daily>` 批准、`oad:<请求 id>` 拒绝，commands.ts 认这两个 */
 export const OAUTH_APPROVE_ACTION = "oaa";
 export const OAUTH_DENY_ACTION = "oad";
+/** 追更通知里「搜替代资源」按钮：`fsr:<订阅 id>` */
+export const FOLLOW_SEARCH_ACTION = "fsr";
 
 const SCOPE_TEXT: Record<string, string> = { read: "查看", run: "运行", write: "改网盘", danger: "危险操作" };
 
@@ -300,7 +302,7 @@ const realButtonSender: ButtonSender = async (chatId, text, buttons) => {
   const token = readAppSettings().telegram?.botToken;
   if (!token) return;
   const res = await createTelegramBot(token).sendMessage(chatId, text, { buttons });
-  if (!res.ok) log.warn(`Telegram 批准通知发送失败：${res.error ?? res.description ?? "unknown"}`);
+  if (!res.ok) log.warn(`Telegram 带按钮的通知发送失败：${res.error ?? res.description ?? "unknown"}`);
 };
 
 let buttonSender: ButtonSender = realButtonSender;
@@ -387,11 +389,20 @@ export async function notify(event: NotifyEvent): Promise<boolean> {
         text = render(event);
         break;
       case "follow-added":
-      case "follow-expired":
-      case "follow-stale":
         if (!prefs.follow) return false;
         text = render(event);
         break;
+      case "follow-expired":
+      case "follow-stale": {
+        if (!prefs.follow) return false;
+        text = render(event);
+        // 配了资源搜索就带个按钮：分享没了、或者这个分享不更了，最要紧的是找一个还在更的（commands.ts 认 fsr）
+        if (text && settings.pansou?.baseUrl?.trim()) {
+          await buttonSender(telegram.chatId, text, [[{ text: "🔍 搜替代资源", callback_data: `${FOLLOW_SEARCH_ACTION}:${event.id}` }]]);
+          return true;
+        }
+        break;
+      }
       case "follow-failed":
         if (!prefs.follow) return false;
         if (throttled(`follow-failed:${event.id}`)) return false;

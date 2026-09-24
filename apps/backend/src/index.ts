@@ -55,6 +55,9 @@ import { migrateLegacyCopyMount, startOfflineWatcher, stopOfflineWatcher } from 
 import copyRoute from "./routes/copy/index.js";
 import { adoptLegacyCopyFollowups, startCopyWatcher, stopCopyWatcher } from "./services/copy/service.js";
 
+// 资源搜索（PanSou）
+import resourceRoute from "./routes/resource/index.js";
+
 // 分享追更
 import followRoute from "./routes/follow/index.js";
 import { startFollowWatcher, stopFollowWatcher } from "./services/follow/service.js";
@@ -158,6 +161,7 @@ await app.register(shareRoute);
 await app.register(cloudOfflineRoute);
 await app.register(copyRoute);
 await app.register(followRoute);
+await app.register(resourceRoute);
 
 // Library routes
 await app.register(libraryRoute);

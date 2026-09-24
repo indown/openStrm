@@ -34,7 +34,7 @@ export const SCOPE_LABEL: Record<AgentScope, string> = { read: "查看", run: "�
 
 export const TOOLSETS: Array<{ id: AgentToolset; label: string }> = [
   { id: "sync", label: "同步" },
-  { id: "transfer", label: "转存与云下载" },
+  { id: "transfer", label: "搜资源、转存与云下载" },
   { id: "organize", label: "整理" },
   { id: "follow", label: "追更" },
   { id: "strm", label: "strm 管理" },

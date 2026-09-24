@@ -12,6 +12,19 @@ import { parseRules } from "../services/organize/rules.js";
 /** 115 的 id 超过 JS 安全整数，前端有的地方传字符串、有的传数字 */
 export const cidSchema = z.union([z.string(), z.number()]);
 
+/** 地址后面要拼 /api/…：带用户名密码（user:pass@）、? 参数、# 的都拼不对，也不该把凭据写在地址里 */
+function isPlainBaseUrl(v: string): boolean {
+  return !/[?#\s]/.test(v) && !/^https?:\/\/[^/]*@/i.test(v) && URL.canParse(v);
+}
+
+/** PanSou 地址：设置和「检查连接」共用一条规则；空串是清掉 */
+export const pansouBaseUrlSchema = z
+  .string()
+  .trim()
+  .max(500)
+  .refine((v) => v === "" || /^https?:\/\/[^\s/]+/i.test(v), "PanSou 地址要以 http:// 或 https:// 开头")
+  .refine((v) => v === "" || !/^https?:\/\//i.test(v) || isPlainBaseUrl(v), "PanSou 地址只填到主机、端口（或路径）为止：别带用户名密码、? 参数和 #");
+
 /** `/:id` 路由参数 */
 export const idParamsSchema = z.object({ id: z.string().min(1) });
 
@@ -207,6 +220,20 @@ export const settingsPatchSchema = z.looseObject({
     .optional(),
   tmdb: z.looseObject({ apiKey: z.string().optional(), language: z.string().optional() }).optional(),
   hdhive: z.looseObject({ apiKey: z.string().optional(), baseUrl: z.string().optional() }).optional(),
+  pansou: z
+    .looseObject({
+      baseUrl: pansouBaseUrlSchema.optional(),
+      username: z.string().trim().max(200).optional(),
+      password: z.string().max(500).optional(),
+      checkLinks: z.boolean().optional(),
+      // 屏蔽词：去空白、去空、去重（不分大小写）
+      blockWords: z
+        .array(z.string().trim().max(30, "屏蔽词每个最多 30 个字"))
+        .max(50, "屏蔽词最多 50 个")
+        .transform((list) => list.filter((w, i) => w && list.findIndex((x) => x.toLowerCase() === w.toLowerCase()) === i))
+        .optional(),
+    })
+    .optional(),
   download: z
     .looseObject({
       linkMaxPerSecond: z.number().positive().optional(),

@@ -24,16 +24,24 @@ import { toast } from "sonner";
 import { api, type DirectoryNode, type OfflineAddResult, type TaskRow } from "@/lib/api";
 import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 import { DirectoryPickerDialog } from "@/components/DirectoryPickerDialog";
+import { splitOfflineLinks } from "@/lib/offline";
 
 type Mode = "task" | "dir";
 
 interface AddOfflineTaskDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** 往哪个 115 账号加 */
+  /** 默认往哪个 115 账号加 */
   account: string;
-  /** 至少加成功一条时回调，页面据此刷新列表 */
-  onAdded: () => void;
+  /** 能选的 115 账号：不止一个时框里给个选择，换了只换目标目录那一块，已经贴好的链接不动 */
+  accounts?: string[];
+  /**
+   * 至少加成功一条时回调，带着加成功的那几条链接和用的账号（框里可能另选了账号：云下载页据此把列表切过去，
+   * 不然刚加的在别的账号下、看着像没加上；搜索页只去掉这几条的勾选）
+   */
+  onAdded: (addedUrls: string[], account: string) => void;
+  /** 打开时预填的链接（资源搜索页、顶栏带过来的磁力）；挤在一行里的几条会拆成一行一条 */
+  initialUrls?: string;
 }
 
 /** OpenList 路径归一：去空白和尾斜杠、补头斜杠；空的还它空串 */
@@ -47,7 +55,10 @@ const normOlDir = (v?: string): string => {
  *   - 同步任务的目录（可进子目录）：下载完成后由后端自动为产物生成 strm
  *   - 任意网盘目录：只是下载，不管 strm
  */
-export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: AddOfflineTaskDialogProps) {
+export function AddOfflineTaskDialog({ open, onOpenChange, account: defaultAccount, accounts, onAdded, initialUrls }: AddOfflineTaskDialogProps) {
+  /** 这次在框里另选的账号；关了就忘，下次打开还是调用方给的那个 */
+  const [picked, setPicked] = useState<string | null>(null);
+  const account = picked ?? defaultAccount;
   const [urls, setUrls] = useState("");
   const [mode, setMode] = useState<Mode>("task");
   const [tasks, setTasks] = useState<TaskRow[]>([]);
@@ -73,13 +84,23 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
   const [copySubdirs, setCopySubdirs] = useState<DirectoryNode[]>([]);
   const [copySubdirLoading, setCopySubdirLoading] = useState(false);
 
-  // 每次打开都从头来：清链接、回到任务目录、重新拉这个账号的任务和 115 的默认目录
+  // 每次打开，链接回到预填的（没有就清空）；关上时忘掉框里另选的账号
+  useEffect(() => {
+    if (!open) {
+      setPicked(null);
+      return;
+    }
+    setUrls(splitOfflineLinks(initialUrls ?? ""));
+    setResults(null);
+    setInvalid([]);
+  }, [open, initialUrls]);
+
+  // 打开、换账号时目标目录那一块从头来：回到任务目录，重新拉这个账号的任务和 115 的默认目录。
+  // 上一个账号的任务先清掉：新列表回来之前（或者读失败了）不能还挂着、还能选
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    setUrls("");
-    setResults(null);
-    setInvalid([]);
+    setTasks([]);
     setSubSegments([]);
     setDirId("");
     setDirPath("");
@@ -127,7 +148,8 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
     };
   }, [open, account]);
 
-  const selectedTask = useMemo(() => tasks.find((t) => t.id === taskId), [tasks, taskId]);
+  // 只认这个账号的任务：带着任务 id 提交时后端按任务自己的账号走，框里显示的账号和实际加进去的不能对不上
+  const selectedTask = useMemo(() => tasks.find((t) => t.id === taskId && t.account === account), [tasks, taskId, account]);
   /**
    * 复制到哪：任务目录模式按任务自己的目标目录（没填才用设置页的默认值），和后端 addOfflineTasks 一个规则；
    * 任务开着「复制到 OpenList」时不用勾也会复制，勾选框就锁成勾上
@@ -194,7 +216,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
       toast.error("请先粘贴链接");
       return;
     }
-    if (mode === "task" && !taskId) {
+    if (mode === "task" && !selectedTask) {
       toast.error("请选择一个同步任务");
       return;
     }
@@ -204,8 +226,8 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
     try {
       const copyOpts = copying && copyBase ? { copyToOpenlist: true, ...(copySegments.length ? { copyDstDir: copyTarget } : {}) } : {};
       const target =
-        mode === "task"
-          ? { taskId, subPath: subSegments.join("/"), generateStrm, ...copyOpts }
+        mode === "task" && selectedTask
+          ? { taskId: selectedTask.id, subPath: subSegments.join("/"), generateStrm, ...copyOpts }
           : dirId
             ? { dirId, ...copyOpts }
             : copyOpts;
@@ -220,7 +242,10 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
             ? `，下载完成后会自动生成 strm${copied ? `，并${copied}` : ""}`
             : `，下载完成后会${copied}`;
         toast.success(`已添加 ${res.added} 个云下载任务${suffix}`);
-        onAdded();
+        onAdded(
+          res.results.filter((r) => r.ok).map((r) => r.url),
+          account,
+        );
       }
       if (res.failed === 0 && res.invalid.length === 0) {
         onOpenChange(false);
@@ -248,9 +273,29 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
         <DialogHeader>
           <DialogTitle>添加云下载</DialogTitle>
           <DialogDescription>
-            由 115 在云端下载到网盘。账号：{account}
+            由 115 在云端下载到网盘。{accounts && accounts.length > 1 ? "" : `账号：${account}`}
           </DialogDescription>
         </DialogHeader>
+
+        {accounts && accounts.length > 1 && (
+          <div className="flex items-center gap-2">
+            <label htmlFor="offline-account" className="shrink-0 text-sm font-medium">
+              账号
+            </label>
+            <Select value={account} onValueChange={setPicked} disabled={submitting}>
+              <SelectTrigger id="offline-account" className="w-48">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {accounts.map((a) => (
+                  <SelectItem key={a} value={a}>
+                    {a}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
 
         <div className="flex-1 overflow-auto min-h-0 space-y-4 py-2">
           <div className="space-y-2">
@@ -544,7 +589,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account, onAdded }: A
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             取消
           </Button>
-          <Button onClick={submit} disabled={submitting || lineCount === 0 || (mode === "task" && !taskId)}>
+          <Button onClick={submit} disabled={submitting || tasksLoading || lineCount === 0 || (mode === "task" && !selectedTask)}>
             {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
             添加
           </Button>

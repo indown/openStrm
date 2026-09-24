@@ -1125,5 +1125,73 @@
       ],
       "additionalProperties": false
     }
+  },
+  {
+    "name": "resource_search",
+    "scope": "read",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "keyword": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "kinds": {
+          "maxItems": 4,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "115",
+              "quark",
+              "magnet",
+              "ed2k"
+            ]
+          }
+        },
+        "year": {
+          "type": "string",
+          "maxLength": 4
+        },
+        "include": {
+          "maxItems": 10,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30
+          }
+        },
+        "exclude": {
+          "maxItems": 10,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30
+          }
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "fresh": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "keyword"
+      ],
+      "additionalProperties": false
+    }
   }
 ]

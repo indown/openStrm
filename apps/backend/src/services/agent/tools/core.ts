@@ -13,6 +13,7 @@ import { KIND_LABEL, providerFor } from "../../drive/registry.js";
 import { getLifeMonitorStatus } from "../../life/monitor.js";
 import { listFollowups } from "../../offline/service.js";
 import { listAttention } from "../../organize/run.js";
+import { pansouConn } from "../../pansou/search.js";
 import { getRunningTask, isTaskRunning, listRunningTaskIds } from "../../task/registry.js";
 import { getLatestExecutions, queryTaskHistory } from "../../task-history.js";
 import { SCOPE_LABEL } from "../access.js";
@@ -43,7 +44,7 @@ export const overviewTool = defineTool({
   name: "overview",
   title: "总览",
   description:
-    "一眼看全 OpenStrm 的现状：版本、网盘账号、正在跑的同步、网盘监控、要人管的整理（待确认的清单、有失败的，最近 5 条）、云下载待回执、最近 24 小时失败的同步，以及当前令牌的权限。开始干活前先调它。",
+    "一眼看全 OpenStrm 的现状：版本、网盘账号、正在跑的同步、网盘监控、要人管的整理（待确认的清单、有失败的，最近 5 条）、云下载待回执、资源搜索配没配、最近 24 小时失败的同步，以及当前令牌的权限。开始干活前先调它。",
   scope: "read",
   toolset: null,
   annotations: LOCAL_READ,
@@ -98,6 +99,8 @@ export const overviewTool = defineTool({
         : {}),
       // 只数「下完生成 strm」的回执；复制到 OpenList 的那种不生成 strm
       offlinePendingStrm: listFollowups().filter((f) => f.status === "pending" && (f.kind ?? "strm") === "strm").length,
+      // 只看设置、不联网：没配置时 resource_search 调了也只会报错
+      resourceSearch: { configured: pansouConn() !== null },
       recentFailures,
       notes: USAGE_NOTES,
       ...openInUi("/"),

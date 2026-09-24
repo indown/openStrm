@@ -29,6 +29,7 @@ import { AGENT_CALLER_KEY } from "./access.js";
 import { callTool, type AgentCaller } from "./calls.js";
 import type { ToolDef } from "./define.js";
 import { AGENT_INSTRUCTIONS } from "./instructions.js";
+import { promptsFor } from "./prompts.js";
 import { toolsFor } from "./tools/index.js";
 
 const log = moduleLogger("agent");
@@ -119,7 +120,8 @@ async function runTool(tool: ToolDef, caller: AgentCaller, args: unknown, ctx: S
 
 export function buildAgentServer(caller: AgentCaller): McpServer {
   const server = new McpServer({ name: "openstrm", title: "OpenStrm", version: APP_VERSION }, { instructions: AGENT_INSTRUCTIONS });
-  for (const tool of toolsFor(caller.token)) {
+  const tools = toolsFor(caller.token);
+  for (const tool of tools) {
     server.registerTool(
       tool.name,
       {
@@ -136,6 +138,13 @@ export function buildAgentServer(caller: AgentCaller): McpServer {
       },
       (args, ctx) => runTool(tool, caller, args, ctx),
     );
+  }
+  // prompt 展开只是拼一段文字，不调工具；注册了才声明 prompts 能力，用不上的令牌连这一项都看不到
+  const names = new Set(tools.map((t) => t.name));
+  for (const prompt of promptsFor(names)) {
+    server.registerPrompt(prompt.name, { title: prompt.title, description: prompt.description, argsSchema: prompt.args }, (args) => ({
+      messages: [{ role: "user", content: { type: "text", text: prompt.render(args, names) } }],
+    }));
   }
   return server;
 }

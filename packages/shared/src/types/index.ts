@@ -4,10 +4,21 @@ export type {
   OpenlistCopySettings,
   LifePullMode,
   LifeEventMode,
+  PansouSettings,
   TelegramSettings,
   TelegramNotifySettings,
   UpdateSettings,
 } from "./settings.js";
+export type {
+  ResourceAction,
+  ResourceCheckResult,
+  ResourceHit,
+  ResourceKind,
+  ResourceLinkState,
+  ResourceSearchResult,
+  ResourceSource,
+  ResourceStatus,
+} from "./resource.js";
 export type { AccountInfo, Account115, AccountOpenlist, AccountQuark } from "./account.js";
 export type {
   FileFailureAction,

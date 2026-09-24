@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
+  CloudDownload,
   Download,
   Edit,
   FileText,
@@ -11,6 +12,7 @@ import {
   FolderTree,
   History,
   KeyRound,
+  Link2Off,
   ListChecks,
   LogOut,
   Monitor,
@@ -22,6 +24,7 @@ import {
   Search,
   Share2,
   Sun,
+  Telescope,
 } from "lucide-react";
 import type { TaskRow } from "@/lib/api";
 import {
@@ -34,6 +37,7 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { NAV_GROUPS } from "@/lib/nav";
+import { inputKindOf } from "@/lib/share";
 import { downloadBackupWithToast } from "@/lib/backup";
 import { startTaskWithToast } from "@/lib/task-start";
 import { checkForUpdate } from "@/lib/update";
@@ -44,6 +48,8 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   /** 顶栏那个「粘贴分享链接」的入口，面板只负责把它叫出来 */
   onOpenShare: () => void;
+  /** 输入框里打的字交给顶栏同一套处理：分享打开转存框、磁力去云下载、别的去资源搜索 */
+  onInput: (text: string) => void;
   onLogout: () => void;
 };
 
@@ -56,18 +62,24 @@ type Stage = { kind: "task"; task: TaskRow; rootQuery: string } | null;
 /** 任务在面板里显示成什么样 */
 const taskLabel = (t: TaskRow) => `${t.originPath} → ${t.targetPath}`;
 
+/** 「搜资源 / 查看分享 / 云下载」那一条的 value 前缀：和别的条目的 value 撞不上 */
+const INPUT_ITEM = "input-action:";
+
+const INPUT_ITEM_LABEL = { share: "查看分享", offline: "云下载", unsupported: "认不出的链接", search: "搜资源" } as const;
+
 /**
  * ⌘K 命令面板：去哪儿、做什么、找什么，都在这一个输入框里。
  *
  * 两段式：第一段搜页面 / 操作 / 实体，选中一个任务进第二段，列出对它能做什么。
  * 空输入框上按 Backspace 或 Esc 退回第一段。设计见 .claude/plans/command-palette.md。
  */
-export function CommandPalette({ open, onOpenChange, onOpenShare, onLogout }: Props) {
+export function CommandPalette({ open, onOpenChange, onOpenShare, onInput, onLogout }: Props) {
   const router = useRouter();
   const { setTheme } = useTheme();
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState<Stage>(null);
   const { tasks, accounts, follows } = usePaletteData(open);
+  const queryKind = inputKindOf(query);
 
   // 每次打开都从头开始：留着上次的词和上次进的那一段，第二次打开还得先退出来
   useEffect(() => {
@@ -88,6 +100,26 @@ export function CommandPalette({ open, onOpenChange, onOpenShare, onLogout }: Pr
     setStage({ kind: "task", task, rootQuery: query.trim() });
     setQuery("");
   };
+
+  /**
+   * 打了字就给一条「搜资源」，和「在 strm 里搜」是同一种写法。value 里带着输入的词，筛选时总能匹配上；
+   * 不用 forceMount——强制挂上的条目不算结果，下面会同时冒出「什么都没找到」。
+   * 贴的是分享、磁力的话这一条换成「查看分享」「云下载」，和顶栏输入框一样分开走。
+   *
+   * 摆在哪决定回车执行谁：cmdk 选中的是排在最前面的那一条，而它只在组内按分数排、组和组之间照写的顺序
+   * （它按分数挪组的那一步对不上号，从来没生效过）。所以贴的是链接时这一组放最前；打的是普通文字时放最后——
+   * 不然打 settings、备份这些找页面找操作的词，回车都成了去 PanSou 搜。什么都没对上时它就是唯一一条
+   */
+  const inputGroup = query.trim() ? (
+    <CommandGroup heading={queryKind === "search" ? "资源搜索" : "链接"}>
+      <CommandItem value={`${INPUT_ITEM}${query.trim()}`} onSelect={() => run(() => onInput(query.trim()))}>
+        {queryKind === "share" ? <Share2 /> : queryKind === "offline" ? <CloudDownload /> : queryKind === "unsupported" ? <Link2Off /> : <Telescope />}
+        <span className="truncate">
+          {INPUT_ITEM_LABEL[queryKind]}「{query.trim()}」
+        </span>
+      </CommandItem>
+    </CommandGroup>
+  ) : null;
 
   return (
     <CommandDialog
@@ -175,6 +207,8 @@ export function CommandPalette({ open, onOpenChange, onOpenShare, onLogout }: Pr
           </CommandGroup>
         ) : (
           <>
+            {queryKind !== "search" && inputGroup}
+
             {tasks.length > 0 && (
               <CommandGroup heading="任务">
                 {tasks.map((task) => (
@@ -283,6 +317,8 @@ export function CommandPalette({ open, onOpenChange, onOpenShare, onLogout }: Pr
                 退出登录
               </CommandItem>
             </CommandGroup>
+
+            {queryKind === "search" && inputGroup}
           </>
         )}
       </CommandList>

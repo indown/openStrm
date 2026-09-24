@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Pause, Pencil, Play, RefreshCw, Rss, Trash2 } from "lucide-react";
+import Link from "next/link";
+import { Loader2, Pause, Pencil, Play, RefreshCw, Rss, Telescope, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -45,6 +46,7 @@ import { TableSkeleton } from "@/components/loading";
 import { api, type FollowListResponse } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import { FOLLOW_INTERVALS, intervalLabel, scopeLabel } from "@/lib/follow";
+import { keywordFromName, searchHref } from "@/lib/resource";
 
 /** 有订阅正在检查时的刷新间隔 */
 const POLL_INTERVAL_MS = 5000;
@@ -356,6 +358,17 @@ function followView(f: ShareFollowSummary, originPath: string | null | undefined
   };
 }
 
+/** 分享失效、长期没更新而停掉的订阅：给个按订阅名去资源搜索的入口，找一个还在更的分享 */
+function AltSearchLink({ follow: f, className }: { follow: ShareFollowSummary; className?: string }) {
+  if (f.enabled || (f.status !== "expired" && f.status !== "stale")) return null;
+  return (
+    <Link href={searchHref(keywordFromName(f.name))} className={`flex w-fit items-center gap-1 text-xs text-brand hover:underline ${className ?? ""}`}>
+      <Telescope className="size-3" />
+      搜替代资源
+    </Link>
+  );
+}
+
 /** 最近一次有动静的检查：新增了什么、跳过了什么 */
 function FollowRecent({ last }: { last: ShareFollowRun | undefined }) {
   if (!last) return <span className="text-xs text-muted-foreground">订阅以来还没有新增</span>;
@@ -485,6 +498,7 @@ function FollowRow(props: FollowItemProps) {
             {f.lastError.length > 60 ? `${f.lastError.slice(0, 60)}…` : f.lastError}
           </div>
         )}
+        <AltSearchLink follow={f} className="mt-1" />
       </TableCell>
       <TableCell className="whitespace-nowrap text-right">
         <FollowActions {...props} variant="row" />
@@ -519,6 +533,7 @@ function FollowCard(props: FollowItemProps) {
         </div>
         <FollowRecent last={last} />
         {f.lastError && f.status !== "checking" && <div className="break-all text-destructive">{f.lastError}</div>}
+        <AltSearchLink follow={f} />
       </div>
       <div className="mt-3 flex items-center gap-2 border-t pt-3">
         <FollowActions {...props} variant="card" />

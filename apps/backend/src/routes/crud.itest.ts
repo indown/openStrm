@@ -407,3 +407,33 @@ test("密钥只给末 4 位；回传掩码值不改真值，空串才清除", as
   await call("PUT", "/api/settings", { emby: { url: "http://newer", apiKey: "" } });
   assert.equal(readAppSettings().emby?.apiKey, "", "空串才是清除");
 });
+
+test("PUT /api/settings：资源搜索的屏蔽词去空白、去空、不分大小写去重；密码是掩码时沿用库里的；空数组清掉", async () => {
+  await call("PUT", "/api/settings", { pansou: { baseUrl: "http://pansou", password: "pansou-pw-1234", blockWords: [" 预告 ", "", "TC", "tc", "枪版"] } });
+  assert.deepEqual(readAppSettings().pansou?.blockWords, ["预告", "TC", "枪版"]);
+  const masked = (await call("GET", "/api/settings")).json().pansou;
+  assert.deepEqual(masked.blockWords, ["预告", "TC", "枪版"]);
+  await call("PUT", "/api/settings", { pansou: { ...masked, blockWords: [] } });
+  assert.deepEqual(readAppSettings().pansou?.blockWords, []);
+  assert.equal(readAppSettings().pansou?.password, "pansou-pw-1234", "掩码的密码不写进库");
+  const tooMany = await call("PUT", "/api/settings", { pansou: { blockWords: Array.from({ length: 51 }, (_, i) => `w${i}`) } });
+  assert.equal(tooMany.statusCode, 400);
+});
+
+test("PUT /api/settings：PanSou 换了地址、密码还是掩码，存着的密码不跟着去新地址（清掉）；地址只是多了 / 或 /api 不算换", async () => {
+  await call("PUT", "/api/settings", { pansou: { baseUrl: "http://pansou:8888", username: "admin", password: "pansou-pw-1234" } });
+  const masked = (await call("GET", "/api/settings")).json().pansou;
+  assert.notEqual(masked.password, "pansou-pw-1234");
+
+  await call("PUT", "/api/settings", { pansou: { ...masked, baseUrl: "http://pansou:8888/api/" } });
+  assert.equal(readAppSettings().pansou?.password, "pansou-pw-1234", "同一台：沿用");
+
+  await call("PUT", "/api/settings", { pansou: { ...masked, baseUrl: "http://elsewhere:8888" } });
+  assert.equal(readAppSettings().pansou?.baseUrl, "http://elsewhere:8888");
+  assert.equal(readAppSettings().pansou?.password, "", "换了地址：清掉，要用就重新填");
+
+  await call("PUT", "/api/settings", { pansou: { baseUrl: "http://elsewhere:8888", username: "admin", password: "new-pw-5678" } });
+  assert.equal(readAppSettings().pansou?.password, "new-pw-5678", "重新填的照存");
+  const bad = await call("PUT", "/api/settings", { pansou: { baseUrl: "http://admin:pw@elsewhere:8888" } });
+  assert.equal(bad.statusCode, 400, "地址里不收用户名密码");
+});

@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, type ShareEntry, type ShareInfo } from "@/lib/api";
-import { apiErrorMessage } from "@/lib/axios";
+import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 
 /** 分享详情弹框一页多少条；115 按这个给，夸克固定 50 一页 */
 export const SHARE_PAGE_SIZE = 50;
@@ -10,6 +10,12 @@ export interface ShareCrumb {
   id: string;
   name: string;
 }
+
+/**
+ * 打开成没成：失败时带后端的错误码（分享打不开是 SHARE_GONE）和原因（password 是提取码不对或没带，gone 是分享没了）；
+ * 被后一次打开盖掉的算 superseded
+ */
+export type ShareLoadResult = { ok: true } | { ok: false; code?: string; reason?: string; superseded?: boolean };
 
 interface LoadOptions {
   /** 先把弹框打开再加载（影库卡片点开时用），默认加载成功后才打开 */
@@ -37,11 +43,11 @@ export function useShareDetail() {
   // 连续点开两个分享时只认最后一次，慢的旧响应不能把新分享盖掉
   const seqRef = useRef(0);
 
-  const load = async (url: string, opts: LoadOptions = {}) => {
+  const load = async (url: string, opts: LoadOptions = {}): Promise<ShareLoadResult> => {
     const trimmed = url.trim();
     if (!trimmed) {
       toast.error("请输入分享链接（115 或夸克）");
-      return;
+      return { ok: false };
     }
     const seq = ++seqRef.current;
     setLink(trimmed);
@@ -64,7 +70,7 @@ export function useShareDetail() {
         api.share.info(trimmed),
         needRootList ? api.share.list(trimmed, "0", undefined, SHARE_PAGE_SIZE) : Promise.resolve(null),
       ]);
-      if (seq !== seqRef.current) return;
+      if (seq !== seqRef.current) return { ok: false, superseded: true };
       setInfo(shareInfo ?? null);
       if (page) {
         setList(page.entries ?? []);
@@ -72,10 +78,13 @@ export function useShareDetail() {
         setNext(page.next);
       }
       setOpen(true);
+      return { ok: true };
     } catch (err) {
-      if (seq !== seqRef.current) return;
+      if (seq !== seqRef.current) return { ok: false, superseded: true };
       toast.error(apiErrorMessage(err, opts.failMessage ?? "获取分享详情失败"));
       if (opts.openImmediately) setOpen(false);
+      const body = apiErrorBody(err) as { code?: string; reason?: string };
+      return { ok: false, code: body.code, reason: body.reason };
     } finally {
       if (seq === seqRef.current) setLoading(false);
     }

@@ -107,7 +107,7 @@ export function AppSidebar() {
                 className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-xs tabular-nums hover:bg-accent group-data-[collapsible=icon]:hidden"
               >
                 v{appVersion}
-                <span className="size-1.5 rounded-full bg-brand" aria-label="有新版本" />
+                <span role="img" className="size-1.5 rounded-full bg-brand" aria-label="有新版本" />
               </Link>
             ) : (
               <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs tabular-nums group-data-[collapsible=icon]:hidden">v{appVersion}</span>

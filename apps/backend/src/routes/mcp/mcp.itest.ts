@@ -237,6 +237,33 @@ test("只读令牌只看到只读工具；新旧两版协议的客户端都连�
   }
 });
 
+test("prompts：「找片入库」按令牌展开（只读令牌不提 share_save）；用不上的令牌不声明 prompts 能力", async () => {
+  const read = await connect(readToken);
+  const daily = await connect(dailyToken, true);
+  const syncOnly = await connect(createApiToken({ name: "只同步", scopes: ["read"], toolsets: ["sync"], expiresAt: null }).token);
+  try {
+    const { prompts } = await read.listPrompts();
+    assert.deepEqual(
+      prompts.map((p) => [p.name, p.title, p.arguments?.map((a) => [a.name, a.required])]),
+      [["find_and_save", "找片入库", [["title", true], ["type", false]]]],
+    );
+    const readText = (await read.getPrompt({ name: "find_and_save", arguments: { title: "沙丘2" } })).messages[0].content as { type: string; text: string };
+    assert.equal(readText.type, "text");
+    assert.match(readText.text, /openInUi/);
+    assert.doesNotMatch(readText.text, /share_save/);
+
+    const dailyText = (await daily.getPrompt({ name: "find_and_save", arguments: { title: "繁花", type: "剧集" } })).messages[0].content as { text: string };
+    assert.match(dailyText.text, /share_save，带 organize: true/);
+    await assert.rejects(daily.getPrompt({ name: "find_and_save", arguments: { title: "" } }), /Invalid arguments/);
+
+    assert.equal(syncOnly.getServerCapabilities()?.prompts, undefined);
+  } finally {
+    await read.close();
+    await daily.close();
+    await syncOnly.close();
+  }
+});
+
 test("总览和任务列表；认不出的任务回 isError + hint", async () => {
   const client = await connect(dailyToken);
   try {

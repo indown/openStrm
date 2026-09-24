@@ -11,15 +11,16 @@ import { Button } from "@/components/ui/button";
 import { SwitchRow } from "@/components/switch-row";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { toast } from "sonner";
-import { Settings as SettingsIcon } from "lucide-react";
+import { Loader2, PlugZap, Settings as SettingsIcon } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { StatusBadge } from "@/components/status-badge";
 import { FormSkeleton } from "@/components/loading";
 import { api } from "@/lib/api";
 import { downloadBackupWithToast } from "@/lib/backup";
 import { useModKey } from "@/hooks/use-mod-key";
 import { apiErrorMessage } from "@/lib/axios";
 import { FEATURES } from "@/lib/features";
-import type { AppSettings, OpenlistCopySettings, OrganizeSettings, UpdateSettings } from "@openstrm/shared";
+import type { AppSettings, OpenlistCopySettings, OrganizeSettings, ResourceStatus, UpdateSettings } from "@openstrm/shared";
 import { OpenlistCopySection } from "./components/OpenlistCopySection";
 import { OrganizeSection } from "./components/OrganizeSection";
 import { UpdateSection } from "./components/UpdateSection";
@@ -33,6 +34,7 @@ const SECTIONS: Section[] = [
   { id: "throttle", title: "下载限流" },
   { id: "emby", title: "Emby" },
   { id: "tmdb", title: "TMDB" },
+  { id: "pansou", title: "资源搜索" },
   ...(FEATURES.hdhiveSearch ? [{ id: "hdhive", title: "HDHive" }] : []),
   { id: "openlist-copy", title: "复制到 OpenList" },
   { id: "organize", title: "整理与命名" },
@@ -44,6 +46,17 @@ function normalizeExtension(raw: string): string | null {
   const v = raw.trim().toLowerCase();
   if (!v) return null;
   return v.startsWith(".") ? v : `.${v}`;
+}
+
+/** 屏蔽词落一个标签：去空白，太长的截到 30 个字（后端同样的上限）。空的丢掉 */
+function normalizeBlockWord(raw: string): string | null {
+  const v = raw.trim().slice(0, 30);
+  return v || null;
+}
+
+/** 屏蔽词不分大小写去重（后端也这么存）：「TC」「tc」只留先填的那个 */
+function dedupeWords(list: string[]): string[] {
+  return list.filter((w, i) => list.findIndex((x) => x.toLowerCase() === w.toLowerCase()) === i);
 }
 
 const httpUrl = (hint: string) =>
@@ -122,6 +135,9 @@ const count = (min: number, max: number) =>
     .trim()
     .refine((v) => /^\d+$/.test(v) && Number(v) >= min && Number(v) <= max, `填 ${min}–${max} 之间的整数`);
 
+/** PanSou 地址比「是不是同一台」用：末尾的 /、误填的 /api 去掉（和后端 services/pansou/client.ts 的 apiBase 一个口径） */
+const pansouServer = (url?: string) => (url ?? "").trim().replace(/\/+$/, "").replace(/\/api$/i, "");
+
 /**
  * 表单的形状。只含本页拥有的键——后端按顶层键合并，Telegram / 网盘监控那些
  * 由别的页面写的设置不会被这里加载时的快照覆盖掉。
@@ -144,6 +160,17 @@ const schema = z.object({
     downloadMaxConcurrent: count(1, 50),
   }),
   tmdb: z.object({ apiKey: z.string(), language: z.string() }),
+  pansou: z.object({
+    // 后面要拼 /api/…：带用户名密码、? 参数、# 的拼不对（和后端 pansouBaseUrlSchema 一样拦）
+    baseUrl: httpUrl("填 http:// 或 https:// 开头的地址，比如 http://pansou:8888").refine(
+      (v) => v === "" || !/^https?:\/\//i.test(v) || (!/[?#]/.test(v) && !/^https?:\/\/[^/]*@/i.test(v)),
+      "只填到主机、端口（或路径）为止：别带用户名密码、? 参数和 #",
+    ),
+    username: z.string(),
+    password: z.string(),
+    checkLinks: z.boolean(),
+    blockWords: z.array(z.string()).max(50, "屏蔽词最多 50 个"),
+  }),
   // 入口关着时这一节不显示，原样带回去就行：看不见的字段不能拦住保存（以前存进去的地址可能没带 http://）
   hdhive: z.object({
     apiKey: z.string(),
@@ -182,6 +209,13 @@ function fromSettings(s: AppSettings): SettingsValues {
       downloadMaxConcurrent: String(s.download?.downloadMaxConcurrent ?? 2),
     },
     tmdb: { apiKey: s.tmdb?.apiKey ?? "", language: s.tmdb?.language ?? "" },
+    pansou: {
+      baseUrl: s.pansou?.baseUrl ?? "",
+      username: s.pansou?.username ?? "",
+      password: s.pansou?.password ?? "",
+      checkLinks: s.pansou?.checkLinks !== false,
+      blockWords: s.pansou?.blockWords ?? [],
+    },
     hdhive: { apiKey: s.hdhive?.apiKey ?? "", baseUrl: s.hdhive?.baseUrl ?? "" },
     openlistCopy: s.openlistCopy ?? {},
     organize: s.organize ?? {},
@@ -211,6 +245,7 @@ function toSettings(v: SettingsValues): AppSettings {
       downloadMaxConcurrent: Number(v.download.downloadMaxConcurrent),
     },
     tmdb: v.tmdb,
+    pansou: v.pansou,
     hdhive: v.hdhive,
     openlistCopy: v.openlistCopy,
     organize: v.organize,
@@ -365,6 +400,31 @@ export default function SettingsPage() {
     if (id) document.getElementById(id)?.scrollIntoView();
   }, [loading]);
 
+  /**
+   * 资源搜索的「检查连接」：用表单里还没保存的值（密码是掩码就用库里的）。
+   * 结果只对检查时那组值有效：地址、账号改了就不再显示，免得旧的「已连上」误导人
+   */
+  const [pansouCheck, setPansouCheck] = useState<{ checking: boolean; key: string; result: ResourceStatus | null }>({
+    checking: false,
+    key: "",
+    result: null,
+  });
+  const pansouKey = JSON.stringify([values.pansou?.baseUrl, values.pansou?.username, values.pansou?.password]);
+  const checkPansou = async () => {
+    const v = form.getValues("pansou");
+    const key = JSON.stringify([v.baseUrl, v.username, v.password]);
+    setPansouCheck({ checking: true, key, result: null });
+    try {
+      const result = await api.resource.status({ baseUrl: v.baseUrl.trim(), username: v.username.trim(), password: v.password });
+      setPansouCheck({ checking: false, key, result });
+    } catch (err) {
+      setPansouCheck({ checking: false, key, result: { configured: true, ok: false, message: apiErrorMessage(err, "检查失败") } });
+    }
+  };
+  const pansouResult = pansouCheck.key === pansouKey ? pansouCheck.result : null;
+  /** health 回来了（带着插件、频道数）但 ok 是 false：连上了，是登录那一步没过 */
+  const pansouReached = pansouResult ? pansouResult.plugins !== undefined || pansouResult.channels !== undefined : false;
+
   const onBackup = async () => {
     setBackingUp(true);
     await downloadBackupWithToast();
@@ -374,6 +434,14 @@ export default function SettingsPage() {
   const description = "配置全局选项与 Emby 通知";
   /** 密钥字段拿它判断"还是库里那份掩码、没动过" */
   const saved = form.formState.defaultValues;
+  /**
+   * PanSou 的地址改了、密码还是存着的那份掩码：保存时后端会把存着的密码清掉（不发给没确认过的新地址），先说一声。
+   * 地址末尾的 /、误填的 /api 不算改
+   */
+  const pansouPasswordDropped =
+    Boolean(saved?.pansou?.password) &&
+    values.pansou?.password === saved?.pansou?.password &&
+    pansouServer(values.pansou?.baseUrl) !== pansouServer(saved?.pansou?.baseUrl);
 
   if (loading) {
     return (
@@ -619,6 +687,127 @@ export default function SettingsPage() {
                   )}
                 />
               </div>
+            </section>
+
+            <section id="pansou" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
+              <h2 className="text-base font-medium">资源搜索</h2>
+              <p className="text-sm text-muted-foreground">
+                接上自己部署的 PanSou 后，「资源搜索」页、顶栏的搜索框和智能体都能按片名搜网盘分享和磁力：115 / 夸克的分享直接转存，磁力交给 115 云下载。
+              </p>
+              <FormField
+                control={form.control}
+                name="pansou.baseUrl"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>PanSou 地址</FormLabel>
+                    <FormControl>
+                      <Input placeholder="http://pansou" {...field} />
+                    </FormControl>
+                    <FormDescription className="text-xs">
+                      和 OpenStrm 放在同一个 docker compose 里：带网页的镜像填 http://pansou，纯接口的填 http://pansou:8888。空着就是不用这个功能
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="pansou.username"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>用户名</FormLabel>
+                      <FormControl>
+                        <Input placeholder="PanSou 开了登录才填" autoComplete="off" {...field} />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="pansou.password"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>密码</FormLabel>
+                      <FormControl>
+                        <SecretInput
+                          value={field.value}
+                          onChange={field.onChange}
+                          onBlur={field.onBlur}
+                          name={field.name}
+                          masked={saved?.pansou?.password}
+                          placeholder="PanSou 开了登录才填"
+                          autoComplete="new-password"
+                        />
+                      </FormControl>
+                      {pansouPasswordDropped ? (
+                        <p className="text-xs text-warning">地址改了：存着的密码不会发给新地址，保存时会清掉；PanSou 开了登录的话重新填一遍</p>
+                      ) : (
+                        <FormDescription className="text-xs">改动即替换，清空即删除</FormDescription>
+                      )}
+                    </FormItem>
+                  )}
+                />
+              </div>
+              <FormField
+                control={form.control}
+                name="pansou.checkLinks"
+                render={({ field }) => (
+                  <SwitchRow
+                    label="自动检测链接是否有效"
+                    description="搜索结果里只查屏幕上看得见的 115 / 夸克分享，失效的变淡；智能体拿到的结果里直接去掉"
+                    hint="检测由 PanSou 去问各家网盘，不经过你的网盘账号，不会把账号查出风控。结果会缓存一阵，同一条不会反复查。"
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="pansou.blockWords"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>屏蔽词</FormLabel>
+                    <FormControl>
+                      <TagInput
+                        value={field.value}
+                        onChange={(next) => field.onChange(dedupeWords(next))}
+                        normalize={normalizeBlockWord}
+                        placeholder="例如：预告，回车落一个"
+                      />
+                    </FormControl>
+                    <FormDescription className="text-xs">
+                      标题里带这些词（不分大小写、全角半角）的结果不显示，网页、Telegram、智能体都生效；也对「4K」「枪版」这类标签算，比如填「枪版」连 HDTS、CAM 一起藏掉。常见的：预告、枪版、TC。「花絮」这种词慎用：附带花絮的整套资源也会被一起藏掉
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <div className="flex flex-wrap items-center gap-3">
+                <Button type="button" variant="outline" size="sm" onClick={checkPansou} disabled={pansouCheck.checking}>
+                  {pansouCheck.checking ? <Loader2 className="size-4 animate-spin" /> : <PlugZap className="size-4" />}
+                  检查连接
+                </Button>
+                {pansouResult && (
+                  <>
+                    <StatusBadge
+                      tone={!pansouResult.configured ? "neutral" : !pansouResult.ok ? (pansouReached ? "warning" : "danger") : pansouResult.message ? "warning" : "success"}
+                    >
+                      {!pansouResult.configured
+                        ? "还没填地址"
+                        : !pansouResult.ok
+                          ? pansouReached
+                            ? "连上了，登录没过"
+                            : "连不上"
+                          : `已连上：${pansouResult.plugins ?? 0} 个插件、${pansouResult.channels ?? 0} 个频道${pansouResult.authEnabled ? "，登录正常" : ""}`}
+                    </StatusBadge>
+                    {pansouResult.message && <span className="text-xs text-muted-foreground">{pansouResult.message}</span>}
+                  </>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                还没有的话：README「资源搜索」一节有 docker compose 片段，带网页的 PanSou 镜像自带一批 TG 频道和插件，起来就能搜（纯接口的镜像要自己配，裸起几乎搜不到东西）；国内要搜 TG 频道得给它配代理（PROXY），只开插件也能用。网上的公共实例有限流、说关就关，不建议长期用。
+              </p>
             </section>
 
             {FEATURES.hdhiveSearch && (

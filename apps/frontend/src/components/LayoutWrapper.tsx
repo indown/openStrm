@@ -4,7 +4,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { CircleUserRound, KeyRound, LogOut, Search, Share2 } from "lucide-react";
+import { CircleUserRound, CloudDownload, KeyRound, Link2Off, LogOut, Search, Share2, Telescope } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
@@ -24,6 +24,8 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { apiErrorBody, clearToken } from "@/lib/axios";
 import { api, type HdhiveResourceItem, type HdhiveTmdbItem } from "@/lib/api";
 import { useShareDetail } from "@/hooks/use-share-detail";
+import { inputKindOf, unsupportedInputMessage } from "@/lib/share";
+import { offlineHandoffHref } from "@/lib/offline";
 import { FEATURES } from "@/lib/features";
 import { PageCrumbs } from "@/components/page-crumbs";
 import { useModKey } from "@/hooks/use-mod-key";
@@ -180,14 +182,40 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     }
   };
 
-  const fetchShareDetail = (overrideUrl?: string) => share.load(overrideUrl ?? share.link);
-
-  /** 手机弹框里点「查看」：先关掉输入弹框，转存弹框加载完自己会开 */
-  const submitShareFromDialog = () => {
-    if (!share.link.trim()) return;
-    setShareBoxOpen(false);
-    void fetchShareDetail();
+  /**
+   * 顶栏输入框和 ⌘K 里打的字，按是什么分开走：认得的分享链接打开转存框（和以前一样）；磁力、电驴、下载链接去云下载页、
+   * 添加框预填好；认不出的链接当场说一声（不拿网址去搜）；别的文字当片名，去资源搜索页搜。
+   * 没配 PanSou 的话搜索页自己会说「还没配置」并给去设置的按钮
+   */
+  const routeInput = (text: string) => {
+    const kind = inputKindOf(text);
+    if (kind === "unsupported") {
+      toast.error(unsupportedInputMessage(text));
+      return;
+    }
+    if (kind === "share") {
+      void share.load(text);
+      return;
+    }
+    share.setLink("");
+    router.push(kind === "offline" ? offlineHandoffHref(text) : `/search?${new URLSearchParams({ q: text })}`);
   };
+  const inputKind = inputKindOf(share.link);
+  const submitLabel = share.loading ? "加载中..." : inputKind === "offline" ? "云下载" : inputKind === "search" ? "搜索" : "查看";
+  const submitTopbar = () => {
+    const text = share.link.trim();
+    if (text) routeInput(text);
+  };
+
+  /** 手机弹框里点「查看 / 搜索」：先关掉输入弹框，转存弹框加载完自己会开；认不出的链接留在弹框里好改 */
+  const submitShareFromDialog = () => {
+    const text = share.link.trim();
+    if (!text) return;
+    if (inputKindOf(text) !== "unsupported") setShareBoxOpen(false);
+    routeInput(text);
+  };
+  // 资源搜索页自己有一个大搜索框，顶栏再摆一个就重复了
+  const onSearchPage = pathname === "/search" || pathname.startsWith("/search/");
 
   const handle115UnlockedFromHdhive = (fullUrl: string) => {
     const url = (fullUrl || "").trim();
@@ -213,31 +241,43 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
                 <PageCrumbs />
               </Suspense>
             </div>
-            {/* 115 / 夸克分享链接全站都能粘，回车或点「查看」打开转存弹框；手机上收成一个图标，点开再输入 */}
-            <div className="hidden items-center gap-1.5 sm:flex">
-              <div className="relative w-72">
-                <Share2 className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  placeholder="粘贴 115 / 夸克分享链接，回车查看"
-                  value={share.link}
-                  onChange={(e) => share.setLink(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && fetchShareDetail()}
-                  className="h-8 bg-muted/60 pl-8 text-sm shadow-none"
-                />
-              </div>
-              <Button size="sm" variant="secondary" className="h-8" onClick={() => fetchShareDetail()} disabled={share.loading}>
-                {share.loading ? "加载中..." : "查看"}
-              </Button>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-8 sm:hidden"
-              aria-label="查看分享"
-              onClick={() => setShareBoxOpen(true)}
-            >
-              <Share2 className="size-5" />
-            </Button>
+            {/* 全站都能用：打片名回车去资源搜索，粘 115 / 夸克分享链接回车打开转存弹框；手机上收成一个图标，点开再输入 */}
+            {!onSearchPage && (
+              <>
+                <div className="hidden items-center gap-1.5 sm:flex">
+                  <div className="relative w-72">
+                    {inputKind === "share" ? (
+                      <Share2 className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                    ) : inputKind === "offline" ? (
+                      <CloudDownload className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                    ) : inputKind === "unsupported" ? (
+                      <Link2Off className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                    ) : (
+                      <Telescope className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                    )}
+                    <Input
+                      placeholder="搜资源，或粘贴分享 / 磁力链接"
+                      value={share.link}
+                      onChange={(e) => share.setLink(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && submitTopbar()}
+                      className="h-8 bg-muted/60 pl-8 text-sm shadow-none"
+                    />
+                  </div>
+                  <Button size="sm" variant="secondary" className="h-8" onClick={submitTopbar} disabled={share.loading}>
+                    {submitLabel}
+                  </Button>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 sm:hidden"
+                  aria-label="搜资源或查看分享"
+                  onClick={() => setShareBoxOpen(true)}
+                >
+                  <Telescope className="size-5" />
+                </Button>
+              </>
+            )}
             {/* 影巢搜索入口暂时隐藏（lib/features.ts） */}
             {FEATURES.hdhiveSearch && (
               <div className="hidden items-center gap-1.5 sm:flex">
@@ -283,19 +323,19 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       <Dialog open={shareBoxOpen} onOpenChange={setShareBoxOpen}>
         <DialogContent size="sm" className="top-20 translate-y-0">
           <DialogHeader>
-            <DialogTitle>查看分享</DialogTitle>
-            <DialogDescription>粘贴分享链接，看内容并转存到网盘</DialogDescription>
+            <DialogTitle>搜资源或查看分享</DialogTitle>
+            <DialogDescription>打片名去资源搜索页搜；粘贴分享链接看内容并转存到网盘；磁力、电驴交给 115 云下载</DialogDescription>
           </DialogHeader>
           <InputGroup>
             <InputGroupInput
               autoFocus
-              placeholder="https://115.com/s/... 或 https://pan.quark.cn/s/..."
+              placeholder="片名，或 https://pan.quark.cn/s/..."
               value={share.link}
               onChange={(e) => share.setLink(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && submitShareFromDialog()}
             />
             <InputGroupButton onClick={submitShareFromDialog} disabled={share.loading || !share.link.trim()}>
-              {share.loading ? "加载中..." : "查看"}
+              {submitLabel}
             </InputGroupButton>
           </InputGroup>
         </DialogContent>
@@ -304,6 +344,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
         onOpenShare={() => setShareBoxOpen(true)}
+        onInput={routeInput}
         onLogout={logout}
       />
       <ShareDetailDialog {...share.dialogProps} />

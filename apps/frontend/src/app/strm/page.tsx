@@ -19,6 +19,7 @@ import {
   Search,
   ShieldCheck,
   Stethoscope,
+  Telescope,
   Trash2,
   Wrench,
   X,
@@ -53,6 +54,7 @@ import { useDirPosters } from "@/hooks/use-dir-posters";
 import { Spinner, TableSkeleton } from "@/components/loading";
 import { fmtTime, formatSize } from "@/lib/format";
 import { KIND_META, parentOf } from "@/lib/strm";
+import { keywordFromPath, searchHref } from "@/lib/resource";
 import { useStrmBrowser, type DeleteRequest, type StrmRow } from "./use-strm-browser";
 import { StrmFileSheet } from "./components/StrmFileSheet";
 import { ScanDialog } from "./components/ScanDialog";
@@ -540,12 +542,15 @@ function EntryName({ row, showPath, onOpen }: Pick<RowProps, "row" | "showPath" 
 }
 
 function DirMenu({
+  path,
   size,
   onVerify,
   onRegenerate,
   onRewrite,
   onDelete,
-}: Pick<RowProps, "onVerify" | "onRegenerate" | "onRewrite" | "onDelete"> & { size: "size-8" | "size-9" }) {
+}: Pick<RowProps, "onVerify" | "onRegenerate" | "onRewrite" | "onDelete"> & { path: string; size: "size-8" | "size-9" }) {
+  // 季目录（Season 1）按上一级的作品名搜
+  const keyword = keywordFromPath(path);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -566,6 +571,14 @@ function DirMenu({
           <FileCog />
           修正内容
         </DropdownMenuItem>
+        {keyword && (
+          <DropdownMenuItem asChild>
+            <Link href={searchHref(keyword)}>
+              <Telescope />
+              找资源
+            </Link>
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onSelect={() => afterMenuClosed(onDelete)}>
           <Trash2 />
@@ -600,7 +613,7 @@ function StrmTableRow(p: RowProps) {
       <TableCell className="w-28">
         <div className="flex justify-end gap-0.5">
           {row.isDir ? (
-            <DirMenu size="size-8" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onDelete={p.onDelete} />
+            <DirMenu path={row.path} size="size-8" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onDelete={p.onDelete} />
           ) : (
             <>
               {row.kind === "strm" && (
@@ -650,7 +663,7 @@ function StrmCard(p: RowProps) {
               <FolderOpen className="size-4" />
               打开
             </Button>
-            <DirMenu size="size-9" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onDelete={p.onDelete} />
+            <DirMenu path={row.path} size="size-9" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onDelete={p.onDelete} />
           </>
         ) : row.kind === "strm" ? (
           <>

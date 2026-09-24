@@ -42,6 +42,23 @@ test("normalizeOfflineUrls：按行拆、去空白去重，裸 info_hash 补成�
   assert.deepEqual(normalizeOfflineUrls(["  ", HASH40]).urls, [`magnet:?xt=urn:btih:${HASH40}`]);
 });
 
+test("normalizeOfflineUrls：单行输入框把换行吃成空格的，挨着的磁力 / 电驴拆开；电驴文件名里的空格、http 前面的话不拆", () => {
+  const ed2k = (n: number) => `ed2k://|file|Show S01E0${n} 1080p.mkv|${n}|0E7FAA0EAEB2DEE85E02964F7D93E38${n}|/`;
+  assert.deepEqual(normalizeOfflineUrls(`${ed2k(1)} ${ed2k(2)}  magnet:?xt=urn:btih:${HASH40}`).urls, [
+    ed2k(1),
+    ed2k(2),
+    `magnet:?xt=urn:btih:${HASH40}`,
+  ]);
+  const { urls, invalid } = normalizeOfflineUrls("沙丘2 https://example.com/page");
+  assert.deepEqual(urls, []);
+  assert.deepEqual(invalid, ["沙丘2 https://example.com/page"]);
+  // 前面带句话的磁力：话单列成认不出的，磁力照收
+  assert.deepEqual(normalizeOfflineUrls(`看看这个 magnet:?xt=urn:btih:${HASH40}`), {
+    urls: [`magnet:?xt=urn:btih:${HASH40}`],
+    invalid: ["看看这个"],
+  });
+});
+
 const fileTask = {
   info_hash: "1576af16c443c3669d1d6eddd07a1bc9",
   add_time: 1787355082,
