@@ -4,7 +4,7 @@
 
 # OpenStrm
 
-一个开源的 **Strm 生成工具**：把 115、夸克、OpenList 上的影视目录同步成本地 `.strm`，交给 Emby 这类媒体服务器播放；115 的还能 302 到直链播放。不完全使用指南：[文档地址](https://www.yuque.com/aitiaodetuzi/ueexc2/ynkwg2flhsvf233c)
+一个开源的 **Strm 生成工具**：把 115、夸克、OpenList 上的影视目录同步成本地 `.strm`，交给 Emby 这类媒体服务器播放；115 的还能 302 到直链播放。
 
 > **安全提示**：Next.js 的 [CVE-2025-66478](https://nextjs.org/blog/CVE-2025-66478)（React2Shell，CVSS 10.0，可导致远程代码执行）影响使用 App Router 的 Next.js 15.x / 16.x，而且要有 Next.js 服务端在跑才能利用。v2 起生产镜像里没有 Next.js 服务进程——前端是静态导出，由后端进程直接托管——所以**当前版本不受影响**；锁定的 `next@15.4.8` 也是官方公告列出的 15.4.x 修复版本。仍在使用 v0.2.4 及更早版本的请尽快升级；那些版本若曾以未修复状态暴露在公网，建议轮换应用密钥。
 
