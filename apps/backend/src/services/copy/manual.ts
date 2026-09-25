@@ -9,19 +9,23 @@
  *   - **补齐**：源是目录、OpenList 目标里已经有同名目录时，整目录登记会被「目标里已有」跳过、什么都不复制，
  *     所以改成和目标逐层比对，只把缺的文件 / 子目录登记进去（只比名字，和队列一致）；
  *   - 任务正在整理时拒：整理会改名挪目录，这时登记的复制不是复制成整理前的样子，就是复制到一半源被挪走。
- * 复制成功后源文件的去向默认跟任务设置，调用方可以按次指定（删除要更高的权限，由调用方把关）。
+ * 两个阶段：先只看不改（网盘、OpenList 都可能等一会，哪一步不成整个请求都不登记），再一口气登记（中间没有 await）。
+ * 复制成功后源文件的去向默认跟任务设置，调用方可以按次指定；落到「删除」的要调用方明确允许（令牌得有「删除」档）。
  */
 import type { CopyAfterCopy, TaskDefinition } from "@openstrm/shared";
 import { listRunsByStatus } from "../../db/repositories/organize.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
-import { HttpError } from "../../lib/http-error.js";
+import { messageOf } from "../../lib/errors.js";
+import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { providerForTask } from "../drive/registry.js";
+import { subtreeEntries } from "../drive/walk.js";
 import type { DriveProvider, SubtreeEntry } from "../drive/types.js";
 import { autoOrganizeBusy } from "../organize/auto.js";
-import { normalizeSubPath } from "../strm/naming.js";
-import { baseName, copyBlockerFor, copyDstProblem, copyOptionsFor, dstDirFor, joinPath, normConfigDir, normDir, resolveCopyConfig, type CopyConfig } from "./paths.js";
-import { enqueueCopy, listOpenlistNames, withAfterCopy, type CopyOutcome, type CopySource } from "./service.js";
+import { isStagingDir } from "../organize/duplicates.js";
+import { normalizeRel } from "../strm/manage.js";
+import { baseName, copyBlockerFor, copyDstProblem, copyOptionsFor, dstDirFor, joinPath, normConfigDir, normDir, parentDir, resolveCopyConfig, type CopyConfig } from "./paths.js";
+import { enqueueCopy, findCoveringRecord, isMissingDir, listOpenlistNames, lookupFresh, withAfterCopy, type CopyOutcome, type CopySource } from "./service.js";
 
 const log = moduleLogger("copy-manual");
 
@@ -38,9 +42,10 @@ export const FILL_DIRS_MAX = 200;
  *   complete  目标里已经有同名目录，里面一样都不缺，没登记
  *   exists    目标里已经有同名文件，没登记
  *   duplicate 已经在队列里，或刚复制过
+ *   covered   队列里有一条还没提交的整目录复制会把它一起带过去，没单独登记
  *   missing   网盘上没有这条路径
  */
-export type ManualItemOutcome = "queued" | "filled" | "complete" | "exists" | "duplicate" | "missing";
+export type ManualItemOutcome = "queued" | "filled" | "complete" | "exists" | "duplicate" | "covered" | "missing";
 
 export interface ManualCopyItem {
   /** 相对任务网盘目录 */
@@ -63,10 +68,20 @@ export interface ManualCopyInput {
   dstDir?: string;
   /** 复制成功后源文件的去向；不给按任务设置（任务没开复制的按「不动」） */
   afterCopy?: CopyAfterCopy;
+  /** 最终的去向是「删除」时调用方允不允许：会话可以，令牌要有「删除」档 */
+  allowDelete: boolean;
   signal?: AbortSignal;
 }
 
 const http = (status: number, message: string, code: string, extra: Record<string, unknown> = {}) => new HttpError(status, message, { code, ...extra });
+
+/** 第一阶段看完的一条路径：怎么登记、登记什么 */
+interface PathPlan {
+  rel: string;
+  outcome: ManualItemOutcome;
+  isDir?: boolean;
+  sources: CopySource[];
+}
 
 export async function enqueueManualCopy(input: ManualCopyInput): Promise<ManualCopyResult> {
   const { task, signal } = input;
@@ -80,90 +95,123 @@ export async function enqueueManualCopy(input: ManualCopyInput): Promise<ManualC
     if (why) throw http(400, why, "COPY_DST_INVALID");
   }
   const rels = uniquePaths(input.paths);
-  // 整理正在动这个任务的目录：登记的复制要么复制成整理前的样子，要么复制到一半源被挪走。压着等整理的那套只放整理开始之前登记的，这里直说更清楚
+  assertNotOrganizing(task);
+  const opts = copyOptionsFor(task, true, settings, dst);
+  const afterCopy = input.afterCopy ?? opts.afterCopy;
+  // 复制完删源是删东西：没明说、按任务设置落到删除的也一样要调用方允许
+  if (afterCopy === "delete" && !input.allowDelete) throw http(403, "复制完删掉网盘上的源文件要有「删除」权限", "INSUFFICIENT_SCOPE", { required: "danger" });
+  const cfg = resolveCopyConfig(settings);
+  const base = normConfigDir(opts.dstDir) || cfg.dstDir;
+
+  // 第一阶段：只看不改。到网盘核对每条路径、和目标比对；这里的任何一步不成，整个请求都不登记
+  const provider = providerForTask(task);
+  const origin = normDir(task.originPath);
+  const targets = new TargetListing(cfg);
+  const plans: PathPlan[] = [];
+  for (const rel of rels) {
+    signal?.throwIfAborted();
+    const abs = joinPath(origin, rel);
+    // 按父目录绕开缓存找：115 按路径找文件看的是缓存 5 分钟的目录清单，刚落进来的文件在里面还没有
+    const node = await lookupFresh(task.account, abs);
+    if (!node) {
+      plans.push({ rel, outcome: "missing", sources: [] });
+      continue;
+    }
+    const { dstDir } = dstDirFor(base, origin, abs);
+    // 队列里已经有一条还没提交的整目录复制包着它、落点一样：那条会把它一起带过去，单独登记只会让整目录到时按「目标里已有」跳过
+    if (findCoveringRecord({ account: task.account, srcDir: parentDir(abs), name: baseName(abs), dstDir, afterCopy })) {
+      plans.push({ rel, outcome: "covered", isDir: node.isDir, sources: [] });
+      continue;
+    }
+    const names = await targets.names(dstDir);
+    if (!names?.includes(baseName(abs))) {
+      // 目标里还没有：整条登记
+      plans.push({ rel, outcome: "queued", isDir: node.isDir, sources: [{ path: abs, isDir: node.isDir, nodeId: node.id }] });
+    } else if (!node.isDir) {
+      plans.push({ rel, outcome: "exists", isDir: false, sources: [] });
+    } else {
+      const sources = await planFill(provider, abs, node.id, joinPath(dstDir, baseName(abs)), targets, signal);
+      plans.push({ rel, outcome: sources.length > 0 ? "filled" : "complete", isDir: true, sources });
+    }
+  }
+
+  // 第二阶段：登记。上面等网络的时候整理可能开始了，再看一眼；从这里到登记完没有 await
+  assertNotOrganizing(task);
+  const items: ManualCopyItem[] = plans.map((p) => ({ path: p.rel, outcome: p.outcome, queued: 0, ...(p.isDir === undefined ? {} : { isDir: p.isDir }) }));
+  const sources = plans.flatMap((p) => p.sources);
+  let queued = 0;
+  let pending: Exclude<CopyAfterCopy, "keep"> | undefined;
+  let reason: string | undefined;
+  if (sources.length > 0) {
+    const r = enqueueCopy({ account: task.account, sources, rootPath: origin, taskId: task.id, dstDir: opts.dstDir, afterCopy, trigger: "manual" });
+    // 设置在这一步被改坏了（挂载根被删之类）和「都排着了」要分开说：前者整个请求都成不了
+    if (r.queued === 0 && !r.duplicates && !r.covered) throw http(400, r.skipped ?? "没排上", "COPY_NOT_READY");
+    queued = r.queued;
+    pending = r.pendingAfterCopy;
+    if (r.queued === 0) reason = r.skipped ?? undefined;
+    // 每条路径排上了几条：按源路径归到它下面；一条都没排上的就是已经排着了
+    const queuedPaths = (r.perSource ?? []).filter((s) => s.outcome === "queued").map((s) => s.path);
+    plans.forEach((p, i) => {
+      if (p.sources.length === 0) return;
+      const abs = joinPath(origin, p.rel);
+      const n = queuedPaths.filter((q) => q === abs || q.startsWith(`${abs}/`)).length;
+      items[i].queued = n;
+      if (n === 0) items[i].outcome = "duplicate";
+    });
+  }
+  const summary = items.map((i) => `${i.path}=${i.outcome}${i.queued ? `(${i.queued})` : ""}`).join("，");
+  log.info(`手动复制（${task.account}，任务 ${task.originPath}）：${summary}`);
+  // 去向和 enqueueCopyFor 同一个口径：这次新排的按这次的；新排的不动、或没再排的，按已经排着的那条（可能是别的来源登记的）
+  const reported: CopyAfterCopy = (queued > 0 && afterCopy !== "keep" ? afterCopy : undefined) ?? pending ?? "keep";
+  const stuck = queued === 0 ? (reason ?? explainNothing(items)) : undefined;
+  return { queued, dstDir: base, ...withAfterCopy(reported), items, ...(stuck ? { reason: stuck } : {}) };
+}
+
+/** 整理正在动这个任务的目录（跑着的 run，或攒着的自动整理）就拒：压着等整理的那套只放整理开始之前登记的，这里直说更清楚 */
+function assertNotOrganizing(task: TaskDefinition): void {
   const organizing = listRunsByStatus(["planning", "applying", "reverting"]).find((r) => r.taskId === task.id);
   if (organizing || autoOrganizeBusy(task.id)) {
     throw http(409, "这个任务正在整理，整理完再复制", "TASK_ORGANIZING", organizing ? { runId: organizing.id } : {});
   }
-  const opts = copyOptionsFor(task, true, settings, dst);
-  if (opts.blocked) throw http(400, `没法复制到 OpenList：${opts.blocked}`, "COPY_NOT_READY");
-  const afterCopy = input.afterCopy ?? opts.afterCopy;
-  const cfg = resolveCopyConfig(settings);
-  const base = normConfigDir(opts.dstDir) || cfg.dstDir;
-  if (!base) throw http(400, "没有可用的目标目录：设置页的默认目标目录和任务上的都是空的", "COPY_NOT_READY");
-
-  const provider = providerForTask(task);
-  const origin = normDir(task.originPath);
-  const targets = new TargetListing(cfg);
-  const items: ManualCopyItem[] = [];
-  let queued = 0;
-  let reason: string | undefined;
-  for (const rel of rels) {
-    signal?.throwIfAborted();
-    const abs = joinPath(origin, rel);
-    const node = await provider.resolvePath(abs, signal);
-    if (!node) {
-      items.push({ path: rel, outcome: "missing", queued: 0 });
-      continue;
-    }
-    const { dstDir } = dstDirFor(base, origin, abs);
-    const names = await targets.names(dstDir);
-    let sources: CopySource[];
-    let outcome: ManualItemOutcome;
-    if (!names?.includes(baseName(abs))) {
-      // 目标里还没有（或列不出来：交给队列按它的规矩办）：整条登记
-      sources = [{ path: abs, isDir: node.isDir, nodeId: node.id }];
-      outcome = "queued";
-    } else if (!node.isDir) {
-      items.push({ path: rel, outcome: "exists", queued: 0, isDir: false });
-      continue;
-    } else {
-      sources = await planFill(provider, abs, node.id, joinPath(dstDir, baseName(abs)), targets, signal);
-      outcome = sources.length > 0 ? "filled" : "complete";
-    }
-    let got = 0;
-    if (sources.length > 0) {
-      const r = enqueueCopy({ account: task.account, sources, rootPath: origin, taskId: task.id, dstDir: opts.dstDir, afterCopy, trigger: "manual" });
-      got = r.queued;
-      if (r.queued === 0) {
-        // 设置在这一步被改坏了（挂载根被删之类）和「都排着了」要分开说：前者整个请求都成不了
-        if (!r.duplicates && !r.covered) throw http(400, r.skipped ?? "没排上", "COPY_NOT_READY");
-        outcome = "duplicate";
-        reason ??= r.skipped ?? undefined;
-      }
-    }
-    queued += got;
-    items.push({ path: rel, outcome, queued: got, isDir: node.isDir });
-  }
-  const summary = items.map((i) => `${i.path}=${i.outcome}${i.queued ? `(${i.queued})` : ""}`).join("，");
-  log.info(`手动复制（${task.account}，任务 ${task.originPath}）：${summary}`);
-  const stuck = queued === 0 ? (reason ?? explainNothing(items)) : undefined;
-  return { queued, dstDir: base, ...withAfterCopy(afterCopy), items, ...(stuck ? { reason: stuck } : {}) };
 }
 
 /** 一条都没排上时的原因：按最常见的那种说 */
 function explainNothing(items: ManualCopyItem[]): string {
   if (items.every((i) => i.outcome === "missing")) return "网盘上没有这些路径";
   if (items.every((i) => i.outcome === "exists" || i.outcome === "complete")) return "目标里已经都有了";
+  if (items.every((i) => i.outcome === "covered")) return "整目录的复制会把它们一起带过去";
   if (items.some((i) => i.outcome === "duplicate")) return "这些条目已经在队列里或刚复制过";
   return "没有要复制的条目";
 }
 
-/** 归一路径：去掉多余斜杠和空段，不许 `..`，不许任务目录本身（整目录复制会摆成 dst/tv，层级不对），去重 */
+/**
+ * 归一路径：只收拢斜杠、去掉空段和 `.`，**不削每段的空格**（网盘上真有「Season 1 」这种名字，削了就找不到）；
+ * 不许 `..` 和控制字符，不许任务目录本身（整目录复制会摆成 dst/tv，层级不对），不许暂存区（重复文件、归档），去重；
+ * 父目录已经在里面的子路径去掉——整目录复制会把它带过去，单独登记只会让目录到时按「目标里已有」跳过
+ */
 function uniquePaths(paths: string[]): string[] {
   if (paths.length === 0) throw http(400, "paths 不能为空", "VALIDATION");
   if (paths.length > MANUAL_PATHS_MAX) throw http(400, `一次最多 ${MANUAL_PATHS_MAX} 条路径`, "VALIDATION");
   const out: string[] = [];
   for (const raw of paths) {
-    const rel = normalizeSubPath(raw);
+    let rel: string;
+    try {
+      rel = normalizeRel(raw);
+    } catch {
+      throw http(400, `路径里不能有「..」或控制字符：${raw}`, "VALIDATION");
+    }
     if (!rel) throw http(400, "路径不能是任务目录本身：要整个任务都复制，把它下面的条目选上", "VALIDATION");
-    if (rel.split("/").some((s) => s === "..")) throw http(400, `路径里不能有「..」：${raw}`, "VALIDATION");
+    if (isStagingDir(rel)) throw http(400, `「${rel.split("/")[0]}」是暂存区（整理挪进去的重复文件、复制后归档的），不复制`, "VALIDATION");
     if (!out.includes(rel)) out.push(rel);
   }
-  return out;
+  return out.filter((p) => !out.some((o) => o !== p && p.startsWith(`${o}/`)));
 }
 
-/** OpenList 目标目录的一层条目名，同一次请求里每个目录只列一次；列不出来（目录还没有、连不上）记成 null */
+/**
+ * OpenList 目标目录的一层条目名，同一次请求里每个目录只列一次。
+ * 只有 OpenList 明确说「没有这个目录」才记成 null（当它还没有）；连不上、超时这些不能猜——
+ * 猜成「没有」会整目录登记，到时按「目标里已有」跳过，缺的永远补不上，所以直接报错、整个请求不登记
+ */
 class TargetListing {
   private readonly cache = new Map<string, string[] | null>();
   private calls = 0;
@@ -177,7 +225,7 @@ class TargetListing {
     try {
       names = await listOpenlistNames(this.cfg, key);
     } catch (err) {
-      log.debug({ err, dir: key }, "列 OpenList 目标目录失败，当它还没有");
+      if (!isMissingDir(err)) throw upstreamError(`读 OpenList 的 ${key} 失败：${messageOf(err)}`, {}, err);
       names = null;
     }
     this.cache.set(key, names);
@@ -190,7 +238,7 @@ class TargetListing {
  * 有 walkSubtree 的网盘（夸克 / OpenList）一次拿到整棵带 id；115 只有文件路径，目录从路径里推，节点 id 到提交时再钉
  */
 async function planFill(provider: DriveProvider, abs: string, id: string, olDir: string, targets: TargetListing, signal: AbortSignal | undefined): Promise<CopySource[]> {
-  const entries = await sourceTree(provider, abs, id, signal);
+  const entries = await subtreeEntries(provider, abs, { id, signal });
   const files = entries.filter((e) => !e.isDir).length;
   if (files > FILL_FILES_MAX) throw http(400, `「${baseName(abs)}」里有 ${files} 个文件，超过一次补齐的上限 ${FILL_FILES_MAX}，请缩小范围`, "TOO_LARGE");
   /** 目录（相对 abs，"" 是根）→ 直接子项 */
@@ -216,22 +264,4 @@ async function planFill(provider: DriveProvider, abs: string, id: string, olDir:
   };
   await walk("", olDir);
   return out;
-}
-
-/** 源目录整棵：每个节点相对 abs 的路径、是不是目录、节点 id（115 的目录树导出没有 id） */
-async function sourceTree(provider: DriveProvider, abs: string, id: string, signal: AbortSignal | undefined): Promise<SubtreeEntry[]> {
-  if (provider.walkSubtree) return provider.walkSubtree(abs, { id, signal });
-  const paths = await provider.listSubtree(abs, { id, signal });
-  const seen = new Map<string, SubtreeEntry>();
-  for (const p of paths) {
-    const segs = p.split("/").filter(Boolean);
-    // 中间每一级都是目录；最后一段：没有扩展名且不含点的当目录（115 导出树里空目录就是这样）
-    for (let i = 1; i < segs.length; i++) {
-      const dir = segs.slice(0, i).join("/");
-      if (!seen.has(dir)) seen.set(dir, { path: dir, id: "", isDir: true });
-    }
-    const rel = segs.join("/");
-    if (rel && !seen.has(rel)) seen.set(rel, { path: rel, id: "", isDir: !/\.[A-Za-z0-9]{1,10}$/.test(segs[segs.length - 1] ?? "") });
-  }
-  return [...seen.values()];
 }

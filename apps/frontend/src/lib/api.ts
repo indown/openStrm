@@ -314,8 +314,8 @@ export interface CopyAddInput {
   /** 不给按任务设置 */
   afterCopy?: CopyAfterCopy;
 }
-/** 每条路径的结果：整条登记 / 只补了缺的 / 目标里已经齐了 / 目标里已有同名文件 / 已经排着 / 网盘上没有 */
-export type CopyAddOutcome = "queued" | "filled" | "complete" | "exists" | "duplicate" | "missing";
+/** 每条路径的结果：整条登记 / 只补了缺的 / 目标里已经齐了 / 目标里已有同名文件 / 已经排着 / 整目录复制会带过去 / 网盘上没有 */
+export type CopyAddOutcome = "queued" | "filled" | "complete" | "exists" | "duplicate" | "covered" | "missing";
 export interface CopyAddResult {
   queued: number;
   dstDir: string | null;
@@ -722,8 +722,8 @@ export const api = {
   /** 复制到 OpenList 的队列：登记是各个来源自己做的，这里只看进度、重试、不跟了 */
   copy: {
     list: (limit = 20) => data(axiosInstance.get<CopyQueue>("/api/copy", { params: { limit } })),
-    /** 手动发起：要到网盘核对路径、和目标比对，大目录要一会 */
-    add: (input: CopyAddInput) => data(axiosInstance.post<CopyAddResult>("/api/copy", input, { timeout: 120_000 })),
+    /** 手动发起：要到网盘核对路径、和目标比对，115 整目录导出要几分钟（和 strm 校验一样给足） */
+    add: (input: CopyAddInput) => data(axiosInstance.post<CopyAddResult>("/api/copy", input, { timeout: 330_000 })),
     retry: (id: string) => data(axiosInstance.post<CopyItem>(`/api/copy/${encodeURIComponent(id)}/retry`)),
     remove: (id: string) => data(axiosInstance.delete<{ success: true }>(`/api/copy/${encodeURIComponent(id)}`)),
   },

@@ -22,6 +22,7 @@ import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { TreeSelectDialog } from "@/components/TreeSelectDialog";
 import { api, type CopyAddOutcome, type CopyAddResult, type TaskRow } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
+import { AFTER_COPY_LABEL, taskAfterCopy } from "@/lib/openlist-copy";
 
 /** 从别处（strm 管理页）带进来的预填：哪个任务、哪些路径（相对任务网盘目录） */
 export interface CopyPreset {
@@ -37,7 +38,6 @@ interface AddCopyDialogProps {
   onQueued?: () => void;
 }
 
-export const AFTER_COPY_LABEL: Record<CopyAfterCopy, string> = { keep: "不动", delete: "删除", archive: "归档" };
 const AFTER_COPY_HINT: Record<CopyAfterCopy, string> = {
   keep: "网盘上那份留着。Emby 里同一集会同时有云上的 strm 和本地那份。",
   archive: "复制成功、目标里确认看得见之后，把网盘上那份挪进任务目录下的「归档」（原来的层级留着），本地 strm 删掉。想恢复挪回去就行。",
@@ -49,6 +49,7 @@ const OUTCOME_META: Record<CopyAddOutcome, { label: string; tone: StatusTone }> 
   complete: { label: "目标里已经齐了", tone: "neutral" },
   exists: { label: "目标里已有同名", tone: "neutral" },
   duplicate: { label: "已经排着", tone: "neutral" },
+  covered: { label: "整目录复制会带过去", tone: "neutral" },
   missing: { label: "网盘上没有", tone: "warning" },
 };
 
@@ -58,13 +59,6 @@ const normDir = (p?: string): string => {
   return t ? (t.startsWith("/") ? t : `/${t}`) : "";
 };
 const stripSlashes = (p: string): string => p.replace(/^\/+|\/+$/g, "");
-
-/** 任务上复制成功后源文件的去向；任务没开复制就是不动（老数据只有 deleteSource） */
-export function taskAfterCopy(task: Pick<TaskRow, "copyToOpenlist"> | undefined): CopyAfterCopy {
-  const c = task?.copyToOpenlist;
-  if (!c?.enabled) return "keep";
-  return c.afterCopy ?? (c.deleteSource ? "delete" : "keep");
-}
 
 /**
  * 手动发起「复制到 OpenList」：选任务 → 在它的网盘目录里勾目录 / 文件 → 复制到哪、复制完源文件怎么办 → 提交。
@@ -99,9 +93,8 @@ export function AddCopyDialog({ open, onOpenChange, preset, onQueued }: AddCopyD
     api.tasks
       .list()
       .then((rows) => {
-        if (cancelled) return;
-        // OpenList 账号的任务用不着复制：转存、追更、云下载、监控都不会往那里落新文件
-        setTasks((Array.isArray(rows) ? rows : []).filter((t) => t.accountType !== "openlist"));
+        // 不过滤：strm 管理页可能带着任何任务进来，列表里没有它的话下拉框会空着、什么也说不出来；复制不了的由 copyBlocked 说清楚
+        if (!cancelled) setTasks(Array.isArray(rows) ? rows : []);
       })
       .catch((err) => {
         if (!cancelled) toast.error(apiErrorMessage(err, "读取任务列表失败"));
@@ -128,20 +121,9 @@ export function AddCopyDialog({ open, onOpenChange, preset, onQueued }: AddCopyD
   const olAccount = settings?.account ?? "";
   const base = normDir(task?.copyToOpenlist?.dstDir) || normDir(settings?.dstDir);
   const dstDir = dstSub ? `${base}/${dstSub}` : base;
-  const effectiveAfter: CopyAfterCopy = afterCopy || taskAfterCopy(task);
-  // 卡在哪：任务列表带着后端算好的 copyBlocked，还没拿到设置时不误报
-  const blocked = task
-    ? task.copyBlocked ??
-      (settings === null
-        ? null
-        : !olAccount
-          ? "设置页还没选 OpenList 账号"
-          : !settings.mounts?.[account]?.trim()
-            ? `账号 ${account} 还没在设置页填「在 OpenList 里的挂载根」`
-            : !base
-              ? "没有目标目录：任务上和设置页都没填"
-              : null)
-    : null;
+  const effectiveAfter: CopyAfterCopy = afterCopy || taskAfterCopy(task?.copyToOpenlist);
+  // 卡在哪：任务列表带着后端算好的 copyBlocked（和真干活时同一套判断），这里不再自己猜一遍
+  const blocked = task?.copyBlocked ?? null;
 
   // TreeSelectDialog 打开时按 load 拉根目录：这两个要稳定，不然每次渲染都重拉
   const loadSource = useCallback(
@@ -290,7 +272,7 @@ export function AddCopyDialog({ open, onOpenChange, preset, onQueued }: AddCopyD
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="z-[60]">
-                    <SelectItem value="__task__">跟任务设置{task ? `（${AFTER_COPY_LABEL[taskAfterCopy(task)]}）` : ""}</SelectItem>
+                    <SelectItem value="__task__">跟任务设置{task ? `（${AFTER_COPY_LABEL[taskAfterCopy(task.copyToOpenlist)]}）` : ""}</SelectItem>
                     <SelectItem value="keep">不动</SelectItem>
                     <SelectItem value="archive">归档</SelectItem>
                     <SelectItem value="delete">删除</SelectItem>

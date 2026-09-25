@@ -86,6 +86,12 @@ test("POST /api/copy：手动发起；复制后删源要令牌有「删除」档
   const denied = await call("POST", "/api/copy", { taskId: "t1", paths: ["Show/E01.mkv"], afterCopy: "delete" }, { authorization: `Bearer ${write}` });
   assert.equal(denied.statusCode, 403);
   assert.equal(denied.json().code, "INSUFFICIENT_SCOPE");
+  // 没明说、任务设的就是复制后删除：一样要「删除」档
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true, afterCopy: "delete" } }]);
+  const implied = await call("POST", "/api/copy", { taskId: "t1", paths: ["Show/E01.mkv"] }, { authorization: `Bearer ${write}` });
+  assert.equal(implied.statusCode, 403, implied.body);
+  assert.equal(implied.json().code, "INSUFFICIENT_SCOPE");
+  replaceTasks([task]);
   const allowed = await call("POST", "/api/copy", { taskId: "t1", paths: ["Show/E01.mkv"], afterCopy: "delete" }, { authorization: `Bearer ${danger}` });
   assert.equal(allowed.statusCode, 200, allowed.body);
   assert.equal(allowed.json().afterCopy, "delete");

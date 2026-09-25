@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { AddCopyDialog, AFTER_COPY_LABEL } from "@/components/AddCopyDialog";
+import { AddCopyDialog } from "@/components/AddCopyDialog";
+import { AFTER_COPY_LABEL } from "@/lib/openlist-copy";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,

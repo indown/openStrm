@@ -10,9 +10,11 @@ export const AFTER_COPY_VALUES = ["keep", "delete", "archive"] as const satisfie
 /** 界面和说明里的叫法 */
 export const AFTER_COPY_LABEL: Record<CopyAfterCopy, string> = { keep: "不动", delete: "删除", archive: "归档" };
 
-/** 任务上复制成功后源文件怎么办：新字段优先，老数据按 deleteSource 算，都没有就是不动 */
+/** 任务上复制成功后源文件怎么办：新字段优先（认不得的值不算，手改过的库里可能有），老数据按 deleteSource 算，都没有就是不动 */
 export function afterCopyOf(cfg: Pick<TaskCopySettings, "afterCopy" | "deleteSource"> | undefined | null): CopyAfterCopy {
-  return cfg?.afterCopy ?? (cfg?.deleteSource === true ? "delete" : "keep");
+  const value = cfg?.afterCopy;
+  if (value && (AFTER_COPY_VALUES as readonly string[]).includes(value)) return value;
+  return cfg?.deleteSource === true ? "delete" : "keep";
 }
 
 /** 把任务上的旧字段收成 afterCopy（读出来、写进去都过一遍）；没带旧字段的原样还回去（afterCopy 没填就是不动，不硬写） */

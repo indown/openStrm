@@ -19,7 +19,7 @@ import { createFollowAfterSave } from "../../follow/service.js";
 import { addOfflineTasks, listOfflineTasks, type AddOfflineResponse } from "../../offline/service.js";
 import { autoOrganizeBusy, autoOrganizeFor, effectiveAutoMode, maybeAutoOrganize } from "../../organize/auto.js";
 import { enqueueReceivedCopy, forcedOrganizeMode, saveSelectionToTask, uniqueItems, type SaveSelectionResult } from "../../share/receive.js";
-import type { CopyOutcome } from "../../copy/service.js";
+import { withAfterCopy, type CopyOutcome } from "../../copy/service.js";
 import { HttpError } from "../../../lib/http-error.js";
 import { copyBlockerFor, copyDstProblem, copyOptionsFor, normConfigDir } from "../../copy/paths.js";
 import { isSafeItemName } from "../../strm/share-strm.js";
@@ -316,8 +316,7 @@ function prevCopy(prev: PreviousSave): Record<string, unknown> | undefined {
     const after = afterCopyNote(prev.meta.copyAfter);
     return {
       pending: true,
-      afterCopy: prev.meta.copyAfter,
-      deleteSource: prev.meta.copyAfter === "delete",
+      ...withAfterCopy(prev.meta.copyAfter),
       note: after ? `进行中的那次转存完会排进复制队列，${after}。` : "进行中的那次转存完会排进复制队列。",
     };
   }
@@ -801,8 +800,7 @@ function offlineCopyView(
     const after = afterCopyNote(res.copyAfterCopy);
     return {
       dstDir: res.copyDstDir,
-      afterCopy: res.copyAfterCopy,
-      deleteSource: res.copyAfterCopy === "delete",
+      ...withAfterCopy(res.copyAfterCopy),
       note: after
         ? `下完排进复制队列，复制到 ${res.copyDstDir} 下${layout}；任务设了「复制后${AFTER_COPY_LABEL[res.copyAfterCopy]}」，${after}（只动任务目录里的，115 上原本就有、不在任务目录里的不动）。`
         : `下完排进复制队列，复制到 ${res.copyDstDir} 下${layout}。`,

@@ -99,6 +99,7 @@ import { finalizeItems, planUnit, type PlannedItem, type ScopeRoot, type UnitPla
 import { parseRules } from "./rules.js";
 import { resolveOrganizeSettings, type ResolvedOrganizeSettings } from "./settings.js";
 import { isNamedAfter, looksLikeReleaseDir } from "./parse-name.js";
+import { looksLikeFileName } from "../drive/walk.js";
 import { AUDIO_EXTS, buildUnits, type ScopeEntry, type Unit } from "./units.js";
 
 const log = moduleLogger("organize");
@@ -601,8 +602,8 @@ async function listTree(provider: DriveProvider, task: TaskDefinition, rel: stri
   if (provider.walkSubtree) {
     return (await provider.walkSubtree(abs, { id, signal })).map((e) => ({ path: joinRel(rel, e.path), isDir: e.isDir, id: e.id, size: e.size }));
   }
-  // listSubtree 给的是文件 + 顶层空目录；没有扩展名且不含点的当目录（115 导出树里空目录就是这样）
-  return (await provider.listSubtree(abs, { id, signal })).map((p) => ({ path: joinRel(rel, p), isDir: !/\.[A-Za-z0-9]{1,10}$/.test(baseOf(p)) }));
+  // listSubtree 给的是文件 + 顶层空目录；没有扩展名的当目录（和 115 导出树的判断一致）
+  return (await provider.listSubtree(abs, { id, signal })).map((p) => ({ path: joinRel(rel, p), isDir: !looksLikeFileName(baseOf(p)) }));
 }
 
 /** 列范围：有 walkSubtree 的（夸克 / OpenList）带 id，115 只有路径，id 到执行时再解析 */

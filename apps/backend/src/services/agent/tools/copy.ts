@@ -26,7 +26,7 @@ import {
   type CopyStatus,
 } from "../../copy/service.js";
 import { listFollowups } from "../../offline/service.js";
-import { enqueueManualCopy, MANUAL_PATHS_MAX, type ManualCopyItem } from "../../copy/manual.js";
+import { enqueueManualCopy, MANUAL_PATHS_MAX, type ManualCopyItem, type ManualCopyResult } from "../../copy/manual.js";
 import { HttpError } from "../../../lib/http-error.js";
 import { hasScope, hasToolset } from "../access.js";
 import { LOCAL_READ, ToolError, defineTool } from "../define.js";
@@ -267,8 +267,30 @@ const ITEM_OUTCOME_TEXT: Record<ManualCopyItem["outcome"], string> = {
   complete: "目标里已经齐了，没再排",
   exists: "目标里已经有同名文件，没再排",
   duplicate: "已经在队列里或刚复制过",
+  covered: "队列里有一条整目录的复制会把它一起带过去，没单独排",
   missing: "网盘上没有这条路径",
 };
+
+/** copy_add 的结果：按这次的 items 说话（不能套 copyOutcomeView：那边把「一条没排、带目标根」一律当成「都排着了」） */
+function manualCopyView(task: TaskDefinition, r: ManualCopyResult, token: Pick<AgentToken, "toolsets">): Record<string, unknown> {
+  const progress = hasToolset(token, "transfer") ? "用 copy_list 看进度" : "进度在 OpenStrm 云下载页的「复制到 OpenList」里看";
+  const after = afterCopyNote(r.afterCopy);
+  let note: string;
+  if (r.queued > 0) note = `已排进复制队列，复制到 ${r.dstDir} 下（按任务目录的层级摆）${after ? `；${after}` : ""}。${progress}。`;
+  else if (r.items.some((i) => i.outcome === "duplicate")) note = `这些条目已经在复制队列里或刚复制过，这次没再排${after ? `；排着的那些${after}` : ""}。${progress}。`;
+  else note = `这次没有排上：${r.reason ?? "没有要复制的条目"}。逐条见 items。`;
+  return {
+    task: taskBrief(task),
+    queued: r.queued,
+    dstDir: r.dstDir,
+    ...afterCopyFields(r.afterCopy),
+    ...(r.reason ? { reason: r.reason } : {}),
+    note,
+    items: r.items.map((i) => ({ ...i, outcomeText: ITEM_OUTCOME_TEXT[i.outcome] })),
+    ...(r.queued > 0 ? { next: "复制在后台跑（大约 30 秒推进一轮），过几分钟用 copy_list(status: \"pending\") 看进度，别连续快速轮询。" } : {}),
+    ...openInUi(COPY_UI),
+  };
+}
 
 export const copyAddTool = defineTool({
   name: "copy_add",
@@ -285,22 +307,16 @@ export const copyAddTool = defineTool({
   }),
   async run(args, ctx) {
     const task = resolveTask(args.task);
-    if (args.afterCopy === "delete" && !hasScope(ctx.token, "danger")) {
-      throw new ToolError("INSUFFICIENT_SCOPE", "复制完删掉网盘上的源文件要令牌有「删除」档", "让用户到设置页给这个令牌勾上「删除」档；或者改用 archive（归档，可逆）/ keep。", { required: "danger" });
-    }
     try {
-      const r = await enqueueManualCopy({ task, paths: args.paths, dstDir: args.dstDir, afterCopy: args.afterCopy, signal: ctx.signal });
-      const items = r.items.map((i) => ({ ...i, outcomeText: ITEM_OUTCOME_TEXT[i.outcome] }));
-      return {
-        task: taskBrief(task),
-        ...copyOutcomeView({ queued: r.queued, dstDir: r.dstDir, afterCopy: r.afterCopy, deleteSource: r.deleteSource, ...(r.reason ? { reason: r.reason } : {}) }, ctx.token),
-        items,
-        ...(r.queued > 0 ? { next: "复制在后台跑（大约 30 秒推进一轮），过几分钟用 copy_list(status: \"pending\") 看进度，别连续快速轮询。" } : {}),
-        ...openInUi(COPY_UI),
-      };
+      // 复制完删源要「删除」档：没明说、按任务设置落到删除的也一样，服务层按最终的去向把关
+      const r = await enqueueManualCopy({ task, paths: args.paths, dstDir: args.dstDir, afterCopy: args.afterCopy, allowDelete: hasScope(ctx.token, "danger"), signal: ctx.signal });
+      return manualCopyView(task, r, ctx.token);
     } catch (err) {
       if (!(err instanceof HttpError)) throw err;
       const code = typeof err.extra.code === "string" ? err.extra.code : undefined;
+      if (code === "INSUFFICIENT_SCOPE") {
+        throw new ToolError(code, "复制完删掉网盘上的源文件要令牌有「删除」档（这个任务设的就是复制后删除）", "让用户到设置页给这个令牌勾上「删除」档；或者传 afterCopy: \"archive\"（归档，可逆）/ \"keep\"。", { required: "danger" });
+      }
       if (code === "COPY_NOT_READY") throw copyNotReady(err.message.replace(/^没法复制到 OpenList：/, ""));
       if (code === "TASK_ORGANIZING") throw new ToolError(code, err.message, "用 organize_status 等这次整理办完再调。", typeof err.extra.runId === "string" ? { runId: err.extra.runId } : {});
       if (code === "COPY_DST_INVALID") throw new ToolError(code, err.message, "不填 dstDir 就用任务上 / 设置页的目标目录；要指定就填它们下面的目录。");

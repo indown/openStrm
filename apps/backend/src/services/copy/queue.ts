@@ -10,6 +10,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { CopyAfterCopy } from "@openstrm/shared";
+import { afterCopyOf } from "../../lib/after-copy.js";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
 
@@ -128,11 +129,12 @@ export function listCopies(): CopyRecord[] {
 /** 库里的一条：老记录只有 deleteSource */
 type StoredRecord = Omit<CopyRecord, "afterCopy"> & { afterCopy?: CopyAfterCopy; deleteSource?: boolean };
 
-/** 老记录的 deleteSource 收成 afterCopy，别的代码只认 afterCopy */
+/** 老记录的 deleteSource 收成 afterCopy（认不得的值当不动），别的代码只认 afterCopy */
 function normalizeRecord(c: StoredRecord): CopyRecord {
-  if (c.afterCopy) return c as CopyRecord;
-  const { deleteSource, ...rest } = c;
-  return { ...rest, afterCopy: deleteSource ? "delete" : "keep" };
+  const afterCopy = afterCopyOf(c);
+  if (c.afterCopy === afterCopy && c.deleteSource === undefined) return c as CopyRecord;
+  const { deleteSource: _legacy, ...rest } = c;
+  return { ...rest, afterCopy };
 }
 
 /** 整份写回。只给「这一份就是全部」的调用方（登记、接管、重置）用，循环里别用 */

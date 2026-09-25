@@ -127,8 +127,8 @@ function defaultsFor(task: TaskEditable | undefined): TaskFormValues {
     cronExpression: task?.cronExpression ?? "",
     copyEnabled: task?.copyToOpenlist?.enabled ?? false,
     copyDstDir: task?.copyToOpenlist?.dstDir ?? "",
-    // 老数据只有 deleteSource
-    copyAfterCopy: task?.copyToOpenlist?.afterCopy ?? (task?.copyToOpenlist?.deleteSource ? "delete" : "keep"),
+    // 关着时留的旧值不算（保存时关着就整块记成关）
+    copyAfterCopy: task?.copyToOpenlist?.enabled ? (task.copyToOpenlist.afterCopy ?? "keep") : "keep",
     libraryType: task?.organize?.libraryType ?? "mixed",
     organizeMode: task?.organize?.mode ?? "",
   };

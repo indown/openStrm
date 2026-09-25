@@ -54,7 +54,7 @@ import { PosterBackdrop } from "@/components/poster-backdrop";
 import { useDirPosters } from "@/hooks/use-dir-posters";
 import { Spinner, TableSkeleton } from "@/components/loading";
 import { fmtTime, formatSize } from "@/lib/format";
-import { KIND_META, parentOf } from "@/lib/strm";
+import { KIND_META, PARSE_REASON_LABEL, parentOf } from "@/lib/strm";
 import { keywordFromPath, searchHref } from "@/lib/resource";
 import { useStrmBrowser, type DeleteRequest, type StrmRow } from "./use-strm-browser";
 import { StrmFileSheet } from "./components/StrmFileSheet";
@@ -105,6 +105,8 @@ type RowProps = {
   onRewrite: () => void;
   /** 交给「复制到 OpenList」：目录整个复制，strm 按它指向的网盘文件 */
   onCopy: () => void;
+  /** 这个任务复制不了的原因（OpenList 账号的任务、设置没配好）：有就把入口灰掉 */
+  copyBlocked: string | null;
 };
 
 /** 网盘绝对路径 → 相对任务目录；不在任务目录下面回 null */
@@ -133,20 +135,27 @@ function StrmContent() {
     setScanOpen(true);
   };
 
-  /** 本地目录和网盘目录同一个相对路径；strm 要读一下才知道指向网盘上的哪个文件 */
+  /** 本地目录和网盘目录同一个相对路径；strm 要读一下才知道指向网盘上的哪个文件（按内容里写的那个，内容坏了才退回按文件名算的） */
   const copyRow = async (row: StrmRow) => {
     if (!task) return;
     let rel: string | null = row.path;
     if (!row.isDir) {
+      let remote: string;
       try {
-        rel = relativeToTask((await api.strm.file(task.id, row.path)).expectedRemotePath, task.originPath);
+        const info = await api.strm.file(task.id, row.path);
+        if (!info.actualRemotePath && info.reason) {
+          toast.error(`这个 strm 的内容看不出指向网盘上的哪个文件（${PARSE_REASON_LABEL[info.reason]}），先用「修正内容」把它写对`);
+          return;
+        }
+        remote = info.actualRemotePath ?? info.expectedRemotePath;
       } catch (err) {
         toast.error(apiErrorMessage(err, "读取 strm 失败"));
         return;
       }
+      rel = relativeToTask(remote, task.originPath);
     }
     if (rel === null || rel === "") {
-      toast.error("这个 strm 指向的文件不在任务目录下面，没法按任务复制");
+      toast.error("这个 strm 指向的文件不在任务的网盘目录下面，没法按任务复制");
       return;
     }
     setCopyPreset({ taskId: task.id, paths: [rel] });
@@ -167,6 +176,7 @@ function StrmContent() {
     onRegenerate: () => setRegenPath(row.path),
     onRewrite: () => setRewritePath(row.path),
     onCopy: () => void copyRow(row),
+    copyBlocked: task?.copyBlocked ?? null,
   });
 
   const task = b.task;
@@ -370,8 +380,8 @@ function StrmContent() {
                   修正内容
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  disabled={b.path === ""}
-                  title={b.path === "" ? "任务目录本身不能整个复制，进到里面的目录再选" : undefined}
+                  disabled={b.path === "" || Boolean(task?.copyBlocked)}
+                  title={task?.copyBlocked ?? (b.path === "" ? "任务目录本身不能整个复制，进到里面的目录再选" : undefined)}
                   onSelect={() =>
                     afterMenuClosed(() => {
                       setCopyPreset({ taskId: b.taskId, paths: [b.path] });
@@ -602,8 +612,9 @@ function DirMenu({
   onRegenerate,
   onRewrite,
   onCopy,
+  copyBlocked,
   onDelete,
-}: Pick<RowProps, "onVerify" | "onRegenerate" | "onRewrite" | "onCopy" | "onDelete"> & { path: string; size: "size-8" | "size-9" }) {
+}: Pick<RowProps, "onVerify" | "onRegenerate" | "onRewrite" | "onCopy" | "copyBlocked" | "onDelete"> & { path: string; size: "size-8" | "size-9" }) {
   // 季目录（Season 1）按上一级的作品名搜
   const keyword = keywordFromPath(path);
   return (
@@ -626,7 +637,7 @@ function DirMenu({
           <FileCog />
           修正内容
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => afterMenuClosed(onCopy)}>
+        <DropdownMenuItem disabled={Boolean(copyBlocked)} title={copyBlocked ?? undefined} onSelect={() => afterMenuClosed(onCopy)}>
           <Copy />
           复制到 OpenList
         </DropdownMenuItem>
@@ -672,7 +683,7 @@ function StrmTableRow(p: RowProps) {
       <TableCell className="w-28">
         <div className="flex justify-end gap-0.5">
           {row.isDir ? (
-            <DirMenu path={row.path} size="size-8" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onCopy={p.onCopy} onDelete={p.onDelete} />
+            <DirMenu path={row.path} size="size-8" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onCopy={p.onCopy} copyBlocked={p.copyBlocked} onDelete={p.onDelete} />
           ) : (
             <>
               {row.kind === "strm" && (
@@ -680,7 +691,7 @@ function StrmTableRow(p: RowProps) {
                   <Button variant="ghost" size="icon" className="size-8" title="查看" onClick={p.onOpen}>
                     <Eye className="size-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="size-8" title="复制到 OpenList" onClick={p.onCopy}>
+                  <Button variant="ghost" size="icon" className="size-8" title={p.copyBlocked ?? "复制到 OpenList"} disabled={Boolean(p.copyBlocked)} onClick={p.onCopy}>
                     <Copy className="size-4" />
                   </Button>
                 </>
@@ -727,7 +738,7 @@ function StrmCard(p: RowProps) {
               <FolderOpen className="size-4" />
               打开
             </Button>
-            <DirMenu path={row.path} size="size-9" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onCopy={p.onCopy} onDelete={p.onDelete} />
+            <DirMenu path={row.path} size="size-9" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onCopy={p.onCopy} copyBlocked={p.copyBlocked} onDelete={p.onDelete} />
           </>
         ) : row.kind === "strm" ? (
           <>
@@ -735,7 +746,7 @@ function StrmCard(p: RowProps) {
               <Eye className="size-4" />
               查看
             </Button>
-            <Button variant="ghost" size="icon" className="size-9" title="复制到 OpenList" onClick={p.onCopy}>
+            <Button variant="ghost" size="icon" className="size-9" title={p.copyBlocked ?? "复制到 OpenList"} disabled={Boolean(p.copyBlocked)} onClick={p.onCopy}>
               <Copy className="size-4" />
             </Button>
             <Button

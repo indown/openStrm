@@ -214,7 +214,8 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
 
   // 对照规则在 plan.ts，有单测钉着；这里只负责把两边的清单喂进去
   const remoteEntries = loaded.entries;
-  const localEntries = collectFilesAndTopEmptyDirs(await getLocalTree(saveDir));
+  // 本地这边同样跳过暂存区：升级前就叫「归档」的目录里可能早有 strm，远端那边不列了，不能因此把它们当多余删掉
+  const localEntries = collectFilesAndTopEmptyDirs(await getLocalTree(saveDir)).filter((p) => !isStagingDir(p));
   const { missing: missingLocally, extra: extraLocally } = planSync(remoteEntries, localEntries, strmExts, dlExts);
 
   let warning: string | undefined;

@@ -1,4 +1,12 @@
-import type { OpenlistCopySettings } from "@openstrm/shared";
+import type { CopyAfterCopy, OpenlistCopySettings, TaskCopySettings } from "@openstrm/shared";
+
+/** 复制成功后源文件去向的叫法（任务弹框、队列面板、新建复制弹框共用） */
+export const AFTER_COPY_LABEL: Record<CopyAfterCopy, string> = { keep: "不动", delete: "删除", archive: "归档" };
+
+/** 任务上复制成功后源文件怎么办；任务没开复制就是不动。后端读写时已经把老字段归一成 afterCopy，这里只认它 */
+export function taskAfterCopy(cfg: TaskCopySettings | undefined): CopyAfterCopy {
+  return cfg?.enabled ? (cfg.afterCopy ?? "keep") : "keep";
+}
 
 /**
  * 任务弹框里「开着复制却复制不了」卡在哪，null = 设置上齐了。

@@ -42,7 +42,7 @@ export type NotifyEvent =
   /** 云下载的「复制到 OpenList」没走完；旧名字，留一轮 */
   | { type: "offline-copy-failed"; name: string; detail: string }
   /** OpenList 复制完了；一轮里完成的合成一条（队列是一个文件一条记录，逐条发会被限流吞掉） */
-  | { type: "copy-done"; names: string[]; target: string; source: string }
+  | { type: "copy-done"; names: string[]; target: string; source: string; kept?: string[] }
   /** OpenList 复制失败，detail 里说清楚在哪一步 */
   | { type: "copy-failed"; names: string[]; detail: string; source: string }
   /** 追更转存了新文件 */
@@ -198,7 +198,11 @@ function render(event: NotifyEvent): string {
     case "copy-done": {
       const shown = event.names.slice(0, 8).map(esc).join("、");
       const more = event.names.length > 8 ? ` 等 ${event.names.length} 个` : "";
-      return `📦 <b>已复制到 OpenList</b>（${esc(event.source)}）\n${shown}${more}\n→ ${esc(event.target)}`;
+      // 复制成了、源文件却没按设置删 / 归档的：说一声，不然人以为搬运完了
+      const kept = event.kept?.length
+        ? `\n源文件没按设置处理：${event.kept.slice(0, 5).map(esc).join("；")}${event.kept.length > 5 ? ` 等 ${event.kept.length} 个` : ""}`
+        : "";
+      return `📦 <b>已复制到 OpenList</b>（${esc(event.source)}）\n${shown}${more}\n→ ${esc(event.target)}${kept}`;
     }
     case "copy-failed": {
       const shown = event.names.slice(0, 8).map(esc).join("、");

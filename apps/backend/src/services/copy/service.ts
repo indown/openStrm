@@ -19,7 +19,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { AppSettings, CopyAfterCopy, TaskDefinition } from "@openstrm/shared";
-import { ARCHIVE_DIR } from "../organize/duplicates.js";
+import { ARCHIVE_DIR, underArchive } from "../organize/duplicates.js";
 import { KEY } from "../../db/keys.js";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -45,7 +45,7 @@ import { removeEmptyParents } from "../../lib/fs.js";
 import { matchTask } from "../life/handlers.js";
 import { mirrorDelete } from "../organize/mirror.js";
 import { providerForAccount } from "../drive/registry.js";
-import type { DriveNode, DriveProvider } from "../drive/types.js";
+import type { DriveEntry, DriveNode, DriveProvider } from "../drive/types.js";
 import { listTasks } from "../../db/repositories/tasks.js";
 import {
   baseName,
@@ -208,6 +208,8 @@ export interface CopyEnqueueResult {
   covered?: number;
   /** 这次新排上的记录 id */
   ids?: string[];
+  /** 每条来源的下场（路径原样）：调用方要按路径回话时用 */
+  perSource?: Array<{ path: string; outcome: "queued" | "duplicate" | "covered" }>;
 }
 
 /**
@@ -262,6 +264,12 @@ export function enqueueCopy(req: CopyRequest): CopyEnqueueResult {
     const now = deps.now();
     const rows = listCopies();
     const fresh: CopyRecord[] = [];
+    /** 按「账号 + 所在目录 + 名字」索引：找重复不用每条都扫一遍整个队列（补齐一次能登记几千条） */
+    const byName = new Map<string, CopyRecord[]>();
+    const keyOf = (c: Pick<CopyRecord, "account" | "srcDir" | "name">) => JSON.stringify([c.account, c.srcDir, c.name]);
+    const remember = (c: CopyRecord) => byName.set(keyOf(c), [...(byName.get(keyOf(c)) ?? []), c]);
+    for (const c of rows) remember(c);
+    const perSource: NonNullable<CopyEnqueueResult["perSource"]> = [];
     /** 被这次补上删源的、已经排着的记录 */
     const upgraded: CopyRecord[] = [];
     /** 被这次的整条目并进去的监控记录 */
@@ -270,7 +278,8 @@ export function enqueueCopy(req: CopyRequest): CopyEnqueueResult {
     let covered = 0;
     let pendingAfterCopy: Exclude<CopyAfterCopy, "keep"> | undefined;
     for (const s of sources) {
-      const srcPath = s.path.trim();
+      // 不 trim：网盘上真有「Season 1 」这种带尾空格的名字，削掉就找不到了
+      const srcPath = s.path;
       const { dstDir, flattened } = dstDirFor(base, req.rootPath, srcPath);
       const rec: CopyRecord = {
         id: randomUUID(),
@@ -303,14 +312,18 @@ export function enqueueCopy(req: CopyRequest): CopyEnqueueResult {
       // 单独登记的话它先按文件复制完，轮到整条目时目标里已经有了只能跳过，任务的「复制后删源」就落空了
       if (rec.trigger === "monitor" && [...rows, ...fresh].some((w) => coversRecord(w, rec))) {
         covered++;
+        perSource.push({ path: srcPath, outcome: "covered" });
         continue;
       }
-      const dup = findDuplicate([...rows, ...fresh], rec, now);
+      const dup = findDuplicate(byName.get(keyOf(rec)) ?? [], rec, now);
       if (!dup) {
         fresh.push(rec);
+        remember(rec);
+        perSource.push({ path: srcPath, outcome: "queued" });
         continue;
       }
       duplicates++;
+      perSource.push({ path: srcPath, outcome: "duplicate" });
       if (upgradeAfterCopy(dup, rec)) upgraded.push(dup);
       if (dup.status === "pending" && dup.afterCopy !== "keep") pendingAfterCopy = dup.afterCopy;
     }
@@ -323,7 +336,7 @@ export function enqueueCopy(req: CopyRequest): CopyEnqueueResult {
         merged.push(o);
       }
     }
-    const counts = { dstDir: base, duplicates, covered, ...(pendingAfterCopy ? { pendingAfterCopy } : {}) };
+    const counts = { dstDir: base, duplicates, covered, perSource, ...(pendingAfterCopy ? { pendingAfterCopy } : {}) };
     const nothing = covered > 0 && duplicates === 0 ? "整目录的复制会把它们一起带过去" : "这些条目已经在队列里或刚复制过";
     if (fresh.length === 0 && upgraded.length === 0) return { queued: 0, skipped: nothing, ...counts };
     saveCopies([...fresh, ...rows]);
@@ -345,11 +358,19 @@ export function enqueueCopy(req: CopyRequest): CopyEnqueueResult {
  * 而且按 outer 的层级摆出来的目标目录和 inner 自己的一样（弹框里另选了目的地的不算，那是两份复制）；
  * inner 复制完要删源 / 归档的，outer 得是同一种去向，不然那个意图就丢了
  */
-function coversRecord(outer: CopyRecord, inner: CopyRecord): boolean {
+function coversRecord(outer: CopyRecord, inner: CoverCandidate): boolean {
   if (!queuedNow(outer) || outer.adopted || outer.srcDir === "") return false;
   if (inner.adopted || inner.srcDir === "" || outer.account !== inner.account || !isInside(fullPathOf(inner), fullPathOf(outer))) return false;
   if (inner.afterCopy !== "keep" && inner.afterCopy !== outer.afterCopy) return false;
   return dstDirFor(outer.dstBase, outer.rootPath, fullPathOf(inner)).dstDir === inner.dstDir;
+}
+
+/** 会不会被整条目带过去，只看这几样 */
+type CoverCandidate = Pick<CopyRecord, "account" | "srcDir" | "name" | "dstDir" | "afterCopy"> & { adopted?: boolean };
+
+/** 队列里有没有一条还没提交的整条目复制会把这条一起带过去：手动发起时用来告诉用户「不用单独登记」 */
+export function findCoveringRecord(inner: CoverCandidate): CopyRecord | undefined {
+  return listCopies().find((w) => coversRecord(w, inner));
 }
 
 /** 监控记录并进整条目：标成用不着了（不给重试），说明里写进了谁 */
@@ -390,7 +411,7 @@ function upgradeAfterCopy(dup: CopyRecord, rec: CopyRecord): boolean {
  */
 export function enqueueCopyFor(
   opts: CopyOptions,
-  req: Omit<CopyRequest, "dstDir" | "deleteSource">,
+  req: Omit<CopyRequest, "dstDir" | "afterCopy">,
   onBlocked?: (why: string) => void,
   onQueued?: (ids: string[]) => void,
 ): CopyOutcome | undefined {
@@ -444,7 +465,9 @@ function flushNotifications(): void {
       // 一季的文件多半在同一个目录；落在好几个目录时只写第一个再说一共几个，别让人以为全在第一个里
       const dirs = [...new Set(rows.map((c) => c.dstDir))];
       const target = dirs.length > 1 ? `${dirs[0]} 等 ${dirs.length} 个目录` : dirs[0];
-      void deps.notify({ type: "copy-done", names, target, source }).catch(() => {});
+      // 复制成了、源文件却没按设置删 / 归档的（目标里没看全、归档里已有同名……）：通知里也说一声，别只留在队列的说明里
+      const kept = rows.filter((c) => c.sourceKept).map((c) => `${c.name}：${c.sourceKept}`);
+      void deps.notify({ type: "copy-done", names, target, source, ...(kept.length ? { kept } : {}) }).catch(() => {});
     } else {
       void deps.notify({ type: "copy-failed", names, detail: rows[0].detail, source }).catch(() => {});
     }
@@ -452,7 +475,7 @@ function flushNotifications(): void {
 }
 
 /** OpenList 明确说「找不到」（不是连不上）：是挂载根填错了还是缓存没跟上，由 listSource 往上追着分 */
-function isMissingDir(err: unknown): boolean {
+export function isMissingDir(err: unknown): boolean {
   return err instanceof OpenlistError && !err.transport && /not found|不存在|no such|object not found/i.test(err.message);
 }
 
@@ -467,11 +490,13 @@ export async function tickCopies(): Promise<void> {
   if (pending.length === 0) return;
   // 这一轮手里的记录登记出去（见 queue.ts 的 tickRecords）：中途别处的改动要同时改到它们身上
   tickRecords.clear();
+  ensuredDirs.clear();
   for (const c of pending) tickRecords.set(c.id, c);
   try {
     await tickPending(pending);
   } finally {
     tickRecords.clear();
+    ensuredDirs.clear();
   }
 }
 
@@ -535,7 +560,7 @@ function supersedeEarlierFailures(touched: Set<CopyRecord>, now: number): void {
 }
 
 /** 网盘绝对路径（所在目录 + 名字）：比较两条记录谁套着谁 */
-const fullPathOf = (c: CopyRecord): string => joinPath(c.srcDir, c.name);
+const fullPathOf = (c: Pick<CopyRecord, "srcDir" | "name">): string => joinPath(c.srcDir, c.name);
 const isInside = (path: string, dir: string): boolean => path.startsWith(`${dir === "/" ? "" : dir}/`);
 
 /**
@@ -887,7 +912,7 @@ async function verifyCopied(c: CopyRecord, cfg: CopyConfig): Promise<{ ok: true 
  * （真机撞到：转存弹框刚列过任务目录，提交复制时就钉不住节点，删源被关掉；删的时候也会说「源已不在原处」）。
  * 目录本身按路径解析（115 的 getid 不走那份缓存），整理那边挑同名也是这么绕的
  */
-async function lookupFresh(account: string, path: string): Promise<DriveNode | null> {
+export async function lookupFresh(account: string, path: string): Promise<DriveNode | null> {
   const provider = providerForAccount(account);
   const name = baseName(path);
   const dir = await provider.resolvePath(parentDir(path));
@@ -970,27 +995,30 @@ async function afterCopiedInner(c: CopyRecord, cfg: CopyConfig): Promise<void> {
   }
   /** 说明里的动词：删 / 归档 */
   const verb = c.afterCopy === "delete" ? "删" : "归档";
-  if (c.adopted || c.srcDir === "") {
-    c.detail += `；这条是升级前接管的，不知道源在哪，没${verb}`;
-    return;
-  }
+  /** 没按设置处理源文件：原因记在 sourceKept（收尾的通知里也说一声），说明里带上 */
+  const kept = (why: string, tail = `，源文件没${verb}`) => {
+    c.sourceKept = why;
+    c.detail += `；${why}${tail}`;
+  };
+  if (c.adopted || c.srcDir === "") return kept("这条是升级前接管的，不知道源在哪", `，没${verb}`);
   const src = joinPath(c.srcDir, c.name);
   try {
     const verdict = await verifyCopied(c, cfg);
-    if (!verdict.ok) {
-      c.detail += `；${verdict.why}，源文件没${verb}`;
-      return;
-    }
+    if (!verdict.ok) return kept(verdict.why);
     let outcome: string;
     if (c.afterCopy === "delete") {
       outcome = await deps.removeSource(c.account, src, c.nodeId);
       if (outcome === "removed") c.detail += "；网盘上那份已删";
-    } else {
+    } else if (c.afterCopy === "archive") {
       const r = await deps.archiveSource(c.account, src, c.nodeId, c.rootPath);
       outcome = r.kind;
       if (r.kind === "archived") c.detail += `；网盘上那份已归档到 ${r.to}`;
-      else if (r.kind === "exists") c.detail += "；归档目录里已经有同名的，源文件没动";
-      else if (r.kind === "no-root") c.detail += "；不知道任务目录在哪（平铺复制的），归档不了，源文件没动";
+      else if (r.kind === "exists") return kept("归档目录里已经有同名的", "，源文件没动");
+      else if (r.kind === "staged") return kept("它本来就在归档目录里", "，没再动");
+      else if (r.kind === "no-root") return kept("不知道任务目录在哪（平铺复制的），归档不了", "，源文件没动");
+    } else {
+      // 库里混进了认不得的去向（手改过、回退过版本）：当不动，不猜
+      return kept(`不认识的去向「${String(c.afterCopy)}」`, "，源文件没动");
     }
     if (outcome === "removed" || outcome === "archived") {
       // 本地的 strm 指着的路径已经空了，留着就是 Emby 里一个放不了的条目。
@@ -1001,17 +1029,17 @@ async function afterCopiedInner(c: CopyRecord, cfg: CopyConfig): Promise<void> {
       } catch (err) {
         c.detail += `，本地 strm 没删掉：${messageOf(err)}`;
       }
-    } else if (outcome === "missing") c.detail += `；源文件已不在原处，没${verb}`;
-    else if (outcome === "changed") c.detail += `；源路径上换成了别的文件，没${verb}`;
-    else if (outcome === "unsupported") c.detail += `；这个网盘不支持${c.afterCopy === "delete" ? "删除" : "移动"}，源文件没${verb}`;
+    } else if (outcome === "missing") kept("源文件已不在原处", `，没${verb}`);
+    else if (outcome === "changed") kept("源路径上换成了别的文件", `，没${verb}`);
+    else if (outcome === "unsupported") kept(`这个网盘不支持${c.afterCopy === "delete" ? "删除" : "移动"}`);
   } catch (err) {
-    c.detail += `；${verb}源文件失败：${messageOf(err)}`;
+    kept(`${verb}源文件失败：${messageOf(err)}`, "");
     log.warn({ err }, `复制后${verb}源文件失败：${src}`);
   }
 }
 
-/** 归档的结果：挪到了哪（to 是归档里的目录），或者为什么没动 */
-export type ArchiveResult = { kind: "archived"; to: string } | { kind: "missing" | "changed" | "exists" | "unsupported" | "no-root" };
+/** 归档的结果：挪到了哪（to 是归档里的目录），或者为什么没动（staged = 它本来就在归档目录里） */
+export type ArchiveResult = { kind: "archived"; to: string } | { kind: "missing" | "changed" | "exists" | "unsupported" | "no-root" | "staged" };
 
 /**
  * 归档：把源挪进任务目录下的「归档」，原来的层级留着（tv/某剧/S01/E01.mkv → tv/归档/某剧/S01/E01.mkv）。
@@ -1024,28 +1052,47 @@ async function archiveSourceReal(account: string, path: string, nodeId: string |
   const root = normDir(rootPath);
   const rel = root ? relativeTo(root, parentDir(path)) : null;
   if (rel === null) return { kind: "no-root" };
+  // 本来就在归档目录里的（把归档区选进来复制了）：不能把「归档」挪进「归档」
+  if (underArchive(relativeTo(root, path) ?? "")) return { kind: "staged" };
   const node = await lookupFresh(account, path);
   if (!node) return { kind: "missing" };
   if (nodeId && String(node.id) !== String(nodeId)) return { kind: "changed" };
   const parent = await ensureDriveDir(provider, root, [ARCHIVE_DIR, ...rel.split("/").filter(Boolean)]);
+  // 归档里已有同名的不覆盖、不合并（每条都要看：同一轮里前一条可能刚挪进去一个同名的）
   const name = baseName(path);
   if ((await provider.listDir(parent.id, undefined, { fresh: true })).some((e) => e.name === name)) return { kind: "exists" };
   await provider.write.move([{ id: node.id, path, isDir: node.isDir }], parent);
   return { kind: "archived", to: parent.path };
 }
 
+/** 这一轮里已经确认 / 建过的归档目录链（账号 + 路径 → 节点）：一季几十集归档时同一条链不用每条都到网盘列一遍；每轮开始清空 */
+const ensuredDirs = new Map<string, { id: string; path: string }>();
+
 /** 从 base 往下逐级确认 / 建出目录，返回最后一级；沿途撞上同名文件就抛 */
 async function ensureDriveDir(provider: DriveProvider, base: string, segs: string[]): Promise<{ id: string; path: string }> {
-  const root = await provider.resolvePath(base);
-  if (!root?.isDir) throw new Error(`任务目录 ${base} 在网盘上不存在`);
-  let cur = { id: root.id, path: base };
+  const keyOf = (p: string) => JSON.stringify([provider.account.name, p]);
+  let cur: { id: string; path: string };
+  const cachedRoot = ensuredDirs.get(keyOf(base));
+  if (cachedRoot) cur = cachedRoot;
+  else {
+    const root = await provider.resolvePath(base);
+    if (!root?.isDir) throw new Error(`任务目录 ${base} 在网盘上不存在`);
+    cur = { id: root.id, path: base };
+    ensuredDirs.set(keyOf(base), cur);
+  }
   for (const seg of segs) {
     const next = joinPath(cur.path, seg);
+    const known = ensuredDirs.get(keyOf(next));
+    if (known) {
+      cur = known;
+      continue;
+    }
     // 按父目录 id 列（绕开路径缓存）：刚建出来的目录按路径解析可能还找不到
-    const hit = (await provider.listDir(cur.id, undefined, { fresh: true })).find((e) => e.name === seg);
+    const hit: DriveEntry | undefined = (await provider.listDir(cur.id, undefined, { fresh: true })).find((e) => e.name === seg);
     if (hit && !hit.isDir) throw new Error(`${next} 不是目录，归档不了`);
-    const node = hit ?? (await provider.write!.mkdir(cur, seg));
+    const node: { id: string } = hit ?? (await provider.write!.mkdir(cur, seg));
     cur = { id: node.id, path: next };
+    ensuredDirs.set(keyOf(next), cur);
   }
   return cur;
 }

@@ -527,3 +527,19 @@ export class FakeWrite implements DriveWriteOps {
     this.drive.tree.remove(p);
   }
 }
+
+/** 115 式的网盘：没有 walkSubtree，整棵列只有路径、没有 id。给要验「只有路径也能办」的测试用 */
+export function withoutWalk(inner: FakeDrive): DriveProvider {
+  return {
+    kind: inner.kind,
+    account: inner.account,
+    capabilities: inner.capabilities,
+    rootId: inner.rootId,
+    write: inner.write,
+    resolvePath: (p, s) => inner.resolvePath(p, s),
+    listDir: (id, s) => inner.listDir(id, s),
+    listSubtree: (p, o) => inner.listSubtree(p, o),
+    downloadLink: (p) => inner.downloadLink(p),
+    classifyError: (e) => inner.classifyError(e),
+  };
+}

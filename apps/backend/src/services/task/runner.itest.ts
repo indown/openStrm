@@ -249,10 +249,13 @@ test("并发启动同一任务：拉目录树期间第二次进来必须 409", a
   assert.equal(getTaskHistory(TASK).filter((h) => h.status === "completed").length, 2);
 });
 
-test("removeExtraFiles：本地多出来的文件和空目录被删掉，远端仍有的不动", async () => {
+test("removeExtraFiles：本地多出来的文件和空目录被删掉，远端仍有的不动；暂存区（归档 / 重复文件）里的本地文件不算多余", async () => {
   updateTask(TASK, { removeExtraFiles: true });
   fs.writeFileSync(path.join(outDir, "out/S1/stray.strm"), "x");
   fs.mkdirSync(path.join(outDir, "out/Empty/Deeper"), { recursive: true });
+  // 升级前就叫「归档」的目录：远端那边不再列它，本地这边也不能因此把里面的 strm 当多余删掉
+  fs.mkdirSync(path.join(outDir, "out/归档/老剧"), { recursive: true });
+  fs.writeFileSync(path.join(outDir, "out/归档/老剧/E01.strm"), "x");
   try {
     const res = await startTask(TASK);
     assert.equal(res.status, 200);
@@ -261,7 +264,9 @@ test("removeExtraFiles：本地多出来的文件和空目录被删掉，远端�
     assert.equal(fs.existsSync(path.join(outDir, "out/Empty")), false, "顶层空目录整个删掉");
     assert.ok(fs.existsSync(path.join(outDir, "out/S1/ep1.strm")), "远端仍有的不能被删");
     assert.ok(fs.existsSync(path.join(outDir, "out/S1/ep1.nfo")));
+    assert.ok(fs.existsSync(path.join(outDir, "out/归档/老剧/E01.strm")), "暂存区里的留着");
   } finally {
+    fs.rmSync(path.join(outDir, "out/归档"), { recursive: true, force: true });
     updateTask(TASK, { removeExtraFiles: false });
   }
 });

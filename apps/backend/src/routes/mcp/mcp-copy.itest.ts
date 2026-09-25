@@ -756,12 +756,20 @@ test("copy_add：手动把任务目录里已有的目录交给复制；复制后
     assert.equal(missing.data.queued, 0);
     assert.equal(missing.data.items[0].outcome, "missing");
     assert.match(missing.data.reason, /网盘上没有/);
+    assert.match(missing.data.note, /没有排上：网盘上没有/, "一条没排的原因要照实说，不能说成「已经排着」");
 
     // 日常令牌没有「删除」档：复制后删源拒掉，网盘和队列都不动
     const del = await call(daily, "copy_add", { task: "tv", paths: ["Show/E01.mkv"], afterCopy: "delete" });
     assert.equal(del.isError, true);
     assert.equal(del.data.code, "INSUFFICIENT_SCOPE");
     assert.match(del.data.hint, /archive/);
+    assert.equal(listCopies().length, 1);
+
+    // 任务设的就是复制后删除（movies）：没明说 afterCopy 也拒，网盘和队列都不动
+    d115.tree.addFile("/movies/M.mkv");
+    const implied = await call(daily, "copy_add", { task: "movies", paths: ["M.mkv"] });
+    assert.equal(implied.isError, true, JSON.stringify(implied.data));
+    assert.equal(implied.data.code, "INSUFFICIENT_SCOPE");
     assert.equal(listCopies().length, 1);
 
     // 归档不用「删除」档

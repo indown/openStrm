@@ -2,25 +2,14 @@
  * 资源搜索（PanSou）：网页的一问一答、链接检测、设置页的「检查连接」。
  * 搜到的只是链接，转存 / 云下载走 /api/share 和 /api/115/offline，这里不写任何东西。
  */
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance } from "fastify";
+import { abandonedSignal } from "../../lib/abandoned-signal.js";
 import { z } from "zod";
 import { isAbortError } from "../../lib/errors.js";
 import { HttpError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 import { pansouBaseUrlSchema } from "../../schemas/entities.js";
 import { checkResourceLinks, pansouStatus, searchPhase } from "../../services/pansou/search.js";
-
-/**
- * 浏览器不等了（换了关键词、离开了页面）就掐掉还在路上的那一问。盯 reply.raw 的 close（和 lib/sse.ts 一样，
- * POST 的请求流读完 body 就 close 了，盯它会一开始就掐）；已经回完了的那次 close 不算
- */
-function abandonedSignal(reply: FastifyReply): AbortSignal {
-  const ac = new AbortController();
-  reply.raw.on("close", () => {
-    if (!reply.raw.writableFinished) ac.abort();
-  });
-  return ac.signal;
-}
 
 const searchSchema = z.object({
   keyword: z.string().trim().min(1, "关键词不能为空").max(100, "关键词最多 100 个字"),

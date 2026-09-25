@@ -35,8 +35,7 @@ import { HttpError } from "../../lib/http-error.js";
 import { DATA_DIR } from "../../paths.js";
 import { setDriveProviderFactory } from "../drive/registry.js";
 import { clearCopies, listCopies, saveCopies } from "../copy/queue.js";
-import type { DriveProvider } from "../drive/types.js";
-import { FakeDrive } from "../../test/fake-drive.js";
+import { FakeDrive, withoutWalk } from "../../test/fake-drive.js";
 import type { TmdbDetails, TmdbEpisode, TmdbSearchResult } from "../tmdb.js";
 import type { NotifyEvent } from "../telegram/notify.js";
 import type { TmdbApi } from "./identify.js";
@@ -895,18 +894,7 @@ test("撤销不拽错：落进原来就有的作品目录的，指着作品目�
 
 test("115 式：没有 walkSubtree，预览只有路径，执行时按父目录列一次拿 id", async () => {
   const inner = drive;
-  const noWalk: DriveProvider = {
-    kind: inner.kind,
-    account: inner.account,
-    capabilities: inner.capabilities,
-    rootId: inner.rootId,
-    write: inner.write,
-    resolvePath: (p) => inner.resolvePath(p),
-    listDir: (id) => inner.listDir(id),
-    listSubtree: (p, o) => inner.listSubtree(p, o),
-    downloadLink: (p) => inner.downloadLink(p),
-    classifyError: (e) => inner.classifyError(e),
-  };
+  const noWalk = withoutWalk(inner);
   setDriveProviderFactory((a) => (a.name === "acc" ? noWalk : null));
   const run = await createRun({ taskId: "t1", subPath: "inbox" });
   await untilStatus(run.id, ["ready"]);

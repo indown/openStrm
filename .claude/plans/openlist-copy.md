@@ -476,7 +476,7 @@ copyToOpenlist?: { enabled?: boolean; dstDir?: string };   // dstDir 不填用�
 - [x] B3 远程列目录带文件；新建复制弹框；strm 页入口
 - [x] 测试、tsc / eslint
 - [x] 浏览器冒烟（scratch 后端 4100 + dev 3223）
-- [ ] 评审
+- [x] 评审（15 + 次要项全修，见末节）
 
 ### 实施记录（2026-09-25，两件一起）
 
@@ -505,3 +505,29 @@ copyToOpenlist?: { enabled?: boolean; dstDir?: string };   // dstDir 不填用�
 - 全量 1298 个通过；三包 tsc、两端 eslint 干净。
 - 浏览器冒烟（全新 scratch 库起 4100、dev 3223，夸克假账号 + 两个任务 + 本地 strm；远程列目录和 POST /api/copy 在页面里换成 XHR 桩）：云下载页「新建复制」→ 选任务（Radix Select 用 keydown Enter）→ 树里勾目录和文件、展开子目录 → 去向改成删除（提示变红）→ 二次确认 → 结果逐条带徽标 + toast；strm 页目录行菜单、顶部工具菜单（根目录灰掉）、strm 文件行按钮都能预填进弹框，strm 文件按应指向的网盘路径换成任务相对路径；任务弹框三选一显示当前值；任务列表徽标提示按去向说。
   - 冒烟撞到一处：云下载页没有 115 账号时整页只有「去添加账号」，复制队列面板根本不渲染——只有夸克账号的用户看不到队列、也发不起复制。改成那个分支也渲染面板（面板没配好又空着时自己不显示）。
+
+### 评审与修补（2026-09-25，`/code-review max`）
+
+15 条主要发现 + 一批次要项，全部核实成立，除两条说明外都修了：
+
+1. **删除档只按明说的 `afterCopy` 把关**：没明说、按任务设置落到删除的也会删。改成服务层按最终去向把关（`ManualCopyInput.allowDelete`，路由按会话 / 令牌有没有 danger 档给，工具按 `hasScope`），路由和工具都补了用例。
+2. **`归档` 这个名字撞上用户原有目录**：远端不再列它，本地 `removeExtraFiles` 会把里面已有的 strm 当多余删掉。名字不改（和「重复文件」一个做法，用户定的），但全量同步的本地清单也跳过暂存区，原有 strm 不会被删；升级说明里要写这一条。用例在 runner.itest。
+3. **手动登记的路径没查队列里包着它的整目录**：一次里选了父子路径、或队列里已有整目录复制时，子路径单独登记，整目录到时被「目标里已有」跳过。改成子路径去掉、队列里有还没提交的整目录包着（`findCoveringRecord`，任何来源都算）就记成 `covered`。
+4. **列 OpenList 目标失败一律当「还没有」**：OpenList 挂了会整目录登记、到时跳过、缺的永远补不上。改成只有 `isMissingDir`（明确说没有）才算没有，其它一律报错、整个请求不登记。
+5. **逐条登记、逐条校验**：后一条的 TOO_LARGE / 报错让前一条已经排上（可能带删源）。改成两阶段：先只看不改（所有 await 都在这一段），再一口气登记（一次 `enqueueCopy`，按 `perSource` 归到每条路径）。
+6. **回话里的去向照抄请求的**：已经排着一条要删源的，这次说归档、没再排，回的却是归档。改成和 `enqueueCopyFor` 同一个口径（`pendingAfterCopy`）。
+7. **115 按路径找刚落进来的文件看的是 5 分钟的缓存**：报「网盘上没有」。改用 `lookupFresh`（按父目录绕开缓存列）。
+8. **路由不传 AbortSignal、前端 120 秒超时、网盘错误没走 `driveErrorToHttp`**：`abandonedSignal` 从资源搜索路由抽到 `lib/abandoned-signal.ts`，前端超时改 330 秒（和 strm 校验一样），网盘错误映射成上游错误。
+9. **`normalizeSubPath` 削每段空格**：「Season 1 」这种名字找不到。改用 `strm/manage.ts` 的 `normalizeRel`（只收拢斜杠，拒 `..` 和 NUL）；`enqueueCopy` 里那句 `s.path.trim()` 也去掉了。用例：尾空格目录。
+10. **暂存区能当源**：`uniquePaths` 拒 `isStagingDir`；`archiveSourceReal` 对本来就在归档里的回 `staged`，不会把「归档」挪进「归档」。
+11. **弹框把 OpenList 账号的任务过滤掉，strm 页却给了入口**：下拉框空着、什么也说不出。改成不过滤、按后端算好的 `copyBlocked` 说原因，strm 页的入口在 `copyBlocked` 时灰掉并把原因放到 title。
+12. **`copy_add` 套用 `copyOutcomeView`**：一条没排、带目标根就被说成「已经排着」。改成自己的 `manualCopyView`，按 items 说话。
+13. **strm 页按文件名算的 `expectedRemotePath` 找网盘文件**：改用 `actualRemotePath ?? expectedRemotePath`，内容解析不出的单独提示。
+14. **整理忙的检查只在开头看一次**：登记前再看一次（登记那一段没有 await）。
+15. **归档整条路没测试、归档里已有同名时通知不提**：新加 `archive-source.itest.ts`（目录链、真挪、本地 strm、同一轮里目录链只建一次、已有同名、本来就在归档里、平铺 / 不支持写 / 节点换了）；复制成功但源文件没按设置处理的，`copy-done` 通知带 `kept` 说一声。
+
+次要项：`ensureDriveDir` 每轮缓存目录链；`enqueueCopy` 找重复改成按「账号 + 目录 + 名字」索引；`Omit<CopyRequest, "deleteSource">` 改正；扩展名判断和 115 导出树用同一条规则（`drive/walk.ts` 的 `looksLikeFileName`，整理的 `listTree` 也引它）；`AddTaskDialog` 关着时不预选旧去向；`afterCopyOf` 认不得的值当不动、`afterCopiedInner` 不再把 else 当归档；`AFTER_COPY_LABEL` / `taskAfterCopy` 挪到 `lib/openlist-copy.ts`，前端三处 `deleteSource` 兜底删掉；`normalizeRecord` 复用 `afterCopyOf`；`transfer.ts` 两处用 `withAfterCopy`；弹框里自己猜「卡在哪」的三元删掉；`manual.ts` 两处到不了的保护删掉；`withoutWalk` 抽进 `test/fake-drive.ts`（整理和手动复制的测试共用）。
+
+没改的两条：`planFill` 要先整棵列才知道文件数（115 是一次导出，列之前没法知道大小）；三处「mkdir -p」（转存的 `ensureSubDir`、整理的 `ensureDir`、归档的 `ensureDriveDir`）各自带着不同的缓存和错误口径，合并的收益抵不过风险。
+
+全量后端测试通过，三包 tsc、两端 eslint 干净。

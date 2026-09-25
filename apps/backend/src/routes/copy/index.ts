@@ -4,7 +4,9 @@ import { getTask } from "../../db/repositories/tasks.js";
 import { HttpError } from "../../lib/http-error.js";
 import { canRetryCopy, dropCopy, getCopyWatcherStatus, listCopies, retryCopy, type CopyRecord } from "../../services/copy/service.js";
 import { enqueueManualCopy, MANUAL_PATHS_MAX } from "../../services/copy/manual.js";
-import { requireAgentScope } from "../../services/agent/access.js";
+import { hasScope } from "../../services/agent/access.js";
+import { driveErrorToHttp } from "../../services/drive/errors.js";
+import { abandonedSignal } from "../../lib/abandoned-signal.js";
 import { parse } from "../../lib/validate.js";
 
 const idParams = z.object({ id: z.string().min(1) });
@@ -39,13 +41,20 @@ export default async function (fastify: FastifyInstance) {
     };
   });
 
-  fastify.post("/api/copy", { preHandler: [fastify.authenticate], config: { agentScope: "write", agentToolset: "transfer" } }, async (request) => {
+  fastify.post("/api/copy", { preHandler: [fastify.authenticate], config: { agentScope: "write", agentToolset: "transfer" } }, async (request, reply) => {
     const body = parse(addBody, request.body);
-    // 复制完删源是删东西：令牌得有「删除」档（会话不受限）
-    if (body.afterCopy === "delete") requireAgentScope(request, "danger");
     const task = getTask(body.taskId);
     if (!task) throw new HttpError(404, `任务不存在：${body.taskId}`);
-    return enqueueManualCopy({ task, paths: body.paths, dstDir: body.dstDir, afterCopy: body.afterCopy });
+    // 复制完删源是删东西：会话不受限，令牌得有「删除」档——没明说、按任务设置落到删除的也一样，由服务层按最终的去向把关
+    const p = request.principal;
+    const allowDelete = p?.kind !== "token" || hasScope(p.token, "danger");
+    try {
+      // 到网盘核对、和目标比对可能要一会（115 整目录导出）：浏览器不等了就掐掉，别在它走了之后还登记
+      return await enqueueManualCopy({ task, paths: body.paths, dstDir: body.dstDir, afterCopy: body.afterCopy, allowDelete, signal: abandonedSignal(reply) });
+    } catch (err) {
+      if (err instanceof HttpError) throw err;
+      throw driveErrorToHttp(err, "发起复制失败");
+    }
   });
 
   fastify.post("/api/copy/:id/retry", { preHandler: [fastify.authenticate], config: { agentScope: "write", agentToolset: "transfer" } }, async (request) => {
