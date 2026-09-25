@@ -652,7 +652,7 @@ test("自动模式：全 high 且无冲突直接执行；有拿不准的只通�
 
 test("自动整理挪走 / 改名了还没提交的复制：队列里的路径跟过去（发布目录没腾空也跟），整理办完放行等它的复制", async () => {
   replaceTasks([{ ...task, organize: { mode: "auto" } }]);
-  const base = { account: "acc", dstBase: "/local/media", rootPath: "tv", taskId: "t1", trigger: "share" as const, status: "pending" as const, stage: "waiting" as const, detail: "", attempts: 0, waits: 0, misses: 0 };
+  const base = { account: "acc", dstBase: "/local/media", rootPath: "tv", taskId: "t1", trigger: "share" as const, afterCopy: "keep" as const, status: "pending" as const, stage: "waiting" as const, detail: "", attempts: 0, waits: 0, misses: 0 };
   const held = Date.now() + 600_000;
   saveCopies([
     { ...base, id: "movie", srcDir: "/tv/inbox", name: "Dune.Part.Two.2024.2160p.WEB-DL.mkv", dstDir: "/local/media/inbox", addedAt: Date.now() - 1_000, holdUntil: held },
@@ -681,7 +681,7 @@ test("自动整理挪走 / 改名了还没提交的复制：队列里的路径�
 
 test("整理办完放行压着的复制按它开始那一刻的毫秒比：开始之后才登记的（哪怕同一秒）不放，要等下一次整理", async () => {
   replaceTasks([{ ...task, organize: { mode: "auto" } }]);
-  const base = { account: "acc", srcDir: "/tv/other", dstBase: "/local/media", rootPath: "tv", taskId: "t1", trigger: "share" as const, status: "pending" as const, stage: "waiting" as const, detail: "", attempts: 0, waits: 0, misses: 0, dstDir: "/local/media/other" };
+  const base = { account: "acc", srcDir: "/tv/other", dstBase: "/local/media", rootPath: "tv", taskId: "t1", trigger: "share" as const, afterCopy: "keep" as const, status: "pending" as const, stage: "waiting" as const, detail: "", attempts: 0, waits: 0, misses: 0, dstDir: "/local/media/other" };
   const held = Date.now() + 600_000;
   try {
     // 剧拿不准：留着等人确认，这时放行压着的复制

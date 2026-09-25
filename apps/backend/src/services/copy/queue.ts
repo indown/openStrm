@@ -9,6 +9,7 @@
  * 那样会把期间别人写的东西整片抹掉。循环里的改动一律走 commitCopies（重读、按 id 合并、再写）。
  */
 import { randomUUID } from "node:crypto";
+import type { CopyAfterCopy } from "@openstrm/shared";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
 
@@ -40,8 +41,8 @@ export interface CopyRecord {
   /** 触发时的同步任务；没有就是空串 */
   taskId: string;
   trigger: CopyTrigger;
-  /** 复制成功后把网盘上那份删掉（搬运）。登记时按任务设置冻结，之后改设置不影响在途的 */
-  deleteSource?: boolean;
+  /** 复制成功后源文件的去向（不动 / 删除 / 归档）。登记时按任务设置冻结，之后改设置不影响在途的 */
+  afterCopy: CopyAfterCopy;
   /** 升级时从老的云下载回执接管过来的：只有 OpenList 任务 id，没有网盘路径 */
   adopted?: boolean;
   addedAt: number;
@@ -120,8 +121,18 @@ export function queuedNow(c: CopyRecord): boolean {
 }
 
 export function listCopies(): CopyRecord[] {
-  const rows = readKv<CopyRecord[]>(QUEUE_KEY);
-  return Array.isArray(rows) ? rows : [];
+  const rows = readKv<StoredRecord[]>(QUEUE_KEY);
+  return Array.isArray(rows) ? rows.map(normalizeRecord) : [];
+}
+
+/** 库里的一条：老记录只有 deleteSource */
+type StoredRecord = Omit<CopyRecord, "afterCopy"> & { afterCopy?: CopyAfterCopy; deleteSource?: boolean };
+
+/** 老记录的 deleteSource 收成 afterCopy，别的代码只认 afterCopy */
+function normalizeRecord(c: StoredRecord): CopyRecord {
+  if (c.afterCopy) return c as CopyRecord;
+  const { deleteSource, ...rest } = c;
+  return { ...rest, afterCopy: deleteSource ? "delete" : "keep" };
 }
 
 /** 整份写回。只给「这一份就是全部」的调用方（登记、接管、重置）用，循环里别用 */

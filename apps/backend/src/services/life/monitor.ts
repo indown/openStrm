@@ -401,9 +401,9 @@ class AccountMonitor {
                     taskId: m.task.id,
                     dstDir: copyOpts.dstDir,
                     trigger: "monitor",
-                    // 监控是一个文件一条事件：删源只对「整条目复制」开（转存 / 追更 / 云下载），
-                    // 不然自动整理还没来得及动那个文件，它就已经被删掉了
-                    deleteSource: false,
+                    // 监控是一个文件一条事件：删源 / 归档只对「整条目复制」开（转存 / 追更 / 云下载），
+                    // 不然自动整理还没来得及动那个文件，它就已经被删掉或挪走了
+                    afterCopy: "keep",
                     holdForOrganize: effectiveAutoMode(m.task) === "auto",
                   });
                 }

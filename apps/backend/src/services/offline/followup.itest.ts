@@ -300,7 +300,7 @@ test("下到 115 默认目录：下完把产物的网盘路径交给复制队列
     rootPath: undefined,
     taskId: undefined,
     dstDir: "/local/dl",
-    deleteSource: false,
+    afterCopy: "keep",
     trigger: "offline",
   });
 });
@@ -346,7 +346,7 @@ test("下到任务目录 + 勾复制：先生成 strm，再交给复制队列", 
     rootPath: "tv",
     taskId: "t1",
     dstDir: "/local/dl",
-    deleteSource: false,
+    afterCopy: "keep",
     trigger: "offline",
     holdForOrganize: false,
   });
@@ -455,27 +455,27 @@ test("下完交给复制队列却没排上（设置被改坏了）：写进回�
 });
 
 test("删不删源在加任务那一刻冻结，之后改设置不影响；115 上原本就有、不在任务目录里的不删，在任务目录里的照删", async () => {
-  replaceTasks([{ ...task, copyToOpenlist: { enabled: true, deleteSource: true } }]);
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true, afterCopy: "delete" } }]);
   const r = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", taskId: "t1", subPath: "S1" });
   await stopOfflineWatcher();
-  assert.equal(r.copyDeleteSource, true);
-  assert.equal(listFollowups()[0].copyDeleteSource, true);
+  assert.equal(r.copyAfterCopy, "delete");
+  assert.equal(listFollowups()[0].copyAfterCopy, "delete");
   // 下完之前关掉了删源：已经登记的照登记时的办（同转存 / 追更在登记时冻结）
-  replaceTasks([{ ...task, copyToOpenlist: { enabled: true, deleteSource: false } }]);
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true, afterCopy: "keep" } }]);
   pages = [[row({})]];
   await tickFollowups();
-  assert.equal(copyCalls[0]?.deleteSource, true);
+  assert.equal(copyCalls[0]?.afterCopy, "delete");
 
   // 「任务已存在」的只复制回执：产物躺在任务目录外面（/别的目录），不能因为这个任务开着删源就删它
   await __test_resetOffline();
   copyCalls.length = 0;
-  replaceTasks([{ ...task, copyToOpenlist: { enabled: true, deleteSource: true } }]);
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true, afterCopy: "delete" } }]);
   await addOfflineTasks({ urls: "magnet:?xt=urn:btih:dup", taskId: "t1" });
   await stopOfflineWatcher();
   assert.equal(listFollowups()[0].kind, "openlist-copy");
   pages = [[row({ dirId: "5" })]];
   await tickFollowups();
-  assert.equal(copyCalls[0]?.deleteSource, false);
+  assert.equal(copyCalls[0]?.afterCopy, "keep");
 
   // 躺在任务目录里的照删
   await __test_resetOffline();
@@ -485,7 +485,18 @@ test("删不删源在加任务那一刻冻结，之后改设置不影响；115 �
   await stopOfflineWatcher();
   pages = [[row({ dirId: "7" })]];
   await tickFollowups();
-  assert.equal(copyCalls[0]?.deleteSource, true);
+  assert.equal(copyCalls[0]?.afterCopy, "delete");
+
+  // 归档同样在加任务那一刻冻结
+  await __test_resetOffline();
+  copyCalls.length = 0;
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true, afterCopy: "archive" } }]);
+  const archived = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", taskId: "t1", subPath: "S1" });
+  await stopOfflineWatcher();
+  assert.equal(archived.copyAfterCopy, "archive");
+  pages = [[row({})]];
+  await tickFollowups();
+  assert.equal(copyCalls[0]?.afterCopy, "archive");
 });
 
 test("任务开着复制、OpenList 账号却被删了：照常下载，回执不带复制目标，结果里说卡在哪；明说要复制的当场拒绝", async () => {

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { TaskDefinition } from "@openstrm/shared";
 import { deleteTask, insertTask, listTasks, updateTask } from "../../db/repositories/tasks.js";
 import { isTaskRunning, listRunningTaskIds } from "../../services/task/registry.js";
 import { getLatestExecutions } from "../../services/task-history.js";
@@ -40,8 +39,7 @@ export default async function (fastify: FastifyInstance) {
   });
 
   fastify.post("/api/task", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const task: TaskDefinition = { ...parse(taskInputSchema, request.body), id: randomUUID() };
-    insertTask(task);
+    const task = insertTask({ ...parse(taskInputSchema, request.body), id: randomUUID() });
     resyncCron();
     return reply.code(201).send(task);
   });

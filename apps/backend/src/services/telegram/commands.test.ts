@@ -114,7 +114,7 @@ const deps: Partial<CommandDeps> = {
       followup: Boolean(input.taskId) || input.copyToOpenlist === true,
       strmFollowup: Boolean(input.taskId),
       copyDstDir: input.copyToOpenlist === true ? (input.copyDstDir ?? "/local") : null,
-      copyDeleteSource: false,
+      copyAfterCopy: "keep",
       copyBlocked: null,
       results: [{ url: "magnet:?xt=urn:btih:aaa", ok: true, infoHash: "h" }, { url: "magnet:?xt=urn:btih:bbb", ok: false, message: "任务已存在" }] };
   },
@@ -760,7 +760,7 @@ test("云下载回话按实际登记上的回执说：只登记了「下完只�
       calls.push({ fn: "addOffline", args: input });
       return {
         account: "115", dirId: "9", dirPath: "tv", added: 0, failed: 1, invalid: [],
-        followup: true, strmFollowup: false, copyDstDir: "/local/tv", copyDeleteSource: false, copyBlocked: null,
+        followup: true, strmFollowup: false, copyDstDir: "/local/tv", copyAfterCopy: "keep", copyBlocked: null,
         results: [{ url: "magnet:?xt=urn:btih:aaa", ok: false, infoHash: "h", message: "任务已存在" }],
       };
     },

@@ -20,6 +20,7 @@ const rec = (over: Partial<CopyRecord>): CopyRecord => ({
   rootPath: "/tv",
   taskId: "t1",
   trigger: "monitor",
+  afterCopy: "keep",
   addedAt: NOW,
   status: "pending",
   stage: "waiting",
@@ -161,7 +162,7 @@ test("整理把一集挪进作品目录并改名（所在目录没腾空）：�
 });
 
 test("整理把目录里的文件挪走、目录腾空删掉：目录待办记成跳过，挪走的每个文件另起一条跟过去", () => {
-  saveCopies([rec({ id: "dir", srcDir: "/tv", name: "Show.S01.1080p", isDir: true, dstDir: "/local/media", deleteSource: true, holdUntil: NOW + 60_000 })], NOW);
+  saveCopies([rec({ id: "dir", srcDir: "/tv", name: "Show.S01.1080p", isDir: true, dstDir: "/local/media", afterCopy: "delete", holdUntil: NOW + 60_000 })], NOW);
   rewriteCopyPaths(
     "t1",
     "/tv",
@@ -187,7 +188,7 @@ test("整理把目录里的文件挪走、目录腾空删掉：目录待办记�
     assert.equal(c.isDir, false);
     assert.equal(c.srcDir, "/tv/某剧 (2022) [tmdbid=1]/Season 01");
     assert.equal(c.dstDir, "/local/media/某剧 (2022) [tmdbid=1]/Season 01");
-    assert.equal(c.deleteSource, true, "删源的意思跟着拆出来的文件走");
+    assert.equal(c.afterCopy, "delete", "删源的意思跟着拆出来的文件走");
     assert.equal(c.nodeId, undefined, "目录的节点 id 对不上里面的文件，提交时再钉");
     assert.equal(c.holdUntil, NOW + 60_000, "照样压着，等整理那边放行");
   }

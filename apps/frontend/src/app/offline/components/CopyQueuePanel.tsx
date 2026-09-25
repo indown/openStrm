@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, RotateCcw, Trash2 } from "lucide-react";
+import { Loader2, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { AddCopyDialog, AFTER_COPY_LABEL } from "@/components/AddCopyDialog";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -34,8 +35,9 @@ const TRIGGER_LABEL: Record<CopyItem["trigger"], string> = {
 };
 
 /**
- * 「复制到 OpenList」的队列。登记是各个来源做的（云下载 / 转存 / 追更 / 监控），
- * 这里只看进度：失败的能单独重试，不想跟的能去掉。
+ * 「复制到 OpenList」的队列。自动登记是各个来源做的（云下载 / 转存 / 追更 / 监控）；
+ * 「新建复制」是事后补的手动发起（转存时没勾、后来才开了复制）。失败的能单独重试，不想跟的能去掉。
+ * 队列空着、复制也没配好时整块不显示，免得没用这个功能的人看到一块空面板
  */
 export function CopyQueuePanel() {
   const [items, setItems] = useState<CopyItem[] | null>(null);
@@ -44,6 +46,16 @@ export function CopyQueuePanel() {
   const [working, setWorking] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<CopyItem | null>(null);
+  /** 设置页选了 OpenList 账号、至少给一个网盘填了挂载根：队列空着也给「新建复制」的入口 */
+  const [configured, setConfigured] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+
+  useEffect(() => {
+    api.settings
+      .get()
+      .then((s) => setConfigured(Boolean(s.openlistCopy?.account) && Object.values(s.openlistCopy?.mounts ?? {}).some((m) => m?.trim())))
+      .catch(() => {});
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -91,7 +103,7 @@ export function CopyQueuePanel() {
     }
   };
 
-  if (!items || items.length === 0) return null;
+  if (!items || (items.length === 0 && !configured)) return null;
 
   return (
     <section id="copy-queue" className="scroll-mt-20 space-y-3 rounded-xl border bg-card p-4">
@@ -103,7 +115,12 @@ export function CopyQueuePanel() {
           </StatusBadge>
         )}
         {error && <span className="break-all text-xs text-destructive">{error}</span>}
+        <Button variant="outline" size="sm" className="ml-auto" onClick={() => setAddOpen(true)} disabled={!configured} title={configured ? undefined : "先到设置页配好 OpenList 账号和挂载根"}>
+          <Plus className="size-4" />
+          新建复制
+        </Button>
       </div>
+      {items.length === 0 && <p className="text-xs text-muted-foreground">队列是空的。转存、追更、云下载、监控落下的新文件按任务设置自动排进来；网盘上已经有的用「新建复制」补。</p>}
       <ul className="divide-y">
         {items.map((c) => {
           const meta = STATUS_META[c.status];
@@ -117,6 +134,7 @@ export function CopyQueuePanel() {
                   </StatusBadge>
                   <span className="break-all text-sm font-medium">{c.name}</span>
                   <span className="text-xs text-muted-foreground">· {TRIGGER_LABEL[c.trigger]}</span>
+                  {c.afterCopy !== "keep" && <span className="text-xs text-muted-foreground">· 复制后{AFTER_COPY_LABEL[c.afterCopy]}</span>}
                 </div>
                 <p className="break-all text-xs text-muted-foreground">
                   → {c.dstDir}
@@ -145,6 +163,8 @@ export function CopyQueuePanel() {
         })}
       </ul>
       {total > items.length && <p className="text-xs text-muted-foreground">只显示 {items.length} 条（能重试的、还在跑的排在前面），队列里共 {total} 条</p>}
+
+      <AddCopyDialog open={addOpen} onOpenChange={setAddOpen} onQueued={() => void load()} />
 
       <AlertDialog open={dropTarget !== null} onOpenChange={(o) => !o && setDropTarget(null)}>
         <AlertDialogContent>

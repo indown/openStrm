@@ -11,7 +11,7 @@ import { readAppSettings } from "../../db/repositories/settings.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { HttpError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
-import { DUPLICATES_DIR } from "./duplicates.js";
+import { isStagingDir } from "./duplicates.js";
 import { createRun } from "./run.js";
 import { taskAutoMode } from "./settings.js";
 import { releaseCopyHolds } from "../copy/queue.js";
@@ -70,8 +70,8 @@ export function effectiveAutoMode(task: TaskDefinition, forced?: "review" | "aut
 }
 
 export function maybeAutoOrganize(input: AutoOrganizeInput): void {
-  // 重复文件目录是整理自己挪进去的暂存区，扫它只会空跑一轮
-  const paths = input.paths.map((p) => p.replace(/^\/+|\/+$/g, "")).filter((p) => p && p !== DUPLICATES_DIR && !p.startsWith(`${DUPLICATES_DIR}/`));
+  // 重复文件目录、归档目录是暂存区，扫它只会空跑一轮
+  const paths = input.paths.map((p) => p.replace(/^\/+|\/+$/g, "")).filter((p) => p && !isStagingDir(p));
   if (paths.length === 0) return;
   const settings = readAppSettings();
   const mode = effectiveAutoMode(input.task, input.mode, settings);

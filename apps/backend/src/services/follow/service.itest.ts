@@ -206,7 +206,7 @@ test("任务开了「复制到 OpenList」：新集顺手进复制队列；没�
       ],
       "任务目录里的层级原样带过去，来源写成追更",
     );
-    assert.deepEqual(copy, { queued: 2, dstDir: "/local/media", deleteSource: false }, "两组的结果合成一份");
+    assert.deepEqual(copy, { queued: 2, dstDir: "/local/media", afterCopy: "keep", deleteSource: false }, "两组的结果合成一份");
   } finally {
     // 失败也要收拾干净：留着配置和真循环会祸害后面的用例（它们会去连 http://ol.local）
     await __test_resetCopy();

@@ -94,7 +94,7 @@ import { classifyFailure, FAILURE_LABEL, messageOf, OrganizeFailure, retryableIt
 import { idTagFromName, identifyUnit, TmdbClient, type IdEvidence, type KnownId, type TmdbApi } from "./identify.js";
 import { mirrorDelete, mirrorRelocate, mirrorRmdir } from "./mirror.js";
 import { nfoEvidence } from "./nfo.js";
-import { duplicatePathFor, underDuplicates } from "./duplicates.js";
+import { duplicatePathFor, isStagingDir } from "./duplicates.js";
 import { finalizeItems, planUnit, type PlannedItem, type ScopeRoot, type UnitPlan } from "./plan.js";
 import { parseRules } from "./rules.js";
 import { resolveOrganizeSettings, type ResolvedOrganizeSettings } from "./settings.js";
@@ -808,8 +808,8 @@ async function preview(job: Job, runId: string): Promise<void> {
 
   const rules = parseRules(org.rules).rules;
   const scopes = unitScopesOf(run);
-  // 重复文件目录是用户自己处理的暂存区（冲突项挪进去的），不再当作品扫；冲突检测还是要知道里面有什么，所以只挡 buildUnits
-  const units = buildUnits(walked.entries.filter((e) => !underDuplicates(e.path)), {
+  // 重复文件目录（冲突项挪进去的）、归档目录（复制后挪进去的）是暂存区，不再当作品扫；冲突检测还是要知道里面有什么，所以只挡 buildUnits
+  const units = buildUnits(walked.entries.filter((e) => !isStagingDir(e.path)), {
     scopePath: run.scopePath,
     scopes,
     taskRootName: baseOf(normalizePath(task.originPath)),

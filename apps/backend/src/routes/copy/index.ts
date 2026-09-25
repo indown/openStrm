@@ -1,18 +1,30 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { getTask } from "../../db/repositories/tasks.js";
+import { HttpError } from "../../lib/http-error.js";
 import { canRetryCopy, dropCopy, getCopyWatcherStatus, listCopies, retryCopy, type CopyRecord } from "../../services/copy/service.js";
+import { enqueueManualCopy, MANUAL_PATHS_MAX } from "../../services/copy/manual.js";
+import { requireAgentScope } from "../../services/agent/access.js";
 import { parse } from "../../lib/validate.js";
 
 const idParams = z.object({ id: z.string().min(1) });
+const addBody = z.object({
+  taskId: z.string().min(1),
+  /** 相对任务网盘目录 */
+  paths: z.array(z.string().min(1).max(1000)).min(1).max(MANUAL_PATHS_MAX),
+  dstDir: z.string().max(1000).optional(),
+  afterCopy: z.enum(["keep", "delete", "archive"]).optional(),
+});
 
 /** 列表里的先后：能重试的 → 还在跑的 → 其余 */
 const rank = (c: CopyRecord) => (canRetryCopy(c) ? 0 : c.status === "pending" ? 1 : 2);
 const listQuery = z.object({ limit: z.coerce.number().int().min(1).max(500).optional() });
 
 /**
- * 「复制到 OpenList」的队列：看进度、失败了重排、不想跟了就删掉。
- * 登记是各个来源（云下载 / 转存 / 追更 / 监控）自己做的，这里没有「新建」。
- * 看和重试对智能体令牌开放（和 copy_list / copy_retry 同一组、同一档）；「不跟了」只认会话，智能体用不着
+ * 「复制到 OpenList」的队列：看进度、手动发起、失败了重排、不想跟了就删掉。
+ * 自动登记是各个来源（云下载 / 转存 / 追更 / 监控）自己做的；POST 是事后补的手动发起（见 services/copy/manual.ts）。
+ * 看、发起、重试对智能体令牌开放（和 copy_list / copy_add / copy_retry 同一组、同一档；发起时要删源得有「删除」档）；
+ * 「不跟了」只认会话，智能体用不着
  */
 export default async function (fastify: FastifyInstance) {
   fastify.get("/api/copy", { preHandler: [fastify.authenticate], config: { agentScope: "read", agentToolset: "transfer" } }, async (request) => {
@@ -25,6 +37,15 @@ export default async function (fastify: FastifyInstance) {
       // 队列已经读出来了，别让状态再读一遍
       watcher: getCopyWatcherStatus(items),
     };
+  });
+
+  fastify.post("/api/copy", { preHandler: [fastify.authenticate], config: { agentScope: "write", agentToolset: "transfer" } }, async (request) => {
+    const body = parse(addBody, request.body);
+    // 复制完删源是删东西：令牌得有「删除」档（会话不受限）
+    if (body.afterCopy === "delete") requireAgentScope(request, "danger");
+    const task = getTask(body.taskId);
+    if (!task) throw new HttpError(404, `任务不存在：${body.taskId}`);
+    return enqueueManualCopy({ task, paths: body.paths, dstDir: body.dstDir, afterCopy: body.afterCopy });
   });
 
   fastify.post("/api/copy/:id/retry", { preHandler: [fastify.authenticate], config: { agentScope: "write", agentToolset: "transfer" } }, async (request) => {

@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { LRUCache } from "lru-cache";
 import { z } from "zod";
-import type { AgentToken, TaskDefinition } from "@openstrm/shared";
+import type { AgentToken, CopyAfterCopy, TaskDefinition } from "@openstrm/shared";
 import { getAccount, listAccounts } from "../../../db/repositories/accounts.js";
 import { readAppSettings } from "../../../db/repositories/settings.js";
 import { normalizeOfflineUrls } from "../../cloud-115/offline.js";
@@ -31,7 +31,8 @@ import { JOB_RETENTION_MS, latestJob, startJob, viewJob, waitForJob, type Job, t
 import { resolveTask, taskBrief } from "../resolve.js";
 import { MAX_WAIT_SECONDS } from "./core.js";
 import { organizeUiPath } from "./organize-view.js";
-import { copyAlwaysOn, copyNotReady, copyOutcomeView, copyProblemFor } from "./copy.js";
+import { afterCopyNote, copyAlwaysOn, copyNotReady, copyOutcomeView, copyProblemFor } from "./copy.js";
+import { AFTER_COPY_LABEL } from "../../../lib/after-copy.js";
 
 /* ------------------------------- 小缓存 ------------------------------- */
 
@@ -271,7 +272,8 @@ interface SaveMeta {
   /** 这次会不会交给复制队列（明说要复制，或任务开着复制） */
   copy: boolean;
   /** 会的话，复制成功后删不删网盘上的源文件（只看任务的「复制后删源」） */
-  copyDeletes: boolean;
+  /** 发起时按任务设置定下的、复制成功后源文件的去向 */
+  copyAfter: CopyAfterCopy;
   /**
    * 这次转存的条目。不给 itemIds 的整层转存，去重键是「这一层的全部」，再来一次时分享里可能已经多了东西：
    * 补整理、补复制只能认上次真正存进来的这些，不能拿分享现在的样子去对
@@ -311,12 +313,12 @@ function previousSave(key: string): PreviousSave | undefined {
 function prevCopy(prev: PreviousSave): Record<string, unknown> | undefined {
   if (prev.job.status === "running") {
     if (!prev.meta.copy) return undefined;
+    const after = afterCopyNote(prev.meta.copyAfter);
     return {
       pending: true,
-      deleteSource: prev.meta.copyDeletes,
-      note: prev.meta.copyDeletes
-        ? "进行中的那次转存完会排进复制队列，复制成功后会删掉网盘上的源文件和本地对应的 strm。"
-        : "进行中的那次转存完会排进复制队列。",
+      afterCopy: prev.meta.copyAfter,
+      deleteSource: prev.meta.copyAfter === "delete",
+      note: after ? `进行中的那次转存完会排进复制队列，${after}。` : "进行中的那次转存完会排进复制队列。",
     };
   }
   const copy = (prev.view.result as { copy?: unknown } | undefined)?.copy ?? prev.view.failure?.copy;
@@ -431,7 +433,7 @@ async function ensureSubDir(provider: DriveProvider, base: string, rel: string):
 export const shareSaveTool = defineTool({
   name: "share_save",
   title: "转存分享",
-  description: `把 115 / 夸克分享里的条目转存到某个同步任务的网盘目录（可带子目录），然后为它们生成 strm。**这会往网盘里写东西，调用前先把要转存什么、存到哪告诉用户，得到同意再调用。** 不给 itemIds 就转存 dirId 这一层（默认分享的根）下的全部条目。分享和任务必须是同一家网盘。同样的请求在进行中、或结束不到 10 分钟时不会再转存一次（直接返回上次的作业；这次多要了 follow、organize 或 copy 就只补这几样，补的只是上次真正转存进来的那些条目），确实要再存一份传 force: true；结果里有 received: true 的失败表示条目已经进了网盘、只是 strm 没生成好，这时别再转存，用 sync_start 补 strm。${SAVE_INLINE_WAIT_MS / 1000} 秒内做完就直接返回结果，做不完返回 jobId，用 job_status 等（结果保留 ${JOB_RETENTION_MS / 60000} 分钟）。follow 为 true 时顺手建追更订阅，之后分享里有新增会自动转存。copy 管复不复制到 OpenList（由 OpenList 把转存进来的条目复制到另一个存储，比如本地磁盘）：不传按任务的设置（tasks_list 里任务的 copyToOpenlist），true 这次也复制（任务没开也复制）；任务开着复制的没法这次不复制（和界面一样，网盘监控也会把新文件交给复制），传 false 会被拒。删不删网盘上的源文件只看任务设置：任务的 copyToOpenlist.deleteSource 为 true 时，复制成功后会删掉网盘上的源文件和本地对应的 strm，要事先告诉用户。结果里的 copy 说排没排上、删不删源。`,
+  description: `把 115 / 夸克分享里的条目转存到某个同步任务的网盘目录（可带子目录），然后为它们生成 strm。**这会往网盘里写东西，调用前先把要转存什么、存到哪告诉用户，得到同意再调用。** 不给 itemIds 就转存 dirId 这一层（默认分享的根）下的全部条目。分享和任务必须是同一家网盘。同样的请求在进行中、或结束不到 10 分钟时不会再转存一次（直接返回上次的作业；这次多要了 follow、organize 或 copy 就只补这几样，补的只是上次真正转存进来的那些条目），确实要再存一份传 force: true；结果里有 received: true 的失败表示条目已经进了网盘、只是 strm 没生成好，这时别再转存，用 sync_start 补 strm。${SAVE_INLINE_WAIT_MS / 1000} 秒内做完就直接返回结果，做不完返回 jobId，用 job_status 等（结果保留 ${JOB_RETENTION_MS / 60000} 分钟）。follow 为 true 时顺手建追更订阅，之后分享里有新增会自动转存。copy 管复不复制到 OpenList（由 OpenList 把转存进来的条目复制到另一个存储，比如本地磁盘）：不传按任务的设置（tasks_list 里任务的 copyToOpenlist），true 这次也复制（任务没开也复制）；任务开着复制的没法这次不复制（和界面一样，网盘监控也会把新文件交给复制），传 false 会被拒。复制成功后源文件的去向只看任务设置（tasks_list 里 copyToOpenlist.afterCopy）：delete 会删掉网盘上的源文件和本地对应的 strm，archive 会把源文件挪进任务目录下的「归档」目录，都要事先告诉用户。结果里的 copy 说排没排上、源文件的去向。`,
   scope: "write",
   toolset: "transfer",
   annotations: { readOnly: false, destructive: false, idempotent: false, openWorld: true },
@@ -614,7 +616,7 @@ export const shareSaveTool = defineTool({
       follow: args.follow === true,
       organize: args.organize === false ? "off" : effectiveAutoMode(task, forcedOrganizeMode(task, args.organize)),
       copy: copyOpts.enabled,
-      copyDeletes: copyOpts.deleteSource,
+      copyAfter: copyOpts.afterCopy,
       items: items.map((i) => ({ name: i.name, isDir: i.isDir })),
     };
     const job = startJob(
@@ -695,7 +697,7 @@ const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1
 export const offlineAddTool = defineTool({
   name: "offline_add",
   title: "添加 115 云下载",
-  description: `把磁力、ed2k、http(s)、ftp 链接交给 115 在云端下载（每行一条，40 位 info hash 也行；去掉重复和认不出的之后最多 ${OFFLINE_URLS_MAX} 条）。**这会往网盘里加东西，调用前先告诉用户要下什么、下到哪，得到同意再调用。** 给 task 就下到这个任务的网盘目录（可带子目录），下完自动为产物生成 strm；不给就下到 115 默认目录，不生成 strm。只支持 115 账号。下载进度用 offline_list 看。copy 管下完复不复制到 OpenList（由 OpenList 把产物复制到另一个存储，比如本地磁盘）：true 复制，给了 task 按任务目录的层级摆，不给 task 就平铺到目标目录；不填按任务的设置（不给 task 就不复制）；任务开着复制的没法这次不复制（和界面一样），传 false 会被拒。copyDstDir 只能是任务上或设置页填的目标目录、或者它们下面的目录。删不删网盘上的源文件在加任务这一刻按任务设置定下来：任务开着「复制后删源」的（tasks_list 里 copyToOpenlist.deleteSource），复制成功后会删掉任务目录里的源文件，要事先告诉用户。`,
+  description: `把磁力、ed2k、http(s)、ftp 链接交给 115 在云端下载（每行一条，40 位 info hash 也行；去掉重复和认不出的之后最多 ${OFFLINE_URLS_MAX} 条）。**这会往网盘里加东西，调用前先告诉用户要下什么、下到哪，得到同意再调用。** 给 task 就下到这个任务的网盘目录（可带子目录），下完自动为产物生成 strm；不给就下到 115 默认目录，不生成 strm。只支持 115 账号。下载进度用 offline_list 看。copy 管下完复不复制到 OpenList（由 OpenList 把产物复制到另一个存储，比如本地磁盘）：true 复制，给了 task 按任务目录的层级摆，不给 task 就平铺到目标目录；不填按任务的设置（不给 task 就不复制）；任务开着复制的没法这次不复制（和界面一样），传 false 会被拒。copyDstDir 只能是任务上或设置页填的目标目录、或者它们下面的目录。复制成功后源文件的去向在加任务这一刻按任务设置定下来（tasks_list 里 copyToOpenlist.afterCopy）：delete 会删掉任务目录里的源文件，archive 会把它挪进任务目录下的「归档」，都要事先告诉用户。`,
   scope: "write",
   toolset: "transfer",
   annotations: { readOnly: false, destructive: false, idempotent: false, openWorld: true },
@@ -790,17 +792,19 @@ export const offlineAddTool = defineTool({
  * 任务开着复制却复制不了（设置没配好、OpenList 账号不可用）的也说一声。不复制就不带
  */
 function offlineCopyView(
-  res: Pick<AddOfflineResponse, "copyDstDir" | "copyDeleteSource" | "copyBlocked">,
+  res: Pick<AddOfflineResponse, "copyDstDir" | "copyAfterCopy" | "copyBlocked">,
   task: TaskDefinition | undefined,
 ): Record<string, unknown> | undefined {
   if (res.copyDstDir) {
-    // 115 上原本就有的（「任务已存在」）可能不在任务目录里：那种平铺复制、也不删
+    // 115 上原本就有的（「任务已存在」）可能不在任务目录里：那种平铺复制、源文件也不动
     const layout = task ? "（在任务目录里的按层级摆）" : "（平铺）";
+    const after = afterCopyNote(res.copyAfterCopy);
     return {
       dstDir: res.copyDstDir,
-      deleteSource: res.copyDeleteSource,
-      note: res.copyDeleteSource
-        ? `下完排进复制队列，复制到 ${res.copyDstDir} 下${layout}；任务开着「复制后删源」，复制成功后会删掉任务目录里的源文件，本地对应的 strm 也跟着删。`
+      afterCopy: res.copyAfterCopy,
+      deleteSource: res.copyAfterCopy === "delete",
+      note: after
+        ? `下完排进复制队列，复制到 ${res.copyDstDir} 下${layout}；任务设了「复制后${AFTER_COPY_LABEL[res.copyAfterCopy]}」，${after}（只动任务目录里的，115 上原本就有、不在任务目录里的不动）。`
         : `下完排进复制队列，复制到 ${res.copyDstDir} 下${layout}。`,
     };
   }

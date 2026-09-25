@@ -422,7 +422,13 @@ function HomeContent() {
             <Badge
               variant="secondary"
               className="shrink-0 px-1.5 py-0"
-              title={`新文件会让 OpenList 复制到 ${task.copyToOpenlist.dstDir || "设置页的默认目标目录"}${task.copyToOpenlist.deleteSource ? "，复制完删掉网盘上那份" : ""}`}
+              title={`新文件会让 OpenList 复制到 ${task.copyToOpenlist.dstDir || "设置页的默认目标目录"}${
+                task.copyToOpenlist.afterCopy === "archive"
+                  ? "，复制完把网盘上那份挪进任务目录下的「归档」"
+                  : task.copyToOpenlist.afterCopy === "delete" || (!task.copyToOpenlist.afterCopy && task.copyToOpenlist.deleteSource)
+                    ? "，复制完删掉网盘上那份"
+                    : ""
+              }`}
             >
               复制
             </Badge>

@@ -23,7 +23,7 @@ import {
 import { followCheckTool, followDeleteTool, followListTool, followUpdateTool } from "./follow.js";
 import { strmCheckTool, strmDeleteTool, strmFixTool, strmRebuildTool, strmSearchTool, strmVerifyTool } from "./strm.js";
 import { resourceSearchTool } from "./resource.js";
-import { copyListTool, copyRetryTool } from "./copy.js";
+import { copyAddTool, copyListTool, copyRetryTool } from "./copy.js";
 
 export const AGENT_TOOLS: readonly ToolDef[] = [
   overviewTool,
@@ -60,6 +60,7 @@ export const AGENT_TOOLS: readonly ToolDef[] = [
   strmDeleteTool,
   resourceSearchTool,
   copyListTool,
+  copyAddTool,
   copyRetryTool,
 ];
 

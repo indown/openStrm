@@ -8,7 +8,8 @@
  * 这里的路径归一**只管斜杠**：不能用 drive/types.ts 的 normalizePath，
  * 它会把每一段首尾的空格削掉，而网盘上真有「Season 1 」这种带尾空格的目录名（见 test/fake-drive.ts）。
  */
-import type { AccountOpenlist, AppSettings, TaskDefinition } from "@openstrm/shared";
+import type { AccountOpenlist, AppSettings, CopyAfterCopy, TaskDefinition } from "@openstrm/shared";
+import { afterCopyOf } from "../../lib/after-copy.js";
 import { getAccount, listAccounts } from "../../db/repositories/accounts.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { messageOf } from "../../lib/errors.js";
@@ -157,7 +158,8 @@ export interface CopyOptions {
   enabled: boolean;
   /** 这一次指定的、或任务上填的目标目录；都没有用设置页的默认目标目录 */
   dstDir?: string;
-  deleteSource: boolean;
+  /** 复制成功后源文件的去向 */
+  afterCopy: CopyAfterCopy;
   /** 要复制却复制不了：卡在哪 */
   blocked?: string;
 }
@@ -167,8 +169,8 @@ export interface CopyOptions {
  * 全局没配好 / 这个账号没填挂载根一律当关——同「没配 TMDB key 就不自动整理」的路子。
  * 要复制却因此关掉的，blocked 里带着卡在哪：调用方记一笔，不然用户只看到「开着复制，什么都没发生」。
  *
- * **删源只认任务开关**：一次性勾的那个复选框上只写着「复制」，
- * 不能让它顺带把网盘上的源文件删了（任务上留着的旧 deleteSource 也不行）。
+ * **源文件的去向只认任务开关**：一次性勾的那个复选框上只写着「复制」，
+ * 不能让它顺带把网盘上的源文件删了或挪了（任务上留着的旧设置也不行）。
  */
 export function copyOptionsFor(
   task: Pick<TaskDefinition, "account" | "copyToOpenlist"> | null,
@@ -178,14 +180,14 @@ export function copyOptionsFor(
   dstDir?: string,
 ): CopyOptions {
   const account = task?.account;
-  const off = { enabled: false, deleteSource: false };
+  const off: CopyOptions = { enabled: false, afterCopy: "keep" };
   const cfg = task?.copyToOpenlist;
   const byTask = cfg?.enabled === true;
   if (!account || !(forced ?? byTask)) return off;
   const dst = normConfigDir(dstDir) || cfg?.dstDir;
   const gap = copySettingsGap(account, settings, dst);
   if (gap) return { ...off, blocked: gap };
-  return { enabled: true, dstDir: dst, deleteSource: byTask && cfg?.deleteSource === true };
+  return { enabled: true, dstDir: dst, afterCopy: byTask ? afterCopyOf(cfg) : "keep" };
 }
 
 /**

@@ -19,13 +19,23 @@ export interface TaskDefinition {
   copyToOpenlist?: TaskCopySettings;
 }
 
+/**
+ * 复制成功后网盘上那份怎么办：
+ *   keep     不动（Emby 里会同时有云上的 strm 和本地那份）
+ *   delete   删掉（115 / 夸克进回收站，过期清空，不可逆）
+ *   archive  挪进任务目录下的「归档」目录，原来的层级留着；不进媒体库，本地 strm 跟着删，想恢复挪回去就行
+ */
+export type CopyAfterCopy = "keep" | "delete" | "archive";
+
 /** 任务级「复制到 OpenList」设置 */
 export interface TaskCopySettings {
   /** 开着才复制；默认关 */
   enabled?: boolean;
   /** 复制到哪（OpenList 完整路径）；不填用设置页的默认目标目录 */
   dstDir?: string;
-  /** 复制成功后把网盘上那份删掉（搬运）。默认关，不可逆 */
+  /** 复制成功后源文件的去向，默认 keep */
+  afterCopy?: CopyAfterCopy;
+  /** 旧字段，等于 afterCopy: "delete"。读出时归一成 afterCopy，新数据不再写它 */
   deleteSource?: boolean;
 }
 

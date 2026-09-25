@@ -1,34 +1,50 @@
 /**
- * 「复制到 OpenList」队列的路由：看队列、重试、不跟了。
+ * 「复制到 OpenList」队列的路由：看队列、手动发起、重试、不跟了。
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/routes/copy/copy.itest.ts
  */
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import Fastify, { type FastifyInstance } from "fastify";
-import type { AccountInfo, AppSettings } from "@openstrm/shared";
+import type { AccountInfo, AppSettings, TaskDefinition } from "@openstrm/shared";
 import { registerErrorHandling } from "../../plugins/error-handler.js";
 import { authPlugin } from "../../plugins/auth.js";
 import copyRoute from "./index.js";
 import { DEFAULT_AUTH } from "../../db/defaults.js";
 import { writeAuthPassword } from "../../db/repositories/auth.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
+import { createApiToken, deleteAllApiTokens } from "../../db/repositories/api-tokens.js";
+import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
+import { setDriveProviderFactory } from "../../services/drive/registry.js";
+import { FakeDrive } from "../../test/fake-drive.js";
 import { patchAppSettings, readAppSettings } from "../../db/repositories/settings.js";
 import { __test_resetCopy, enqueueCopy, listCopies, setCopyServiceDeps, type CopyRecord } from "../../services/copy/service.js";
 import { saveCopies } from "../../services/copy/queue.js";
 
 let app: FastifyInstance;
 let auth: Record<string, string>;
-let baseline: { accounts: AccountInfo[]; openlistCopy: AppSettings["openlistCopy"] };
+let baseline: { accounts: AccountInfo[]; tasks: TaskDefinition[]; openlistCopy: AppSettings["openlistCopy"]; agent: AppSettings["agent"] };
 
 const drive: AccountInfo = { accountType: "115", name: "acc", cookie: "c" };
 const olAccount: AccountInfo = { accountType: "openlist", name: "ol", account: "u", password: "p", url: "http://ol.local" };
+const task: TaskDefinition = { id: "t1", account: "acc", accountType: "115", originPath: "tv", targetPath: "copy-itest/tv", strmPrefix: "/mnt" };
 
-const call = (method: "GET" | "POST" | "DELETE", url: string) => app.inject({ method, url, headers: auth });
+const call = (method: "GET" | "POST" | "DELETE", url: string, body?: Record<string, unknown>, headers: Record<string, string> = auth) =>
+  app.inject({ method, url, headers, ...(body ? { payload: body } : {}) });
 
 before(async () => {
-  baseline = { accounts: listAccounts(), openlistCopy: readAppSettings().openlistCopy };
+  baseline = { accounts: listAccounts(), tasks: listTasks(), openlistCopy: readAppSettings().openlistCopy, agent: readAppSettings().agent };
   replaceAccounts([drive, olAccount]);
+  replaceTasks([task]);
+  // 令牌要能用得先开智能体接入
+  patchAppSettings({ agent: { ...(readAppSettings().agent ?? {}), enabled: true } });
+  const fake = new FakeDrive("115", drive);
+  fake.tree.addFile("/tv/Show/E01.mkv");
+  setDriveProviderFactory((a) => (a.name === "acc" ? fake : null));
+  setCopyServiceDeps({
+    openlist: { listNames: async () => [], mkdir: async () => {}, copy: async () => [], copyTasks: async () => ({ undone: [], done: [] }) },
+    notify: async () => {},
+  });
   patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local/media", mounts: { acc: "/115" } } });
   await writeAuthPassword("copy-itest-pw");
 
@@ -47,10 +63,39 @@ beforeEach(async () => {
 after(async () => {
   await __test_resetCopy();
   setCopyServiceDeps(null);
+  setDriveProviderFactory(null);
+  deleteAllApiTokens();
   await app.close();
   await writeAuthPassword(DEFAULT_AUTH.password);
   replaceAccounts(baseline.accounts);
-  patchAppSettings({ openlistCopy: baseline.openlistCopy });
+  replaceTasks(baseline.tasks);
+  patchAppSettings({ openlistCopy: baseline.openlistCopy, agent: baseline.agent });
+});
+
+test("POST /api/copy：手动发起；复制后删源要令牌有「删除」档，会话不受限；任务不存在 404，参数不对 400", async () => {
+  const ok = await call("POST", "/api/copy", { taskId: "t1", paths: ["Show"] });
+  assert.equal(ok.statusCode, 200, ok.body);
+  const body = ok.json() as { queued: number; afterCopy: string; items: Array<{ path: string; outcome: string }> };
+  assert.equal(body.queued, 1);
+  assert.equal(body.afterCopy, "keep");
+  assert.deepEqual(body.items.map((i) => [i.path, i.outcome]), [["Show", "queued"]]);
+  assert.equal(listCopies()[0].trigger, "manual");
+
+  const write = createApiToken({ name: "写", scopes: ["read", "run", "write"], toolsets: ["transfer"], expiresAt: null }).token;
+  const danger = createApiToken({ name: "删", scopes: ["read", "run", "write", "danger"], toolsets: ["transfer"], expiresAt: null }).token;
+  const denied = await call("POST", "/api/copy", { taskId: "t1", paths: ["Show/E01.mkv"], afterCopy: "delete" }, { authorization: `Bearer ${write}` });
+  assert.equal(denied.statusCode, 403);
+  assert.equal(denied.json().code, "INSUFFICIENT_SCOPE");
+  const allowed = await call("POST", "/api/copy", { taskId: "t1", paths: ["Show/E01.mkv"], afterCopy: "delete" }, { authorization: `Bearer ${danger}` });
+  assert.equal(allowed.statusCode, 200, allowed.body);
+  assert.equal(allowed.json().afterCopy, "delete");
+  const viaSession = await call("POST", "/api/copy", { taskId: "t1", paths: ["Show/E01.mkv"], afterCopy: "archive" });
+  assert.equal(viaSession.statusCode, 200, viaSession.body);
+  assert.equal(viaSession.json().items[0].outcome, "duplicate", "同一个文件已经排着");
+
+  assert.equal((await call("POST", "/api/copy", { taskId: "没有", paths: ["Show"] })).statusCode, 404);
+  assert.equal((await call("POST", "/api/copy", { taskId: "t1", paths: [] })).statusCode, 400);
+  assert.equal((await call("POST", "/api/copy", { taskId: "t1", paths: ["Show"], afterCopy: "burn" })).statusCode, 400);
 });
 
 test("没有 token 一律 401", async () => {
@@ -93,7 +138,7 @@ test("DELETE /api/copy/:id：从队列里去掉", async () => {
 test("GET /api/copy：每条带 canRetry；能重试的排在前面、再是还在跑的，老的失败不会被新的成功挤出去", async () => {
   const now = Date.now();
   const rec = (id: string, over: Partial<CopyRecord>): CopyRecord => ({
-    id, account: "acc", srcDir: "/tv", name: `${id}.mkv`, dstDir: "/local/media", dstBase: "/local/media", taskId: "", trigger: "monitor",
+    id, account: "acc", srcDir: "/tv", name: `${id}.mkv`, dstDir: "/local/media", dstBase: "/local/media", taskId: "", trigger: "monitor", afterCopy: "keep",
     addedAt: now, status: "done", stage: "waiting", detail: "", attempts: 0, waits: 0, misses: 0, doneAt: now, ...over,
   });
   saveCopies([

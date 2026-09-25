@@ -6,7 +6,12 @@ import { parse } from "../../lib/validate.js";
 import { driveErrorToHttp } from "../../services/drive/errors.js";
 import { providerFor } from "../../services/drive/registry.js";
 
-const bodySchema = z.object({ account: z.string().min(1, "account is required"), path: z.string().default("") });
+const bodySchema = z.object({
+  account: z.string().min(1, "account is required"),
+  path: z.string().default(""),
+  /** 连文件一起列（手动发起复制时要能勾单个文件）；默认只有目录 */
+  withFiles: z.boolean().optional(),
+});
 
 /**
  * 新建任务时浏览远程目录：按账号类型分派给对应的 Provider，前端按名字逐层拼路径来导航，id 只当 key。
@@ -14,7 +19,7 @@ const bodySchema = z.object({ account: z.string().min(1, "account is required"),
  */
 export default async function (fastify: FastifyInstance) {
   fastify.post("/api/directory/remote/list", { preHandler: [fastify.authenticate], config: { agentScope: "read", agentToolset: "transfer" } }, async (request) => {
-    const { account, path } = parse(bodySchema, request.body);
+    const { account, path, withFiles } = parse(bodySchema, request.body);
 
     const accountInfo = getAccount(account);
     if (!accountInfo) throw new HttpError(404, `account not found: ${account}`);
@@ -28,10 +33,12 @@ export default async function (fastify: FastifyInstance) {
         if (!node.isDir) throw new HttpError(400, `不是目录: ${path}`);
         dirId = node.id;
       }
-      // 文件不进目录树
-      return (await provider.listDir(dirId))
-        .filter((e) => e.isDir)
-        .map((e) => ({ name: e.name, id: e.id, isDir: true, hasChildren: true }));
+      // 默认文件不进目录树；要文件的排在目录后面
+      const entries = await provider.listDir(dirId);
+      return [
+        ...entries.filter((e) => e.isDir).map((e) => ({ name: e.name, id: e.id, isDir: true, hasChildren: true })),
+        ...(withFiles ? entries.filter((e) => !e.isDir).map((e) => ({ name: e.name, id: e.id, isDir: false, hasChildren: false, size: e.size })) : []),
+      ];
     } catch (err) {
       throw driveErrorToHttp(err, "列目录失败");
     }

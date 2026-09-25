@@ -1236,6 +1236,54 @@
     }
   },
   {
+    "name": "copy_add",
+    "scope": "write",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": false,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "paths": {
+          "minItems": 1,
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "dstDir": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "afterCopy": {
+          "type": "string",
+          "enum": [
+            "keep",
+            "delete",
+            "archive"
+          ]
+        }
+      },
+      "required": [
+        "task",
+        "paths"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "copy_retry",
     "scope": "write",
     "toolset": "transfer",

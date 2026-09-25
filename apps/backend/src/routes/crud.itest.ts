@@ -237,7 +237,8 @@ test("POST/PUT /api/task：任务级「复制到 OpenList」原样存取，改�
   });
   assert.equal(created.statusCode, 201);
   const id = created.json().id;
-  assert.deepEqual(created.json().copyToOpenlist, { enabled: true, dstDir: "/local/media", deleteSource: true });
+  // 老字段 deleteSource 读写时归一成 afterCopy
+  assert.deepEqual(created.json().copyToOpenlist, { enabled: true, dstDir: "/local/media", afterCopy: "delete" });
 
   // 浅合并：整块替换，没带的字段跟着没了（同 organize）
   const put = await call("PUT", "/api/task", { id, copyToOpenlist: { enabled: false } });

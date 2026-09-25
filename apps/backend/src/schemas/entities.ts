@@ -57,6 +57,8 @@ export const taskInputSchema = z.looseObject({
     .object({
       enabled: z.boolean().optional(),
       dstDir: z.string().optional(),
+      afterCopy: z.enum(["keep", "delete", "archive"]).optional(),
+      // 旧字段：老请求还可能带，仓库层读写时归一成 afterCopy
       deleteSource: z.boolean().optional(),
     })
     .optional(),

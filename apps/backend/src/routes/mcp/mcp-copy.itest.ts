@@ -60,7 +60,7 @@ const movies: TaskDefinition = {
   originPath: "movies",
   targetPath: "mcp-copy/movies",
   strmPrefix: "/mnt/pan",
-  copyToOpenlist: { enabled: true, dstDir: "/local/movies", deleteSource: true },
+  copyToOpenlist: { enabled: true, dstDir: "/local/movies", afterCopy: "delete" },
 };
 /** 开着自动整理（把握大的直接执行），没开复制 */
 const anime: TaskDefinition = {
@@ -234,6 +234,7 @@ function record(over: Partial<CopyRecord>): CopyRecord {
     srcDir: "/movies",
     name: "x.mkv",
     dstDir: "/local/movies",
+    afterCopy: "keep",
     dstBase: "/local/movies",
     rootPath: "/movies",
     taskId: "c-movies",
@@ -291,7 +292,7 @@ test("转存：任务开着复制后删源 → 结果如实说会删源；没开
     for (const r of rows) {
       assert.equal(r.trigger, "share");
       assert.equal(r.taskId, "c-movies");
-      assert.equal(r.deleteSource, true);
+      assert.equal(r.afterCopy, "delete");
       assert.equal(r.dstDir, "/local/movies");
     }
 
@@ -310,7 +311,7 @@ test("转存：任务开着复制后删源 → 结果如实说会删源；没开
     assert.equal(forced.data.copy.deleteSource, false, "任务没开删源就不删");
     rows = listCopies();
     const y = rows.find((r) => r.name === "Y.mkv")!;
-    assert.equal(y.deleteSource, false);
+    assert.equal(y.afterCopy, "keep");
     assert.equal(y.taskId, "c-tv");
 
     // 没开复制的任务：copy: false 和不传一样，都不复制
@@ -421,7 +422,7 @@ test("转存去重：上次交给了自动整理（把握大的直接执行）�
 
 test("转存：同一个文件已经排着一条要删源的，这次没再排也如实说会删源；网盘监控先排了不删源的那条，整条目转存把删源补上", async () => {
   // 监控先登记了 E01（监控一律不删源）；整条目转存带着任务的「复制后删源」来了
-  enqueueCopy({ account: "a", sources: [{ path: "/movies/E01.mkv", nodeId: "n-e01" }], rootPath: "movies", taskId: "c-movies", trigger: "monitor", deleteSource: false, dstDir: "/local/movies" });
+  enqueueCopy({ account: "a", sources: [{ path: "/movies/E01.mkv", nodeId: "n-e01" }], rootPath: "movies", taskId: "c-movies", trigger: "monitor", afterCopy: "keep", dstDir: "/local/movies" });
   await stopCopyWatcher();
   const client = await connect(dailyToken);
   try {
@@ -431,11 +432,11 @@ test("转存：同一个文件已经排着一条要删源的，这次没再排�
     assert.equal(saved.data.copy.deleteSource, true);
     const e01 = listCopies().find((r) => r.name === "E01.mkv")!;
     assert.equal(e01.trigger, "monitor");
-    assert.equal(e01.deleteSource, true, "删源补上了，不因为谁先登记而丢");
+    assert.equal(e01.afterCopy, "delete", "删源补上了，不因为谁先登记而丢");
     assert.equal(e01.nodeId, "n-e01");
 
     // 排着的那条要删源，这次（没开删源的任务上明说要复制）没再排：删不删源照排着的那条说
-    enqueueCopy({ account: "a", sources: [{ path: "/tv/F.mkv", nodeId: "n-f" }], rootPath: "tv", taskId: "c-tv", trigger: "share", deleteSource: true });
+    enqueueCopy({ account: "a", sources: [{ path: "/tv/F.mkv", nodeId: "n-f" }], rootPath: "tv", taskId: "c-tv", trigger: "share", afterCopy: "delete" });
     await stopCopyWatcher();
     const dup = await call(client, "share_save", { link: defineShare("cpe2", ["/F.mkv"]), task: "tv", copy: true });
     assert.equal(dup.data.copy.queued, 0, JSON.stringify(dup.data));
@@ -500,7 +501,7 @@ test("云下载：不给 task 也能下完复制（平铺）、copyDstDir 跟着
     let [f] = listFollowups();
     assert.equal(f.kind, "openlist-copy");
     assert.equal(f.copyDstDir, "/local/media");
-    assert.equal(f.copyDeleteSource, false);
+    assert.equal(f.copyAfterCopy, "keep");
     assert.equal(f.taskId, "");
 
     const elsewhere = await call(client, "offline_add", { urls: MAGNET, copy: true, copyDstDir: " /local/media/别处/ " });
@@ -512,11 +513,12 @@ test("云下载：不给 task 也能下完复制（平铺）、copyDstDir 跟着
     assert.equal(byTask.data.strmAfterDownload, true);
     assert.equal(byTask.data.copy.dstDir, "/local/movies");
     assert.equal(byTask.data.copy.deleteSource, true, "按任务的「复制后删源」说");
-    assert.match(byTask.data.copy.note, /删掉任务目录里的源文件/);
+    assert.equal(byTask.data.copy.afterCopy, "delete");
+    assert.match(byTask.data.copy.note, /删掉网盘上的源文件/);
     [f] = listFollowups();
     assert.equal(f.kind ?? "strm", "strm");
     assert.equal(f.copyDstDir, "/local/movies", "生成 strm 的回执兼办复制");
-    assert.equal(f.copyDeleteSource, true, "删不删源在加任务这一刻冻结");
+    assert.equal(f.copyAfterCopy, "delete", "删不删源在加任务这一刻冻结");
 
     const plain = await call(client, "offline_add", { urls: MAGNET, task: "tv" });
     assert.equal(plain.data.strmAfterDownload, true);
@@ -663,7 +665,7 @@ test("复制队列：各状态的条数、过滤、配置；能不能重试；�
     record({ id: "f1", status: "failed", name: "失败.mkv", detail: "OpenList 复制失败：磁盘满了", doneAt: Date.now() }),
     record({ id: "s1", status: "skipped", name: "跳过.mkv", taskId: "c-tv", srcDir: "/tv", rootPath: "/tv", dstDir: "/local/media", doneAt: Date.now() }),
     record({ id: "d1", status: "done", name: "好了.mkv", doneAt: Date.now() }),
-    record({ id: "p1", status: "pending", name: "在跑.mkv", deleteSource: true }),
+    record({ id: "p1", status: "pending", name: "在跑.mkv", afterCopy: "delete" }),
     record({ id: "a1", status: "failed", name: "接管的.mkv", adopted: true, srcDir: "", taskId: "", doneAt: Date.now() }),
     record({ id: "x1", status: "skipped", name: "拆开了.mkv", superseded: true, detail: "整理把「拆开了」里的文件挪到了别处", doneAt: Date.now() }),
   ]);
@@ -719,9 +721,72 @@ test("复制队列：各状态的条数、过滤、配置；能不能重试；�
   }
 });
 
+test("copy_add：手动把任务目录里已有的目录交给复制；复制后删源要「删除」档；只读令牌看不到这个工具", async () => {
+  d115.tree.addFile("/tv/Show/E01.mkv");
+  d115.tree.addFile("/tv/Show/E02.mkv");
+  const daily = await connect(dailyToken);
+  const read = await connect(readToken);
+  try {
+    assert.ok(!(await read.listTools()).tools.some((t) => t.name === "copy_add"), "只读令牌没有 copy_add");
+    const tool = (await daily.listTools()).tools.find((t) => t.name === "copy_add")!;
+    assert.match(tool.description ?? "", /得到同意再调用/);
+
+    const res = await call(daily, "copy_add", { task: "tv", paths: ["Show"] });
+    assert.equal(res.isError, false, JSON.stringify(res.data));
+    assert.equal(res.data.queued, 1);
+    assert.equal(res.data.dstDir, "/local/media", "任务上没填目标目录就用设置页的");
+    assert.equal(res.data.afterCopy, "keep", "任务没开复制：不动源文件");
+    assert.deepEqual(res.data.items, [{ path: "Show", outcome: "queued", queued: 1, isDir: true, outcomeText: "已排进队列" }]);
+    assert.match(res.data.note, /已排进复制队列/);
+    assert.match(res.data.next, /copy_list/);
+    const [row] = listCopies();
+    assert.equal(row.trigger, "manual");
+    assert.equal(row.name, "Show");
+    assert.equal(row.isDir, true);
+    assert.equal(row.nodeId, d115.tree.get("/tv/Show")!.id);
+    await stopCopyWatcher();
+
+    // 再来一次：已经排着，如实说
+    const dup = await call(daily, "copy_add", { task: "tv", paths: ["Show"] });
+    assert.equal(dup.data.queued, 0);
+    assert.equal(dup.data.items[0].outcome, "duplicate");
+
+    // 网盘上没有的
+    const missing = await call(daily, "copy_add", { task: "tv", paths: ["没有的"] });
+    assert.equal(missing.data.queued, 0);
+    assert.equal(missing.data.items[0].outcome, "missing");
+    assert.match(missing.data.reason, /网盘上没有/);
+
+    // 日常令牌没有「删除」档：复制后删源拒掉，网盘和队列都不动
+    const del = await call(daily, "copy_add", { task: "tv", paths: ["Show/E01.mkv"], afterCopy: "delete" });
+    assert.equal(del.isError, true);
+    assert.equal(del.data.code, "INSUFFICIENT_SCOPE");
+    assert.match(del.data.hint, /archive/);
+    assert.equal(listCopies().length, 1);
+
+    // 归档不用「删除」档
+    const archive = await call(daily, "copy_add", { task: "tv", paths: ["Show/E02.mkv"], afterCopy: "archive" });
+    assert.equal(archive.isError, false, JSON.stringify(archive.data));
+    assert.equal(archive.data.afterCopy, "archive");
+    assert.match(archive.data.note, /归档/);
+    await stopCopyWatcher();
+
+    // 任务目录本身、目标目录越界
+    const root = await call(daily, "copy_add", { task: "tv", paths: [""] });
+    assert.equal(root.isError, true);
+    const dst = await call(daily, "copy_add", { task: "tv", paths: ["Show"], dstDir: "/elsewhere" });
+    assert.equal(dst.isError, true);
+    assert.equal(dst.data.code, "COPY_DST_INVALID");
+  } finally {
+    await stopCopyWatcher();
+    await daily.close();
+    await read.close();
+  }
+});
+
 test("重试：失败 / 跳过的重新排队，已经在队列里的算成功；已复制的、接管的、不存在的不收；全都不行回 isError", async () => {
   saveCopies([
-    record({ id: "f1", status: "failed", deleteSource: true, attempts: 3, doneAt: Date.now() }),
+    record({ id: "f1", status: "failed", afterCopy: "delete", attempts: 3, doneAt: Date.now() }),
     record({ id: "s1", status: "skipped", name: "跳过.mkv", doneAt: Date.now() }),
     record({ id: "d1", status: "done", name: "好了.mkv", doneAt: Date.now() }),
     record({ id: "p1", status: "pending", name: "在跑.mkv" }),
@@ -775,7 +840,7 @@ test("总览和任务列表：复制配没配好、队列里在跑的 / 失败�
 
     const tasks = await call(client, "tasks_list", {});
     const byId = new Map(tasks.data.tasks.map((t: Record<string, any>) => [t.id, t]));
-    assert.deepEqual((byId.get("c-movies") as Record<string, any>).copyToOpenlist, { dstDir: "/local/movies", deleteSource: true });
+    assert.deepEqual((byId.get("c-movies") as Record<string, any>).copyToOpenlist, { dstDir: "/local/movies", afterCopy: "delete", afterCopyText: "删除", deleteSource: true });
     assert.equal((byId.get("c-tv") as Record<string, any>).copyToOpenlist, undefined, "没开复制的不带");
 
     patchAppSettings({ openlistCopy: { ...COPY_SETTINGS, mounts: {} } });

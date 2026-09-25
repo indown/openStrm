@@ -68,7 +68,8 @@ export const taskFormSchema = z.object({
   /** 复制到 OpenList：这个任务落下新文件时复制走 */
   copyEnabled: z.boolean().optional(),
   copyDstDir: z.string().optional(),
-  copyDeleteSource: z.boolean().optional(),
+  /** 复制成功后源文件的去向 */
+  copyAfterCopy: z.enum(["keep", "delete", "archive"]).optional(),
   /** 整理：库类型先验；自动整理策略（空串 = 跟随全局设置） */
   libraryType: z.enum(["mixed", "movie", "tv"]).optional(),
   organizeMode: z.enum(["", "off", "review", "auto"]).optional(),
@@ -126,7 +127,8 @@ function defaultsFor(task: TaskEditable | undefined): TaskFormValues {
     cronExpression: task?.cronExpression ?? "",
     copyEnabled: task?.copyToOpenlist?.enabled ?? false,
     copyDstDir: task?.copyToOpenlist?.dstDir ?? "",
-    copyDeleteSource: task?.copyToOpenlist?.deleteSource ?? false,
+    // 老数据只有 deleteSource
+    copyAfterCopy: task?.copyToOpenlist?.afterCopy ?? (task?.copyToOpenlist?.deleteSource ? "delete" : "keep"),
     libraryType: task?.organize?.libraryType ?? "mixed",
     organizeMode: task?.organize?.mode ?? "",
   };
@@ -141,7 +143,7 @@ function SwitchRow({
   disabled = false,
 }: {
   control: Control<TaskFormValues>;
-  name: "removeExtraFiles" | "enable302" | "enablePathEncoding" | "copyEnabled" | "copyDeleteSource";
+  name: "removeExtraFiles" | "enable302" | "enablePathEncoding" | "copyEnabled";
   label: string;
   description: string;
   disabled?: boolean;
@@ -353,19 +355,19 @@ export function AddTaskDialog({
       // 115 + 302 且前缀是本地挂载路径时拼上账户名，代理按这个前缀识别挂载点；http(s) 前缀不拼，代理按任务反查账号
       const prefix = normalizePrefix(values.strmPrefix);
       const withAccount = is115Account && !!values.enable302 && !!values.account && !isHttpPrefix(prefix);
-      const { libraryType, organizeMode, copyEnabled, copyDstDir, copyDeleteSource, ...rest } = values;
+      const { libraryType, organizeMode, copyEnabled, copyDstDir, copyAfterCopy, ...rest } = values;
       const taskData = {
         ...rest,
         strmPrefix: withAccount ? `${prefix}/${values.account}` : prefix,
         accountType,
         organize: { ...(organizeMode ? { mode: organizeMode } : {}), libraryType: libraryType ?? "mixed" },
-        // 开关关着就整块记成关：留着 deleteSource=true 的话，
-        // 以后在转存弹框里勾一次「转存后复制」会连带把网盘上的源文件删了
+        // 开关关着就整块记成关：留着「删除 / 归档」的话，
+        // 以后在转存弹框里勾一次「转存后复制」会连带把网盘上的源文件删了或挪走
         copyToOpenlist: copyEnabled
           ? {
               enabled: true,
               ...(copyDstDir?.trim() ? { dstDir: copyDstDir.trim() } : {}),
-              deleteSource: copyDeleteSource === true,
+              afterCopy: copyAfterCopy ?? "keep",
             }
           : { enabled: false },
       };
@@ -691,11 +693,30 @@ export function AddTaskDialog({
                       </FormItem>
                     )}
                   />
-                  <SwitchRow
+                  <FormField
                     control={form.control}
-                    name="copyDeleteSource"
-                    label="复制完把网盘上那份删掉"
-                    description="等于搬运：只在复制成功、且目标目录里确认看得见之后才删（115 / 夸克进回收站）。默认关，备份类任务别开。"
+                    name="copyAfterCopy"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>复制成功后，网盘上的源文件</FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value ?? "keep"}>
+                          <FormControl>
+                            <SelectTrigger className="w-full">
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent className="z-[60]">
+                            <SelectItem value="keep">不动</SelectItem>
+                            <SelectItem value="archive">归档：挪进任务目录下的「归档」</SelectItem>
+                            <SelectItem value="delete">删除（进回收站，不可逆）</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <FormDescription className="text-xs">
+                          都只在复制成功、目标目录里确认看得见之后才动。归档：原来的层级留着，不进媒体库，想恢复挪回去就行；删除等于搬运，备份类任务别选。
+                          不动的话 Emby 里同一集会有云上的 strm 和本地那份两个。
+                        </FormDescription>
+                      </FormItem>
+                    )}
                   />
                 </div>
               )}

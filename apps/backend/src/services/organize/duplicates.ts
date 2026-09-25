@@ -16,3 +16,15 @@ export const underDuplicates = (rel: string): boolean => rel === DUPLICATES_DIR 
 
 /** 挪进重复文件目录后的路径：原来的目录层级留着 */
 export const duplicatePathFor = (srcPath: string): string => `${DUPLICATES_DIR}/${srcPath}`;
+
+/**
+ * 「复制到 OpenList」复制成功后归档的落脚点：任务根下的 `归档/`，原来的目录层级留在里面
+ * （tv/某剧/S01/E01.mkv → tv/归档/某剧/S01/E01.mkv）。和重复文件目录一样是不进媒体库的暂存区，三处排除都走 isStagingDir
+ */
+export const ARCHIVE_DIR = "归档";
+
+/** 相对任务 originPath 的路径在不在归档目录里 */
+export const underArchive = (rel: string): boolean => rel === ARCHIVE_DIR || rel.startsWith(`${ARCHIVE_DIR}/`);
+
+/** 任务根下不进媒体库的暂存区（重复文件、归档）：整理不扫、本地不镜像、全量同步不生成 strm */
+export const isStagingDir = (rel: string): boolean => underDuplicates(rel) || underArchive(rel);

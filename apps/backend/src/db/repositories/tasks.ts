@@ -1,21 +1,28 @@
 import { eq, notInArray, sql } from "drizzle-orm";
 import type { TaskDefinition } from "@openstrm/shared";
+import { normalizeTaskCopy } from "../../lib/after-copy.js";
 import { db } from "../client.js";
 import { tasks } from "../schema.js";
 
 type Row = typeof tasks.$inferSelect;
 
+/** 旧的 copyToOpenlist.deleteSource 收成 afterCopy：读出来的、写进去的都归一，别的代码只认 afterCopy */
+function normalizeTaskDef(t: TaskDefinition): TaskDefinition {
+  const cfg = normalizeTaskCopy(t.copyToOpenlist);
+  return cfg === t.copyToOpenlist ? t : { ...t, copyToOpenlist: cfg };
+}
+
 function deserialize(row: Row): TaskDefinition {
   try {
     const obj = JSON.parse(row.data) as Record<string, unknown>;
-    return { ...obj, id: row.id, account: row.accountName } as TaskDefinition;
+    return normalizeTaskDef({ ...obj, id: row.id, account: row.accountName } as TaskDefinition);
   } catch {
     return { id: row.id, account: row.accountName } as TaskDefinition;
   }
 }
 
 function columns(t: TaskDefinition) {
-  return { accountName: t.account, data: JSON.stringify(t) };
+  return { accountName: t.account, data: JSON.stringify(normalizeTaskDef(t)) };
 }
 
 export function listTasks(): TaskDefinition[] {
@@ -27,9 +34,11 @@ export function getTask(id: string): TaskDefinition | null {
   return row ? deserialize(row) : null;
 }
 
-/** id 重复会抛主键冲突，调用方负责生成唯一 id */
-export function insertTask(task: TaskDefinition): void {
-  db.insert(tasks).values({ id: task.id, ...columns(task) }).run();
+/** id 重复会抛主键冲突，调用方负责生成唯一 id。返回存进去的样子（旧字段归一过的） */
+export function insertTask(task: TaskDefinition): TaskDefinition {
+  const stored = normalizeTaskDef(task);
+  db.insert(tasks).values({ id: stored.id, ...columns(stored) }).run();
+  return stored;
 }
 
 /** 合并给出的字段；id 不可改。任务不存在时返回 null */
@@ -38,7 +47,7 @@ export function updateTask(id: string, patch: Partial<TaskDefinition>): TaskDefi
   return db.transaction((tx) => {
     const current = getTask(id);
     if (!current) return null;
-    const merged: TaskDefinition = { ...current, ...patch, id };
+    const merged: TaskDefinition = normalizeTaskDef({ ...current, ...patch, id });
     tx.update(tasks)
       .set({ ...columns(merged), updatedAt: sql`(unixepoch())` })
       .where(eq(tasks.id, id))

@@ -6,6 +6,7 @@ import Link from "next/link";
 import {
   ChevronDown,
   ChevronRight,
+  Copy,
   Eye,
   File,
   FileCog,
@@ -61,6 +62,10 @@ import { ScanDialog } from "./components/ScanDialog";
 import { VerifyDialog } from "./components/VerifyDialog";
 import { RegenerateDialog } from "./components/RegenerateDialog";
 import { RewriteDialog } from "./components/RewriteDialog";
+import { AddCopyDialog, type CopyPreset } from "@/components/AddCopyDialog";
+import { api } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/axios";
+import { toast } from "sonner";
 
 const DESCRIPTION = "浏览任务生成的本地 strm 目录，体检、校验、修正或重新生成";
 
@@ -98,7 +103,19 @@ type RowProps = {
   onVerify: () => void;
   onRegenerate: () => void;
   onRewrite: () => void;
+  /** 交给「复制到 OpenList」：目录整个复制，strm 按它指向的网盘文件 */
+  onCopy: () => void;
 };
+
+/** 网盘绝对路径 → 相对任务目录；不在任务目录下面回 null */
+function relativeToTask(remote: string, originPath: string): string | null {
+  const strip = (p: string) => p.replace(/^\/+|\/+$/g, "");
+  const o = strip(originPath);
+  const r = strip(remote);
+  if (o === "") return r;
+  if (r === o) return "";
+  return r.startsWith(`${o}/`) ? r.slice(o.length + 1) : null;
+}
 
 function StrmContent() {
   const b = useStrmBrowser();
@@ -108,10 +125,32 @@ function StrmContent() {
   const [verifyPath, setVerifyPath] = useState<string | null>(null);
   const [regenPath, setRegenPath] = useState<string | null>(null);
   const [rewritePath, setRewritePath] = useState<string | null>(null);
+  const [copyPreset, setCopyPreset] = useState<CopyPreset | null>(null);
+  const [copyOpen, setCopyOpen] = useState(false);
 
   const openScan = (p: string) => {
     setScanPath(p);
     setScanOpen(true);
+  };
+
+  /** 本地目录和网盘目录同一个相对路径；strm 要读一下才知道指向网盘上的哪个文件 */
+  const copyRow = async (row: StrmRow) => {
+    if (!task) return;
+    let rel: string | null = row.path;
+    if (!row.isDir) {
+      try {
+        rel = relativeToTask((await api.strm.file(task.id, row.path)).expectedRemotePath, task.originPath);
+      } catch (err) {
+        toast.error(apiErrorMessage(err, "读取 strm 失败"));
+        return;
+      }
+    }
+    if (rel === null || rel === "") {
+      toast.error("这个 strm 指向的文件不在任务目录下面，没法按任务复制");
+      return;
+    }
+    setCopyPreset({ taskId: task.id, paths: [rel] });
+    setCopyOpen(true);
   };
 
   const rowProps = (row: StrmRow): RowProps => ({
@@ -127,6 +166,7 @@ function StrmContent() {
     onVerify: () => setVerifyPath(row.path),
     onRegenerate: () => setRegenPath(row.path),
     onRewrite: () => setRewritePath(row.path),
+    onCopy: () => void copyRow(row),
   });
 
   const task = b.task;
@@ -329,6 +369,19 @@ function StrmContent() {
                   <FileCog />
                   修正内容
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={b.path === ""}
+                  title={b.path === "" ? "任务目录本身不能整个复制，进到里面的目录再选" : undefined}
+                  onSelect={() =>
+                    afterMenuClosed(() => {
+                      setCopyPreset({ taskId: b.taskId, paths: [b.path] });
+                      setCopyOpen(true);
+                    })
+                  }
+                >
+                  <Copy />
+                  复制当前目录到 OpenList
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </>
@@ -512,6 +565,7 @@ function StrmContent() {
         onDone={() => void b.refresh()}
       />
       <RewriteDialog target={rewritePath} onOpenChange={(open) => !open && setRewritePath(null)} taskId={b.taskId} onDone={() => void b.refresh()} />
+      <AddCopyDialog open={copyOpen} onOpenChange={setCopyOpen} preset={copyPreset} />
     </div>
   );
 }
@@ -547,8 +601,9 @@ function DirMenu({
   onVerify,
   onRegenerate,
   onRewrite,
+  onCopy,
   onDelete,
-}: Pick<RowProps, "onVerify" | "onRegenerate" | "onRewrite" | "onDelete"> & { path: string; size: "size-8" | "size-9" }) {
+}: Pick<RowProps, "onVerify" | "onRegenerate" | "onRewrite" | "onCopy" | "onDelete"> & { path: string; size: "size-8" | "size-9" }) {
   // 季目录（Season 1）按上一级的作品名搜
   const keyword = keywordFromPath(path);
   return (
@@ -570,6 +625,10 @@ function DirMenu({
         <DropdownMenuItem onSelect={() => afterMenuClosed(onRewrite)}>
           <FileCog />
           修正内容
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => afterMenuClosed(onCopy)}>
+          <Copy />
+          复制到 OpenList
         </DropdownMenuItem>
         {keyword && (
           <DropdownMenuItem asChild>
@@ -613,13 +672,18 @@ function StrmTableRow(p: RowProps) {
       <TableCell className="w-28">
         <div className="flex justify-end gap-0.5">
           {row.isDir ? (
-            <DirMenu path={row.path} size="size-8" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onDelete={p.onDelete} />
+            <DirMenu path={row.path} size="size-8" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onCopy={p.onCopy} onDelete={p.onDelete} />
           ) : (
             <>
               {row.kind === "strm" && (
-                <Button variant="ghost" size="icon" className="size-8" title="查看" onClick={p.onOpen}>
-                  <Eye className="size-4" />
-                </Button>
+                <>
+                  <Button variant="ghost" size="icon" className="size-8" title="查看" onClick={p.onOpen}>
+                    <Eye className="size-4" />
+                  </Button>
+                  <Button variant="ghost" size="icon" className="size-8" title="复制到 OpenList" onClick={p.onCopy}>
+                    <Copy className="size-4" />
+                  </Button>
+                </>
               )}
               <Button
                 variant="ghost"
@@ -663,13 +727,16 @@ function StrmCard(p: RowProps) {
               <FolderOpen className="size-4" />
               打开
             </Button>
-            <DirMenu path={row.path} size="size-9" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onDelete={p.onDelete} />
+            <DirMenu path={row.path} size="size-9" onVerify={p.onVerify} onRegenerate={p.onRegenerate} onRewrite={p.onRewrite} onCopy={p.onCopy} onDelete={p.onDelete} />
           </>
         ) : row.kind === "strm" ? (
           <>
             <Button variant="outline" size="sm" className="h-9 flex-1" onClick={p.onOpen}>
               <Eye className="size-4" />
               查看
+            </Button>
+            <Button variant="ghost" size="icon" className="size-9" title="复制到 OpenList" onClick={p.onCopy}>
+              <Copy className="size-4" />
             </Button>
             <Button
               variant="ghost"

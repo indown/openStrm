@@ -74,14 +74,18 @@ test("copySettingsGap：按设置页从上到下说缺哪样；同类型的两�
 
 test("copyOptionsFor：要复制却配不齐就当关，blocked 说卡在哪；本来就不复制的不带 blocked", () => {
   const s = withCopy({ account: "ol", dstDir: "/local", mounts: { "115-a": "/115" } });
+  // 老数据只有 deleteSource：读成 delete
   const on = { enabled: true, deleteSource: true };
-  assert.deepEqual(copyOptionsFor({ account: "115-a", copyToOpenlist: on }, undefined, s), { enabled: true, dstDir: undefined, deleteSource: true });
+  assert.deepEqual(copyOptionsFor({ account: "115-a", copyToOpenlist: on }, undefined, s), { enabled: true, dstDir: undefined, afterCopy: "delete" });
+  assert.equal(copyOptionsFor({ account: "115-a", copyToOpenlist: { enabled: true, afterCopy: "archive" } }, undefined, s).afterCopy, "archive");
+  assert.equal(copyOptionsFor({ account: "115-a", copyToOpenlist: { enabled: true } }, undefined, s).afterCopy, "keep");
   const blocked = copyOptionsFor({ account: "115-b", copyToOpenlist: on }, undefined, s);
   assert.equal(blocked.enabled, false);
-  assert.equal(blocked.deleteSource, false);
+  assert.equal(blocked.afterCopy, "keep");
   assert.match(blocked.blocked ?? "", /115-b 还没填/, "第二个 115 没填挂载根：任务开着复制也不复制，但要说出来");
   assert.match(copyOptionsFor({ account: "115-b" }, true, s).blocked ?? "", /115-b/, "一次性勾的也算要复制");
   assert.equal(copyOptionsFor({ account: "115-b", copyToOpenlist: on }, false, s).blocked, undefined, "这次明说不复制");
   assert.equal(copyOptionsFor({ account: "115-b" }, undefined, s).blocked, undefined, "任务上没开");
-  assert.deepEqual(copyOptionsFor({ account: "115-a" }, true, s), { enabled: true, dstDir: undefined, deleteSource: false }, "一次性勾选不带删源");
+  assert.deepEqual(copyOptionsFor({ account: "115-a" }, true, s), { enabled: true, dstDir: undefined, afterCopy: "keep" }, "一次性勾选不动源文件");
+  assert.equal(copyOptionsFor({ account: "115-a", copyToOpenlist: { enabled: false, afterCopy: "archive" } }, true, s).afterCopy, "keep", "任务没开复制：一次性勾的不认任务上留着的去向");
 });

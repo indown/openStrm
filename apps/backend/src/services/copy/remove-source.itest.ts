@@ -73,7 +73,7 @@ function localFile(rel: string): string {
 
 /** 登记 → 提交 → 报完成，一路跑到删源那一步 */
 async function copyThrough(source: { path: string; isDir?: boolean; nodeId?: string }): Promise<void> {
-  enqueueCopy({ account: "acc", sources: [source], rootPath: "/tv", taskId: "t1", trigger: "monitor", deleteSource: true });
+  enqueueCopy({ account: "acc", sources: [source], rootPath: "/tv", taskId: "t1", trigger: "monitor", afterCopy: "delete" });
   await stopCopyWatcher();
   now += 30_000;
   await tickCopies(); // 阶段一：源在 OpenList 里可见 → 提交
@@ -178,7 +178,7 @@ test("提交时网盘上就没有这个路径（OpenList 的缓存还留着）�
   await copyThrough({ path: "/tv/某剧/S01/E01.mkv" });
   const [c] = listCopies();
   assert.equal(c.status, "done");
-  assert.match(c.detail, /核对不了，源文件没删/);
+  assert.match(c.detail, /核对不了，源文件没动/);
   assert.equal(drive.calls.remove, 0);
 });
 
@@ -247,7 +247,7 @@ test("网盘删不了（报错）：复制仍然算成功，只在说明里写�
 
   const [c] = listCopies();
   assert.equal(c.status, "done", "复制本身成了，删源失败不该翻案");
-  assert.match(c.detail, /删源失败：回收站满了/);
+  assert.match(c.detail, /删源文件失败：回收站满了/);
 });
 
 test("没开删源开关：一个网盘写操作都不做", async () => {

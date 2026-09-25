@@ -35,7 +35,7 @@ import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, KIND_LABEL, parseShareRef, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession, ShareUpdateSignal, DriveKind } from "../drive/types.js";
 import { saveSelectionToTask } from "../share/receive.js";
-import type { CopyOutcome } from "../copy/service.js";
+import { withAfterCopy, type CopyOutcome } from "../copy/service.js";
 import { maybeAutoOrganize } from "../organize/auto.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
@@ -605,7 +605,7 @@ async function runCheck(f: ShareFollow, sink: CheckSink): Promise<ShareFollowRun
   return run;
 }
 
-/** 追更一轮按目录分组转存、各组各自登记复制：合成一份回给调用方（条数相加，删不删源有一组删就算删） */
+/** 追更一轮按目录分组转存、各组各自登记复制：合成一份回给调用方（条数相加，去向取第一组不是「不动」的——同一个任务本来就一样） */
 function mergeCopyOutcomes(list: CopyOutcome[]): CopyOutcome | undefined {
   if (list.length === 0) return undefined;
   const queued = list.reduce((n, c) => n + c.queued, 0);
@@ -613,7 +613,7 @@ function mergeCopyOutcomes(list: CopyOutcome[]): CopyOutcome | undefined {
   return {
     queued,
     dstDir: list.find((c) => c.dstDir)?.dstDir ?? null,
-    deleteSource: list.some((c) => c.deleteSource),
+    ...withAfterCopy(list.find((c) => c.afterCopy !== "keep")?.afterCopy ?? "keep"),
     ...(reason ? { reason } : {}),
   };
 }

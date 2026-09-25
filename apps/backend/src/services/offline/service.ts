@@ -13,7 +13,7 @@
  *     失败 → 记下 115 的说法；列表里连续几轮找不到 → 当作被人删了。
  *     没有待办时循环自己停掉，不白打接口。
  */
-import type { Account115, AccountInfo as SharedAccountInfo, AppSettings, TaskDefinition } from "@openstrm/shared";
+import type { Account115, AccountInfo as SharedAccountInfo, AppSettings, CopyAfterCopy, TaskDefinition } from "@openstrm/shared";
 import { getAccount, listAccounts } from "../../db/repositories/accounts.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { readAppSettings, updateAppSetting } from "../../db/repositories/settings.js";
@@ -85,9 +85,11 @@ export interface OfflineFollowup {
   /** 下完之后把产物交给复制队列，复制到这个 OpenList 目录；不填就不复制 */
   copyDstDir?: string;
   /**
-   * 复制成功后删不删网盘上那份：加任务那一刻按任务的「复制后删源」冻结（同转存 / 追更在登记时冻结），
-   * 下完之前改设置不影响它。存量回执没有这个字段，下完时按任务现在的设置算
+   * 复制成功后源文件的去向：加任务那一刻按任务设置冻结（同转存 / 追更在登记时冻结），下完之前改设置不影响它。
+   * 存量回执没有这个字段（更老的只有 copyDeleteSource），下完时按任务现在的设置算
    */
+  copyAfterCopy?: CopyAfterCopy;
+  /** 旧字段，等于 copyAfterCopy: "delete" */
   copyDeleteSource?: boolean;
 }
 
@@ -254,8 +256,8 @@ export interface AddOfflineResponse {
   strmFollowup: boolean;
   /** 下完复制到 OpenList 的哪个目录；这次不复制（或一条回执都没登记上）是 null */
   copyDstDir: string | null;
-  /** 复制成功后删不删网盘上的源文件（冻结在回执上的那个；115 上原本就有、不在任务目录里的不删） */
-  copyDeleteSource: boolean;
+  /** 复制成功后源文件的去向（冻结在回执上的那个；115 上原本就有、不在任务目录里的一律不动） */
+  copyAfterCopy: CopyAfterCopy;
   /** 任务开着复制、这次却复制不了的原因（设置没配好、OpenList 账号不可用）；能复制或本来就不复制是 null */
   copyBlocked: string | null;
 }
@@ -328,8 +330,8 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
     const why = copyDstProblem(pickedDst, task, settings);
     if (why) throw new HttpError(400, why);
   }
-  // 删不删源在这一刻按任务的开关冻结（明说要复制、任务却没开的不删）
-  const copyDeleteSource = Boolean(copyDst) && copyOptionsFor(task, undefined, settings, pickedDst).deleteSource;
+  // 源文件的去向在这一刻按任务的设置冻结（明说要复制、任务却没开的不动）
+  const copyAfterCopy: CopyAfterCopy = copyDst ? copyOptionsFor(task, undefined, settings, pickedDst).afterCopy : "keep";
 
   let results: OfflineAddResult[];
   try {
@@ -361,7 +363,7 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
         attempts: 0,
         misses: 0,
         // 下到任务目录又要复制走：同一条回执兼办，生成 strm 之后再交给复制队列
-        ...(copyDst ? { copyDstDir: copyDst, copyDeleteSource } : {}),
+        ...(copyDst ? { copyDstDir: copyDst, copyAfterCopy } : {}),
       })),
     );
     startOfflineWatcher();
@@ -386,7 +388,7 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
         attempts: 0,
         misses: 0,
         copyDstDir: copyDst,
-        copyDeleteSource,
+        copyAfterCopy,
       })),
     );
     startOfflineWatcher();
@@ -405,7 +407,7 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
     strmFollowup,
     // 生成 strm 的回执兼办复制时也带着 copyDstDir，所以两种回执登记上了哪一种都算
     copyDstDir: followup && copyDst ? copyDst : null,
-    copyDeleteSource: followup && Boolean(copyDst) && copyDeleteSource,
+    copyAfterCopy: followup && copyDst ? copyAfterCopy : "keep",
     copyBlocked,
   };
 }
@@ -636,7 +638,7 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
         taskId: task.id,
         dstDir: f.copyDstDir,
         // 加任务那一刻冻结的；存量回执没有，按任务现在的设置
-        deleteSource: f.copyDeleteSource ?? copyOptionsFor(task, undefined, readAppSettings()).deleteSource,
+        afterCopy: followupAfterCopy(f, task),
         trigger: "offline",
         holdForOrganize: effectiveAutoMode(task) === "auto",
       });
@@ -709,7 +711,7 @@ async function handoffCopy(f: OfflineFollowup, t: OfflineTask, accountInfo: Acco
   }
   const task = f.taskId ? getTask(f.taskId) : null;
   const path = joinPanPath(dir, name);
-  // 删源只删任务目录里的：115 上原本就有的（「任务已存在」）可能躺在别处、甚至属于别的任务，不能因为这个任务开着删源就删它
+  // 删源 / 归档只动任务目录里的：115 上原本就有的（「任务已存在」）可能躺在别处、甚至属于别的任务，不能因为这个任务开着就动它
   const inTask = task != null && relativeTo(task.originPath, path) !== null;
   const queued = deps.enqueueCopy({
     account: accountInfo.name,
@@ -719,7 +721,7 @@ async function handoffCopy(f: OfflineFollowup, t: OfflineTask, accountInfo: Acco
     taskId: task?.id,
     dstDir: f.copyDstDir,
     trigger: "offline",
-    deleteSource: inTask && (f.copyDeleteSource ?? copyOptionsFor(task, undefined, readAppSettings()).deleteSource),
+    afterCopy: inTask ? followupAfterCopy(f, task) : "keep",
   });
   f.name = name;
   // 队列没收下（配置被删了、挂载根还没换算出来）就如实报失败：
@@ -754,6 +756,13 @@ export function rewriteOfflineSubPaths(taskId: string, mappings: Array<{ from: s
   }
   if (changed) saveFollowups(rows);
   return hit;
+}
+
+/** 回执上冻结的去向；存量回执按任务现在的设置（更老的只有 copyDeleteSource） */
+function followupAfterCopy(f: OfflineFollowup, task: TaskDefinition | null | undefined): CopyAfterCopy {
+  if (f.copyAfterCopy) return f.copyAfterCopy;
+  if (f.copyDeleteSource !== undefined) return f.copyDeleteSource ? "delete" : "keep";
+  return copyOptionsFor(task ?? null, undefined, readAppSettings()).afterCopy;
 }
 
 /** 仅供测试：清掉所有回执并停循环 */

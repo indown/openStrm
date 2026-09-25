@@ -21,6 +21,7 @@ export type {
 } from "./resource.js";
 export type { AccountInfo, Account115, AccountOpenlist, AccountQuark } from "./account.js";
 export type {
+  CopyAfterCopy,
   FileFailureAction,
   FileFailureKind,
   TaskCopySettings,

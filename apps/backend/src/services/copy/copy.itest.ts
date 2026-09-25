@@ -543,18 +543,18 @@ test("批量重试：读一次写一次；排着的算成功，不行的各带�
 
 test("网盘监控先登记了不删源的那条：整条目的登记（转存 / 追更 / 云下载）把删源补上；认不出节点的不补", async () => {
   // 监控：一个文件一条，一律不删源
-  enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }], rootPath: "/tv", taskId: "t1", trigger: "monitor", deleteSource: false });
-  enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E02.mkv"], rootPath: "/tv", taskId: "t1", trigger: "monitor", deleteSource: false });
+  enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }], rootPath: "/tv", taskId: "t1", trigger: "monitor", afterCopy: "keep" });
+  enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E02.mkv"], rootPath: "/tv", taskId: "t1", trigger: "monitor", afterCopy: "keep" });
   await stopCopyWatcher();
-  const r = enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv", "/tv/某剧/S01/E02.mkv"], rootPath: "/tv", taskId: "t1", trigger: "share", deleteSource: true });
+  const r = enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv", "/tv/某剧/S01/E02.mkv"], rootPath: "/tv", taskId: "t1", trigger: "share", afterCopy: "delete" });
   await stopCopyWatcher();
   assert.equal(r.queued, 0);
   assert.equal(r.duplicates, 2);
-  assert.equal(r.pendingDeletes, true);
+  assert.equal(r.pendingAfterCopy, "delete");
   const byName = new Map(listCopies().map((c) => [c.name, c]));
-  assert.equal(byName.get("E01.mkv")!.deleteSource, true, "带着节点 id：补上删源");
+  assert.equal(byName.get("E01.mkv")!.afterCopy, "delete", "带着节点 id：补上删源");
   assert.equal(byName.get("E01.mkv")!.trigger, "monitor");
-  assert.equal(byName.get("E02.mkv")!.deleteSource, false, "谁都不知道节点 id：删的时候核对不了，不补");
+  assert.equal(byName.get("E02.mkv")!.afterCopy, "keep", "谁都不知道节点 id：删的时候核对不了，不补");
 });
 
 test("网盘监控按文件登记：被还没提交的整目录复制包着、落点一样的不单独登记，先登记的并进去；已经提交的、落点不一样的、在外面的照旧", async () => {
@@ -565,7 +565,7 @@ test("网盘监控按文件登记：被还没提交的整目录复制包着、�
   rows.find((c) => c.name === "E02.mkv")!.stage = "copying";
   saveCopies(rows, now);
   // 整条目：转存了整个「某剧」，任务开着删源
-  const whole = enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧", isDir: true, nodeId: "w1" }], rootPath: "/tv", taskId: "t1", trigger: "share", deleteSource: true });
+  const whole = enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧", isDir: true, nodeId: "w1" }], rootPath: "/tv", taskId: "t1", trigger: "share", afterCopy: "delete" });
   assert.equal(whole.queued, 1);
   // 监控后到：同一个目录里又来一个文件
   const late = enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧/S01/E03.mkv", nodeId: "n3" }], rootPath: "/tv", taskId: "t1", trigger: "monitor" });
@@ -577,7 +577,7 @@ test("网盘监控按文件登记：被还没提交的整目录复制包着、�
   enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧/S01/E04.mkv" }], rootPath: "/tv", taskId: "t1", trigger: "monitor", dstDir: "/local/other" });
   // 要删源的不交给不删源的整条目带：删源意图不能丢
   enqueueCopy({ account: "acc", sources: [{ path: "/tv/另一部", isDir: true }], rootPath: "/tv", taskId: "t1", trigger: "share" });
-  const keeps = enqueueCopy({ account: "acc", sources: [{ path: "/tv/另一部/E01.mkv", nodeId: "k1" }], rootPath: "/tv", taskId: "t1", trigger: "monitor", deleteSource: true });
+  const keeps = enqueueCopy({ account: "acc", sources: [{ path: "/tv/另一部/E01.mkv", nodeId: "k1" }], rootPath: "/tv", taskId: "t1", trigger: "monitor", afterCopy: "delete" });
   assert.equal(keeps.queued, 1);
   await stopCopyWatcher();
 
@@ -590,7 +590,7 @@ test("网盘监控按文件登记：被还没提交的整目录复制包着、�
   assert.equal(at("/tv/某剧/S01/E02.mkv")!.stage, "copying", "已经提交的按提交时的样子走完");
   assert.equal(at("/tv/某剧/S01/E02.mkv")!.status, "pending");
   assert.equal(at("/tv/某剧/S01/E03.mkv"), undefined, "后到的不单独登记");
-  assert.equal(at("/tv/某剧")!.deleteSource, true);
+  assert.equal(at("/tv/某剧")!.afterCopy, "delete");
   assert.equal(at("/tv/别的剧/E01.mkv")!.status, "pending");
   assert.equal(at("/tv/某剧/S01/E04.mkv", "/local/other")!.status, "pending", "目的地不一样是两份复制");
   assert.equal(at("/tv/另一部/E01.mkv")!.status, "pending");
@@ -694,7 +694,7 @@ test("提交前的每道等待都核对：列目标目录、钉节点、建目�
     mkdirCalls.length = 0;
     copyCalls.length = 0;
     // 要删源又没带节点 id：提交前会钉节点
-    await seed(["/tv/某剧/S01/E01.mkv"], { deleteSource: true, trigger: "follow" });
+    await seed(["/tv/某剧/S01/E01.mkv"], { afterCopy: "delete", trigger: "follow" });
     names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
     copyResult = [olTask({ id: "tid1" })];
     const release = stop.arm();
@@ -766,7 +766,7 @@ test("一轮当中被去掉的：这一轮不提交，收尾写回也不会复�
 });
 
 test("盯任务的这一轮里被去掉的：不再收尾（不删源、不通知），也不复活", async () => {
-  await seed(["/tv/某剧/S01/E01.mkv"], { deleteSource: true, trigger: "share" });
+  await seed(["/tv/某剧/S01/E01.mkv"], { afterCopy: "delete", trigger: "share" });
   names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
   copyResult = [olTask({ id: "tid1" })];
   await tickCopies();
@@ -864,7 +864,7 @@ test("删源：目标里看得见才删，看不见就留着并说明", async ()
     sources: [{ path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }],
     rootPath: "/tv",
     trigger: "monitor",
-    deleteSource: true,
+    afterCopy: "delete",
   });
   await stopCopyWatcher();
   now += 30_000;
@@ -885,7 +885,7 @@ test("删源：目标里确认看得见就删，节点 id 一起带过去核对"
     sources: [{ path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }],
     rootPath: "/tv",
     trigger: "monitor",
-    deleteSource: true,
+    afterCopy: "delete",
   });
   await stopCopyWatcher();
   now += 30_000;
@@ -907,7 +907,7 @@ test("删源：源路径上换成了别的文件（整理挪过）就不删", as
     sources: [{ path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }],
     rootPath: "/tv",
     trigger: "monitor",
-    deleteSource: true,
+    afterCopy: "delete",
   });
   await stopCopyWatcher();
   now += 30_000;
@@ -1044,7 +1044,7 @@ test("删源：目录只确认名字在目标里不够，子项少了就不删",
     sources: [{ path: "/tv/某剧/S01", isDir: true, nodeId: "n1" }],
     rootPath: "/tv",
     trigger: "share",
-    deleteSource: true,
+    afterCopy: "delete",
   });
   await stopCopyWatcher();
   now += 30_000;
@@ -1174,7 +1174,7 @@ test("等整理有兜底：整理一直没回来（建 run 失败之类），到
 });
 
 test("要删源又没带节点 id（追更、115 转存）：提交时钉住，删之前按它核对", async () => {
-  enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "follow", deleteSource: true });
+  enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "follow", afterCopy: "delete" });
   await stopCopyWatcher();
   now += 30_000;
   names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
@@ -1190,7 +1190,7 @@ test("要删源又没带节点 id（追更、115 转存）：提交时钉住，�
 });
 
 test("提交时网盘上找不到这个节点：照样复制，但复制完不删源并说明原因", async () => {
-  enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "follow", deleteSource: true });
+  enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "follow", afterCopy: "delete" });
   await stopCopyWatcher();
   now += 30_000;
   names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
@@ -1204,11 +1204,11 @@ test("提交时网盘上找不到这个节点：照样复制，但复制完不�
   const [c] = listCopies();
   assert.equal(c.status, "done");
   assert.equal(removeCalls.length, 0);
-  assert.match(c.detail, /核对不了，源文件没删/);
+  assert.match(c.detail, /核对不了，源文件没动/);
 });
 
 test("钉节点时网盘接口报错：这一轮不提交，按重试算", async () => {
-  enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "follow", deleteSource: true });
+  enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "follow", afterCopy: "delete" });
   await stopCopyWatcher();
   now += 30_000;
   names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };

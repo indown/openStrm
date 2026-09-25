@@ -41,6 +41,7 @@ import type {
   ShareFollowSummary,
   StrmAllPostersResult,
   StrmDeleteResult,
+  CopyAfterCopy,
   StrmFileInfo,
   StrmListResult,
   StrmPosterResult,
@@ -134,6 +135,8 @@ export interface DirectoryNode {
   id: string | number;
   isDir: boolean;
   hasChildren?: boolean;
+  /** 文件的大小（字节）；只有带文件列的时候有 */
+  size?: number;
 }
 
 export type LibraryAddResponse = { mode: "single" | "subdir"; entry: MediaLibraryEntry };
@@ -283,6 +286,8 @@ export interface CopyItem {
   dstDir: string;
   taskId: string;
   trigger: CopyTrigger;
+  /** 复制成功后源文件的去向（登记时按任务设置冻结） */
+  afterCopy: CopyAfterCopy;
   addedAt: number;
   status: CopyStatus;
   stage: CopyStage;
@@ -297,6 +302,27 @@ export interface CopyItem {
   holdUntil?: number;
   /** 后端算好的「能不能重试」：失败的、目标里已有同名而跳过的才行（接管来的、用不着了的、已复制的不行） */
   canRetry: boolean;
+}
+
+/** POST /api/copy：手动把任务网盘目录里已有的目录 / 文件交给复制 */
+export interface CopyAddInput {
+  taskId: string;
+  /** 相对任务网盘目录 */
+  paths: string[];
+  /** 不给用任务上 / 设置页的目标目录；给了只能是它们或它们下面的目录 */
+  dstDir?: string;
+  /** 不给按任务设置 */
+  afterCopy?: CopyAfterCopy;
+}
+/** 每条路径的结果：整条登记 / 只补了缺的 / 目标里已经齐了 / 目标里已有同名文件 / 已经排着 / 网盘上没有 */
+export type CopyAddOutcome = "queued" | "filled" | "complete" | "exists" | "duplicate" | "missing";
+export interface CopyAddResult {
+  queued: number;
+  dstDir: string | null;
+  afterCopy: CopyAfterCopy;
+  deleteSource: boolean;
+  reason?: string;
+  items: Array<{ path: string; outcome: CopyAddOutcome; queued: number; isDir?: boolean }>;
 }
 
 export interface CopyQueue {
@@ -696,6 +722,8 @@ export const api = {
   /** 复制到 OpenList 的队列：登记是各个来源自己做的，这里只看进度、重试、不跟了 */
   copy: {
     list: (limit = 20) => data(axiosInstance.get<CopyQueue>("/api/copy", { params: { limit } })),
+    /** 手动发起：要到网盘核对路径、和目标比对，大目录要一会 */
+    add: (input: CopyAddInput) => data(axiosInstance.post<CopyAddResult>("/api/copy", input, { timeout: 120_000 })),
     retry: (id: string) => data(axiosInstance.post<CopyItem>(`/api/copy/${encodeURIComponent(id)}/retry`)),
     remove: (id: string) => data(axiosInstance.delete<{ success: true }>(`/api/copy/${encodeURIComponent(id)}`)),
   },
@@ -740,8 +768,8 @@ export const api = {
 
   directory: {
     local: (basePath = "") => data(axiosInstance.post<DirectoryNode[]>("/api/directory/local/list", { basePath })),
-    remote: (account: string, path = "") =>
-      data(axiosInstance.post<DirectoryNode[]>("/api/directory/remote/list", { account, path })),
+    remote: (account: string, path = "", withFiles = false) =>
+      data(axiosInstance.post<DirectoryNode[]>("/api/directory/remote/list", { account, path, ...(withFiles ? { withFiles: true } : {}) })),
   },
 
   tmdb: {
