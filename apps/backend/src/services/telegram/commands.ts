@@ -636,13 +636,10 @@ async function finishOffline(
       ...(copyToOpenlist && copyDstDir ? { copyDstDir } : {}),
     });
     const target = task ? `${task.originPath}${subPath ? `/${subPath}` : ""}` : "";
-    const copyNote = !(copyToOpenlist && r.followup)
-      ? ""
-      : copyDstDir
-        ? `，下完让 OpenList 复制到 ${esc(copyDstDir)}`
-        : "，下完让 OpenList 复制走";
-    const defaultDirNote = `\n目录：115 默认目录${copyNote}`;
-    const lines = [`☁️ 已添加 ${r.added} 个云下载${task ? `\n目录：${esc(target)}${r.followup ? "，下完自动生成 strm" : ""}` : defaultDirNote}`];
+    // 按实际登记上的回执说：followup 把「下完只复制」的也算在里面，不能拿它说会生成 strm；任务开着复制的也说一声复制到哪
+    const strmNote = r.strmFollowup ? "，下完自动生成 strm" : "";
+    const copyNote = r.copyDstDir ? `，下完让 OpenList 复制到 ${esc(r.copyDstDir)}` : "";
+    const lines = [`☁️ 已添加 ${r.added} 个云下载\n目录：${task ? `${esc(target)}${strmNote}` : "115 默认目录"}${copyNote}`];
     const failed = r.results.filter((x) => !x.ok);
     if (failed.length) lines.push("", `未接受 ${failed.length} 条：`, ...failed.slice(0, 5).map((x) => `• ${esc(shortName(x.url, 40))} — ${esc(x.message ?? "115 未接受")}`));
     if (r.invalid.length) lines.push(`不支持的链接 ${r.invalid.length} 条`);

@@ -3,7 +3,7 @@
  *   - 建令牌要当前密码；只回一次明文，列表里只有前缀；「查看」总是带上；「全部工具集」存成明确的列表；重名 409；
  *     改档位；撤销、全部撤销；改密码时可以一并撤销
  *   - 令牌碰不了令牌管理、设置、账号、备份（没声明档位的路由一律 403）
- *   - 档位不够 403；/api/share 按动作放行（download_url 不给）；工具集没勾的那组接口 403
+ *   - 档位不够 403；/api/share 按动作放行（download_url 不给）；工具集没勾的那组接口 403；复制队列能看能重试、不能「不跟了」
  *   - 开关关着、过期、默认口令都挡住；和 /mcp 同一个限流桶；令牌调 REST 也进调用记录（带参数摘要和 IP）
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/routes/agent/agent.itest.ts
@@ -25,6 +25,7 @@ import backupRoute from "../system/backup.js";
 import organizeRoute from "../organize/index.js";
 import followRoute from "../follow/index.js";
 import strmRoute from "../strm/index.js";
+import copyRoute from "../copy/index.js";
 import passwordRoute from "../auth/password.js";
 import { DEFAULT_AUTH } from "../../db/defaults.js";
 import { writeAuthPassword } from "../../db/repositories/auth.js";
@@ -49,7 +50,7 @@ before(async () => {
   registerErrorHandling(app);
   await app.register(authPlugin);
   await app.register(cronPlugin);
-  for (const route of [agentRoute, accountRoute, settingsRoute, taskRoute, taskStartRoute, shareRoute, backupRoute, passwordRoute, organizeRoute, followRoute, strmRoute]) {
+  for (const route of [agentRoute, accountRoute, settingsRoute, taskRoute, taskStartRoute, shareRoute, backupRoute, passwordRoute, organizeRoute, followRoute, strmRoute, copyRoute]) {
     await app.register(route);
   }
   await app.ready();
@@ -209,6 +210,26 @@ test("整理 / 追更 / strm 的接口：按档位放行，删除类另要删除
   // 海报、模板试算、删整理记录只认会话
   assert.equal((await req(daily.token, "POST", "/api/organize/preview-name", {})).statusCode, 403);
   assert.equal((await req(daily.token, "DELETE", "/api/organize/runs/x")).statusCode, 403);
+});
+
+test("复制队列的接口：看要查看档、重试要改网盘档，都属于转存那一组；「不跟了」只认会话", async () => {
+  const read = await create({ name: "复制 只读", scopes: ["read"], toolsets: ["transfer"] });
+  const daily = await create({ name: "复制 日常", scopes: ["read", "run", "write"], toolsets: ["transfer"] });
+  const syncOnly = await create({ name: "复制 只同步", scopes: ["read", "run", "write"], toolsets: ["sync"] });
+  const req = (token: string, method: "GET" | "POST" | "DELETE", url: string) => app.inject({ method, url, headers: bearer(token) });
+
+  assert.equal((await req(read.token, "GET", "/api/copy")).statusCode, 200);
+  const retry403 = await req(read.token, "POST", "/api/copy/x/retry");
+  assert.equal(retry403.statusCode, 403);
+  assert.equal(retry403.json().code, "INSUFFICIENT_SCOPE");
+  // 日常档过了档位这一关，记录不存在才回 404
+  assert.equal((await req(daily.token, "POST", "/api/copy/x/retry")).statusCode, 404);
+  const toolset = await req(syncOnly.token, "GET", "/api/copy");
+  assert.equal(toolset.statusCode, 403);
+  assert.equal(toolset.json().code, "TOOLSET_NOT_ALLOWED");
+  const drop = await req(daily.token, "DELETE", "/api/copy/x");
+  assert.equal(drop.statusCode, 403);
+  assert.equal(drop.json().code, "TOKEN_NOT_ALLOWED");
 });
 
 test("令牌调 REST 也扣配额：和 /mcp 同一个桶，掏空了回 429 带 retry-after（这一下不记调用记录）", async () => {

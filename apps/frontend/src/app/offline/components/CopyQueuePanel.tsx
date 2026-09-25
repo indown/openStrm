@@ -34,12 +34,6 @@ const TRIGGER_LABEL: Record<CopyItem["trigger"], string> = {
 };
 
 /**
- * 只有没办成的才给重试：已复制的再点一次，目标里已经有这个文件，只会把它变成「失败」还发一条失败通知；
- * 升级时接管来的只有 OpenList 任务号、没有网盘路径，后端一定拒绝
- */
-const canRetry = (c: CopyItem) => (c.status === "failed" || c.status === "skipped") && !c.adopted;
-
-/**
  * 「复制到 OpenList」的队列。登记是各个来源做的（云下载 / 转存 / 追更 / 监控），
  * 这里只看进度：失败的能单独重试，不想跟的能去掉。
  */
@@ -130,7 +124,7 @@ export function CopyQueuePanel() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                {canRetry(c) && (
+                {c.canRetry && (
                   <Button variant="ghost" size="icon" className="size-8" title="重试复制" disabled={busy} onClick={() => void act(c.id, "retry")}>
                     {busy ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
                   </Button>
@@ -150,7 +144,7 @@ export function CopyQueuePanel() {
           );
         })}
       </ul>
-      {total > items.length && <p className="text-xs text-muted-foreground">只显示最近 {items.length} 条，队列里共 {total} 条</p>}
+      {total > items.length && <p className="text-xs text-muted-foreground">只显示 {items.length} 条（能重试的、还在跑的排在前面），队列里共 {total} 条</p>}
 
       <AlertDialog open={dropTarget !== null} onOpenChange={(o) => !o && setDropTarget(null)}>
         <AlertDialogContent>

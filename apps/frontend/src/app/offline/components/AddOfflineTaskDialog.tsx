@@ -239,11 +239,14 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account: defaultAccou
       setInvalid(res.invalid);
       if (res.added > 0) {
         const copied = copying && copyBase ? `让 OpenList 复制到 ${copyTarget}` : "";
+        // strm 只看「下完生成 strm」的回执：followup 把「下完只复制」的也算在里面（比如关了生成 strm、或者链接都是 115 上已有的）
         const suffix = !res.followup
           ? ""
-          : mode === "task"
+          : res.strmFollowup
             ? `，下载完成后会自动生成 strm${copied ? `，并${copied}` : ""}`
-            : `，下载完成后会${copied}`;
+            : copied
+              ? `，下载完成后会${copied}`
+              : "";
         toast.success(`已添加 ${res.added} 个云下载任务${suffix}`);
         onAdded(
           res.results.filter((r) => r.ok).map((r) => r.url),

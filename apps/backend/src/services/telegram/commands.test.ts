@@ -112,6 +112,10 @@ const deps: Partial<CommandDeps> = {
     calls.push({ fn: "addOffline", args: input });
     return { account: "115", dirId: "9", dirPath: "tv", added: 1, failed: 1, invalid: [],
       followup: Boolean(input.taskId) || input.copyToOpenlist === true,
+      strmFollowup: Boolean(input.taskId),
+      copyDstDir: input.copyToOpenlist === true ? (input.copyDstDir ?? "/local") : null,
+      copyDeleteSource: false,
+      copyBlocked: null,
       results: [{ url: "magnet:?xt=urn:btih:aaa", ok: true, infoHash: "h" }, { url: "magnet:?xt=urn:btih:bbb", ok: false, message: "任务已存在" }] };
   },
   listOffline: async () => ({ tasks: [{ name: "Show.mkv", state: "done", statusText: "下载成功", percent: 100 }], count: 1, quota: 5, total: 10 }),
@@ -746,6 +750,28 @@ test("「搜替代资源」：追更名就是分享码、链接，或者拿不�
     assert.match(sent.at(-1)!.text, /拿不出片名[\s\S]*<code>\/s 片名<\/code>/, id);
   }
   assert.equal(calls.length, 0, "分享码、链接、空的都没拿去搜");
+});
+
+test("云下载回话按实际登记上的回执说：只登记了「下完只复制」的（链接都是 115 上已有的）不说生成 strm，任务开着复制的说复制到哪", async () => {
+  settings.telegram!.allowOfflineAdd = true;
+  setCommandDeps({
+    ...deps,
+    addOffline: async (input) => {
+      calls.push({ fn: "addOffline", args: input });
+      return {
+        account: "115", dirId: "9", dirPath: "tv", added: 0, failed: 1, invalid: [],
+        followup: true, strmFollowup: false, copyDstDir: "/local/tv", copyDeleteSource: false, copyBlocked: null,
+        results: [{ url: "magnet:?xt=urn:btih:aaa", ok: false, infoHash: "h", message: "任务已存在" }],
+      };
+    },
+  });
+  await handleUpdate(bot, msg("magnet:?xt=urn:btih:aaa"));
+  await handleUpdate(bot, cb(findButton("tv")!.callback_data));
+  const go = edited[0].buttons!.flat().find((b) => b.text.includes("就放这里"))!;
+  await handleUpdate(bot, cb(go.callback_data));
+  const text = edited.at(-1)!.text;
+  assert.match(text, /目录：tv，下完让 OpenList 复制到 \/local\/tv/);
+  assert.doesNotMatch(text, /生成 strm/);
 });
 
 test("/tasks 太长被截断时，标签照样成对、没有半个实体（路径里带 & 和 <>）", async () => {

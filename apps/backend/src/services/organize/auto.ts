@@ -15,6 +15,7 @@ import { DUPLICATES_DIR } from "./duplicates.js";
 import { createRun } from "./run.js";
 import { taskAutoMode } from "./settings.js";
 import { releaseCopyHolds } from "../copy/queue.js";
+import { listRunsByStatus } from "../../db/repositories/organize.js";
 
 const log = moduleLogger("organize-auto");
 
@@ -127,6 +128,15 @@ async function fire(taskId: string): Promise<void> {
     // 整理起不来（识别词有语法错误之类）：为等它而压着的复制不用干等兜底时间
     releaseCopyHolds(taskId, Date.now());
   }
+}
+
+/**
+ * 这个任务眼下有没有会直接在网盘上改名挪文件的自动整理：攒着还没建出来的，或者建出来了、正在预览 / 执行的
+ * 「把握大的直接执行」那种。智能体补登记复制时看它：有就先压着，等整理改完名再复制
+ */
+export function autoOrganizeBusy(taskId: string): boolean {
+  if (pending.get(taskId)?.mode === "auto") return true;
+  return listRunsByStatus(["planning", "applying"]).some((r) => r.taskId === taskId && r.mode === "auto");
 }
 
 /**

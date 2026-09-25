@@ -41,7 +41,7 @@ import {
   type OfflineTask,
 } from "../cloud-115/offline.js";
 import { enqueueCopy, type CopyEnqueueResult, type CopyRequest } from "../copy/service.js";
-import { copyOptionsFor, normDir, resolveCopyConfig } from "../copy/paths.js";
+import { copyDstProblem, copyOptionsFor, normDir, relativeTo, resolveCopyConfig } from "../copy/paths.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
 import { normalizeSubPath } from "../strm/naming.js";
@@ -84,6 +84,11 @@ export interface OfflineFollowup {
   misses: number;
   /** 下完之后把产物交给复制队列，复制到这个 OpenList 目录；不填就不复制 */
   copyDstDir?: string;
+  /**
+   * 复制成功后删不删网盘上那份：加任务那一刻按任务的「复制后删源」冻结（同转存 / 追更在登记时冻结），
+   * 下完之前改设置不影响它。存量回执没有这个字段，下完时按任务现在的设置算
+   */
+  copyDeleteSource?: boolean;
 }
 
 const kindOf = (f: OfflineFollowup): OfflineFollowupKind => f.kind ?? "strm";
@@ -245,6 +250,14 @@ export interface AddOfflineResponse {
   results: OfflineAddResult[];
   /** 是否登记了回执（完成后生成 strm，或复制到 OpenList） */
   followup: boolean;
+  /** 其中有没有「下完生成 strm」的回执（只复制的那种不生成 strm） */
+  strmFollowup: boolean;
+  /** 下完复制到 OpenList 的哪个目录；这次不复制（或一条回执都没登记上）是 null */
+  copyDstDir: string | null;
+  /** 复制成功后删不删网盘上的源文件（冻结在回执上的那个；115 上原本就有、不在任务目录里的不删） */
+  copyDeleteSource: boolean;
+  /** 任务开着复制、这次却复制不了的原因（设置没配好、OpenList 账号不可用）；能复制或本来就不复制是 null */
+  copyBlocked: string | null;
 }
 
 export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOfflineResponse> {
@@ -279,24 +292,44 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
   /**
    * 要不要复制：弹框里明确勾了就按它；没说就看任务上的开关
    * （「转存 / 追更 / 云下载 / 监控落下新文件就复制」是同一个开关，云下载不能漏）。
-   * 用户明确勾了却没配好，当场说清楚，别等下完了才发现复制不了。
+   * 用户明确勾了却复制不了，当场说清楚，别等下完了才发现；没明说、只是任务开着的，复制不了就记一笔、照常下载。
    */
-  const copyOpts = copyOptionsFor(task, opts.copyToOpenlist, readAppSettings());
+  const settings = readAppSettings();
+  const forced = opts.copyToOpenlist;
+  const pickedDst = normDir(opts.copyDstDir);
+  const copyOpts = copyOptionsFor(task, forced, settings, pickedDst);
   let copyDst = "";
-  if (opts.copyToOpenlist && !copyOpts.enabled) {
-    const cfg = resolveCopyConfig();
+  let copyBlocked: string | null = null;
+  if (forced && !copyOpts.enabled) {
+    const cfg = resolveCopyConfig(settings);
     if (!cfg.mounts[account.name]) {
       throw new HttpError(400, `账号 ${account.name} 还没填「在 OpenList 里的挂载根」，先到设置页的「复制到 OpenList」里填上`);
     }
-    // 配置齐了却还是 false：没有任务（copyOptionsFor 认任务），或者任务上、设置页都没填目标目录。
-    // 这次弹框里选了就用它，都没有就当场说，不然下完了才发现没地方复制
-    copyDst = normDir(opts.copyDstDir) || cfg.dstDir;
+    // 配置齐了却还是 false：没有任务（copyOptionsFor 认任务），或者任务上、设置页、这次都没给目标目录
+    copyDst = pickedDst || cfg.dstDir;
     if (!copyDst) throw new HttpError(400, "没有复制目标目录：任务上和设置页的「复制到 OpenList」都没填");
   } else if (copyOpts.enabled) {
-    copyDst = normDir(opts.copyDstDir) || normDir(copyOpts.dstDir) || resolveCopyConfig().dstDir;
-  } else if (copyOpts.blocked && task) {
-    log.info(`任务 ${task.originPath} 开着复制到 OpenList，但${copyOpts.blocked}，这次云下载的不复制`);
+    // copyOptionsFor 只看设置上填没填，OpenList 账号本身（被删了、缺密码）到这里才核对：
+    // 不核对的话回执照登、下完才发现排不进复制队列
+    try {
+      const cfg = resolveCopyConfig(settings);
+      copyDst = normDir(copyOpts.dstDir) || cfg.dstDir;
+    } catch (err) {
+      if (forced) throw err;
+      copyDst = "";
+      copyBlocked = messageOf(err);
+    }
+  } else if (copyOpts.blocked) {
+    copyBlocked = copyOpts.blocked;
   }
+  if (copyBlocked && task) log.info(`任务 ${task.originPath} 开着复制到 OpenList，但${copyBlocked}，这次云下载的不复制`);
+  // 这次指定的目标只能在任务上、设置页的目标目录下面：界面和 Telegram 都是从那儿往下选的
+  if (copyDst && pickedDst) {
+    const why = copyDstProblem(pickedDst, task, settings);
+    if (why) throw new HttpError(400, why);
+  }
+  // 删不删源在这一刻按任务的开关冻结（明说要复制、任务却没开的不删）
+  const copyDeleteSource = Boolean(copyDst) && copyOptionsFor(task, undefined, settings, pickedDst).deleteSource;
 
   let results: OfflineAddResult[];
   try {
@@ -328,14 +361,15 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
         attempts: 0,
         misses: 0,
         // 下到任务目录又要复制走：同一条回执兼办，生成 strm 之后再交给复制队列
-        ...(copyDst ? { copyDstDir: copyDst } : {}),
+        ...(copyDst ? { copyDstDir: copyDst, copyDeleteSource } : {}),
       })),
     );
     startOfflineWatcher();
   }
   // 只复制不生成 strm 的（下到默认目录 / 任意目录，或任务目录但关了 strm）单独记一条回执。
-  // 有任务就把 taskId / subPath 一起记上：复制的落点要按任务目录的层级摆，整理挪目录时也要认得出来
-  const copyTargets = strmFollowup ? [] : [...ok, ...dup];
+  // 有任务就把 taskId / subPath 一起记上：复制的落点要按任务目录的层级摆，整理挪目录时也要认得出来。
+  // 115 上原本就有的（「任务已存在」）不跟 strm 回执，但要复制的照样记一条只复制的：同一批里有新有旧时不能漏掉旧的
+  const copyTargets = strmFollowup ? dup : [...ok, ...dup];
   const copyFollowup = Boolean(copyDst) && copyTargets.length > 0;
   if (copyFollowup) {
     addFollowups(
@@ -352,6 +386,7 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
         attempts: 0,
         misses: 0,
         copyDstDir: copyDst,
+        copyDeleteSource,
       })),
     );
     startOfflineWatcher();
@@ -367,6 +402,11 @@ export async function addOfflineTasks(opts: AddOfflineOptions): Promise<AddOffli
     invalid,
     results,
     followup,
+    strmFollowup,
+    // 生成 strm 的回执兼办复制时也带着 copyDstDir，所以两种回执登记上了哪一种都算
+    copyDstDir: followup && copyDst ? copyDst : null,
+    copyDeleteSource: followup && Boolean(copyDst) && copyDeleteSource,
+    copyBlocked,
   };
 }
 
@@ -587,22 +627,25 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
     log.info(`云下载完成：${t.name} → ${f.detail}`);
     if (r.generatedCount > 0) scheduleEmbyRefresh();
     maybeAutoOrganize({ task, paths: [f.subPath ? `${f.subPath}/${item.name}` : item.name], trigger: "offline" });
-    void deps
-      .notify({ type: "offline-done", name: t.name, detail: f.detail, target: `${task.originPath}${f.subPath ? `/${f.subPath}` : ""}` })
-      .catch(() => {});
     if (f.copyDstDir) {
       const dir = `${task.originPath}${f.subPath ? `/${f.subPath}` : ""}`;
-      deps.enqueueCopy({
+      const queued = deps.enqueueCopy({
         account: accountInfo.name,
         sources: [{ path: `${dir}/${item.name}`, isDir: t.isDir, nodeId: t.resultId ? String(t.resultId) : undefined }],
         rootPath: task.originPath,
         taskId: task.id,
         dstDir: f.copyDstDir,
-        deleteSource: copyOptionsFor(task, undefined, readAppSettings()).deleteSource,
+        // 加任务那一刻冻结的；存量回执没有，按任务现在的设置
+        deleteSource: f.copyDeleteSource ?? copyOptionsFor(task, undefined, readAppSettings()).deleteSource,
         trigger: "offline",
         holdForOrganize: effectiveAutoMode(task) === "auto",
       });
+      // 没排上（设置被改坏了、OpenList 账号没了）要写进回执和通知：不然回执显示「已生成」，复制悄悄就没了
+      if (queued.queued === 0 && !queued.duplicates) f.detail += `；没能交给复制队列：${queued.skipped ?? "没有可排的条目"}`;
     }
+    void deps
+      .notify({ type: "offline-done", name: t.name, detail: f.detail, target: `${task.originPath}${f.subPath ? `/${f.subPath}` : ""}` })
+      .catch(() => {});
   } catch (err) {
     const msg = describeFileFailure(err, { relPath: f.subPath ? `${f.subPath}/${f.name}` : f.name, kind: "strm" });
     if (f.attempts >= MAX_ATTEMPTS) finish(f, "failed", `生成 strm 失败：${msg}`);
@@ -665,25 +708,28 @@ async function handoffCopy(f: OfflineFollowup, t: OfflineTask, accountInfo: Acco
     return;
   }
   const task = f.taskId ? getTask(f.taskId) : null;
-  const copyOpts = copyOptionsFor(task, undefined, readAppSettings());
+  const path = joinPanPath(dir, name);
+  // 删源只删任务目录里的：115 上原本就有的（「任务已存在」）可能躺在别处、甚至属于别的任务，不能因为这个任务开着删源就删它
+  const inTask = task != null && relativeTo(task.originPath, path) !== null;
   const queued = deps.enqueueCopy({
     account: accountInfo.name,
-    sources: [{ path: joinPanPath(dir, name), isDir: t.isDir, nodeId: t.resultId ? String(t.resultId) : undefined }],
+    sources: [{ path, isDir: t.isDir, nodeId: t.resultId ? String(t.resultId) : undefined }],
     // 有任务就按任务目录的层级摆，没有就平铺到目标目录
     rootPath: task?.originPath,
     taskId: task?.id,
     dstDir: f.copyDstDir,
     trigger: "offline",
-    deleteSource: copyOpts.deleteSource,
+    deleteSource: inTask && (f.copyDeleteSource ?? copyOptionsFor(task, undefined, readAppSettings()).deleteSource),
   });
   f.name = name;
   // 队列没收下（配置被删了、挂载根还没换算出来）就如实报失败：
-  // 记成「已交给复制队列」的话，这次复制既不在队列里也没人知道它没了
-  if (queued.queued === 0) {
+  // 记成「已交给复制队列」的话，这次复制既不在队列里也没人知道它没了。
+  // 已经排着一样的（或刚复制过）不算没收下：那一条会照办
+  if (queued.queued === 0 && !queued.duplicates) {
     finish(f, "failed", `没能交给复制队列：${queued.skipped ?? "没有可排的条目"}`);
     return;
   }
-  finish(f, "done", `已交给复制队列：${f.copyDstDir ?? "默认目标目录"}`);
+  finish(f, "done", queued.queued > 0 ? `已交给复制队列：${f.copyDstDir ?? "默认目标目录"}` : "复制队列里已经有这一项（或刚复制过）");
 }
 
 /**

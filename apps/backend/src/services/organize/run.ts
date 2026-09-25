@@ -15,6 +15,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
+import { LRUCache } from "lru-cache";
 import type {
   AppSettings,
   OrganizeAttention,
@@ -316,6 +317,7 @@ export async function createRun(input: CreateRunInput): Promise<OrganizeRun> {
   const busy = listRunsByStatus(["planning", "applying", "reverting"]).find((r) => r.taskId === task.id);
   if (busy) throw new HttpError(409, `任务已有一次整理在进行中（${busy.id}）`, { runId: busy.id });
 
+  const startedAt = Date.now();
   const run = insertRun({
     id: randomUUID(),
     taskId: task.id,
@@ -325,9 +327,17 @@ export async function createRun(input: CreateRunInput): Promise<OrganizeRun> {
     mode: input.mode ?? "manual",
     trigger,
   });
+  runStartedAt.set(run.id, startedAt);
   startJob(run.id, (job) => preview(job, run.id));
   return getRun(run.id)!;
 }
+
+/**
+ * 每次 run 建出来的那一刻（毫秒）：放行压着的复制时按它比「在这次整理开始之前登记的」。
+ * 库里的 created_at 只到秒，按秒比会把同一秒里、整理开始之后才登记的复制也提前放掉（那些要等下一次整理）。
+ * 进程重启就没了，那时退回按秒比
+ */
+const runStartedAt = new LRUCache<string, number>({ max: 1000 });
 
 /**
  * onAbort：执行 / 撤销被取消时的收尾。取消多半发生在网盘请求中途、异常从 work 里抛出来，
@@ -1841,10 +1851,11 @@ function movedFiles(task: TaskDefinition, items: OrganizeItem[], how: "done" | "
 
 /**
  * 自动整理这次到头了（执行完、没有要动的、留着等人确认、失败或取消）：
- * 在它开始之前登记、为等它而压着的复制放行。createdAt 只到秒，同一秒登记的也算进来
+ * 在它开始之前登记、为等它而压着的复制放行。开始时间按毫秒记着的就按毫秒比；
+ * 进程重启过、只剩库里到秒的 createdAt 时，同一秒登记的也算进来
  */
-function releaseHeldCopies(run: Pick<OrganizeRun, "taskId" | "createdAt">): void {
-  const n = releaseCopyHolds(run.taskId, (run.createdAt + 1) * 1000);
+function releaseHeldCopies(run: Pick<OrganizeRun, "id" | "taskId" | "createdAt">): void {
+  const n = releaseCopyHolds(run.taskId, runStartedAt.get(run.id) ?? (run.createdAt + 1) * 1000);
   if (n > 0) log.info({ taskId: run.taskId, released: n }, "自动整理办完，放行压着的复制");
 }
 

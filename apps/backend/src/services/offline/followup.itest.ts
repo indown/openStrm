@@ -43,7 +43,7 @@ const copyCalls: CopyRequest[] = [];
 /** 115 目录 id → 网盘绝对路径 的桩 */
 let dirPaths: Record<string, string> = {};
 /** 复制队列收不收：默认收下一条 */
-let enqueueResult: { queued: number; skipped: string | null } = { queued: 1, skipped: null };
+let enqueueResult: { queued: number; skipped: string | null; duplicates?: number } = { queued: 1, skipped: null };
 
 const row = (over: Partial<OfflineTask>): OfflineTask => ({
   infoHash: "hash0", name: "Show.S01", url: "magnet:?xt=urn:btih:one", size: 1, percent: 100, status: 2, state: "done",
@@ -429,4 +429,101 @@ test("strm 回执和复制回执混在一轮里：各走各的", async () => {
   assert.equal(done.length, 2, "两条都办完了");
   assert.equal(generated.length, 1, "只有 strm 那条生成了 strm");
   assert.equal(copyCalls.length, 1, "只有复制那条进了队列");
+});
+
+test("下完交给复制队列却没排上（设置被改坏了）：写进回执说明和通知，不悄悄没了；已经排着一样的不算没排上", async () => {
+  await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", taskId: "t1", subPath: "S1", copyToOpenlist: true });
+  await stopOfflineWatcher();
+  enqueueResult = { queued: 0, skipped: "「复制到 OpenList」没配置好：OpenList 账号不存在：ol" };
+  pages = [[row({})]];
+  await tickFollowups();
+  const [f] = listFollowups();
+  assert.equal(f.status, "done", "strm 照样生成好了");
+  assert.match(f.detail, /已生成 3 个 strm/);
+  assert.match(f.detail, /没能交给复制队列：「复制到 OpenList」没配置好/);
+  const done = notified.find((n) => n.type === "offline-done") as { detail?: string } | undefined;
+  assert.match(done?.detail ?? "", /没能交给复制队列/, "通知里也说");
+
+  // 只复制的回执：队列里已经排着一样的，那一条会照办，不记成失败
+  await __test_resetOffline();
+  await seedCopy();
+  enqueueResult = { queued: 0, skipped: "这些条目已经在队列里或刚复制过", duplicates: 1 };
+  pages = [[row({})]];
+  await tickFollowups();
+  assert.equal(listFollowups()[0].status, "done");
+  assert.match(listFollowups()[0].detail, /复制队列里已经有这一项/);
+});
+
+test("删不删源在加任务那一刻冻结，之后改设置不影响；115 上原本就有、不在任务目录里的不删，在任务目录里的照删", async () => {
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true, deleteSource: true } }]);
+  const r = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", taskId: "t1", subPath: "S1" });
+  await stopOfflineWatcher();
+  assert.equal(r.copyDeleteSource, true);
+  assert.equal(listFollowups()[0].copyDeleteSource, true);
+  // 下完之前关掉了删源：已经登记的照登记时的办（同转存 / 追更在登记时冻结）
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true, deleteSource: false } }]);
+  pages = [[row({})]];
+  await tickFollowups();
+  assert.equal(copyCalls[0]?.deleteSource, true);
+
+  // 「任务已存在」的只复制回执：产物躺在任务目录外面（/别的目录），不能因为这个任务开着删源就删它
+  await __test_resetOffline();
+  copyCalls.length = 0;
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true, deleteSource: true } }]);
+  await addOfflineTasks({ urls: "magnet:?xt=urn:btih:dup", taskId: "t1" });
+  await stopOfflineWatcher();
+  assert.equal(listFollowups()[0].kind, "openlist-copy");
+  pages = [[row({ dirId: "5" })]];
+  await tickFollowups();
+  assert.equal(copyCalls[0]?.deleteSource, false);
+
+  // 躺在任务目录里的照删
+  await __test_resetOffline();
+  copyCalls.length = 0;
+  dirPaths["7"] = "/tv/S1";
+  await addOfflineTasks({ urls: "magnet:?xt=urn:btih:dup", taskId: "t1" });
+  await stopOfflineWatcher();
+  pages = [[row({ dirId: "7" })]];
+  await tickFollowups();
+  assert.equal(copyCalls[0]?.deleteSource, true);
+});
+
+test("任务开着复制、OpenList 账号却被删了：照常下载，回执不带复制目标，结果里说卡在哪；明说要复制的当场拒绝", async () => {
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true } }]);
+  replaceAccounts([account]);
+  const r = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", taskId: "t1" });
+  await stopOfflineWatcher();
+  assert.equal(r.added, 1);
+  assert.equal(r.copyDstDir, null);
+  assert.match(r.copyBlocked ?? "", /OpenList 账号不存在/);
+  assert.equal(listFollowups()[0].copyDstDir, undefined, "不许诺下完复制");
+  await __test_resetOffline();
+  await assert.rejects(addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", taskId: "t1", copyToOpenlist: true }), /OpenList 账号不存在/);
+  assert.equal(listFollowups().length, 0);
+});
+
+test("这次指定的复制目标只能在任务上、设置页的目标目录下面；都没填就不能指定", async () => {
+  await assert.rejects(addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", copyToOpenlist: true, copyDstDir: "/quark/x" }), /复制目标只能是 \/local\/dl/);
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true, dstDir: "/local/tv" } }]);
+  const r = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", taskId: "t1", copyDstDir: "/local/tv/S1" });
+  await stopOfflineWatcher();
+  assert.equal(r.copyDstDir, "/local/tv/S1");
+  // 任务上开着复制、没填目标目录，设置页也没填：这次指定的目标没有根可比，不收（以前是悄悄不复制）
+  await __test_resetOffline();
+  patchAppSettings({ openlistCopy: { account: "ol", mounts: { acc: "/115" } } });
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true } }]);
+  await assert.rejects(addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", taskId: "t1", copyDstDir: "/local/x" }), /都没填复制的目标目录/);
+  assert.equal(listFollowups().length, 0);
+});
+
+test("同一批里有新有旧：新的登记 strm 回执（兼办复制），115 上原本就有的也登记一条只复制的", async () => {
+  replaceTasks([{ ...task, copyToOpenlist: { enabled: true } }]);
+  const r = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one\nmagnet:?xt=urn:btih:dup", taskId: "t1" });
+  await stopOfflineWatcher();
+  assert.equal(r.strmFollowup, true);
+  assert.equal(r.copyDstDir, "/local/dl");
+  const byHash = new Map(listFollowups().map((f) => [f.infoHash, f]));
+  assert.equal(byHash.get("hash0")?.kind ?? "strm", "strm");
+  assert.equal(byHash.get("hash0")?.copyDstDir, "/local/dl");
+  assert.equal(byHash.get("hash1")?.kind, "openlist-copy", "原本就有的不能漏掉");
 });

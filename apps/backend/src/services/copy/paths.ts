@@ -152,6 +152,16 @@ export function copyBlockerFor(settings: AppSettings = readAppSettings()): (task
   };
 }
 
+/** copyOptionsFor 的结论 */
+export interface CopyOptions {
+  enabled: boolean;
+  /** 这一次指定的、或任务上填的目标目录；都没有用设置页的默认目标目录 */
+  dstDir?: string;
+  deleteSource: boolean;
+  /** 要复制却复制不了：卡在哪 */
+  blocked?: string;
+}
+
 /**
  * 这一次复制什么参数。明说了就按它（弹框里的一次性勾选），否则按任务上的开关；
  * 全局没配好 / 这个账号没填挂载根一律当关——同「没配 TMDB key 就不自动整理」的路子。
@@ -164,15 +174,29 @@ export function copyOptionsFor(
   task: Pick<TaskDefinition, "account" | "copyToOpenlist"> | null,
   forced: boolean | undefined,
   settings: AppSettings = readAppSettings(),
-): { enabled: boolean; dstDir?: string; deleteSource: boolean; blocked?: string } {
+  /** 这一次指定的目标目录（云下载弹框里选的）：有它就不再要求任务上、设置页填了目标目录 */
+  dstDir?: string,
+): CopyOptions {
   const account = task?.account;
   const off = { enabled: false, deleteSource: false };
   const cfg = task?.copyToOpenlist;
   const byTask = cfg?.enabled === true;
   if (!account || !(forced ?? byTask)) return off;
-  const gap = copySettingsGap(account, settings, cfg?.dstDir);
+  const dst = normConfigDir(dstDir) || cfg?.dstDir;
+  const gap = copySettingsGap(account, settings, dst);
   if (gap) return { ...off, blocked: gap };
-  return { enabled: true, dstDir: cfg?.dstDir, deleteSource: byTask && cfg?.deleteSource === true };
+  return { enabled: true, dstDir: dst, deleteSource: byTask && cfg?.deleteSource === true };
+}
+
+/**
+ * 这一次指定的复制目标能不能用，null = 能。只能是任务上填的目标目录、设置页的默认目标目录，或者它们下面的目录——
+ * 界面和 Telegram 都是从这两个根往下选的；随便填的话能把东西复制进别的网盘的挂载里，开着删源还会删掉原件
+ */
+export function copyDstProblem(dstDir: string, task: Pick<TaskDefinition, "copyToOpenlist"> | null, settings: AppSettings = readAppSettings()): string | null {
+  const bases = [...new Set([normConfigDir(task?.copyToOpenlist?.dstDir), normConfigDir(settings.openlistCopy?.dstDir)].filter(Boolean))];
+  if (bases.length === 0) return "任务上和设置页都没填复制的目标目录，没法指定这次复制到哪";
+  if (bases.some((b) => relativeTo(b, dstDir) !== null)) return null;
+  return `复制目标只能是 ${bases.join(" 或 ")}，或者它下面的目录`;
 }
 
 /** 只问「这次要不要复制」 */

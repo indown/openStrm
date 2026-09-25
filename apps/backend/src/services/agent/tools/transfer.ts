@@ -16,9 +16,12 @@ import { listWholeShareDir } from "../../drive/share-walk.js";
 import { normalizePath, splitPath, type DriveProvider, type ShareEntry, type ShareRef } from "../../drive/types.js";
 import { scopeFromSelection } from "../../follow/diff.js";
 import { createFollowAfterSave } from "../../follow/service.js";
-import { addOfflineTasks, listOfflineTasks } from "../../offline/service.js";
-import { autoOrganizeFor, effectiveAutoMode, maybeAutoOrganize } from "../../organize/auto.js";
-import { forcedOrganizeMode, saveSelectionToTask, uniqueItems } from "../../share/receive.js";
+import { addOfflineTasks, listOfflineTasks, type AddOfflineResponse } from "../../offline/service.js";
+import { autoOrganizeBusy, autoOrganizeFor, effectiveAutoMode, maybeAutoOrganize } from "../../organize/auto.js";
+import { enqueueReceivedCopy, forcedOrganizeMode, saveSelectionToTask, uniqueItems, type SaveSelectionResult } from "../../share/receive.js";
+import type { CopyOutcome } from "../../copy/service.js";
+import { HttpError } from "../../../lib/http-error.js";
+import { copyBlockerFor, copyDstProblem, copyOptionsFor, normConfigDir } from "../../copy/paths.js";
 import { isSafeItemName } from "../../strm/share-strm.js";
 import { normalizeSubPath } from "../../strm/naming.js";
 import { hasToolset } from "../access.js";
@@ -28,6 +31,7 @@ import { JOB_RETENTION_MS, latestJob, startJob, viewJob, waitForJob, type Job, t
 import { resolveTask, taskBrief } from "../resolve.js";
 import { MAX_WAIT_SECONDS } from "./core.js";
 import { organizeUiPath } from "./organize-view.js";
+import { copyAlwaysOn, copyNotReady, copyOutcomeView, copyProblemFor } from "./copy.js";
 
 /* ------------------------------- 小缓存 ------------------------------- */
 
@@ -254,10 +258,27 @@ export async function organizeHandoff(
 const SAVE_INLINE_WAIT_MS = 40_000;
 const SAVE_ITEMS_MAX = 200;
 
-/** 每次转存请求了什么：去重时要知道上次建没建追更、会不会整理 */
+/** 这次真正转存进来的一项 */
+interface SavedItem {
+  name: string;
+  isDir: boolean;
+}
+
+/** 每次转存请求了什么、真正存了什么：去重时要知道上次建没建追更、会不会整理、会不会复制，补的时候认哪些条目 */
 interface SaveMeta {
   follow: boolean;
   organize: "off" | "review" | "auto";
+  /** 这次会不会交给复制队列（明说要复制，或任务开着复制） */
+  copy: boolean;
+  /** 会的话，复制成功后删不删网盘上的源文件（只看任务的「复制后删源」） */
+  copyDeletes: boolean;
+  /**
+   * 这次转存的条目。不给 itemIds 的整层转存，去重键是「这一层的全部」，再来一次时分享里可能已经多了东西：
+   * 补整理、补复制只能认上次真正存进来的这些，不能拿分享现在的样子去对
+   */
+  items: SavedItem[];
+  /** 转存后的网盘节点 id，和 items 一一对应：作业做完回填（网盘给了才有，夸克有、115 没有），补复制时核对还是不是这一份 */
+  nodeIds?: string[];
 }
 
 interface PreviousSave {
@@ -283,19 +304,60 @@ function previousSave(key: string): PreviousSave | undefined {
   return view.failure?.received === true ? { job, view, meta, received: true } : undefined;
 }
 
-/** 这次比上次多要了什么：上次没建成追更这次要建，上次没整理这次要整理 */
-function extrasWanted(prev: PreviousSave, args: { follow?: boolean; organize?: boolean }): { follow: boolean; organize: boolean } {
-  const followed = prev.job.status === "running" ? prev.meta.follow : Boolean((prev.view.result as { follow?: unknown } | undefined)?.follow);
-  return { follow: args.follow === true && !followed, organize: args.organize === true && prev.meta.organize === "off" };
+/**
+ * 上次那次的复制情况：结束了的看结果里的 copy（strm 没生成好的看报错里带的），还在跑的看它发起时打算怎么办。
+ * 没开复制的是 undefined
+ */
+function prevCopy(prev: PreviousSave): Record<string, unknown> | undefined {
+  if (prev.job.status === "running") {
+    if (!prev.meta.copy) return undefined;
+    return {
+      pending: true,
+      deleteSource: prev.meta.copyDeletes,
+      note: prev.meta.copyDeletes
+        ? "进行中的那次转存完会排进复制队列，复制成功后会删掉网盘上的源文件和本地对应的 strm。"
+        : "进行中的那次转存完会排进复制队列。",
+    };
+  }
+  const copy = (prev.view.result as { copy?: unknown } | undefined)?.copy ?? prev.view.failure?.copy;
+  return copy && typeof copy === "object" ? (copy as Record<string, unknown>) : undefined;
 }
 
-function duplicateResult(prev: PreviousSave, extra: Record<string, unknown> = {}): Record<string, unknown> {
+/** 上次那次已经（或将要）排进复制队列：还在跑的、排上了的、「都已经排着」的都算 */
+function prevCopied(prev: PreviousSave): boolean {
+  const copy = prevCopy(prev);
+  return copy !== undefined && (copy.pending === true || Number(copy.queued ?? 0) > 0 || Boolean(copy.dstDir));
+}
+
+/** 这次比上次多要了什么：上次没建成追更这次要建，上次没整理这次要整理，上次没排上复制这次明说要复制 */
+function extrasWanted(
+  prev: PreviousSave,
+  args: { follow?: boolean; organize?: boolean; copy?: boolean },
+): { follow: boolean; organize: boolean; copy: boolean } {
+  const followed = prev.job.status === "running" ? prev.meta.follow : Boolean((prev.view.result as { follow?: unknown } | undefined)?.follow);
+  return {
+    follow: args.follow === true && !followed,
+    organize: args.organize === true && prev.meta.organize === "off",
+    copy: args.copy === true && !prevCopied(prev),
+  };
+}
+
+/** 同样的请求最近转存过时的回话：带上上次那次的复制情况；这次说了 copy: false 而上次已经复制的，说清楚管不了 */
+function duplicateResult(prev: PreviousSave, args: { copy?: boolean }, extra: Record<string, unknown> = {}): Record<string, unknown> {
   const { job, view } = prev;
+  const copy = prevCopy(prev);
+  const base = {
+    duplicate: true,
+    jobId: job.id,
+    ...(copy ? { copy } : {}),
+    ...(args.copy === false && prevCopied(prev)
+      ? { copyNote: "上次那次已经排进了复制队列，这次的 copy: false 管不了它；要撤回，得请用户在 OpenStrm 云下载页的「复制到 OpenList」里把那几条去掉。" }
+      : {}),
+  };
   if (job.status === "running") {
     return {
-      duplicate: true,
+      ...base,
       state: "running",
-      jobId: job.id,
       message: "同样的转存正在进行，这次没有再存。",
       next: `用 job_status(jobId: "${job.id}", waitSeconds: ${MAX_WAIT_SECONDS}) 等结果`,
       ...extra,
@@ -303,10 +365,9 @@ function duplicateResult(prev: PreviousSave, extra: Record<string, unknown> = {}
   }
   if (prev.received) {
     return {
-      duplicate: true,
+      ...base,
       state: "failed",
       received: true,
-      jobId: job.id,
       message: "10 分钟内转存过同样的内容：条目已经进了网盘，只是 strm 没生成好。这次没有再存，再存网盘里会多一份。",
       failure: view.failure,
       next: "排除问题后用 sync_start 同步这个任务补上 strm；确实要再存一份才传 force: true。",
@@ -314,13 +375,37 @@ function duplicateResult(prev: PreviousSave, extra: Record<string, unknown> = {}
     };
   }
   return {
-    duplicate: true,
+    ...base,
     state: "done",
-    jobId: job.id,
     message: "10 分钟内已经转存过同样的内容，这次没有再存。确实要再存一份就传 force: true。",
     next: `用 job_status(jobId: "${job.id}") 看上次的结果`,
     ...extra,
   };
+}
+
+/**
+ * 上次转存进来的条目现在还在不在原处：补复制之前核对。被整理改名挪走、被人删掉的，按原路径复制不到，还会白等十分钟再报失败；
+ * 原处换成了同名的另一份（知道节点 id 时对不上）也不算。还在的带上现在的节点 id，删源时拿它核对
+ */
+async function savedInPlace(
+  provider: DriveProvider,
+  task: TaskDefinition,
+  subPath: string,
+  saved: SavedItem[],
+  nodeIds: string[] | undefined,
+  signal: AbortSignal,
+): Promise<{ here: Array<SavedItem & { nodeId: string }>; gone: number }> {
+  const dir = await provider.resolvePath(splitPath(subPath ? `${task.originPath}/${subPath}` : task.originPath).join("/"), signal);
+  if (!dir?.isDir) return { here: [], gone: saved.length };
+  const entries = new Map((await provider.listDir(dir.id, signal, { fresh: true })).map((e) => [e.name, e]));
+  const here: Array<SavedItem & { nodeId: string }> = [];
+  saved.forEach((item, i) => {
+    const e = entries.get(item.name);
+    if (!e || e.isDir !== item.isDir) return;
+    if (nodeIds?.[i] && String(e.id) !== String(nodeIds[i])) return;
+    here.push({ ...item, nodeId: String(e.id) });
+  });
+  return { here, gone: saved.length - here.length };
 }
 
 /** 任务目录下的 subPath 不存在就一级级建出来：界面上是先建好目录再选，智能体只能在这里建 */
@@ -346,7 +431,7 @@ async function ensureSubDir(provider: DriveProvider, base: string, rel: string):
 export const shareSaveTool = defineTool({
   name: "share_save",
   title: "转存分享",
-  description: `把 115 / 夸克分享里的条目转存到某个同步任务的网盘目录（可带子目录），然后为它们生成 strm。**这会往网盘里写东西，调用前先把要转存什么、存到哪告诉用户，得到同意再调用。** 不给 itemIds 就转存 dirId 这一层（默认分享的根）下的全部条目。分享和任务必须是同一家网盘。同样的请求在进行中、或结束不到 10 分钟时不会再转存一次（直接返回上次的作业；这次多要了 follow 或 organize 就只补这两样），确实要再存一份传 force: true；结果里有 received: true 的失败表示条目已经进了网盘、只是 strm 没生成好，这时别再转存，用 sync_start 补 strm。${SAVE_INLINE_WAIT_MS / 1000} 秒内做完就直接返回结果，做不完返回 jobId，用 job_status 等（结果保留 ${JOB_RETENTION_MS / 60000} 分钟）。follow 为 true 时顺手建追更订阅，之后分享里有新增会自动转存。`,
+  description: `把 115 / 夸克分享里的条目转存到某个同步任务的网盘目录（可带子目录），然后为它们生成 strm。**这会往网盘里写东西，调用前先把要转存什么、存到哪告诉用户，得到同意再调用。** 不给 itemIds 就转存 dirId 这一层（默认分享的根）下的全部条目。分享和任务必须是同一家网盘。同样的请求在进行中、或结束不到 10 分钟时不会再转存一次（直接返回上次的作业；这次多要了 follow、organize 或 copy 就只补这几样，补的只是上次真正转存进来的那些条目），确实要再存一份传 force: true；结果里有 received: true 的失败表示条目已经进了网盘、只是 strm 没生成好，这时别再转存，用 sync_start 补 strm。${SAVE_INLINE_WAIT_MS / 1000} 秒内做完就直接返回结果，做不完返回 jobId，用 job_status 等（结果保留 ${JOB_RETENTION_MS / 60000} 分钟）。follow 为 true 时顺手建追更订阅，之后分享里有新增会自动转存。copy 管复不复制到 OpenList（由 OpenList 把转存进来的条目复制到另一个存储，比如本地磁盘）：不传按任务的设置（tasks_list 里任务的 copyToOpenlist），true 这次也复制（任务没开也复制）；任务开着复制的没法这次不复制（和界面一样，网盘监控也会把新文件交给复制），传 false 会被拒。删不删网盘上的源文件只看任务设置：任务的 copyToOpenlist.deleteSource 为 true 时，复制成功后会删掉网盘上的源文件和本地对应的 strm，要事先告诉用户。结果里的 copy 说排没排上、删不删源。`,
   scope: "write",
   toolset: "transfer",
   annotations: { readOnly: false, destructive: false, idempotent: false, openWorld: true },
@@ -360,6 +445,10 @@ export const shareSaveTool = defineTool({
     followIntervalMinutes: z.number().int().min(30).max(10080).optional().describe("追更检查间隔（分钟），30 到 10080，不填用默认值"),
     organize: z.boolean().optional().describe("转存完整理：true 这次一定整理（任务设了自动整理就直接执行，否则生成待确认的清单）；false 这次不整理；不填按任务的设置"),
     force: z.boolean().optional().describe("同样的内容刚转存过也再存一份，默认 false"),
+    copy: z
+      .boolean()
+      .optional()
+      .describe("复制到 OpenList：true 这次也复制（任务没开也复制）；不填按任务的设置；任务开着复制的传 false 会被拒。删不删源只看任务设置"),
   }),
   async run(args, ctx) {
     const task = resolveTask(args.task);
@@ -367,6 +456,14 @@ export const shareSaveTool = defineTool({
     const target = providerForTask(task, "share");
     const ref = parseLink(args.link);
     assertSameKind(ref, target);
+    const settings = readAppSettings();
+    // 明说要复制却复制不了：转存前就说，别转存完了才悄悄不复制（和界面转存框同一套判断）
+    if (args.copy === true) {
+      const why = copyBlockerFor(settings)(task);
+      if (why) throw copyNotReady(why);
+    }
+    // 任务开着复制时「这次不复制」兑现不了：网盘监控会把转存进来的新文件照样交给复制（界面上的勾选框也是锁住的）
+    if (args.copy === false && task.copyToOpenlist?.enabled === true) throw copyAlwaysOn();
     const share = target.share!;
     const dirId = args.dirId?.trim() || "0";
     const subPath = normalizeSubPath(args.subPath);
@@ -376,18 +473,24 @@ export const shareSaveTool = defineTool({
       throw new ToolError("VALIDATION", "itemIds 里没有有效的条目 id", "要转存这一层的全部就别传 itemIds；要挑条目就传 share_inspect 给的 id。");
     }
 
+    /** 同样的请求最近转存过：没多要什么就回上次的；上次还在跑的，多要的等它结束后再调一次补 */
+    const shortcut = (p: PreviousSave | undefined): Record<string, unknown> | undefined => {
+      if (!p) return undefined;
+      const extras = extrasWanted(p, args);
+      if (!extras.follow && !extras.organize && !extras.copy) return duplicateResult(p, args);
+      if (p.job.status === "running") {
+        return duplicateResult(p, args, { note: "进行中的那次没带这次的 follow / organize / copy：等它结束后用同样的参数再调一次，只会补这些，不会再转存。" });
+      }
+      return undefined;
+    };
+
     // 去重按请求本身算（不给 itemIds 就是「这一层的全部」），先于列目录：重复的请求不用再打网盘
     const dedupKey = createHash("sha1")
       .update(JSON.stringify([ref.kind, ref.code, dirId, wanted.length > 0 ? [...wanted].sort() : "*", task.id, subPath]))
       .digest("hex");
     let prev = args.force ? undefined : previousSave(dedupKey);
-    if (prev) {
-      const extras = extrasWanted(prev, args);
-      if (!extras.follow && !extras.organize) return duplicateResult(prev);
-      if (prev.job.status === "running") {
-        return duplicateResult(prev, { note: "进行中的那次没带这次的 follow / organize：等它结束后用同样的参数再调一次，只会补这些，不会再转存。" });
-      }
-    }
+    const early = shortcut(prev);
+    if (early) return early;
     // 追更要盯的目录在分享里的路径：拿不到就先别动，建出来的订阅会显示成「分享根目录」
     let watchPath = "";
     if (args.follow && dirId !== "0") {
@@ -420,7 +523,6 @@ export const shareSaveTool = defineTool({
     const bad = entries.filter((e) => !isSafeItemName(e.name));
     if (bad.length > 0) throw new ToolError("BAD_ITEM_NAME", `有 ${bad.length} 个条目的名字不能用作文件名，没法转存`);
     const items = uniqueItems(entries.map((e) => ({ id: e.id, name: e.name, isDir: e.isDir, token: e.token })));
-    const savedPaths = items.map((i) => (subPath ? `${subPath}/${i.name}` : i.name));
 
     // 订阅：名字和界面上一样（分享标题，盯的是子目录就是「标题 / 路径」）；整层转存就追整层，分享者后加的目录也算
     const followInput = async () => {
@@ -442,13 +544,12 @@ export const shareSaveTool = defineTool({
 
     // 上面等网盘的时候可能有一样的请求先发起了：发起前最后看一眼（到 startJob 之间没有 await）
     if (!args.force) prev = previousSave(dedupKey);
+    const late = shortcut(prev);
+    if (late) return late;
     if (prev) {
+      // 只补这次多要的：建追更、整理、复制上次真正转存进来的那些条目；网盘上不再存第二份
       const extras = extrasWanted(prev, args);
-      if (!extras.follow && !extras.organize) return duplicateResult(prev);
-      if (prev.job.status === "running") {
-        return duplicateResult(prev, { note: "进行中的那次没带这次的 follow / organize：等它结束后用同样的参数再调一次，只会补这些，不会再转存。" });
-      }
-      // 只补这次多要的：建追更、整理刚转存进来的这些条目；网盘上不再存第二份
+      const saved = prev.meta.items;
       const done: string[] = [];
       const extra: Record<string, unknown> = {};
       if (extras.follow) {
@@ -458,24 +559,60 @@ export const shareSaveTool = defineTool({
           done.push("建了追更");
         } else if (follow.followError) extra.followError = follow.followError;
       }
+      // 补复制先到网盘上核对条目还在不在原处（这一步要等网盘）。整理排上之后到复制登记之间不能再有 await：
+      // 整理办完只放行在它开始之前登记的复制（releaseCopyHolds）
+      const inPlace = extras.copy ? await savedInPlace(target, task, subPath, saved, prev.meta.nodeIds, ctx.signal) : undefined;
+      let organizeMode: "off" | "review" | "auto" = "off";
+      let organizeSince = 0;
       if (extras.organize) {
         const mode = effectiveAutoMode(task, forcedOrganizeMode(task, true));
         if (prev.received) extra.organizeSkipped = "上次的 strm 还没生成好：先用 sync_start 补上 strm，再用 organize_preview 整理这些条目。";
         else if (mode === "off") extra.organizeSkipped = "没配 TMDB，整理不了。";
         else {
-          const since = Date.now();
-          maybeAutoOrganize({ task, paths: savedPaths, trigger: "share", mode: forcedOrganizeMode(task, true) });
-          extra.organize = await organizeHandoff(task, since, mode, ctx.token);
-          done.push("发起了整理");
+          organizeSince = Date.now();
+          maybeAutoOrganize({ task, paths: saved.map((i) => (subPath ? `${subPath}/${i.name}` : i.name)), trigger: "share", mode: forcedOrganizeMode(task, true) });
+          organizeMode = mode;
         }
       }
-      return duplicateResult(prev, {
+      if (inPlace) {
+        if (inPlace.gone > 0) {
+          extra.copySkipped = `上次转存的 ${saved.length} 项里有 ${inPlace.gone} 项已经不在原处（多半被整理改名挪走了），按原路径复制不到，这些没补复制。`;
+        }
+        if (inPlace.here.length > 0) {
+          const copy = enqueueReceivedCopy({
+            task,
+            account: target.account.name,
+            items: inPlace.here,
+            subPath,
+            copy: true,
+            settings,
+            // 眼下有会直接执行的自动整理（这次补的、或者上次交过去还没办完的）：先压着，等它改完名再复制
+            organizing: organizeMode === "auto" || autoOrganizeBusy(task.id),
+          });
+          if (copy) {
+            extra.copy = copyOutcomeView(copy, ctx.token);
+            if (copy.queued > 0) done.push("补上了复制");
+          }
+        }
+      }
+      if (organizeMode !== "off") {
+        extra.organize = await organizeHandoff(task, organizeSince, organizeMode, ctx.token);
+        done.push("发起了整理");
+      }
+      return duplicateResult(prev, args, {
         ...extra,
         ...(done.length ? { message: `这些条目刚转存过，这次没有再存，只${done.join("、")}。` } : {}),
       });
     }
 
-    const meta: SaveMeta = { follow: args.follow === true, organize: args.organize === false ? "off" : effectiveAutoMode(task, forcedOrganizeMode(task, args.organize)) };
+    const copyOpts = copyOptionsFor(task, args.copy, settings);
+    const meta: SaveMeta = {
+      follow: args.follow === true,
+      organize: args.organize === false ? "off" : effectiveAutoMode(task, forcedOrganizeMode(task, args.organize)),
+      copy: copyOpts.enabled,
+      copyDeletes: copyOpts.deleteSource,
+      items: items.map((i) => ({ name: i.name, isDir: i.isDir })),
+    };
     const job = startJob(
       "share_save",
       `转存到 ${brief.label}${subPath ? `/${subPath}` : ""}`,
@@ -484,16 +621,27 @@ export const shareSaveTool = defineTool({
         // 不传请求的 signal：客户端断开只是不等了，建目录、转存和生成 strm 照做
         if (subPath) await ensureSubDir(target, task.originPath, subPath);
         const since = Date.now();
-        const result = await saveSelectionToTask({
-          task,
-          provider: target,
-          ref,
-          items,
-          subPath,
-          mode: "sync",
-          settings: readAppSettings(),
-          organize: args.organize,
-        });
+        let result: SaveSelectionResult;
+        try {
+          result = await saveSelectionToTask({
+            task,
+            provider: target,
+            ref,
+            items,
+            subPath,
+            mode: "sync",
+            settings: readAppSettings(),
+            organize: args.organize,
+            copy: args.copy,
+          });
+        } catch (err) {
+          // 转存成了、strm 没生成好的时候复制照常排上了，报错里带着排没排上：换成给模型看的样子
+          if (err instanceof HttpError && err.extra.copy && typeof err.extra.copy === "object") {
+            err.extra.copy = copyOutcomeView(err.extra.copy as CopyOutcome, ctx.token);
+          }
+          throw err;
+        }
+        if (result.receivedIds) meta.nodeIds = result.receivedIds;
         const summary =
           result.mode === "sync"
             ? { strmGenerated: result.generatedCount, skipped: result.skippedCount, ...(result.invalidNames.length ? { invalidNames: result.invalidNames } : {}) }
@@ -506,6 +654,7 @@ export const shareSaveTool = defineTool({
           saved: items.length,
           ...summary,
           ...(organize ? { organize } : {}),
+          ...(result.copy ? { copy: copyOutcomeView(result.copy, ctx.token) } : {}),
           ...(follow.follow ? { follow: { id: follow.follow.id, name: follow.follow.name, intervalMinutes: follow.follow.intervalMinutes } } : {}),
           ...(follow.followError ? { followError: follow.followError } : {}),
         };
@@ -542,7 +691,7 @@ const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1
 export const offlineAddTool = defineTool({
   name: "offline_add",
   title: "添加 115 云下载",
-  description: `把磁力、ed2k、http(s)、ftp 链接交给 115 在云端下载（每行一条，40 位 info hash 也行；去掉重复和认不出的之后最多 ${OFFLINE_URLS_MAX} 条）。**这会往网盘里加东西，调用前先告诉用户要下什么、下到哪，得到同意再调用。** 给 task 就下到这个任务的网盘目录（可带子目录），下完自动为产物生成 strm；不给就下到 115 默认目录，不生成 strm。只支持 115 账号。下载进度用 offline_list 看。`,
+  description: `把磁力、ed2k、http(s)、ftp 链接交给 115 在云端下载（每行一条，40 位 info hash 也行；去掉重复和认不出的之后最多 ${OFFLINE_URLS_MAX} 条）。**这会往网盘里加东西，调用前先告诉用户要下什么、下到哪，得到同意再调用。** 给 task 就下到这个任务的网盘目录（可带子目录），下完自动为产物生成 strm；不给就下到 115 默认目录，不生成 strm。只支持 115 账号。下载进度用 offline_list 看。copy 管下完复不复制到 OpenList（由 OpenList 把产物复制到另一个存储，比如本地磁盘）：true 复制，给了 task 按任务目录的层级摆，不给 task 就平铺到目标目录；不填按任务的设置（不给 task 就不复制）；任务开着复制的没法这次不复制（和界面一样），传 false 会被拒。copyDstDir 只能是任务上或设置页填的目标目录、或者它们下面的目录。删不删网盘上的源文件在加任务这一刻按任务设置定下来：任务开着「复制后删源」的（tasks_list 里 copyToOpenlist.deleteSource），复制成功后会删掉任务目录里的源文件，要事先告诉用户。`,
   scope: "write",
   toolset: "transfer",
   annotations: { readOnly: false, destructive: false, idempotent: false, openWorld: true },
@@ -550,6 +699,15 @@ export const offlineAddTool = defineTool({
     urls: z.string().min(1).max(20000).describe("下载链接，每行一条"),
     task: z.string().max(500).optional().describe("下到哪个任务：任务 id，或网盘路径 / 本地路径 / 它们的最后一段；必须是 115 账号的任务"),
     subPath: z.string().max(1000).optional().describe("任务网盘目录下的子目录，用 / 分隔；不填就是任务目录本身"),
+    copy: z
+      .boolean()
+      .optional()
+      .describe("下完复制到 OpenList：true 复制；不填按任务的设置（不给 task 就不复制）；任务开着复制的传 false 会被拒。删不删源只看任务设置"),
+    copyDstDir: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe("复制到 OpenList 里的哪个目录（完整路径）：只能是任务上或设置页填的目标目录、或者它们下面的目录；不填用任务上的，再没有用设置页的；只在复制时有用"),
   }),
   async run(args) {
     // 和提交时同一套认链接的规则：重复的、认不出的不占名额
@@ -568,7 +726,37 @@ export const offlineAddTool = defineTool({
       const provider = providerForTask(task);
       if (provider.kind !== "115") throw new ToolError("NOT_115", "云下载只支持 115 账号的任务", "换一个 115 账号的任务，或者不给 task 下到 115 默认目录。");
     }
-    const res = await addOfflineTasks({ urls, ...(task ? { taskId: task.id, subPath: normalizeSubPath(args.subPath) } : {}) });
+    const settings = readAppSettings();
+    const copyDstDir = normConfigDir(args.copyDstDir);
+    // 任务开着复制时「这次不复制」兑现不了：网盘监控会把下完落进任务目录的文件照样交给复制（界面上的勾选框也是锁住的）
+    if (args.copy === false && task?.copyToOpenlist?.enabled === true) throw copyAlwaysOn();
+    // 不填按任务开关：开着的也算「会复制」，这时 copyDstDir 才有用
+    if (copyDstDir && !(args.copy ?? task?.copyToOpenlist?.enabled === true)) {
+      throw new ToolError(
+        "VALIDATION",
+        "给了 copyDstDir，但这次不会复制到 OpenList",
+        task ? "要复制就传 copy: true；不复制就别传 copyDstDir。" : "不给 task 时要复制得传 copy: true；不复制就别传 copyDstDir。",
+      );
+    }
+    // 这次指定的目标只能在任务上、设置页的目标目录下面（界面和 Telegram 都是从那儿往下选的），提交前就说
+    if (copyDstDir) {
+      const why = copyDstProblem(copyDstDir, task ?? null, settings);
+      if (why) throw new ToolError("VALIDATION", why, "不指定 copyDstDir 就复制到任务上或设置页的目标目录；要换地方得在它下面挑（可以用 drive_browse 看 OpenList 账号的目录）。");
+    }
+    // 明说要复制却复制不了：提交前就说，别下完了才发现
+    if (args.copy === true) {
+      const account = task?.account ?? listAccounts().find((a) => a.accountType === "115")?.name;
+      // 一个 115 账号都没有时交给 addOfflineTasks 去报，和不复制时同一句话
+      const why = account ? copyProblemFor(account, copyDstDir || task?.copyToOpenlist?.dstDir, settings) : null;
+      if (why) throw copyNotReady(why);
+    }
+    const res = await addOfflineTasks({
+      urls,
+      ...(task ? { taskId: task.id, subPath: normalizeSubPath(args.subPath) } : {}),
+      ...(args.copy !== undefined ? { copyToOpenlist: args.copy } : {}),
+      ...(copyDstDir ? { copyDstDir } : {}),
+    });
+    const copy = offlineCopyView(res, task);
     return {
       account: res.account,
       ...(task ? { task: taskBrief(task) } : {}),
@@ -584,12 +772,38 @@ export const offlineAddTool = defineTool({
         ...(r.infoHash ? { infoHash: r.infoHash } : {}),
         ...(r.message ? { message: r.message } : {}),
       })),
-      strmAfterDownload: res.followup,
-      next: "用 offline_list 看下载进度；下到任务目录的，下完会自动生成 strm。",
+      // 只算生成 strm 的回执：「下完只复制」的那种也算进 followup，不能拿它说会生成 strm
+      strmAfterDownload: res.strmFollowup,
+      ...(copy ? { copy } : {}),
+      next: `${["用 offline_list 看下载进度", res.strmFollowup ? "下完会自动生成 strm" : "", res.copyDstDir ? "下完之后的复制进度用 copy_list 看" : ""].filter(Boolean).join("；")}。`,
       ...openInUi("/offline"),
     };
   },
 });
+
+/**
+ * 云下载结果里的 copy：下完复制到哪、删不删源（加任务这一刻冻结在回执上的，之后改设置不影响）；
+ * 任务开着复制却复制不了（设置没配好、OpenList 账号不可用）的也说一声。不复制就不带
+ */
+function offlineCopyView(
+  res: Pick<AddOfflineResponse, "copyDstDir" | "copyDeleteSource" | "copyBlocked">,
+  task: TaskDefinition | undefined,
+): Record<string, unknown> | undefined {
+  if (res.copyDstDir) {
+    // 115 上原本就有的（「任务已存在」）可能不在任务目录里：那种平铺复制、也不删
+    const layout = task ? "（在任务目录里的按层级摆）" : "（平铺）";
+    return {
+      dstDir: res.copyDstDir,
+      deleteSource: res.copyDeleteSource,
+      note: res.copyDeleteSource
+        ? `下完排进复制队列，复制到 ${res.copyDstDir} 下${layout}；任务开着「复制后删源」，复制成功后会删掉任务目录里的源文件，本地对应的 strm 也跟着删。`
+        : `下完排进复制队列，复制到 ${res.copyDstDir} 下${layout}。`,
+    };
+  }
+  return res.copyBlocked
+    ? { reason: res.copyBlocked, note: "任务开着复制，但现在复制不了（原因见 reason），这次下完不会复制；只能由用户到设置页的「复制到 OpenList」里处理。" }
+    : undefined;
+}
 
 function humanSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -601,7 +815,8 @@ function humanSize(bytes: number): string {
 export const offlineListTool = defineTool({
   name: "offline_list",
   title: "115 云下载列表",
-  description: "看 115 云下载的列表（按页，新的在前）和剩余配额，以及「下完生成 strm」的回执：哪些还在等、最近哪些生成好了或失败了。",
+  description:
+    "看 115 云下载的列表（按页，新的在前）和剩余配额，以及下完要做的事的回执：「下完生成 strm」的（strmPending / strmRecent，带 copyTo 的生成完还会复制到 OpenList）和「下完只复制到 OpenList」的（copyPending / copyRecent）。复制本身的进度用 copy_list 看。",
   scope: "read",
   toolset: "transfer",
   annotations: REMOTE_READ,
@@ -611,8 +826,10 @@ export const offlineListTool = defineTool({
   }),
   async run(args) {
     const res = await listOfflineTasks(args.account?.trim() || undefined, args.page ?? 1);
-    // 只看「下完生成 strm」的回执；复制到 OpenList 的那种不生成 strm
+    // 两种回执分开列：「下完只复制到 OpenList」的不生成 strm，混进 strm 那两栏会让模型以为会有 strm
     const followups = res.followups.filter((f) => (f.kind ?? "strm") === "strm");
+    const copyOnly = res.followups.filter((f) => f.kind === "openlist-copy");
+    const copyTo = (f: { copyDstDir?: string }) => (f.copyDstDir ? { copyTo: f.copyDstDir } : {});
     return {
       account: res.account,
       page: res.page,
@@ -627,11 +844,20 @@ export const offlineListTool = defineTool({
         size: humanSize(t.size),
         addedAt: fmtTime(t.addTime * 1000),
       })),
-      strmPending: followups.filter((f) => f.status === "pending").map((f) => ({ name: f.name, addedAt: fmtTime(f.addedAt) })),
+      strmPending: followups.filter((f) => f.status === "pending").map((f) => ({ name: f.name, addedAt: fmtTime(f.addedAt), ...copyTo(f) })),
       strmRecent: followups
         .filter((f) => f.status !== "pending")
         .slice(0, 10)
-        .map((f) => ({ name: f.name, status: f.status, detail: f.detail, at: fmtTime(f.doneAt ?? f.addedAt) })),
+        .map((f) => ({ name: f.name, status: f.status, detail: f.detail, at: fmtTime(f.doneAt ?? f.addedAt), ...copyTo(f) })),
+      ...(copyOnly.length
+        ? {
+            copyPending: copyOnly.filter((f) => f.status === "pending").map((f) => ({ name: f.name, addedAt: fmtTime(f.addedAt), ...copyTo(f) })),
+            copyRecent: copyOnly
+              .filter((f) => f.status !== "pending")
+              .slice(0, 10)
+              .map((f) => ({ name: f.name, status: f.status, detail: f.detail, at: fmtTime(f.doneAt ?? f.addedAt), ...copyTo(f) })),
+          }
+        : {}),
       ...openInUi("/offline"),
     };
   },

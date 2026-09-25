@@ -69,6 +69,11 @@ export interface CopyRecord {
   holdUntil?: number;
   /** 本来要删源、提交时核对不了网盘节点而关掉了：办完时把原因写进说明 */
   sourceKept?: string;
+  /**
+   * 这条用不着了（记成 skipped）：整理把目录里的文件挪走、已按文件另排；或者同一个目标后来由另一条复制好了。
+   * 和「目标里已有同名」的跳过不一样，重试只会再失败一次
+   */
+  superseded?: boolean;
 }
 
 const QUEUE_KEY = KEY.copyQueue;
@@ -134,7 +139,7 @@ export function commitCopies(changed: CopyRecord[], now = Date.now(), added: Cop
 }
 
 /** 同一个来源、同一个目标 */
-function sameTarget(
+export function sameTarget(
   a: Pick<CopyRecord, "account" | "srcDir" | "name" | "dstDir">,
   b: Pick<CopyRecord, "account" | "srcDir" | "name" | "dstDir">,
 ): boolean {
@@ -142,14 +147,16 @@ function sameTarget(
 }
 
 /**
- * 已经排着一条一样的、或者刚复制完没多久，就不重复登记。
+ * 已经排着的一样的一条、或者刚复制完没多久的那条：有就不重复登记，没有返回 undefined。
  * 重试（retryCopy）走的是另一条路，不看这里。
  */
-export function isDuplicate(rows: CopyRecord[], next: CopyRecord, now = Date.now()): boolean {
-  return rows.some(
+export function findDuplicate(rows: CopyRecord[], next: CopyRecord, now = Date.now()): CopyRecord | undefined {
+  return rows.find(
     (r) => sameTarget(r, next) && (r.status === "pending" || ((r.status === "done" || r.status === "skipped") && now - (r.doneAt ?? 0) < RECENT_DONE_MS)),
   );
 }
+
+export const isDuplicate = (rows: CopyRecord[], next: CopyRecord, now = Date.now()): boolean => findDuplicate(rows, next, now) !== undefined;
 
 export const hasPendingCopies = (): boolean => listCopies().some((c) => c.status === "pending");
 
@@ -234,6 +241,7 @@ export function rewriteCopyPaths(
       }
       if (removed.has(rel)) {
         c.status = "skipped";
+        c.superseded = true;
         c.doneAt = now;
         c.detail = `整理把「${c.name}」里的文件挪到了别处（目录已腾空删掉），已按文件分别排队复制`;
         changed.push(c);

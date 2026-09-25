@@ -304,6 +304,9 @@
         },
         "force": {
           "type": "boolean"
+        },
+        "copy": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -336,6 +339,13 @@
           "maxLength": 500
         },
         "subPath": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "copy": {
+          "type": "boolean"
+        },
+        "copyDstDir": {
           "type": "string",
           "maxLength": 1000
         }
@@ -1190,6 +1200,67 @@
       },
       "required": [
         "keyword"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "copy_list",
+    "scope": "read",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "failed",
+            "done",
+            "skipped",
+            "all"
+          ]
+        },
+        "task": {
+          "type": "string",
+          "maxLength": 500
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "copy_retry",
+    "scope": "write",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "ids": {
+          "minItems": 1,
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        }
+      },
+      "required": [
+        "ids"
       ],
       "additionalProperties": false
     }

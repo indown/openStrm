@@ -16,6 +16,7 @@ import { JOB_RETENTION_MS, jobSnapshot, startJob, viewJob, waitWithProgress } fr
 import { resolveTask, taskBrief } from "../resolve.js";
 import { MAX_WAIT_SECONDS } from "./core.js";
 import { organizeHandoff } from "./transfer.js";
+import { copyOutcomeView } from "./copy.js";
 
 const STATUS_TEXT: Record<ShareFollowStatus, string> = {
   idle: "正常",
@@ -124,7 +125,7 @@ const CHECK_INLINE_WAIT_MS = 40_000;
 export const followCheckTool = defineTool({
   name: "follow_check",
   title: "追更立即检查",
-  description: `立刻检查一条追更订阅：列分享目录，有新增就照订阅转存到任务目录并生成 strm（和定时检查做的一样）。**有新增时会往网盘里转存，调用前先告诉用户，得到同意再调用。** 暂停着的订阅不检查：要先用 follow_update 恢复。任务开了自动整理的，新增会交给整理，结果里带整理清单的 runId。${CHECK_INLINE_WAIT_MS / 1000} 秒内做完就直接返回结果，做不完返回 jobId，用 job_status 等（结果保留 ${JOB_RETENTION_MS / 60000} 分钟）。这条订阅正在检查时直接返回当前状态。`,
+  description: `立刻检查一条追更订阅：列分享目录，有新增就照订阅转存到任务目录并生成 strm（和定时检查做的一样）。**有新增时会往网盘里转存，调用前先告诉用户，得到同意再调用。** 暂停着的订阅不检查：要先用 follow_update 恢复。任务开了自动整理的，新增会交给整理，结果里带整理清单的 runId。任务开了「复制到 OpenList」的，新增会排进复制队列（结果里的 copy）；其中开着「复制后删源」的（tasks_list 里 copyToOpenlist.deleteSource），复制成功后会删掉网盘上的源文件，要事先告诉用户。${CHECK_INLINE_WAIT_MS / 1000} 秒内做完就直接返回结果，做不完返回 jobId，用 job_status 等（结果保留 ${JOB_RETENTION_MS / 60000} 分钟）。这条订阅正在检查时直接返回当前状态。`,
   scope: "write",
   toolset: "follow",
   annotations: { readOnly: false, destructive: false, idempotent: false, openWorld: true },
@@ -146,6 +147,7 @@ export const followCheckTool = defineTool({
         follow: followView(r.follow),
         ...(r.run ? { run: runView(r.run) } : { message: "没有新增。" }),
         ...(organize ? { organize } : {}),
+        ...(r.copy ? { copy: copyOutcomeView(r.copy, ctx.token) } : {}),
       };
     });
     await waitWithProgress(job.settled, CHECK_INLINE_WAIT_MS, ctx, () => jobSnapshot(job));

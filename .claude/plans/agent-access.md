@@ -1756,6 +1756,213 @@ P3 做完（HDHive 两个工具除外，见上面的范围），没提交。工�
 
 浏览器（全新临时库起后端 4100 + dev 3223）：「改权限」选完全时出密码框、没填时保存是灰的；改密码页只连了网页客户端时也出「同时撤销全部 1 个已连接的网页客户端」；Telegram 页打开「允许批准网页客户端的连接」先弹要密码的框、没填时「开启」是灰的、设置没动。没往密码框里填过东西，提档和开关要密码的后端行为由 `oauth.itest` 管。失败面板「重试」的删除确认没在浏览器里看（要一次执行过、留着删除项的整理，临时库里做不出来），靠代码和 `deletes` 的后端测试。都没提交。
 
+## 复制到 OpenList 接进智能体（2026-09-25）
+
+起因：用户问「现在 mcp 支持复制到 OpenList 了吗」，查完说了现状和建议，用户说「按照你的推荐制定方案开始吧」。复制队列本身的设计见 openlist-copy.md。
+
+### 现状
+
+- 33 个工具里没有一个和复制有关，工具清单快照里也搜不到。
+- 会顺带触发：`share_save`、`follow_check`、`offline_add` 调的是和界面同一套服务函数，都不传「复制」参数，所以按任务上的开关（`copyOptionsFor(task, undefined)`）。任务开了复制，智能体转存完照样排进复制队列。
+- 缺的：
+  1. 不能这一次单独要复制 / 不要复制。界面的转存框有一次性勾选，云下载能选复制到哪，Telegram 云下载有「115 默认目录，下完让 OpenList 复制走」。
+  2. 看不到结果。工具结果里不说排没排上；`offline_list`、`overview` 还专门把复制回执滤掉了；REST 有 `/api/copy`（看、重试、去掉），工具里没有。
+  3. 工具描述完全没提复制。删源只认任务开关，所以任务开着「复制后删源」时，智能体告诉用户「转存了 N 个、生成了 N 个 strm」，之后网盘上的源文件和这些 strm 都会被删掉，它自己并不知道。
+- 「手动复制任意目录」界面也没有（`routes/copy` 的注释写明没有「新建」），不算 MCP 的缺口，这次不做。
+
+### 方案
+
+**1. `share_save` 加 `copy`（布尔，可不填）**
+
+- `true`：这次复制，任务没开也复制；不删源（删源只认任务开关，和界面转存框的一次性勾选一样）。
+- `false`：这次不复制。任务开着也不复制，也就不会删源。（评审推翻：任务开着复制时兑现不了，改成直接拒，见「评审与修补」）
+- 不填：按任务开关。
+- 明说 `true` 却复制不了：转存前就报 `COPY_NOT_READY`（`copyBlockerFor`，和界面同一套判断），不先转存再说。
+- 结果带 `copy: { queued, dstDir, deleteSource, reason? }`。任务开着复制却卡住（设置没配好、没填挂载根）也带上 `reason`，不再只写一行日志。
+- 去重：10 分钟内同样的请求再来、这次多要了 `copy: true`、上次没复制，就只补登记复制，和 `follow` / `organize` 一样只补这一样、网盘上不再存第二份。上次转存时自动整理是「直接执行」的不补：条目可能已经被整理改名挪走，按转存时的路径复制不到，照实说。（评审改了：不再按「上次是不是自动整理」猜，只认上次真正转存的条目、登记前到网盘核对还在不在原位）
+- 服务层：`saveSelectionToTask` 的结果带 `copy`（界面、Telegram 不读这个字段，不受影响）。「按 `copyOptionsFor` 的结论登记、整理成回显的样子」抽成 `copy/service.ts` 的一个函数，转存和追更共用。
+
+**2. `offline_add` 加 `copy`、`copyDstDir`**
+
+- `copy: true`：下完复制。给了 task 就按任务目录的层级摆；不给 task 就下到 115 默认目录、平铺到目标目录（和 Telegram 那个按钮一样）。
+- `copy: false`：这次不复制。不填按任务开关，不给 task 就不复制。（评审推翻，同转存）
+- `copyDstDir`：OpenList 里的完整路径。不填用任务上的，任务上也没填就用设置页的默认目标目录。只在复制时有用：不复制却给了就报错，免得模型以为会复制。（评审后加了：只能落在任务上或设置页的目标目录下面）
+- 明说 `true` 却复制不了：提交前报 `COPY_NOT_READY`。
+- 结果带 `copy: { dstDir, deleteSource, when }`，`deleteSource` 按任务现在的设置说（云下载是下完那一刻才定的）。（实际是 `{ dstDir, deleteSource, note }`，没单列 `when`；评审后删源改成加任务那一刻冻结在回执上）
+- 顺手修：结果里的 `strmAfterDownload` 现在直接用服务层的 `followup`，而它对「只复制」的回执也是 true。不给 task 也能复制之后这里会说错，改成只算生成 strm 的回执。服务层的结果加 `strmFollowup`、`copyDstDir` 两个字段。
+
+**3. `follow_check`**：结果带 `copy`，说这次的新增有没有排进复制、删不删源（按订阅所在任务的开关）。服务层 `CheckResult` 多带一个 `copy`；REST 的立即检查也跟着回，界面不读。
+
+**4. 新工具，放进 transfer 组**
+
+| 工具 | 档 | 注解 | 做什么 |
+|---|---|---|---|
+| `copy_list` | read | RO | 复制队列：按状态、任务过滤；每条带源（网盘账号 + 路径）、复制到哪、谁触发的、删不删源、说明、能不能重试；各状态的条数；设置配没配好（OpenList 账号名、默认目标目录、各网盘账号的挂载根，不给地址和密码）。最多 30 条；有失败的，next 指向 `copy_retry`（没有「改网盘」档就请用户到云下载页重试）；openInUi 指到 `/offline#copy-queue` |
+| `copy_retry` | write | I, OW | 按 id 重排失败 / 跳过的，一次最多 50 个，口径和界面的 `canRetry` 一样（已复制的、升级时接管的不收）。已经在队列里的不当错误。描述写明：记录上标着删源的，复制成功后会删掉网盘上那份 |
+
+- **为什么放 transfer 组、不单开一组**：
+  - 复制队列在界面上就在云下载页；REST 的云下载接口也属于 transfer 组；转存、云下载的 `copy` 参数本来就在这一组。
+  - 单开一组的话，老令牌和已连接的客户端（比如 ChatGPT）要去设置页「改权限」勾上才看得到队列，`copy` 参数却直接能用，拆得别扭。
+  - 老令牌会多出 `copy_list`（只读）和 `copy_retry`（改网盘档）。这一组本来就有会触发同样复制的写工具（`share_save`、`offline_add`），不算多出新种类的风险。追更当初单独成组，是因为会多出删订阅这种性质不同的工具。
+  - 组名还叫「搜资源、转存与云下载」，复制算转存和云下载的后续。
+- **不做 `copy_drop`**（从队列里去掉一条）：界面上有，但只是「不再盯」，智能体用不着；REST 的 DELETE 继续只认会话。
+
+**5. 看得见**
+
+- `overview` 多一个 `openlistCopy: { configured, pending, failed, afterDownload }`：只看设置和队列，不联网。
+- `tasks_list`：开了复制的任务带 `copyToOpenlist: { dstDir, deleteSource, blocked? }`。
+- `offline_list`：只复制的回执放进 `copyPending` / `copyRecent`；生成 strm 的回执，生成完还要复制的带 `copyTo`。
+
+**6. 说明**
+
+- `share_save`、`offline_add`、`follow_check`、`offline_list`、`overview`、`tasks_list` 的描述。
+- 服务端说明的「概念」加一句。
+- `USAGE_NOTES` 加一条：转存 / 云下载前看任务的 `copyToOpenlist`，标了删源的要先告诉用户。
+- README 智能体一节。
+
+**7. REST**
+
+- `GET /api/copy` 声明 read + transfer；`POST /api/copy/:id/retry` 声明 write + transfer。`DELETE` 不开。
+- `retryCopy` 不再收已复制的（409）。界面本来就不给这个按钮，后端却收，令牌走 REST 就能把复制好的弄成「失败」还发一条失败通知。和工具同一个口径。
+
+**8. 测试**
+
+- 新增 `routes/mcp/mcp-copy.itest.ts`：官方 SDK 客户端走真实端口，网盘用 FakeDrive，OpenList 那几个调用换成桩，复制循环停着不跑。覆盖三种 `copy` 取值、`COPY_NOT_READY` 时网盘没动、去重补复制和不补的情况、云下载不给 task 也复制、`copyDstDir` 不复制却给了、`offline_list` 的回执、`follow_check` 的 `copy`、`copy_list` 过滤和配置、`copy_retry` 各种状态、只读令牌看不到 `copy_retry`、`overview` / `tasks_list` 的新字段、REST 档位。
+- 工具清单快照（只增：两个新工具、两个工具的新参数）；`copy.itest` 加「已复制的不让重试」。
+
+**9. 收尾**：后端全量测试、前后端 tsc / eslint；scratch 库起一遍，用 MCP 客户端列工具、调新工具。
+
+发版说明要写的：
+
+- 工具 33 → 35（`copy_list`、`copy_retry`，在「搜资源、转存与云下载」组里，勾了这一组的老令牌直接能用）。
+- `share_save` / `offline_add` 多了 `copy` 参数（`offline_add` 还有 `copyDstDir`）。
+- `offline_add` 结果里的 `strmAfterDownload` 只算生成 strm 的回执。
+- `overview`、`tasks_list`、`offline_list`、`follow_check`、`share_save` 的结果多了复制相关字段。
+- ChatGPT 缓存工具列表，发版后要在它的设置里点刷新。
+
+### 进度
+
+- [x] 1 `share_save` 的 `copy`（含服务层结果、去重补复制）
+- [x] 2 `offline_add` 的 `copy` / `copyDstDir`、`strmAfterDownload` 口径
+- [x] 3 `follow_check` 的 `copy`
+- [x] 4 `copy_list` / `copy_retry`
+- [x] 5 `overview` / `tasks_list` / `offline_list`
+- [x] 6 说明与 README
+- [x] 7 REST 开放、`retryCopy` 不收已复制的
+- [x] 8 测试
+- [x] 9 收尾
+
+### 实施记录（2026-09-25）
+
+按方案做完，没提交。工具 33 → 35。做的时候才定下来、或者和方案不一样的：
+
+- **服务层**
+  - `copy/service.ts`：`enqueueCopy` 的结果多带 `dstDir`（这次用的目标根）；新增 `CopyOutcome` 和 `enqueueCopyFor(按 copyOptionsFor 的结论登记，卡住的交给 onBlocked 记日志并照实回)`；`TRIGGER_LABEL` 导出成 `COPY_TRIGGER_LABEL`；新增 `canRetryCopy`（界面按钮、工具、`retryCopy` 同一个口径），`retryCopy` 对已复制的回 409。
+  - `copy/paths.ts`：`copyOptionsFor` 的返回类型起名 `CopyOptions`。
+  - `share/receive.ts`：抽出 `enqueueReceivedCopy`（转存完顺手登记、智能体补复制共用），`saveSelectionToTask` 三种结果都带 `copy`。
+  - `follow/service.ts`：`runCheck` 多一个 `sink` 参数把这次的复制结果交回来（不进订阅记录），`CheckResult.copy`。
+  - `offline/service.ts`：`AddOfflineResponse` 加 `strmFollowup`、`copyDstDir`。
+- **工具**：新文件 `tools/copy.ts`，放 `copy_list` / `copy_retry` 和几处共用的回显（`copyOutcomeView`、`taskCopyView`、`copyOverview`、`copyProblemFor`、`copyNotReady`、`copyConfigState`）。
+  - `copyOutcomeView` 要令牌：`follow_check` 属于追更组，只开了追更组的令牌调不了 `copy_list`，这时 note 改说「进度在云下载页看」（P3 评审第 16 条同一个坑）。
+  - `share_save` 去重补复制：整理先排、复制紧跟着登记，中间不能有 await——整理办完只放行在它开始之前登记的复制（`releaseCopyHolds` 按 `addedAt <= before`），先 await 整理的交接再登记，复制会白等十分钟兜底。上次 strm 没生成好（`received`）的那次没交给整理，照样能补。
+  - 上次复制过没有：进行中的看 `meta.copy`，结束的看结果里 `copy.queued > 0`。再要一次时队列按「同一来源、同一目标」去重，回 `queued: 0`，不会排两份。
+  - `offline_add` 的预检：不给 task 时账号取第一个 115 账号（和 `resolveAccount115` 一样）；一个 115 账号都没有就不预检，交给 `addOfflineTasks` 报原来那句话。
+  - 「找片入库」prompt 的「存到哪个任务」那一步加了一句：任务开着复制的也要说，复制完会删源的要特别说。
+- **没动**：组名还叫「搜资源、转存与云下载」；界面只改了设置页「只读」「日常」两个预设的说明，别的界面没动（复制队列面板、转存框、云下载框本来就有复制）。
+- **测试**
+  - 新增 `routes/mcp/mcp-copy.itest.ts`（11 个），和方案列的一致；自动整理那条用一个什么都认不出的 TMDB 桩，清单建得出来但不动网盘。
+  - `copy.itest` 加「已复制的不让重试」；`agent.itest` 加复制队列接口的档位用例（`DELETE` 回 `TOKEN_NOT_ALLOWED`）；`prompts.test` 加一条断言；`telegram/commands.test` 的假云下载结果补了两个新字段。
+  - 工具清单快照只增 71 行：两个新工具，`share_save.copy`、`offline_add.copy` / `copyDstDir`。
+  - 后端全量 1254 个全过（原来 1241 个，加上新增的 13 个）；后端 / 前端 / shared 三处 tsc、改动文件 eslint 干净。
+- **自查改的措辞**：`copy` 的说明一开始写成「true 这次复制（不删源）」，不对——删不删源只看任务设置，任务开着「复制后删源」时 `copy: true` 一样会删（`copyOptionsFor` 里 `deleteSource = byTask && cfg.deleteSource`），两个工具的说明都改成「删不删源只看任务设置」。复制没排上的提示原来一律说「设置没配好」，排不上也可能是登记时出错，改成让它看 `reason`。
+- **本机冒烟**（全新 scratch 库起 4100，用完停了、删了库）：改默认密码、打开智能体、建日常档令牌，JSON-RPC 直连 `/mcp`（2025-06-18 协议）。日常档列出 32 个工具（35 减 3 个删除档）；新参数和注解都在；`overview.openlistCopy`、`copy_list` 的配置问题（「OpenList 账号不存在：ol」）、`copy_retry` 的 `COPY_NOT_FOUND`、`offline_add` 给了 `copyDstDir` 却不复制的 `VALIDATION` 都对；令牌 `GET /api/copy` 200、`DELETE` 403 `TOKEN_NOT_ALLOWED`；调用记录都记下了。
+
+还要你来做的：
+
+- 真机：配好「复制到 OpenList」的实例上，让 ChatGPT / Claude Code 转存一次（任务开着复制、再试一次 `copy: true` / `false`）、加一个 `copy: true` 的云下载，用 `copy_list` 看进度，失败的用 `copy_retry` 重试。
+- ChatGPT 缓存工具列表，升级后要在它的设置里点刷新。
+
+### 复制接进智能体：评审与修补（2026-09-25）
+
+用户说「review一下」：跑了一轮 `/code-review max`（9 个角度找，每条都有子代理拿探针调真实的工具函数核实）。出来 15 条，另有 4 条因为数量上限被截掉（整理放行的时间点、效率、两处重复代码）。逐条对着代码核实都成立（第 11 条评审标的是「看模型会不会误读」，也按成立处理），**全修**。
+
+**改掉的方案决定（以后别退回去）**
+
+- **`copy: false` 不再表示「这次不复制」**：任务开着复制时直接拒（`COPY_ALWAYS_ON`），没开复制的任务上和不传一样。
+  - 网盘监控会把新落进任务目录的文件照样交给复制：文件事件的 `changed` 恒为 true（`life/handlers.ts` 的 `handleCreate`）。
+  - 界面上转存框、云下载框在这种任务上也是锁死勾选的。
+  - 许诺「这次不复制」兑现不了，开着删源的还会删。
+- **去重补复制不再按「上次是不是自动整理」猜**：只认上次真正转存进来的条目（`SaveMeta.items`，作业做完回填节点 id `nodeIds`）；登记前到网盘上列一遍那个目录（`savedInPlace`），不在原处的、原处换成同名另一份的（节点 id 对不上）不补，照实说几项不在；眼下有会直接执行的自动整理（`autoOrganizeBusy`：攒着的 auto 批次，或正在预览 / 执行的 auto run）就先压着。
+- **云下载的「删不删源」在加任务那一刻冻结在回执上**（`OfflineFollowup.copyDeleteSource`），和转存 / 追更在登记时冻结一致；存量回执没有这个字段，照旧按下完时的设置。
+- **云下载的 `copyDstDir` 只能是任务上或设置页的目标目录、或者它们下面的**（`copyDstProblem`）。服务层统一拦，界面、Telegram、REST、智能体都一样：界面和 Telegram 本来就是从这两个根往下选的。
+
+**逐条**
+
+1. **重复排队时说错删不删源**：条目已经排着一条要删源的，这次没再排，`copyOutcomeView` 却一律回 `deleteSource: false`。
+   - 修：`enqueueCopy` 的结果多带 `duplicates`、`pendingDeletes`（没再登记的那些里排着的有要删源的）；`enqueueCopyFor` 算删源时带上它；回显照实说「排着的那些复制成功后会删掉……」。
+2. **补复制用了分享现在的内容**：不给 itemIds 的整层转存，再来一次会重新列分享，把分享者后来加的、从没转存过的也登记复制；任务目录里恰好有个同名的无关文件时，开着删源会把它复制完删掉。
+   - 修：补复制、补整理都只认 `SaveMeta.items`。
+3. **云下载不核对 OpenList 账号本身**：`copyOptionsFor` 只看设置上填没填，账号被删了照样许诺「下完复制、会删源」，下完排不进队列，回执照样记成「已生成」。
+   - 修：`addOfflineTasks` 在要复制时核对 `resolveCopyConfig`：明说要复制的当场报错，只是任务开着的就当复制不了（`copyBlocked`，结果里说卡在哪，回执不带复制目标）；`completeFollowup` 排不进队列时把原因写进回执说明和通知（已经排着一样的不算）。
+4. **补复制按「上次是不是自动整理」猜**：复核清单被人执行过、中间某次去重补了整理，文件都已经挪走，补复制照样登记旧路径，十轮后报失败；反过来自动整理没挪动任何文件的，却被拒绝补。
+   - 修：见上面的方案决定（核对网盘）。
+5. **`copy: false` 兑现不了**，外加一个时间差问题：监控比转存先登记了同一个文件（监控一律不删源），转存那条就被去重掉，任务的「复制后删源」悄悄丢了。
+   - 修：`copy: false` 见上。
+   - 另加 `upgradeDeleteSource`：整条目的登记遇上已经排着、不删源的同一个文件时，把删源补到那一条上。只补认得出节点的（那一条或这次带着节点 id），正在跑的那一轮手里的同一条也一起改。
+6. **云下载指定的目标目录被悄悄丢掉**：任务开着复制、任务上和设置页都没填目标目录时，这次指定的 `copyDstDir` 也不算数，结果还怪设置。
+   - 修：`copyOptionsFor` 加「这一次指定的目标目录」参数，缺目标目录的判断把它算上。
+   - 再加上第 13 条：没有根可比时，这次指定的也不收，当场说清楚，不再悄悄不复制。
+7. **一轮当中的重试会被盖回失败**：推进循环中间夹着网络等待，收尾时按 id 写回它手里的旧对象，界面或智能体刚做的重试被盖掉（老问题，智能体接进来后更容易碰上）。
+   - 修：`tickRecords` 登记这一轮手里的记录。`retryCopies`、`upgradeDeleteSource` 同时改到这些对象上。
+   - 没用「版本对不上就丢掉这一轮的改动」：那样会把这一轮刚提交给 OpenList 的复制任务号一起丢掉，下一轮再提交一次。
+8. **能不能重试说错**：
+   - 整理把目录里的文件挪走、按文件另排之后，目录那条记成跳过却还能重试，而且提示「删掉目标里那份」，实际目标里什么都没有；
+   - 同一个目标后来由另一条复制好了，老的失败还挂着、还能重试，重试会因为目标里已经有而失败，还叫人去删复制好的那份。
+   - 修：`CopyRecord.superseded`（`rewriteCopyPaths` 腾空目录时打上；`supersedeEarlierFailures` 在这一轮有复制好的时，把同一个目标以前失败的标成「用不着了」）。
+   - 重试口径收成一个 `retryBlocker`。
+9. **strm 没生成好时复制丢了**：开着复制的任务，转存成功、生成 strm 失败（`received`）就不排复制，提示又叫模型去 `sync_start`，那条路不排复制。
+   - 修：`saveSelectionToTask` 在 catch 里照样排复制，报错带 `copy`（`toFailure` 透传，`share_save` 换成带说明的样子）。
+10. **115 上原本就有的（「任务已存在」）**：
+    - 产物不在任务目录里的，照样按任务的删源删掉，删的是任务目录外、甚至别的任务的文件；
+    - 同一批里有新有旧时，旧的连只复制的回执都没有，结果却许诺复制。
+    - 修：`handoffCopy` 只删任务目录里的；同一批里的旧链接也登记只复制的回执；回显改成「在任务目录里的按层级摆」「删掉任务目录里的源文件」。
+11. **重复请求的回话不提复制**：上次那次（还在跑的、做完的）会复制、会删源，重复的回话里一个字不提；这次说 `copy: false` 也被悄悄忽略。
+    - 修：`duplicateResult` 带上上次的 `copy`（还在跑的按发起时的打算）；这次说 `copy: false` 而上次已经复制的，给 `copyNote` 说管不了，要撤回得请用户在云下载页去掉。
+12. **云下载的删源按下完那一刻的设置**，和结果里说的可能不一样。
+    - 修：冻结在回执上（见方案决定）。
+13. **`copyDstDir` 不受限**：智能体（包括只能用工具的网页客户端）能把东西复制进任意 OpenList 路径，比如别的网盘的挂载，开着删源还会删掉原件。
+    - 修：`copyDstProblem`（见方案决定）。
+14. **界面只显示最近 20 条**：`copy_list` 叫只读令牌去界面重试的失败，可能早被挤出那 20 条。
+    - 修：`GET /api/copy` 把能重试的排前面、再是还在跑的，每条带后端算好的 `canRetry`；界面不再自己判断，文案改成「只显示 N 条（能重试的、还在跑的排在前面）」。
+15. **Telegram 和界面的提示按 `followup` 说「下完自动生成 strm」**，而 `followup` 把「下完只复制」的也算进去了。
+    - 修：都改用 `strmFollowup`；Telegram 在任务开着复制时顺带说复制到哪。
+
+截掉的四条：
+
+16. **整理放行压着的复制按「秒 + 1」比**：同一秒里、整理开始之后才登记的复制也被提前放掉。
+    - 修：建 run 时按毫秒记下开始时间（`runStartedAt`，LRU 1000 条，进程重启后退回按秒）。
+17. **`copy_retry` 逐条读写整个队列**。
+    - 修：`retryCopies` 读一次写一次，`retryCopy` 改成调它。
+18. **重试口径四份**（`canRetryCopy`、`retryCopy` 里自己的判断、工具的 `retryOne`、前端的 `canRetry`）。
+    - 修：收成 `retryBlocker` 一份，前端用接口给的 `canRetry`。
+19. **两处重复**：`share_save` 去重的提前返回写了两遍（这次改动两处都得跟着改）；`copyProblemFor` 另写了一套和 `copyBlockerFor` 一样的判断。
+    - 修：`shortcut()`；`copyProblemFor` 改成调 `copyBlockerFor`。
+
+**另外看到、没在这次修的**（都是老问题，评审没提）：
+
+- 转存一个目录、网盘监控又按文件登记了里面的文件（不删源）：里面的先复制完，目录那条因为「目标里已有」被跳过，任务的「复制后删源」对这种目录不起作用。要修得在「目标里已有」时判断是不是这边刚复制过的，按名字对不出内容，没敢动。
+- 整理改写队列路径（`rewriteCopyPaths`）和推进循环也有同样的时间差：循环收尾会把改写过的路径盖回去。改写发生时循环可能正提交那一条，中途换路径更危险，没动。
+
+测试：
+
+- `mcp-copy.itest`：改写 5 个（`copy: false` 被拒、目标目录限定、补复制只认上次转存的且到网盘核对不在原处的不补、追更那条改成转存后清空队列），新增 5 个（自动整理没挪动照样补、排着的要删源照实说 + 监控先登记补上删源、重复回话带上次的 copy、strm 失败照样排复制、同一批新旧链接），一共 16 个。
+- `copy.itest` 加 4 个（一轮当中的重试不被盖回、同一目标后来复制好了把老失败标成用不着、批量重试、补删源）；`queue.test` 加一条断言。
+- `followup.itest` 加 5 个（排不上写进回执、删源冻结和任务目录外不删、账号被删、目标目录限定、同一批新旧）。
+- `run.itest` 加按毫秒放行；`auto.itest` 加 `autoOrganizeBusy`；`routes/copy` 加排序和 `canRetry`；`telegram/commands.test` 加按实际回执说话。
+- 「一轮当中的重试」「按毫秒放行」两个用例都临时去掉修复验证过会失败。
+- 工具清单快照没变（只改了描述）。
+- 后端全量 1272 个全过（原来 1254 个，新增 18 个）；后端 / 前端 tsc、改动文件 eslint 干净。
+
 ## 核实记录
 
 2026-09-18 查的官方来源：

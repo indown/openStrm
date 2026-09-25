@@ -176,6 +176,7 @@ test("整理把目录里的文件挪走、目录腾空删掉：目录待办记�
   const dir = rows.find((c) => c.id === "dir")!;
   assert.equal(dir.status, "skipped", "目录已经腾空删掉，不能再按目录复制（目标里要是已经有 Season 01 会整个被跳过）");
   assert.match(dir.detail, /按文件分别排队复制/);
+  assert.equal(dir.superseded, true, "用不着了：不给重试（重试只会等十轮再失败）");
   const pieces = rows.filter((c) => c.id !== "dir");
   assert.deepEqual(pieces.map((c) => c.name).sort(), ["某剧 - S01E01.mkv", "某剧 - S01E02.mkv"]);
   for (const c of pieces) {

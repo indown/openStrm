@@ -12,12 +12,12 @@ import { copyToClipboard } from "@/lib/clipboard";
 
 /** 权限预设：档位是集合，界面上只给三个常用组合 */
 export const PRESETS: Array<{ id: string; label: string; scopes: AgentScope[]; hint: string }> = [
-  { id: "read", label: "只读", scopes: ["read"], hint: "只能查看：任务、同步进度和记录、网盘目录、分享内容、云下载列表、整理清单、追更、strm 体检" },
+  { id: "read", label: "只读", scopes: ["read"], hint: "只能查看：任务、同步进度和记录、网盘目录、分享内容、云下载列表、复制到 OpenList 的队列、整理清单、追更、strm 体检" },
   {
     id: "daily",
     label: "日常",
     scopes: ["read", "run", "write"],
-    hint: "查看，加上开始 / 取消同步、转存分享、添加云下载、整理（预览、改清单、执行、撤销；清单里有删除项的由你在整理页点执行）、追更的检查和修改、修正 strm",
+    hint: "查看，加上开始 / 取消同步、转存分享和添加云下载（都能顺带复制到 OpenList）、重试失败的复制、整理（预览、改清单、执行、撤销；清单里有删除项的由你在整理页点执行）、追更的检查和修改、修正 strm",
   },
   {
     id: "full",

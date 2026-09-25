@@ -673,6 +673,26 @@ test("自动整理挪走 / 改名了还没提交的复制：队列里的路径�
   }
 });
 
+test("整理办完放行压着的复制按它开始那一刻的毫秒比：开始之后才登记的（哪怕同一秒）不放，要等下一次整理", async () => {
+  replaceTasks([{ ...task, organize: { mode: "auto" } }]);
+  const base = { account: "acc", srcDir: "/tv/other", dstBase: "/local/media", rootPath: "tv", taskId: "t1", trigger: "share" as const, status: "pending" as const, stage: "waiting" as const, detail: "", attempts: 0, waits: 0, misses: 0, dstDir: "/local/media/other" };
+  const held = Date.now() + 600_000;
+  try {
+    // 剧拿不准：留着等人确认，这时放行压着的复制
+    const run = await createRun({ taskId: "t1", paths: ["inbox/BEEF.S01.1080p"], mode: "auto", trigger: "share" });
+    saveCopies([
+      { ...base, id: "before", name: "a.mkv", addedAt: run.createdAt * 1000 - 5_000, holdUntil: held },
+      // created_at 只到秒：同一秒的末尾一定晚于开始那一刻，按秒比会被提前放掉
+      { ...base, id: "after", name: "b.mkv", addedAt: run.createdAt * 1000 + 999, holdUntil: held },
+    ]);
+    await untilStatus(run.id, ["ready"]);
+    assert.equal(listCopies().find((c) => c.id === "before")!.holdUntil, undefined, "开始之前登记的放行");
+    assert.equal(listCopies().find((c) => c.id === "after")!.holdUntil, held, "开始之后才登记的接着压着");
+  } finally {
+    clearCopies();
+  }
+});
+
 test("115 式：没有 walkSubtree，预览只有路径，执行时按父目录列一次拿 id", async () => {
   const inner = drive;
   const noWalk: DriveProvider = {

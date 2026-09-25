@@ -17,15 +17,18 @@ import { releaseCopyHolds } from "./queue.js";
 import {
   __test_resetCopy,
   adoptLegacyCopyFollowups,
+  canRetryCopy,
   stopCopyWatcher,
   dropCopy,
   enqueueCopy,
   getCopyWatcherStatus,
   listCopies,
+  retryCopies,
   retryCopy,
   setCopyServiceDeps,
   tickCopies,
 } from "./service.js";
+import { saveCopies } from "./queue.js";
 
 let baseline: { accounts: AccountInfo[]; tasks: TaskDefinition[]; openlistCopy: AppSettings["openlistCopy"] };
 const drive: AccountInfo = { accountType: "115", name: "acc", cookie: "c" };
@@ -54,6 +57,8 @@ let copyResultQueue: OpenlistTaskInfo[][] = [];
 let copyError: Error | null = null;
 let tasks: { undone: OpenlistTaskInfo[]; done: OpenlistTaskInfo[] } = { undone: [], done: [] };
 let tasksError: Error | null = null;
+/** 设了就让读 OpenList 任务列表停在这里：测「一轮当中别人改了记录」 */
+let tasksGate: Promise<void> | null = null;
 const notified: NotifyEvent[] = [];
 let embyRefreshes = 0;
 const organized: Array<{ taskId: string; paths: string[]; trigger: string }> = [];
@@ -101,6 +106,7 @@ before(() => {
         return copyResultQueue.length > 0 ? (copyResultQueue.shift() ?? []) : copyResult;
       },
       copyTasks: async () => {
+        if (tasksGate) await tasksGate;
         if (tasksError) throw tasksError;
         return tasks;
       },
@@ -149,6 +155,7 @@ beforeEach(async () => {
   copyError = null;
   tasks = { undone: [], done: [] };
   tasksError = null;
+  tasksGate = null;
   notified.length = 0;
   embyRefreshes = 0;
   organized.length = 0;
@@ -441,6 +448,102 @@ test("还在跑的不让重试；不存在的 404", async () => {
   assert.throws(() => retryCopy(c.id), /还在队列里跑/);
   assert.throws(() => retryCopy("没这个 id"), /不存在/);
   assert.throws(() => dropCopy("没这个 id"), /不存在/);
+});
+
+/** 等到条件成立（推进循环是异步的，中间让出几次事件循环） */
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 500 && !cond(); i++) await new Promise((r) => setImmediate(r));
+  assert.ok(cond(), "没等到");
+}
+
+test("一轮当中被重试的记录：这一轮收尾写回时不会把重试盖掉", async () => {
+  await seed(["/tv/某剧/S01/E01.mkv", "/tv/某剧/S01/E02.mkv"]);
+  // E01 这一轮第 10 次等不到产物、记成失败；E02 已经提交，这一轮去读 OpenList 的任务列表（卡在这里）
+  const rows = listCopies();
+  const e01 = rows.find((c) => c.name === "E01.mkv")!;
+  const e02 = rows.find((c) => c.name === "E02.mkv")!;
+  e01.waits = 9;
+  e02.stage = "copying";
+  e02.copyTaskId = "tid2";
+  e02.submittedAt = now;
+  saveCopies(rows, now);
+  names = { "/115/tv/某剧/S01": [] };
+  let release!: () => void;
+  tasksGate = new Promise<void>((r) => (release = r));
+  const ticking = tickCopies();
+  await until(() => listCopies().find((c) => c.id === e01.id)?.status === "failed");
+  retryCopy(e01.id);
+  await stopCopyWatcher();
+  release();
+  await ticking;
+  const after = listCopies().find((c) => c.id === e01.id)!;
+  assert.equal(after.status, "pending", "重试没被这一轮盖回失败");
+  assert.equal(after.retried, true);
+  assert.equal(after.waits, 0);
+  assert.equal(notified.filter((n) => n.type === "copy-failed").length, 0, "重试过的不再发失败通知");
+});
+
+test("同一个目标后来复制好了：以前失败的那条标成「用不着了」，不再给重试", async () => {
+  await seed(["/tv/某剧/S01/E01.mkv"]);
+  const rows = listCopies();
+  rows[0].status = "failed";
+  rows[0].detail = "OpenList 复制失败：磁盘满了";
+  rows[0].doneAt = now;
+  saveCopies(rows, now);
+  const failedId = rows[0].id;
+  // 又登记了一次（监控重来一轮、再转存一次），这回复制好了
+  await seed(["/tv/某剧/S01/E01.mkv"]);
+  assert.equal(listCopies().length, 2);
+  names = { "/115/tv/某剧/S01": ["E01.mkv"] };
+  copyResult = [];
+  await tickCopies();
+  const old = listCopies().find((c) => c.id === failedId)!;
+  assert.equal(old.status, "skipped");
+  assert.equal(old.superseded, true);
+  assert.match(old.detail, /后来又复制了一次，已经复制好了/);
+  assert.equal(canRetryCopy(old), false);
+  assert.throws(() => retryCopy(failedId), /用不着了/);
+  assert.ok(listCopies().some((c) => c.id !== failedId && c.status === "done"));
+});
+
+test("批量重试：读一次写一次；排着的算成功，不行的各带原因", async () => {
+  await seed(["/tv/某剧/S01/E01.mkv", "/tv/某剧/S01/E02.mkv"]);
+  const rows = listCopies();
+  const [a, b] = rows;
+  a.status = "failed";
+  a.doneAt = now;
+  saveCopies(rows, now);
+  const results = retryCopies([a.id, b.id, "没这条"]);
+  await stopCopyWatcher();
+  assert.deepEqual(results.map((r) => [r.ok, r.ok ? Boolean(r.alreadyQueued) : r.status]), [[true, false], [true, true], [false, 404]]);
+  assert.equal(listCopies().find((c) => c.id === a.id)!.status, "pending");
+});
+
+test("网盘监控先登记了不删源的那条：整条目的登记（转存 / 追更 / 云下载）把删源补上；认不出节点的不补", async () => {
+  // 监控：一个文件一条，一律不删源
+  enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }], rootPath: "/tv", taskId: "t1", trigger: "monitor", deleteSource: false });
+  enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E02.mkv"], rootPath: "/tv", taskId: "t1", trigger: "monitor", deleteSource: false });
+  await stopCopyWatcher();
+  const r = enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv", "/tv/某剧/S01/E02.mkv"], rootPath: "/tv", taskId: "t1", trigger: "share", deleteSource: true });
+  await stopCopyWatcher();
+  assert.equal(r.queued, 0);
+  assert.equal(r.duplicates, 2);
+  assert.equal(r.pendingDeletes, true);
+  const byName = new Map(listCopies().map((c) => [c.name, c]));
+  assert.equal(byName.get("E01.mkv")!.deleteSource, true, "带着节点 id：补上删源");
+  assert.equal(byName.get("E01.mkv")!.trigger, "monitor");
+  assert.equal(byName.get("E02.mkv")!.deleteSource, false, "谁都不知道节点 id：删的时候核对不了，不补");
+});
+
+test("已复制的不让重试：目标里已经有了，再来一次只会变成「失败」还发一条失败通知", async () => {
+  await seed();
+  names = { "/115/tv/某剧/S01": ["E01.mkv"] };
+  copyResult = [];
+  await tickCopies();
+  const [c] = listCopies();
+  assert.equal(c.status, "done");
+  assert.throws(() => retryCopy(c.id), /已经复制好了/);
+  assert.equal(listCopies()[0].status, "done");
 });
 
 test("删掉：从队列里去掉", async () => {

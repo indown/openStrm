@@ -35,7 +35,7 @@ import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, KIND_LABEL, parseShareRef, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession, ShareUpdateSignal, DriveKind } from "../drive/types.js";
 import { saveSelectionToTask } from "../share/receive.js";
-import { enqueueCopy } from "../copy/service.js";
+import { enqueueCopyFor, type CopyOutcome } from "../copy/service.js";
 import { copyOptionsFor } from "../copy/paths.js";
 import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
@@ -399,6 +399,8 @@ export interface CheckResult {
   follow: ShareFollowSummary;
   /** 这次有动静才有；什么都没发生是 null */
   run: ShareFollowRun | null;
+  /** 这次的新增交没交给复制队列（任务没开复制、没有新增就不带）：智能体的结果里照实说 */
+  copy?: CopyOutcome;
 }
 
 /** 检查一条。界面的「立即检查」和循环都走这里；同一条不会并发 */
@@ -409,9 +411,10 @@ export async function checkFollow(id: string): Promise<CheckResult> {
   checking.add(id);
   updateShareFollow(id, { status: "checking" });
   try {
-    const run = await runCheck(f);
+    const sink: CheckSink = {};
+    const run = await runCheck(f, sink);
     const latest = getShareFollow(id) ?? f;
-    return { follow: toSummary(latest), run };
+    return { follow: toSummary(latest), run, ...(sink.copy ? { copy: sink.copy } : {}) };
   } finally {
     checking.delete(id);
   }
@@ -479,7 +482,12 @@ function settleUnchanged(f: ShareFollow): null {
   return null;
 }
 
-async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
+/** runCheck 顺带交回的、不进订阅记录的东西 */
+interface CheckSink {
+  copy?: CopyOutcome;
+}
+
+async function runCheck(f: ShareFollow, sink: CheckSink): Promise<ShareFollowRun | null> {
   let target: Target;
   try {
     target = resolveTask(f.taskId);
@@ -577,20 +585,18 @@ async function runCheck(f: ShareFollow): Promise<ShareFollowRun | null> {
     log.info(`追更「${f.name}」新增 ${received.length} 项 → ${target2}，生成 ${generated} 个 strm`);
     if (generated > 0) scheduleEmbyRefresh();
     maybeAutoOrganize({ task, paths: landed, trigger: "follow" });
-    const copyOpts = copyOptionsFor(task, undefined);
-    if (copyOpts.blocked) log.info(`追更「${f.name}」的任务开着复制到 OpenList，但${copyOpts.blocked}，这次新增的不复制`);
-    if (copyOpts.enabled) {
-      enqueueCopy({
+    sink.copy = enqueueCopyFor(
+      copyOptionsFor(task, undefined),
+      {
         account: provider.account.name,
         sources: landed.map((p) => `${task.originPath}/${p}`),
         rootPath: task.originPath,
         taskId: task.id,
-        dstDir: copyOpts.dstDir,
         trigger: "follow",
-        deleteSource: copyOpts.deleteSource,
         holdForOrganize: effectiveAutoMode(task, undefined, settings) === "auto",
-      });
-    }
+      },
+      (why) => log.info(`追更「${f.name}」的任务开着复制到 OpenList，但${why}，这次新增的不复制`),
+    );
     void deps.notify({ type: "follow-added", name: f.name, added: received.map(baseName), generated, target: target2 }).catch(() => {});
   }
   if (errors.length) {

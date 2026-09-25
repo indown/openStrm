@@ -295,9 +295,12 @@ export interface CopyItem {
   adopted?: boolean;
   /** 等自动整理先办完（ms）：没到点、也没被整理放行之前不提交 */
   holdUntil?: number;
+  /** 后端算好的「能不能重试」：失败的、目标里已有同名而跳过的才行（接管来的、用不着了的、已复制的不行） */
+  canRetry: boolean;
 }
 
 export interface CopyQueue {
+  /** 能重试的在前、再是还在跑的，各自新的在前 */
   items: CopyItem[];
   /** 队列里一共多少条（items 只是前 limit 条） */
   total: number;
@@ -387,6 +390,8 @@ export interface OfflineAddResponse {
   invalid: string[];
   results: OfflineAddResult[];
   followup: boolean;
+  /** 其中有没有「下完生成 strm」的回执（只复制的那种不生成 strm） */
+  strmFollowup: boolean;
 }
 export interface OfflineAddInput {
   account?: string;

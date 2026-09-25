@@ -44,7 +44,9 @@ export function toFailure(err: unknown): ToolFailure {
   // 转存成功、后面生成 strm 失败：最要紧的是别再转存一遍
   const received = http.extra.received === true;
   const hint = received ? [RECEIVED_HINT, account].filter(Boolean).join("") : (account ?? hintForStatus(http.status));
-  return { error: http.message, code, ...(hint ? { hint } : {}), ...(received ? { received: true } : {}) };
+  // 转存成功、strm 没生成好时复制照常排上了：排没排上、删不删源也要让模型知道（share_save 会换成带说明的样子）
+  const copy = http.extra.copy !== undefined && typeof http.extra.copy === "object" ? { copy: http.extra.copy } : {};
+  return { error: http.message, code, ...(hint ? { hint } : {}), ...(received ? { received: true } : {}), ...copy };
 }
 
 function hintForStatus(status: number): string | undefined {

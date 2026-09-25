@@ -8,7 +8,9 @@ import { z } from "zod";
 import type { TaskDefinition } from "@openstrm/shared";
 import { listAccounts } from "../../../db/repositories/accounts.js";
 import { listTasks } from "../../../db/repositories/tasks.js";
+import { readAppSettings } from "../../../db/repositories/settings.js";
 import { APP_VERSION } from "../../../lib/version.js";
+import { copyBlockerFor } from "../../copy/paths.js";
 import { KIND_LABEL, providerFor } from "../../drive/registry.js";
 import { getLifeMonitorStatus } from "../../life/monitor.js";
 import { listFollowups } from "../../offline/service.js";
@@ -23,6 +25,7 @@ import { JOB_RETENTION_MS, getJob, jobSnapshot, viewJob, waitWithProgress } from
 import { USAGE_NOTES } from "../instructions.js";
 import { taskBrief } from "../resolve.js";
 import { organizeUiPath, runBrief } from "./organize-view.js";
+import { copyOverview, taskCopyView } from "./copy.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** waitSeconds 的上限：客户端普遍 60 秒超时，Cloudflare 对源站 100 秒，留足余量 */
@@ -44,7 +47,7 @@ export const overviewTool = defineTool({
   name: "overview",
   title: "总览",
   description:
-    "一眼看全 OpenStrm 的现状：版本、网盘账号、正在跑的同步、网盘监控、要人管的整理（待确认的清单、有失败的，最近 5 条）、云下载待回执、资源搜索配没配、最近 24 小时失败的同步，以及当前令牌的权限。开始干活前先调它。",
+    "一眼看全 OpenStrm 的现状：版本、网盘账号、正在跑的同步、网盘监控、要人管的整理（待确认的清单、有失败的，最近 5 条）、云下载待回执、「复制到 OpenList」配没配好和队列里在跑的 / 失败的、资源搜索配没配、最近 24 小时失败的同步，以及当前令牌的权限。开始干活前先调它。",
   scope: "read",
   toolset: null,
   annotations: LOCAL_READ,
@@ -97,8 +100,10 @@ export const overviewTool = defineTool({
       ...(attention.length
         ? { organize: attention.slice(0, 5).map((a) => ({ ...runBrief(a.run, byId.get(a.run.taskId), { reason: a.reason }), ...openInUi(organizeUiPath(a.run.id)) })) }
         : {}),
-      // 只数「下完生成 strm」的回执；复制到 OpenList 的那种不生成 strm
+      // 只数「下完生成 strm」的回执；「下完只复制到 OpenList」的不生成 strm，算在 openlistCopy.afterDownload 里
       offlinePendingStrm: listFollowups().filter((f) => f.status === "pending" && (f.kind ?? "strm") === "strm").length,
+      // 只看设置和队列、不联网：失败的细节用 copy_list 看
+      openlistCopy: copyOverview(),
       // 只看设置、不联网：没配置时 resource_search 调了也只会报错
       resourceSearch: { configured: pansouConn() !== null },
       recentFailures,
@@ -110,11 +115,13 @@ export const overviewTool = defineTool({
 
 const TASKS_LIMIT = 50;
 
+const withCopy = (view: Record<string, unknown> | undefined) => (view ? { copyToOpenlist: view } : {});
+
 export const tasksListTool = defineTool({
   name: "tasks_list",
   title: "同步任务列表",
   description:
-    "列出同步任务：每个任务把一个网盘目录（drivePath）同步成本地的 strm 目录（localPath）。返回 id、label（界面上的叫法「账号 · 网盘路径」）、定时、是否开了 302、是否在跑、上次结果。其它工具引用任务时可以传 id、网盘路径、本地路径或它们的最后一段。可用 query 按路径或账号过滤，最多返回 50 个。",
+    "列出同步任务：每个任务把一个网盘目录（drivePath）同步成本地的 strm 目录（localPath）。返回 id、label（界面上的叫法「账号 · 网盘路径」）、定时、是否开了 302、是否在跑、上次结果；开了「复制到 OpenList」的带 copyToOpenlist：转存、追更、云下载落进来的新文件会复制到哪（dstDir）、复制成功后删不删网盘上的源文件（deleteSource）、开着却复制不了的原因（blocked）。其它工具引用任务时可以传 id、网盘路径、本地路径或它们的最后一段。可用 query 按路径或账号过滤，最多返回 50 个。",
   scope: "read",
   toolset: null,
   annotations: LOCAL_READ,
@@ -124,6 +131,8 @@ export const tasksListTool = defineTool({
   async run(args) {
     const q = args.query?.trim().toLowerCase() ?? "";
     const latest = getLatestExecutions();
+    const settings = readAppSettings();
+    const copyBlocker = copyBlockerFor(settings);
     const tasks = listTasks().filter(
       (t) => !q || [t.originPath, t.targetPath, t.account].some((v) => v.toLowerCase().includes(q)),
     );
@@ -136,6 +145,7 @@ export const tasksListTool = defineTool({
         cron: t.cronExpression || null,
         enable302: t.enable302 === true,
         removeExtraFiles: t.removeExtraFiles === true,
+        ...withCopy(taskCopyView(t, copyBlocker, settings)),
         state: live?.state ?? "idle",
         lastRun: last
           ? {

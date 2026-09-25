@@ -14,7 +14,8 @@ import { DEFAULT_AUTH } from "../../db/defaults.js";
 import { writeAuthPassword } from "../../db/repositories/auth.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { patchAppSettings, readAppSettings } from "../../db/repositories/settings.js";
-import { __test_resetCopy, enqueueCopy, listCopies, setCopyServiceDeps } from "../../services/copy/service.js";
+import { __test_resetCopy, enqueueCopy, listCopies, setCopyServiceDeps, type CopyRecord } from "../../services/copy/service.js";
+import { saveCopies } from "../../services/copy/queue.js";
 
 let app: FastifyInstance;
 let auth: Record<string, string>;
@@ -86,4 +87,27 @@ test("DELETE /api/copy/:id：从队列里去掉", async () => {
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.json(), { success: true });
   assert.equal(listCopies().length, 0);
+});
+
+
+test("GET /api/copy：每条带 canRetry；能重试的排在前面、再是还在跑的，老的失败不会被新的成功挤出去", async () => {
+  const now = Date.now();
+  const rec = (id: string, over: Partial<CopyRecord>): CopyRecord => ({
+    id, account: "acc", srcDir: "/tv", name: `${id}.mkv`, dstDir: "/local/media", dstBase: "/local/media", taskId: "", trigger: "monitor",
+    addedAt: now, status: "done", stage: "waiting", detail: "", attempts: 0, waits: 0, misses: 0, doneAt: now, ...over,
+  });
+  saveCopies([
+    rec("done", { addedAt: now }),
+    rec("pending", { status: "pending", addedAt: now - 1_000, doneAt: undefined }),
+    rec("gone", { status: "skipped", superseded: true, addedAt: now - 500 }),
+    rec("failed", { status: "failed", addedAt: now - 60_000 }),
+  ]);
+  const res = await call("GET", "/api/copy?limit=2");
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as { items: Array<{ id: string; canRetry: boolean }>; total: number };
+  assert.deepEqual(body.items.map((i) => i.id), ["failed", "pending"]);
+  assert.deepEqual(body.items.map((i) => i.canRetry), [true, false]);
+  assert.equal(body.total, 4);
+  const all = (await call("GET", "/api/copy")).json() as { items: Array<{ id: string; canRetry: boolean }> };
+  assert.equal(all.items.find((i) => i.id === "gone")?.canRetry, false, "用不着了的不给重试");
 });
