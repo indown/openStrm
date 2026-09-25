@@ -192,7 +192,8 @@ export function AddCopyDialog({ open, onOpenChange, preset, onQueued }: AddCopyD
             <div className="space-y-2">
               <p className="text-sm">
                 {result.queued > 0 ? `排上了 ${result.queued} 条，复制到 ${result.dstDir} 下（按任务目录的层级摆）` : result.reason ?? "没有排上"}
-                {result.queued > 0 && result.afterCopy !== "keep" ? `；复制成功后源文件${AFTER_COPY_LABEL[result.afterCopy]}` : ""}
+                {result.queued > 0 && result.afterCopy === "delete" ? "；复制成功后会删掉网盘上的源文件" : ""}
+                {result.queued > 0 && result.afterCopy === "archive" ? "；复制成功后会把网盘上的源文件挪进「归档」" : ""}
               </p>
               <ul className="divide-y rounded-md border">
                 {result.items.map((it) => {

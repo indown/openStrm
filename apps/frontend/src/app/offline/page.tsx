@@ -356,6 +356,8 @@ function OfflineContent() {
             </Button>
           }
         />
+        {/* 复制队列不挑网盘：只有夸克账号的也要能看队列、手动发起复制（面板没配好又空着时自己不显示） */}
+        <CopyQueuePanel />
       </div>
     );
   }

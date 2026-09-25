@@ -475,7 +475,8 @@ copyToOpenlist?: { enabled?: boolean; dstDir?: string };   // dstDir 不填用�
 - [x] B2 `copy_add` 工具 + 快照 + USAGE_NOTES
 - [x] B3 远程列目录带文件；新建复制弹框；strm 页入口
 - [x] 测试、tsc / eslint
-- [ ] 评审、浏览器冒烟
+- [x] 浏览器冒烟（scratch 后端 4100 + dev 3223）
+- [ ] 评审
 
 ### 实施记录（2026-09-25，两件一起）
 
@@ -501,4 +502,6 @@ copyToOpenlist?: { enabled?: boolean; dstDir?: string };   // dstDir 不填用�
 - `/api/directory/remote/list` 加 `withFiles`（文件排在目录后面，带 size）。
 - 界面：`components/AddCopyDialog.tsx`（任务 → `TreeSelectDialog` 多选目录 / 文件 → 目标根下选子目录 → 去向三选一，默认跟任务；选删除要二次确认；提交后逐条显示结果）；队列面板加「新建复制」（队列空着但配好了也显示）；strm 管理页目录行菜单 / 顶部工具菜单 / strm 文件行都有「复制到 OpenList」，strm 文件按 `expectedRemotePath` 换成任务相对路径。
 - 测试：`manual.itest`（整目录 / 补齐 / 文件三态 / 115 式 / 拒绝六种 / 去向 / 重复与并进）；`routes/copy` 的 POST 与档位；`mcp-copy` 的 `copy_add`（含只读令牌看不到、删除要 danger）。
-- 全量 1298 个通过；三包 tsc、两端 eslint 干净。**浏览器没冒烟**（界面按代码走了一遍类型和 lint）。
+- 全量 1298 个通过；三包 tsc、两端 eslint 干净。
+- 浏览器冒烟（全新 scratch 库起 4100、dev 3223，夸克假账号 + 两个任务 + 本地 strm；远程列目录和 POST /api/copy 在页面里换成 XHR 桩）：云下载页「新建复制」→ 选任务（Radix Select 用 keydown Enter）→ 树里勾目录和文件、展开子目录 → 去向改成删除（提示变红）→ 二次确认 → 结果逐条带徽标 + toast；strm 页目录行菜单、顶部工具菜单（根目录灰掉）、strm 文件行按钮都能预填进弹框，strm 文件按应指向的网盘路径换成任务相对路径；任务弹框三选一显示当前值；任务列表徽标提示按去向说。
+  - 冒烟撞到一处：云下载页没有 115 账号时整页只有「去添加账号」，复制队列面板根本不渲染——只有夸克账号的用户看不到队列、也发不起复制。改成那个分支也渲染面板（面板没配好又空着时自己不显示）。
