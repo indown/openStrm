@@ -797,3 +797,15 @@ export function looksLikeReleaseDir(name: string): boolean {
   const p = parseMediaName(name);
   return !!p.year || p.season !== undefined || p.episode !== undefined || seasonDirNumber(name) !== null || hasReleaseNoise(name);
 }
+
+/**
+ * 目录名就是这部作品的名字：目录名解析出的片名（去掉年份、画质、季这些）和识别出来的片名比，归一化后完全相同才算。
+ * 不按包含比（`uploads` 不是《Up》），也不单凭「像发布目录」就算（`蓝光`、`Remux`、`美剧 2024` 都像）；一个字的片名太容易撞，不认。
+ * titles 只给识别出来的片名（TMDB 的中文名、原名、英文名）；别拿单元自己的标题，那里面混着从目录名来的候选，收件箱会自己认自己
+ */
+export function isNamedAfter(name: string, titles: Array<string | undefined>): boolean {
+  const parsed = parseMediaName(name);
+  const own = new Set([parsed.title, ...parsed.titles].map((t) => normalizeTitle(t)).filter((t) => t.length >= 2));
+  if (own.size === 0) return false;
+  return titles.some((t) => !!t && own.has(normalizeTitle(t)));
+}

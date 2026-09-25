@@ -91,6 +91,34 @@ const MAX_FAILED_RECORDS = 200;
 /** 刚办完的同一条不重复排：监控重来一轮（pullMode=all）会把同一批文件再报一遍 */
 export const RECENT_DONE_MS = 24 * 3600_000;
 
+/**
+ * 推进循环正在跑的这一轮手里的记录（按 id）。循环中间夹着网络等待，这期间别处对同一条的改动
+ * （界面 / 智能体的重试、整条目登记补上的删源、整理改写路径）要同时改到这些对象上：
+ * 这一轮收尾是按 id 把它手里的对象写回去的，只改库里那份会被盖掉。由 service.ts 的推进循环在一轮开始时登记、结束时清空
+ */
+export const tickRecords = new Map<string, CopyRecord>();
+
+/**
+ * 改库里的一条记录时，推进循环这一轮手里的同一条也照样改一遍——所有改动方（重试、补删源、去掉、并进整目录、整理改写路径）都走这里。
+ * when：这一轮手里的那个对象满足才改（比如「还在排队、没提交」：已经提交出去的按提交时的样子走完）；不给就总改
+ */
+export function mirrorLive(id: string, fn: (live: CopyRecord) => void, when: (live: CopyRecord) => boolean = () => true): void {
+  const live = tickRecords.get(id);
+  if (live && when(live)) fn(live);
+}
+
+/** 这一轮手里的那个对象还在排队、没提交（推进循环在调 /fs/copy 之前就会把要提交的记成 copying） */
+export const stillQueued = (live: CopyRecord): boolean => live.status === "pending" && live.stage === "waiting";
+
+/**
+ * 库里的这条眼下还没提交：库里排着，推进循环这一轮手里的同一条（有的话）也还排着。
+ * 提交请求在路上的那一下库里还写着「排队」，手里的已经记成「复制中」了，要按手里的算
+ */
+export function queuedNow(c: CopyRecord): boolean {
+  const live = tickRecords.get(c.id);
+  return stillQueued(c) && (!live || stillQueued(live));
+}
+
 export function listCopies(): CopyRecord[] {
   const rows = readKv<CopyRecord[]>(QUEUE_KEY);
   return Array.isArray(rows) ? rows : [];
@@ -204,9 +232,22 @@ export function rewriteCopyPaths(
     c.srcDir = segs.length ? `/${segs.join("/")}` : "/";
     if (layout) c.dstDir = layout(c.dstBase, c.rootPath, nextAbs);
   };
+  /**
+   * 推进循环这一轮手里还没提交的同一条也跟着改：不然这一轮收尾按 id 写回时，会把新路径盖回旧路径
+   * （这一轮已经提交出去的照旧不动，和上面「已经提交给 OpenList 的不动」同一个规则）
+   */
+  const syncLive = (c: CopyRecord) =>
+    mirrorLive(
+      c.id,
+      (live) => {
+        const { name, srcDir, dstDir, status, superseded, doneAt, detail } = c;
+        Object.assign(live, { name, srcDir, dstDir }, status !== "pending" ? { status, superseded, doneAt, detail } : {});
+      },
+      (live) => live !== c && stillQueued(live),
+    );
   const sorted = [...mappings].sort((a, b) => b.from.length - a.from.length);
   for (const c of rows) {
-    if (c.taskId !== taskId || c.status !== "pending" || c.stage !== "waiting") continue;
+    if (c.taskId !== taskId || !queuedNow(c)) continue;
     const abs = `${c.srcDir}/${c.name}`.replace(/^\/+/, "").replace(/\/{2,}/g, "/");
     const rel = root === "" ? abs : abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null;
     if (rel === null) continue;
@@ -254,6 +295,7 @@ export function rewriteCopyPaths(
     place(c, rel === m.from ? m.to : `${m.to}${rel.slice(m.from.length)}`);
     changed.push(c);
   }
+  for (const c of changed) syncLive(c);
   if (changed.length > 0 || added.length > 0) commitCopies(changed, now, added);
   return hit;
 }
@@ -270,6 +312,22 @@ export function releaseCopyHolds(taskId: string, before: number, now = Date.now(
   for (const c of changed) {
     c.holdUntil = undefined;
     c.detail = "自动整理办完了，等着复制到 OpenList";
+  }
+  commitCopies(changed, now);
+  return changed.length;
+}
+
+/**
+ * 按 id 放行压着等整理的复制：登记时说要等的那次整理不会来了（比如转存完生成 strm 失败，这次没交给整理）。
+ * 只动给的这几条：同一个任务里在等别的整理的不能跟着放。返回放了几条
+ */
+export function releaseCopyHoldsById(ids: readonly string[], now = Date.now()): number {
+  if (ids.length === 0) return 0;
+  const want = new Set(ids);
+  const changed = listCopies().filter((c) => want.has(c.id) && queuedNow(c) && c.holdUntil !== undefined);
+  for (const c of changed) {
+    c.holdUntil = undefined;
+    c.detail = "这次没交给整理，等着复制到 OpenList";
   }
   commitCopies(changed, now);
   return changed.length;

@@ -80,6 +80,9 @@ class StubTmdb implements TmdbApi {
     if (q === "dune part two" || q === "沙丘：第二部") return [hit(693134, "movie", "沙丘：第二部", "2024")];
     if (q === "回家的诱惑") return [hit(84656, "tv", "回家的诱惑", "2011")];
     if (q === "我和僵尸有个约会") return [hit(19389, "tv", "我和僵尸有个约会", "1998")];
+    if (q === "up") return [hit(14160, "movie", "飞屋环游记", "2009")];
+    if (q === "alien") return [hit(348, "movie", "异形", "1979")];
+    if (q === "aliens") return [hit(679, "movie", "异形2", "1986")];
     return [];
   }
   async details(kind: "movie" | "tv", id: number): Promise<TmdbDetails | null> {
@@ -89,6 +92,9 @@ class StubTmdb implements TmdbApi {
     if (id === 19389) return { ...base, title: "我和僵尸有个约会", originalTitle: "我和僵尸有个约会", year: "1998", seasons: [{ season: 1, episodeCount: 33 }, { season: 2, episodeCount: 43 }] };
     if (id === 693134) return { ...base, title: "沙丘：第二部", originalTitle: "Dune: Part Two", year: "2024" };
     if (id === 999) return { ...base, title: "另一部剧", originalTitle: "Other", year: "2020", seasons: [{ season: 1, episodeCount: 5 }, { season: 2, episodeCount: 5 }] };
+    if (id === 14160) return { ...base, title: "飞屋环游记", originalTitle: "Up", enTitle: "Up", year: "2009" };
+    if (id === 348) return { ...base, title: "异形", originalTitle: "Alien", year: "1979" };
+    if (id === 679) return { ...base, title: "异形2", originalTitle: "Aliens", year: "1986" };
     return null;
   }
   async season(): Promise<TmdbEpisode[]> {
@@ -691,6 +697,200 @@ test("整理办完放行压着的复制按它开始那一刻的毫秒比：开�
   } finally {
     clearCopies();
   }
+});
+
+/* ------------------------------- 作品自己的空目录 ------------------------------- */
+
+/** 这次整理排了哪些删空目录（网盘绝对路径，从深到浅） */
+const rmdirsOf = (runId: string) => listItems(runId).filter((i) => i.action === "rmdir").map((i) => i.srcPath);
+
+/** 预览 → 执行（自动模式直接执行完的就不用再点） */
+async function organizeNow(input: Parameters<typeof createRun>[0]): Promise<string> {
+  const run = await createRun(input);
+  const r = await untilStatus(run.id, ["ready", "done"]);
+  if (r.status === "ready") {
+    await applyRun(run.id);
+    await untilStatus(run.id, ["done"]);
+  }
+  return run.id;
+}
+
+test("手动 / 智能体整理完删掉作品独占的空目录：范围是只有片名的剧目录、季目录（单元根是上一级的剧目录）、一次给多个范围", async () => {
+  // A 只有片名的剧目录：中文目录名、英文文件名，名字不像发布目录，以前留一个空壳
+  drive.tree.addFile("/tv/怒呛人生/BEEF.S01E01.1080p.WEB-DL.mkv");
+  let run = await createRun({ taskId: "t1", subPath: "怒呛人生", trigger: "agent" });
+  await untilStatus(run.id, ["ready"]);
+  assert.deepEqual(rmdirsOf(run.id), ["/tv/怒呛人生"], "清单里写着删这个空壳，执行前看得到");
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.equal(drive.tree.get("/tv/怒呛人生"), undefined);
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv"));
+
+  // B 季目录：季目录本来就删，上一级的剧目录（范围外，单元根）以前留着
+  drive.tree.addFile("/tv/BEEF/Season 1/BEEF.S01E02.1080p.WEB-DL.mkv");
+  insertShareFollow({
+    id: "fr", name: "BEEF", libraryId: null, shareUrl: "", shareCode: "abr", receiveCode: "", watchCid: "0", watchPath: "", scope: [""],
+    taskId: "t1", subPath: "BEEF", enabled: true, intervalMinutes: 60, status: "idle", lastError: "", errorStreak: 0,
+    lastCheckedAt: null, lastChangeAt: null, nextCheckAt: 0, known: [], recent: [], createdAt: 1, updatedAt: 1,
+  });
+  run = await createRun({ taskId: "t1", subPath: "BEEF/Season 1", trigger: "manual" });
+  await untilStatus(run.id, ["ready"]);
+  assert.deepEqual(rmdirsOf(run.id), ["/tv/BEEF/Season 1", "/tv/BEEF"]);
+  assert.equal(getRunDetail(run.id).units[0].referencedBy, 1, "剧目录这次会删，指着它的追更也要改，算进引用数");
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.equal(drive.tree.get("/tv/BEEF"), undefined);
+  assert.equal(getShareFollow("fr")!.subPath, "怒呛人生 (2023) [tmdbid=153312]", "追更跟到作品目录");
+
+  // C 一次给多个范围：发布目录照旧删，只有片名的剧目录也删（换一套布景，免得和上面整理好的撞名）
+  seed();
+  drive.tree.addFile("/tv/Beef/BEEF.S01E03.1080p.WEB-DL.mkv");
+  run = await createRun({ taskId: "t1", paths: ["Beef", "inbox/BEEF.S01.1080p"], trigger: "agent" });
+  await untilStatus(run.id, ["ready"]);
+  assert.deepEqual(rmdirsOf(run.id).sort(), ["/tv/Beef", "/tv/inbox/BEEF.S01.1080p"]);
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done"]);
+  assert.equal(drive.tree.get("/tv/Beef"), undefined);
+  assert.ok(drive.tree.get("/tv/inbox"), "收件箱不沾边");
+});
+
+test("目录名就是片名时，认不出的附属文件也跟进作品目录，目录才空得了", async () => {
+  drive.tree.addFile("/tv/怒呛人生/BEEF.S01E01.1080p.WEB-DL.mkv");
+  drive.tree.addFile("/tv/怒呛人生/海报.jpg");
+  const run = await createRun({ taskId: "t1", subPath: "怒呛人生", trigger: "agent" });
+  await untilStatus(run.id, ["ready"]);
+  const art = listItems(run.id).find((i) => i.srcPath === "/tv/怒呛人生/海报.jpg")!;
+  assert.equal(art.dstPath, "/tv/怒呛人生 (2023) [tmdbid=153312]/海报.jpg", "中文目录名 + 英文文件名：分单元时对不上，认出片名后知道是这部剧自己的目录");
+  assert.deepEqual(rmdirsOf(run.id), ["/tv/怒呛人生"]);
+});
+
+test("留着的：名字对不上片名、只是包含片名、装着几部作品、别的任务的根目录、有云下载回执指着、还有别的东西；自动整理一律不删范围外", async () => {
+  const planned = async (input: Parameters<typeof createRun>[0]) => {
+    const run = await createRun(input);
+    await untilStatus(run.id, ["ready"]);
+    return rmdirsOf(run.id);
+  };
+  drive.tree.addFile("/tv/牛肉/BEEF.S01E01.1080p.WEB-DL.mkv");
+  assert.deepEqual(await planned({ taskId: "t1", subPath: "牛肉", trigger: "agent" }), [], "目录名对不上片名：不知道是不是这部剧自己的目录，留着");
+
+  drive.tree.addFile("/tv/downloads/BEEF.S01E02.1080p.WEB-DL.mkv");
+  assert.deepEqual(await planned({ taskId: "t1", subPath: "downloads", trigger: "agent" }), [], "收件箱里直接放着这部剧的散文件：单元根就是它");
+
+  drive.tree.addFile("/tv/uploads/Up.2009.1080p.BluRay.mkv");
+  assert.deepEqual(await planned({ taskId: "t1", subPath: "uploads", trigger: "agent" }), [], "uploads 里包含 Up，但不是《Up》自己的目录");
+
+  drive.tree.addFile("/tv/异形/Alien.1979.1080p.BluRay.mkv");
+  drive.tree.addFile("/tv/异形/Aliens.1986.1080p.BluRay.mkv");
+  assert.deepEqual(await planned({ taskId: "t1", subPath: "异形", trigger: "agent" }), [], "装着两部电影（拆成了两个单元）：名字对上其中一部也不删");
+
+  drive.tree.addFile("/tv/BEEF/Season 1/BEEF.S01E03.1080p.WEB-DL.mkv");
+  drive.tree.addFile("/tv/BEEF/Season 2/BEEF.S02E01.1080p.WEB-DL.mkv");
+  assert.deepEqual(await planned({ taskId: "t1", subPath: "BEEF/Season 1", trigger: "agent" }), ["/tv/BEEF/Season 1"], "剧目录下还有 Season 2：不删");
+
+  // 同账号别的任务就建在这个目录上，或者建在它里面
+  drive.tree.addFile("/tv/怒呛人生/BEEF.S01E04.1080p.WEB-DL.mkv");
+  const other: TaskDefinition = { id: "t2", account: "acc", accountType: "quark", originPath: "tv/怒呛人生", targetPath: "organize-itest/t2", strmPrefix: "/mnt" };
+  replaceTasks([task, other]);
+  assert.deepEqual(await planned({ taskId: "t1", subPath: "怒呛人生", trigger: "agent" }), [], "别的任务的根目录");
+  replaceTasks([task, { ...other, originPath: "/tv/怒呛人生/花絮/" }]);
+  assert.deepEqual(await planned({ taskId: "t1", subPath: "怒呛人生", trigger: "agent" }), [], "装着别的任务的根目录");
+  replaceTasks([task]);
+
+  // 有待兑现的云下载回执指进去：115 的目标目录加任务时就定了，删了后面的下载没地方落；兑现了的不拦
+  const receipt = { kind: "strm", infoHash: "h9", account: "acc", taskId: "t1", subPath: "怒呛人生", name: "x", addedAt: Date.now(), detail: "", attempts: 0, misses: 0 };
+  try {
+    writeKv(KEY.offlineFollowups, [{ ...receipt, status: "pending" }]);
+    assert.deepEqual(await planned({ taskId: "t1", subPath: "怒呛人生", trigger: "agent" }), [], "云下载还没下完");
+    writeKv(KEY.offlineFollowups, [{ ...receipt, status: "done" }]);
+    assert.deepEqual(await planned({ taskId: "t1", subPath: "怒呛人生", trigger: "agent" }), ["/tv/怒呛人生"]);
+  } finally {
+    writeKv(KEY.offlineFollowups, []);
+  }
+  assert.deepEqual(await planned({ taskId: "t1", subPath: "怒呛人生", mode: "review", trigger: "offline" }), [], "自动触发的：范围本身也不按片名删");
+
+  // D 智能体转存时用片名建的子目录，自动整理的新增路径是文件：自动整理不删范围外（后面几集可能还要落进来）
+  drive.tree.addFile("/tv/Beef/BEEF.S01E05.1080p.WEB-DL.mkv");
+  const walked = drive.calls.walkSubtree;
+  await organizeNow({ taskId: "t1", paths: ["Beef/BEEF.S01E05.1080p.WEB-DL.mkv"], mode: "auto", trigger: "share" });
+  assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E05.mkv"));
+  assert.ok(drive.tree.get("/tv/Beef"), "空了也留着");
+  assert.equal(drive.calls.walkSubtree, walked, "也不去网盘整棵列它：追更、云下载每来一集都列一遍太费网盘");
+
+  // 网盘监控给收件箱里的新文件起的自动整理：连整棵列都不列（每个新文件都列一遍收件箱太费网盘）
+  drive.tree.addFile("/tv/收件箱/BEEF.S01E06.1080p.WEB-DL.mkv");
+  const walks = drive.calls.walkSubtree;
+  assert.deepEqual(await planned({ taskId: "t1", paths: ["收件箱/BEEF.S01E06.1080p.WEB-DL.mkv"], mode: "review", trigger: "monitor" }), []);
+  assert.equal(drive.calls.walkSubtree, walks, "新增路径是文件，范围本身不整棵列；收件箱也没去列");
+});
+
+test("换了匹配按新片名重算：目录名对上了新认的片名，才排删空目录", async () => {
+  drive.tree.addFile("/tv/另一部剧/BEEF.S01E01.1080p.WEB-DL.mkv");
+  const run = await createRun({ taskId: "t1", subPath: "另一部剧", trigger: "agent" });
+  await untilStatus(run.id, ["ready"]);
+  assert.deepEqual(rmdirsOf(run.id), [], "认成了 BEEF，目录名对不上");
+  const key = getRunDetail(run.id).units[0].key;
+  await patchUnit(run.id, key, { match: { mediaType: "tv", tmdbId: 999 } });
+  assert.deepEqual(rmdirsOf(run.id), ["/tv/另一部剧"], "换成「另一部剧」：这就是它自己的目录");
+});
+
+test("撤销：删掉的剧目录和季目录建回来，文件退回原处；追更的子目录跟过去又跟回来", async () => {
+  drive.tree.addFile("/tv/BEEF/Season 1/BEEF.S01E01.1080p.WEB-DL.mkv");
+  insertShareFollow({
+    id: "fb", name: "BEEF", libraryId: null, shareUrl: "", shareCode: "abc", receiveCode: "", watchCid: "0", watchPath: "", scope: [""],
+    taskId: "t1", subPath: "BEEF/Season 1", enabled: true, intervalMinutes: 60, status: "idle", lastError: "", errorStreak: 0,
+    lastCheckedAt: null, lastChangeAt: null, nextCheckAt: 0, known: [], recent: [], createdAt: 1, updatedAt: 1,
+  });
+  const runId = await organizeNow({ taskId: "t1", subPath: "BEEF/Season 1", trigger: "agent" });
+  assert.equal(drive.tree.get("/tv/BEEF"), undefined);
+  const moved = getShareFollow("fb")!.subPath;
+  assert.ok(moved.startsWith("怒呛人生 (2023) [tmdbid=153312]"), `追更跟到作品目录：${moved}`);
+  await revertRun(runId);
+  await untilStatus(runId, ["reverted"]);
+  assert.ok(drive.tree.get("/tv/BEEF/Season 1/BEEF.S01E01.1080p.WEB-DL.mkv"), "文件退回原处，剧目录、季目录都建回来了");
+  assert.equal(getShareFollow("fb")!.subPath, "BEEF/Season 1");
+});
+
+test("撤销不拽错：落进原来就有的作品目录的，指着作品目录的追更不往回拽；删目录那条没成的，不从作品目录往回反推", async () => {
+  const work = "怒呛人生 (2023) [tmdbid=153312]";
+  const follow = (id: string, subPath: string) =>
+    insertShareFollow({
+      id, name: id, libraryId: null, shareUrl: "", shareCode: id, receiveCode: "", watchCid: "0", watchPath: "", scope: [""],
+      taskId: "t1", subPath, enabled: true, intervalMinutes: 60, status: "idle", lastError: "", errorStreak: 0,
+      lastCheckedAt: null, lastChangeAt: null, nextCheckAt: 0, known: [], recent: [], createdAt: 1, updatedAt: 1,
+    });
+  // 作品目录原来就有（里面有第 5 集），一条追更本来就指着它
+  drive.tree.addFile(`/tv/${work}/Season 01/怒呛人生 - S01E05.mkv`);
+  drive.tree.addFile("/tv/BEEF/Season 1/BEEF.S01E01.1080p.WEB-DL.mkv");
+  follow("fw", work);
+  follow("fb", "BEEF/Season 1");
+  let runId = await organizeNow({ taskId: "t1", subPath: "BEEF/Season 1", trigger: "agent" });
+  assert.equal(drive.tree.get("/tv/BEEF"), undefined);
+  assert.equal(getShareFollow("fb")!.subPath, `${work}/Season 01`);
+  await revertRun(runId);
+  await untilStatus(runId, ["reverted"]);
+  assert.ok(drive.tree.get("/tv/BEEF/Season 1/BEEF.S01E01.1080p.WEB-DL.mkv"));
+  assert.equal(getShareFollow("fw")!.subPath, work, "原来就指着作品目录的不往回拽");
+  assert.equal(getShareFollow("fb")!.subPath, `${work}/Season 01`, "作品目录不是这次建的，分不清谁是跟过去的，一律不动");
+
+  // 剧目录删失败了（执行时就没删成）：作品目录是这次建的，季目录那条照常跟回来；单元根那条不反推
+  seed();
+  replaceShareFollows([]);
+  drive.tree.addFile("/tv/BEEF/Season 1/BEEF.S01E01.1080p.WEB-DL.mkv");
+  follow("fb", "BEEF/Season 1");
+  drive.failWriteOn = (op, p) => (op === "rmdir" && p === "/tv/BEEF" ? new Error("目录删不掉") : null);
+  const run = await createRun({ taskId: "t1", subPath: "BEEF/Season 1", trigger: "agent" });
+  await untilStatus(run.id, ["ready"]);
+  await applyRun(run.id);
+  await untilStatus(run.id, ["done", "failed"]);
+  runId = run.id;
+  drive.failWriteOn = null;
+  assert.ok(drive.tree.get("/tv/BEEF"), "剧目录没删成");
+  // 执行完之后才建的追更，指着新的作品目录
+  follow("fw", work);
+  await revertRun(runId);
+  await untilStatus(runId, ["reverted"]);
+  assert.equal(getShareFollow("fb")!.subPath, "BEEF/Season 1", "季目录删了又建回来：跟回来");
+  assert.equal(getShareFollow("fw")!.subPath, work, "剧目录一直在，没有东西从它挪到作品目录，不往回推");
 });
 
 test("115 式：没有 walkSubtree，预览只有路径，执行时按父目录列一次拿 id", async () => {

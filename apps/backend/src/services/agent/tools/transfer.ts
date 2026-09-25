@@ -438,7 +438,11 @@ export const shareSaveTool = defineTool({
   input: z.object({
     link: z.string().min(1).max(2000).describe("分享链接；带提取码的整段分享文字也可以"),
     task: z.string().min(1).max(500).describe("转存到哪个任务：任务 id，或网盘路径 / 本地路径 / 它们的最后一段"),
-    subPath: z.string().max(1000).optional().describe("任务网盘目录下的子目录，用 / 分隔，不存在会自动建；不填就是任务目录本身"),
+    subPath: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe("任务网盘目录下的子目录，用 / 分隔，不存在会自动建；不填就是任务目录本身。要整理的别拿片名建子目录：整理会建规范的作品目录，自动整理不删这个子目录，会留一个空壳"),
     itemIds: z.array(z.string().min(1).max(200)).min(1).max(SAVE_ITEMS_MAX).optional().describe("要转存的条目 id（来自 share_inspect）；不填就是 dirId 这一层的全部"),
     dirId: z.string().max(200).optional().describe("itemIds 所在的分享子目录 id；不填是分享的根"),
     follow: z.boolean().optional().describe("顺手建追更订阅，默认不建"),

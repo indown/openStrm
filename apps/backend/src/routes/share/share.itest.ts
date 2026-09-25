@@ -24,7 +24,7 @@ import { __test_resetFollows, setFollowServiceDeps } from "../../services/follow
 import { FakeDrive } from "../../test/fake-drive.js";
 import { patchAppSettings } from "../../db/repositories/settings.js";
 import { clearCopies, listCopies } from "../../services/copy/queue.js";
-import { stopCopyWatcher } from "../../services/copy/service.js";
+import { enqueueCopy, stopCopyWatcher } from "../../services/copy/service.js";
 import { isTaskRunning } from "../../services/task/registry.js";
 import { __test_setAsyncStartGrace } from "../../services/share/receive.js";
 
@@ -188,6 +188,63 @@ test("receive 到任务目录（async，后台同步）：任务开着复制时�
     replaceAccounts([a115, aQuark]);
     replaceTasks([t115, tQuark]);
     patchAppSettings({ openlistCopy: baseline.settings.openlistCopy });
+  }
+});
+
+test("同步转存：复制在生成 strm 之前就登记好，这期间网盘监控按文件报上来的被整条目包着、不单独登记；strm 没生成好也照样带回复制，为等整理压着的放行", async () => {
+  const ol: AccountInfo = { accountType: "openlist", name: "ol", account: "u", password: "p", url: "http://ol.local" };
+  replaceAccounts([a115, aQuark, ol]);
+  const copying = { ...tQuark, copyToOpenlist: { enabled: true, dstDir: "/local/kk" } };
+  replaceTasks([t115, copying]);
+  patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/local/media", mounts: { q: "/quark" } } });
+  dQuark.tree.addDir("/kk/Early");
+  dQuark.tree.addDir("/kk/Broken");
+  const tmdbBefore = readAppSettings().tmdb;
+  try {
+    const qlist = await post({ action: "list", url: LINK_QUARK });
+    const entries = qlist.json().entries as Array<{ id: string; name: string; isDir: boolean; token?: string }>;
+    const extras = entries.find((e) => e.name === "Extras")!;
+
+    // 转存完、生成 strm 那几下网盘调用当中，网盘监控按文件报上来一个
+    const receivedBefore = dQuark.share!.calls.receive;
+    let during: ReturnType<typeof enqueueCopy> | null = null;
+    dQuark.beforeCall = async () => {
+      if (during || dQuark.share!.calls.receive === receivedBefore) return;
+      during = enqueueCopy({ account: "q", sources: [{ path: "/kk/Early/Extras/making.mkv" }], rootPath: "/kk", taskId: "s-quark", trigger: "monitor", dstDir: "/local/kk" });
+    };
+    const res = await post({ action: "receive", url: LINK_QUARK, taskId: "s-quark", subPath: "Early", mode: "sync", items: [extras] });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.json().copy?.queued, 1);
+    const seen = during as ReturnType<typeof enqueueCopy> | null;
+    assert.ok(seen, "生成 strm 时调过网盘");
+    assert.equal(seen.queued, 0, "被整条目包着，不单独登记");
+    assert.equal(seen.covered, 1);
+    assert.deepEqual(listCopies().map((c) => [c.srcDir, c.name, c.trigger]), [["/kk/Early", "Extras", "share"]]);
+
+    // strm 没生成好（转存之后列目录挂了）：复制照样带回来；任务开着直接执行的整理，登记时压着等它，这次不交给整理了就放行
+    await stopCopyWatcher();
+    clearCopies();
+    replaceTasks([t115, { ...copying, organize: { mode: "auto" } }]);
+    patchAppSettings({ tmdb: { apiKey: "k" } });
+    const brokenBefore = dQuark.share!.calls.receive;
+    dQuark.beforeCall = async () => {
+      if (dQuark.share!.calls.receive > brokenBefore) throw new Error("风控了");
+    };
+    const broken = await post({ action: "receive", url: LINK_QUARK, taskId: "s-quark", subPath: "Broken", mode: "sync", items: [extras] });
+    assert.notEqual(broken.statusCode, 200);
+    assert.equal(broken.json().received, true);
+    assert.equal(broken.json().copy?.queued, 1);
+    const [c] = listCopies();
+    assert.equal(c.name, "Extras");
+    assert.equal(c.holdUntil, undefined, "这次没交给整理，不用等它");
+    assert.match(c.detail, /这次没交给整理/);
+  } finally {
+    dQuark.beforeCall = null;
+    await stopCopyWatcher();
+    clearCopies();
+    replaceAccounts([a115, aQuark]);
+    replaceTasks([t115, tQuark]);
+    patchAppSettings({ openlistCopy: baseline.settings.openlistCopy, tmdb: tmdbBefore });
   }
 });
 

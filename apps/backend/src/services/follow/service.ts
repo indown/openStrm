@@ -35,9 +35,8 @@ import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, KIND_LABEL, parseShareRef, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession, ShareUpdateSignal, DriveKind } from "../drive/types.js";
 import { saveSelectionToTask } from "../share/receive.js";
-import { enqueueCopyFor, type CopyOutcome } from "../copy/service.js";
-import { copyOptionsFor } from "../copy/paths.js";
-import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
+import type { CopyOutcome } from "../copy/service.js";
+import { maybeAutoOrganize } from "../organize/auto.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
 import { notify, type NotifyEvent } from "../telegram/notify.js";
@@ -525,6 +524,8 @@ async function runCheck(f: ShareFollow, sink: CheckSink): Promise<ShareFollowRun
   const landed: string[] = [];
   const failed: string[] = [];
   const errors: string[] = [];
+  /** 每组转存完各自登记的复制（在 saveSelectionToTask 里、生成 strm 之前登记，来源写成「追更」） */
+  const copies: CopyOutcome[] = [];
   let generated = 0;
   for (const group of groupByParent(diff.added)) {
     const subPath = normalizeSubPath(group.parent ? `${f.subPath}/${group.parent}` : f.subPath);
@@ -536,14 +537,18 @@ async function runCheck(f: ShareFollow, sink: CheckSink): Promise<ShareFollowRun
         items: group.items.map((i) => ({ id: i.id, name: baseName(i.path), isDir: i.isDir, token: i.token })),
         subPath,
         mode: "sync",
-        // 复制在下面一次性登记（按追更这一轮的全部新增，来源也写成「追更」），这里不各自登记
-        copy: false,
+        // 复制按任务上的开关，转存完马上登记：网盘监控随后按文件报上来的，被整条目包着就不再单独登记
+        copyTrigger: "follow",
         settings,
       });
+      if (r.copy) copies.push(r.copy);
       if ("generatedCount" in r) generated += r.generatedCount;
       received.push(...group.items.map((i) => i.path));
       landed.push(...group.items.map((i) => normalizeSubPath(`${subPath}/${baseName(i.path)}`)));
     } catch (err) {
+      // 转存成了、strm 没生成好：复制已经登记了，照样算进去
+      const copy = err instanceof HttpError ? (err.extra as { copy?: CopyOutcome } | undefined)?.copy : undefined;
+      if (copy) copies.push(copy);
       failed.push(...group.items.map((i) => i.path));
       // 转存本身的错误是网盘那边的原文；落盘（写 strm / 下载附件）的错误给人话和建议
       errors.push(`${group.parent || "."}：${describeFileFailure(err, { relPath: group.parent || "", kind: "strm", provider })}`);
@@ -585,20 +590,10 @@ async function runCheck(f: ShareFollow, sink: CheckSink): Promise<ShareFollowRun
     log.info(`追更「${f.name}」新增 ${received.length} 项 → ${target2}，生成 ${generated} 个 strm`);
     if (generated > 0) scheduleEmbyRefresh();
     maybeAutoOrganize({ task, paths: landed, trigger: "follow" });
-    sink.copy = enqueueCopyFor(
-      copyOptionsFor(task, undefined),
-      {
-        account: provider.account.name,
-        sources: landed.map((p) => `${task.originPath}/${p}`),
-        rootPath: task.originPath,
-        taskId: task.id,
-        trigger: "follow",
-        holdForOrganize: effectiveAutoMode(task, undefined, settings) === "auto",
-      },
-      (why) => log.info(`追更「${f.name}」的任务开着复制到 OpenList，但${why}，这次新增的不复制`),
-    );
     void deps.notify({ type: "follow-added", name: f.name, added: received.map(baseName), generated, target: target2 }).catch(() => {});
   }
+  const copy = mergeCopyOutcomes(copies);
+  if (copy) sink.copy = copy;
   if (errors.length) {
     log.warn(`追更「${f.name}」有条目转存失败：${errors.join("；")}`);
     if (streak >= FOLLOW.EXPIRE_STREAK) void deps.notify({ type: "follow-failed", id: f.id, name: f.name, detail: errors.join("；") }).catch(() => {});
@@ -608,6 +603,19 @@ async function runCheck(f: ShareFollow, sink: CheckSink): Promise<ShareFollowRun
     void deps.notify({ type: "follow-stale", id: f.id, name: f.name, days: FOLLOW.STALE_DAYS }).catch(() => {});
   }
   return run;
+}
+
+/** 追更一轮按目录分组转存、各组各自登记复制：合成一份回给调用方（条数相加，删不删源有一组删就算删） */
+function mergeCopyOutcomes(list: CopyOutcome[]): CopyOutcome | undefined {
+  if (list.length === 0) return undefined;
+  const queued = list.reduce((n, c) => n + c.queued, 0);
+  const reason = queued === 0 ? list.find((c) => c.reason)?.reason : undefined;
+  return {
+    queued,
+    dstDir: list.find((c) => c.dstDir)?.dstDir ?? null,
+    deleteSource: list.some((c) => c.deleteSource),
+    ...(reason ? { reason } : {}),
+  };
 }
 
 /* ------------------------------- 循环 ------------------------------- */

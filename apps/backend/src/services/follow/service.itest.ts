@@ -191,14 +191,22 @@ test("任务开了「复制到 OpenList」：新集顺手进复制队列；没�
     assert.equal(listCopies().length, 0, "任务没开复制就不进队列");
 
     replaceTasks([{ ...task, copyToOpenlist: { enabled: true } }]);
+    // 两组：分享根上的新集、已知目录里的新文件，各组转存完各自登记
+    drive.tree.addDir("/tv/The Show/Extras");
     share.addFile("/E04.mkv", { hash: "d" });
+    share.addFile("/Extras/bloopers.mkv", { hash: "y2" });
     now += HOUR;
-    await checkFollow(s.id);
-    const [c] = listCopies();
-    assert.equal(c?.name, "E04.mkv");
-    assert.equal(c?.srcDir, "/tv/The Show");
-    assert.equal(c?.dstDir, "/local/media/The Show", "任务目录里的层级原样带过去");
-    assert.equal(c?.trigger, "follow");
+    const { copy } = await checkFollow(s.id);
+    const rows = listCopies().sort((a, b) => a.name.localeCompare(b.name));
+    assert.deepEqual(
+      rows.map((c) => [c.srcDir, c.name, c.dstDir, c.trigger]),
+      [
+        ["/tv/The Show/Extras", "bloopers.mkv", "/local/media/The Show/Extras", "follow"],
+        ["/tv/The Show", "E04.mkv", "/local/media/The Show", "follow"],
+      ],
+      "任务目录里的层级原样带过去，来源写成追更",
+    );
+    assert.deepEqual(copy, { queued: 2, dstDir: "/local/media", deleteSource: false }, "两组的结果合成一份");
   } finally {
     // 失败也要收拾干净：留着配置和真循环会祸害后面的用例（它们会去连 http://ol.local）
     await __test_resetCopy();

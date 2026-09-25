@@ -18,7 +18,7 @@
  */
 import type { OrganizeAction, OrganizeConflictChoice, OrganizeConflictResolution, OrganizeFileKind, OrganizeMatch } from "@openstrm/shared";
 import { DUPLICATES_DIR, duplicatePathFor } from "./duplicates.js";
-import { normalizeTitle, trailingNumber } from "./parse-name.js";
+import { isNamedAfter, normalizeTitle, trailingNumber } from "./parse-name.js";
 import type { ResolvedOrganizeSettings } from "./settings.js";
 import { pickCategory } from "./settings.js";
 import { episodeToken, idTagFor, pad2, pad3, renderTemplate, type TemplateVars } from "./template.js";
@@ -337,6 +337,9 @@ export function planUnit(input: UnitPlanInput, ctx: PlanContext): UnitPlan {
   // 单元里所有的正片（排没排上都算）：字幕在它们里面找主人
   const unitVideos = unit.files.filter((v) => v.kind === "video" && !v.inExtrasDir && !v.parsed.isExtra);
   const allVideos = videos.map((v) => v.path);
+  // 单元根是这部作品自己的目录：分单元时就认出来了的，或者（不是从大目录里拆出来的）目录名就是识别出来的片名——
+  // 「中文目录名 + 英文文件名」分单元时对不上，TMDB 认出来之后才知道是一回事
+  const ownsDir = unit.ownsDir || (!!unit.rootPath && !unit.key.includes("|") && isNamedAfter(baseOf(unit.rootPath), [match.title, match.originalTitle, match.enTitle]));
   // 季目录 → 里面的视频要去的新季目录（取最多的那个）：季目录里的 poster.jpg / season.nfo 跟过去
   const bySeasonDir = new Map<string, UnitFile[]>();
   for (const v of videos) {
@@ -364,7 +367,7 @@ export function planUnit(input: UnitPlanInput, ctx: PlanContext): UnitPlan {
       return season ? { dst: join(season.dir, f.name), follows: season.videos } : "这个季目录里没有要整理的视频";
     }
     // 名字认不出的：作品自己的目录里原名跟进作品目录；从大目录里拆出来的 / 散在范围根的不知道归谁，不动
-    return unit.ownsDir ? { dst: join(dstRoot, f.name), follows: allVideos } : "找不到对应的视频";
+    return ownsDir ? { dst: join(dstRoot, f.name), follows: allVideos } : "找不到对应的视频";
   };
 
   for (const f of unit.files) {

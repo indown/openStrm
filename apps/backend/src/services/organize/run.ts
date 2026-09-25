@@ -98,7 +98,7 @@ import { duplicatePathFor, underDuplicates } from "./duplicates.js";
 import { finalizeItems, planUnit, type PlannedItem, type ScopeRoot, type UnitPlan } from "./plan.js";
 import { parseRules } from "./rules.js";
 import { resolveOrganizeSettings, type ResolvedOrganizeSettings } from "./settings.js";
-import { looksLikeReleaseDir } from "./parse-name.js";
+import { isNamedAfter, looksLikeReleaseDir } from "./parse-name.js";
 import { AUDIO_EXTS, buildUnits, type ScopeEntry, type Unit } from "./units.js";
 
 const log = moduleLogger("organize");
@@ -477,6 +477,115 @@ function scopeRootsOf(run: OrganizeRun, walkedDirs: string[]): ScopeRoot[] {
   return walkedDirs.map((p) => ({ path: p, removable: p !== "" }));
 }
 
+/**
+ * 单元根算不算这部作品独占的目录（腾空了能跟着删）。只看名字和结构，里面还剩什么由 finalizeItems 按清单算：
+ *   - 目录名就是这部作品的名字（isNamedAfter；titles 是识别出来的片名）；
+ *   - 不是从大目录里拆出来的（一个目录只会分出一个单元，除非按标题拆开，拆出来的 key 带 `|`：装着几部作品）；
+ *   - 不是别的同账号任务的根目录，也不装着别的任务的根目录；
+ *   - 没有待兑现的云下载回执指进去（115 的目标目录在加任务时就定了，删了后面的下载就没地方落）。
+ * 追更、复制队列指进去的照旧跟到作品目录
+ */
+function ownWorkRoot(state: PlanState, unit: Unit, titles: string[]): boolean {
+  const p = unit.rootPath;
+  if (!p || unit.key.includes("|") || !isNamedAfter(baseOf(p), titles)) return false;
+  const abs = normalizePath(absOf(state.task, p));
+  if (state.otherTaskRoots.some((r) => r === abs || r.startsWith(`${abs}/`))) return false;
+  return !state.offlineRefs.some((sub) => sub === p || sub.startsWith(`${p}/`));
+}
+
+/**
+ * 删空目录的边界，给 finalizeItems：在 state.scopeRoots 之外，手动 / 智能体发起的整理里，单元根（这部作品原来所在的目录）
+ * 是它独占的目录（ownWorkRoot）时，腾空了也删——范围选的是只有片名的剧目录、季目录（单元根是上一级的剧目录），都会留下这样的空壳。
+ * 只看里面有什么都知道的：等于某个范围根，或者越到范围外、整棵列过（state.outsideRoots）；范围里面的目录腾空了本来就删。
+ * 自动整理照旧：不删范围外、也不删新增路径所在的目录。按当时的匹配现算：预览、换匹配后的重规划都调它
+ */
+function cleanupRoots(state: PlanState, matchOf: (key: string) => OrganizeMatch | null): ScopeRoot[] {
+  const roots = state.scopeRoots.map((r) => ({ ...r }));
+  if (!state.handPicked) return roots;
+  for (const u of state.units.values()) {
+    const p = u.rootPath;
+    if (!p) continue;
+    const equal = roots.find((r) => r.path === p);
+    if (equal?.removable) continue;
+    const inside = state.scopeRoots.some((r) => r.path === "" || p.startsWith(`${r.path}/`));
+    if (!equal && (inside || !state.outsideRoots.has(p))) continue;
+    if (!ownWorkRoot(state, u, workTitles(matchOf(u.key)))) continue;
+    if (equal) equal.removable = true;
+    else roots.push({ path: p, removable: true });
+  }
+  return roots;
+}
+
+/**
+ * 判断「目录名是不是这部作品的名字」用的片名：识别出来的中文名、原名、英文名。
+ * withCandidates：连「换匹配」的备选一起（预览时决定要不要去网盘列范围外的单元根，换成备选后重规划不用再列）
+ */
+function workTitles(m: OrganizeMatch | null, withCandidates = false): string[] {
+  if (!m) return [];
+  return [m.title, m.originalTitle, m.enTitle ?? "", ...(withCandidates ? (m.candidates ?? []).map((c) => c.title) : [])].filter(Boolean);
+}
+
+/**
+ * 单元的引用数（追更 / 云下载回执 / 复制队列里有多少条落在它下面）：单元根在范围里，或者这次会腾空删掉（范围外、作品独占的目录，
+ * 见 cleanupRoots），按整个单元根算；单元根越到了范围外、又不删的，只有范围里的会挪走，只数范围里的。rmdirs：清单里要删的目录
+ */
+function refsOf(state: PlanState, unit: Unit, rmdirs: ReadonlySet<string>): number {
+  const under = (p: string, dir: string) => dir === "" || p === dir || p.startsWith(`${dir}/`);
+  const whole = state.scopes.some((dir) => under(unit.rootPath, dir)) || rmdirs.has(unit.rootPath);
+  if (whole) return referencesTo(state.refPaths, unit.rootPath);
+  return state.scopes.filter((dir) => unit.files.some((f) => under(f.path, dir))).reduce((n, dir) => n + referencesTo(state.refPaths, dir), 0);
+}
+
+/** 清单里要删的目录（相对任务 originPath） */
+const rmdirsOf = (items: PlannedItem[]): Set<string> => new Set(items.filter((i) => i.action === "rmdir").map((i) => i.srcPath));
+
+/**
+ * 单元根越到范围外的（范围直接选在季目录上，单元根是上一级的剧目录）：腾空后删不删得知道里面还有什么，整棵列一遍，列过的记进 outsideRoots。
+ * 只在有必要时去网盘列：手动 / 智能体发起的整理、开着「整理完删空目录」、是这部作品独占的目录（名字连「换匹配」的备选一起比，
+ * 换成备选后重规划不用再列）、这个单元确实要把东西挪出这个目录。嵌套的只列外层（里层跟着就知道了）。
+ * 不是目录、不在了、太大、列失败的都不记：不知道里面还有什么就不删
+ */
+async function listOutsideUnitRoots(
+  provider: DriveProvider,
+  state: PlanState,
+  plans: UnitPlan[],
+  signal: AbortSignal,
+  titlesOf: (unit: Unit) => string[],
+): Promise<ScopeEntry[]> {
+  if (!state.handPicked || !state.org.cleanupEmptyDirs) return [];
+  const under = (p: string, dir: string) => dir === "" || p === dir || p.startsWith(`${dir}/`);
+  const planOf = new Map(plans.map((pl) => [pl.unitKey, pl]));
+  const wanted: string[] = [];
+  for (const u of state.units.values()) {
+    const root = u.rootPath;
+    if (!root || state.roots.some((r) => under(root, r))) continue;
+    const movesOut = planOf.get(u.key)?.items.some((it) => it.action === "move" && under(it.srcPath, root) && !under(it.dstPath, root));
+    if (movesOut && ownWorkRoot(state, u, titlesOf(u))) wanted.push(root);
+  }
+  const known = new Set(state.entries.map((e) => e.path));
+  const out: ScopeEntry[] = [];
+  for (const root of wanted) {
+    if (wanted.some((o) => o !== root && root.startsWith(`${o}/`))) continue;
+    signal.throwIfAborted();
+    try {
+      const node = await provider.resolvePath(absOf(state.task, root), signal);
+      if (!node?.isDir) continue;
+      const entries = await listTree(provider, state.task, root, signal, node.id);
+      if (entries.filter((e) => !e.isDir).length > ORGANIZE_LIMITS.MAX_FILES) continue;
+      for (const e of [{ path: root, isDir: true, id: node.id }, ...entries]) {
+        if (known.has(e.path)) continue;
+        known.add(e.path);
+        out.push(e);
+      }
+      for (const w of wanted) if (under(w, root)) state.outsideRoots.add(w);
+    } catch (err) {
+      if (isAbortError(err) || signal.aborted) throw err;
+      log.warn({ err, root }, "列范围外的单元根失败：腾空了也不删它");
+    }
+  }
+  return out;
+}
+
 /** 单元里单独取消勾选的文件（网盘绝对路径）换成规划用的相对路径 */
 const excludedRel = (task: TaskDefinition, unit: OrganizeUnit): Set<string> => new Set(unit.excluded.map((p) => relOf(task, p)));
 /** 单元上按网盘绝对路径记的冲突处理 → 相对任务 originPath（规划用的路径） */
@@ -485,6 +594,16 @@ const resolutionsRel = (task: TaskDefinition, unit: OrganizeUnit): Map<string, O
 
 /** 本地镜像只看同一账号的任务：不同网盘上同名的目录（都叫 tv）各有各的本地目录，按路径匹配会串到别的账号的任务上 */
 const accountTasks = (accountName: string): TaskDefinition[] => listTasks().filter((t) => t.account === accountName);
+
+/** 整棵列一个目录（相对任务 originPath）：有 walkSubtree 的（夸克 / OpenList）带 id，115 只有路径，id 到执行时再解析 */
+async function listTree(provider: DriveProvider, task: TaskDefinition, rel: string, signal: AbortSignal, id?: string): Promise<ScopeEntry[]> {
+  const abs = absOf(task, rel);
+  if (provider.walkSubtree) {
+    return (await provider.walkSubtree(abs, { id, signal })).map((e) => ({ path: joinRel(rel, e.path), isDir: e.isDir, id: e.id, size: e.size }));
+  }
+  // listSubtree 给的是文件 + 顶层空目录；没有扩展名且不含点的当目录（115 导出树里空目录就是这样）
+  return (await provider.listSubtree(abs, { id, signal })).map((p) => ({ path: joinRel(rel, p), isDir: !/\.[A-Za-z0-9]{1,10}$/.test(baseOf(p)) }));
+}
 
 /** 列范围：有 walkSubtree 的（夸克 / OpenList）带 id，115 只有路径，id 到执行时再解析 */
 async function walkScope(provider: DriveProvider, task: TaskDefinition, run: OrganizeRun, signal: AbortSignal): Promise<Walked> {
@@ -497,17 +616,8 @@ async function walkScope(provider: DriveProvider, task: TaskDefinition, run: Org
     entries.push(e);
   };
   const walkDir = async (rel: string, id?: string) => {
-    const abs = absOf(task, rel);
     roots.push(rel);
-    if (provider.walkSubtree) {
-      for (const e of await provider.walkSubtree(abs, { id, signal })) push({ path: joinRel(rel, e.path), isDir: e.isDir, id: e.id, size: e.size });
-    } else {
-      for (const p of await provider.listSubtree(abs, { id, signal })) {
-        // listSubtree 给的是文件 + 顶层空目录；没有扩展名且不含点的当目录（115 导出树里空目录就是这样）
-        const isDir = !/\.[A-Za-z0-9]{1,10}$/.test(baseOf(p));
-        push({ path: joinRel(rel, p), isDir });
-      }
-    }
+    for (const e of await listTree(provider, task, rel, signal, id)) push(e);
   };
   if (run.scopePaths.length === 0) {
     await walkDir(run.scopePath);
@@ -552,8 +662,15 @@ async function listOutsideDstDirs(
       if (it.resolve === "duplicate" && !inScope(dirOf(duplicatePathFor(it.srcPath)))) dirs.add(dirOf(duplicatePathFor(it.srcPath)));
     }
   }
-  // 只列最深的那些目录：它存在就顺便说明祖先都存在；不存在就往上找到第一个存在的祖先列出来
-  const known = new Set(entries.map((e) => e.path));
+  // 只列最深的那些目录：它存在就顺便说明祖先都存在；不存在就往上找到第一个存在的祖先列出来。
+  // 已知的条目没带 id 的（115 整棵列只有路径）照样交出去，调用方合并时留带 id 的那份（mergePreferId）
+  const known = new Map(entries.map((e) => [e.path, !!e.id]));
+  const fresh = (p: string, id: string | undefined) => {
+    const had = known.get(p);
+    if (had === true || (had === false && !id)) return false;
+    known.set(p, !!id);
+    return true;
+  };
   const out: ScopeEntry[] = [];
   for (const dir of [...dirs].sort()) {
     let cur = dir;
@@ -561,13 +678,10 @@ async function listOutsideDstDirs(
       signal.throwIfAborted();
       const node = await provider.resolvePath(absOf(task, cur), signal);
       if (node?.isDir) {
-        if (!known.has(cur)) out.push({ path: cur, isDir: true, id: node.id });
+        if (fresh(cur, node.id)) out.push({ path: cur, isDir: true, id: node.id });
         for (const e of await provider.listDir(node.id, signal)) {
           const p = joinRel(cur, e.name);
-          if (!known.has(p)) {
-            known.add(p);
-            out.push({ path: p, isDir: e.isDir, id: e.id, size: e.size });
-          }
+          if (fresh(p, e.id)) out.push({ path: p, isDir: e.isDir, id: e.id, size: e.size });
         }
         listed.add(cur);
         break;
@@ -594,16 +708,36 @@ interface PlanState {
   scopeRoots: ScopeRoot[];
   /** 这次预览已经去网盘看过的范围外目录（在的列过了、不在的也记着）：重规划时不再重复列 */
   listed: Set<string>;
+  /** 手动 / 智能体发起的：只有它们会删范围外、腾空了的作品目录（见 cleanupRoots） */
+  handPicked: boolean;
+  /** 分单元的范围（unitScopesOf），算单元的引用数用 */
+  scopes: string[];
+  /** 追更 / 云下载回执 / 复制队列指着的路径（相对任务 originPath），算单元的引用数用 */
+  refPaths: string[];
+  /** 待兑现的云下载回执指着的目录（相对任务 originPath）：腾空了也不删 */
+  offlineRefs: string[];
+  /** 同账号别的任务的根目录（网盘绝对路径）：它们和装着它们的目录都不删 */
+  otherTaskRoots: string[];
+  /** 越到范围外、整棵列过的单元根（里面有什么都知道了，腾空后能判断删不删，见 cleanupRoots） */
+  outsideRoots: Set<string>;
 }
 
 const planContext = (state: PlanState) => ({ settings: state.org, libraryType: state.task.organize?.libraryType });
 
-/** 把新列到的条目并进本轮已知的条目（按路径去重） */
+/** 合并条目，按路径去重；同一路径留带 id 的那份（115 整棵列只有路径，单独列目录才有 id，覆盖 / 删除时要按 id 核对） */
+function mergePreferId(base: ScopeEntry[], extra: ScopeEntry[]): ScopeEntry[] {
+  if (extra.length === 0) return base;
+  const byPath = new Map(base.map((e) => [e.path, e]));
+  for (const e of extra) {
+    const had = byPath.get(e.path);
+    if (!had || (!had.id && e.id)) byPath.set(e.path, e);
+  }
+  return [...byPath.values()];
+}
+
+/** 把新列到的条目并进本轮已知的条目 */
 function mergeEntries(state: PlanState, extra: ScopeEntry[]): void {
-  if (extra.length === 0) return;
-  const known = new Set(state.entries.map((e) => e.path));
-  const fresh = extra.filter((e) => !known.has(e.path));
-  if (fresh.length > 0) state.entries = [...state.entries, ...fresh];
+  state.entries = mergePreferId(state.entries, extra);
 }
 
 /** 内存里的 run 状态：单元结构（Unit）不落库，改匹配重新规划时要用；进程重启后 run 只能看和执行，不能再改 */
@@ -696,13 +830,16 @@ async function preview(job: Job, runId: string): Promise<void> {
     identifyNotes: new Map(),
     scopeRoots: scopeRootsOf(run, walked.roots),
     listed: new Set(),
+    handPicked: handPicked(run.trigger),
+    scopes,
+    refPaths: [],
+    offlineRefs: rewriteOfflineSubPaths(task.id, [], true),
+    otherTaskRoots: accountTasks(provider.account.name)
+      .filter((t) => t.id !== task.id)
+      .map((t) => normalizePath(t.originPath)),
+    outsideRoots: new Set(),
   };
-  const under = (p: string, s: string) => s === "" || p === s || p.startsWith(`${s}/`);
-  const refPaths = [
-    ...rewriteFollowSubPaths(task.id, [], true),
-    ...rewriteOfflineSubPaths(task.id, [], true),
-    ...rewriteCopyPaths(task.id, task.originPath, [], true),
-  ];
+  state.refPaths = [...rewriteFollowSubPaths(task.id, [], true), ...state.offlineRefs, ...rewriteCopyPaths(task.id, task.originPath, [], true)];
   const library = listLibraryEntries();
   const rows: OrganizeUnit[] = [];
   const plans: UnitPlan[] = [];
@@ -732,12 +869,8 @@ async function preview(job: Job, runId: string): Promise<void> {
     state.episodeTitles.set(unit.key, episodeTitles);
     state.identifyNotes.set(unit.key, identifyNotes);
     const memory = evidence.memory;
-    // 单元根越到了范围外（范围直接选在季目录上，单元根是上一级的剧目录）：只有范围里的会挪走，只数范围里的引用
-    const rootInScope = scopes.some((s) => under(unit.rootPath, s));
-    const refs = rootInScope
-      ? referencesTo(refPaths, unit.rootPath)
-      : scopes.filter((s) => unit.files.some((f) => under(f.path, s))).reduce((n, s) => n + referencesTo(refPaths, s), 0);
-    const row = toUnitRow(runId, unit, match, null, refs);
+    // 引用数等删空目录的边界定了再算（refsOf）
+    const row = toUnitRow(runId, unit, match, null, 0);
     if (memory) {
       row.seasonOverride = memory.season;
       row.episodeOffset = memory.episodeOffset;
@@ -754,10 +887,18 @@ async function preview(job: Job, runId: string): Promise<void> {
   }
 
   setProgress(job, "plan", 0, 0, "规划目标路径");
-  // 目标目录在范围之外（整理到任务根下的作品目录）时，冲突检测得知道那边已经有什么：每个目标目录列一次
-  const extra = await listOutsideDstDirs(provider, task, walked.roots, plans, walked.entries, signal, state.listed);
-  state.entries = [...walked.entries, ...extra];
-  const items = finalizeItems(plans, { entries: state.entries, scopeRoots: state.scopeRoots, items: [], cleanupEmptyDirs: org.cleanupEmptyDirs });
+  // 单元根越到范围外、又是这部作品独占的目录（范围直接选在季目录上）：整棵列一遍，腾空后删不删得知道里面还有什么
+  const matches = new Map(rows.map((r) => [r.key, r.match]));
+  const rootEntries = await listOutsideUnitRoots(provider, state, plans, signal, (u) => workTitles(matches.get(u.key) ?? null, true));
+  const known = [...walked.entries, ...rootEntries];
+  // 目标目录在范围之外（整理到任务根下的作品目录）时，冲突检测得知道那边已经有什么：每个目标目录列一次。
+  // 有 walkSubtree 的网盘整棵列过的单元根里 id、内容都全了，落在里面的不再列；115 整棵列只有路径，照列，合并时留带 id 的
+  const listedRoots = provider.walkSubtree ? [...walked.roots, ...state.outsideRoots] : walked.roots;
+  const extra = await listOutsideDstDirs(provider, task, listedRoots, plans, known, signal, state.listed);
+  state.entries = mergePreferId(known, extra);
+  const items = finalizeItems(plans, { entries: state.entries, scopeRoots: cleanupRoots(state, (key) => matches.get(key) ?? null), items: [], cleanupEmptyDirs: org.cleanupEmptyDirs });
+  const rmdirs = rmdirsOf(items);
+  for (const row of rows) row.referencedBy = refsOf(state, state.units.get(row.key)!, rmdirs);
   planStates.set(runId, state);
   replaceUnits(runId, rows);
   replaceItems(runId, toItemRows(task, items));
@@ -775,6 +916,8 @@ async function preview(job: Job, runId: string): Promise<void> {
 async function afterAutoPreview(runId: string, task: TaskDefinition, mode: OrganizeRunMode, units: OrganizeUnit[], stats: OrganizeRunStats): Promise<void> {
   const run = getRun(runId);
   if (stats.planned === 0) {
+    // 一项都不用动：直接收尾，内存里的规划状态也用不着了
+    planStates.delete(runId);
     updateRun(runId, { status: "done", finishedAt: Math.floor(Date.now() / 1000) });
     if (run) releaseHeldCopies(run);
     return;
@@ -837,7 +980,9 @@ function replanRun(run: OrganizeRun, state: PlanState, changed: Map<string, Orga
     planned.push({ row: r, plan });
     plans.push(plan);
   }
-  const all = finalizeItems(plans, { entries: state.entries, scopeRoots: state.scopeRoots, items: [], cleanupEmptyDirs: state.org.cleanupEmptyDirs });
+  const matchOf = (key: string) => (changed.get(key) ?? rows.get(key))?.match ?? null;
+  const all = finalizeItems(plans, { entries: state.entries, scopeRoots: cleanupRoots(state, matchOf), items: [], cleanupEmptyDirs: state.org.cleanupEmptyDirs });
+  const rmdirs = rmdirsOf(all);
   // 选过的冲突办法这一轮没用上（没撞上：单元取消了勾选、别的单元让开了位置……）就清掉。挂着不清，哪天又撞上了
   // （重新勾上、换回原来的季）会悄悄生效，其中「删掉 / 覆盖」就成了没人再看一眼的删除；撞上了但办法没成的（候选名都被占）留着
   const used = new Set(all.filter((i) => i.resolve && (i.resolved || i.action === "conflict")).map((i) => JSON.stringify([i.unitKey, i.srcPath])));
@@ -845,15 +990,18 @@ function replanRun(run: OrganizeRun, state: PlanState, changed: Map<string, Orga
     const entries = Object.entries(r.resolutions ?? {});
     const kept = entries.filter(([abs]) => used.has(JSON.stringify([r.key, relOf(state.task, abs)])));
     const pruned = kept.length !== entries.length;
+    // 换了匹配，单元根删不删可能跟着变（名字对不对得上），引用数照着重算
+    const refs = refsOf(state, state.units.get(r.key)!, rmdirs);
     if (changed.has(r.key)) {
       updateUnit(run.id, r.key, {
         ...r,
         ...(pruned ? { resolutions: Object.fromEntries(kept) } : {}),
+        referencedBy: refs,
         dstRoot: plan.dstRoot,
         notes: [...(state.identifyNotes.get(r.key) ?? []), ...plan.notes],
       });
-    } else if (pruned) {
-      updateUnit(run.id, r.key, { resolutions: Object.fromEntries(kept) });
+    } else if (pruned || refs !== r.referencedBy) {
+      updateUnit(run.id, r.key, { ...(pruned ? { resolutions: Object.fromEntries(kept) } : {}), referencedBy: refs });
     }
   }
   replaceItems(run.id, toItemRows(state.task, all));
@@ -2335,11 +2483,12 @@ function finishRevert(job: Job, runId: string, outcome: { fatal: string | null; 
 
 /** 撤销的收尾：腾空过的源目录退回来了，追更 / 云下载回执的目录和识别记忆也改回去 */
 function afterRevert(task: TaskDefinition, provider: DriveProvider, units: OrganizeUnit[], items: OrganizeItem[]): void {
-  const removedDirs = new Set(items.filter((it) => it.action === "rmdir").map((it) => relOf(task, it.srcPath)));
-  // 非单元根的只认这次新建出来的目标目录：原来就有的目录，别的追更本来就可能指着它，不能拽回来
-  const created = new Set(items.filter((it) => it.action === "mkdir").map((it) => relOf(task, it.dstPath)));
+  // 只认执行时真删了、撤销时退回了的源目录：删目录那条没成（目录没空、失败了）的，源目录一直在，没有落点从它挪走过
+  const removedDirs = new Set(items.filter((it) => it.action === "rmdir" && it.status === "reverted").map((it) => relOf(task, it.srcPath)));
+  // 只认这次新建、撤销时又删掉了的目标目录：原来就有（或者撤销后还留着东西）的目录，别的追更本来就可能指着它，不能拽回来——单元根那条也一样
+  const created = new Set(items.filter((it) => it.action === "mkdir" && it.status === "reverted").map((it) => relOf(task, it.dstPath)));
   const back = dirMappings(task, units, items, removedDirs)
-    .filter((m) => m.root || created.has(m.to))
+    .filter((m) => created.has(m.to))
     // 这条映射下一个文件都没退回（撤销被取消、在网盘上失败、已经找不到）：源目录还不在，追更 / 云下载继续指着作品目录
     .filter((m) => m.items.some((it) => it.status === "reverted"))
     .map((m) => ({ from: m.to, to: m.from, root: m.root }))

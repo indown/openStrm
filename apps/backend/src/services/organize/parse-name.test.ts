@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hasReleaseNoise, isExtrasDirName, numericTitle, parseCjkNumber, parseMediaName, seasonDirNumber, stripSubtitleSuffix, titleCandidates, trailingNumber, type ParsedName, looksLikeReleaseDir } from "./parse-name.js";
+import { hasReleaseNoise, isExtrasDirName, isNamedAfter, numericTitle, parseCjkNumber, parseMediaName, seasonDirNumber, stripSubtitleSuffix, titleCandidates, trailingNumber, type ParsedName, looksLikeReleaseDir } from "./parse-name.js";
 
 type Expect = Partial<Omit<ParsedName, "tags" | "titles">> & { tags?: Partial<ParsedName["tags"]>; titles?: string[] };
 
@@ -205,3 +205,20 @@ test("标题末尾的数字：拆成标题 + 数字，是不是集数交给调�
   assert.equal(trailingNumber(parseMediaName("Dune Part 2")), null);
   assert.equal(trailingNumber(parseMediaName("我和僵尸有个约会01")), null, "已经认出集数的不再拆");
 });
+
+test("isNamedAfter：目录名解析出的片名就是识别出来的片名才算；包含、像发布目录、收件箱式的名字都不算", () => {
+  const beef = ["怒呛人生", "BEEF", "Beef"];
+  assert.equal(isNamedAfter("怒呛人生", beef), true, "中文片名");
+  assert.equal(isNamedAfter("beef", beef), true, "原名，大小写不论");
+  assert.equal(isNamedAfter("BEEF.S01.1080p.WEB-DL", beef), true, "发布目录去掉季、画质之后就是片名");
+  assert.equal(isNamedAfter("怒呛人生 (2023)", beef), true, "带年份");
+  assert.equal(isNamedAfter("怒呛人生 全集", beef), true, "「全集」「番外」这种标记词解析时就去掉了");
+  assert.equal(isNamedAfter("怒呛人生和朋友们", beef), false, "多了词就不是：不按包含比");
+  assert.equal(isNamedAfter("BEEF.S01.1080p", []), false, "像发布目录也得片名对得上");
+  assert.equal(isNamedAfter("uploads", ["飞屋环游记", "Up"]), false, "uploads 不是《Up》");
+  for (const n of ["inbox", "downloads", "电影", "蓝光", "Remux", "[待整理]", "美剧 2024", "Season 2"]) assert.equal(isNamedAfter(n, beef), false, n);
+  assert.equal(isNamedAfter("美剧", ["美剧狂人"]), false, "片名里包含目录名不算：分类目录会被当成作品目录");
+  assert.equal(isNamedAfter("A", ["A"]), false, "一个字的片名太容易撞，不认");
+  assert.equal(isNamedAfter("怒呛人生", [undefined, ""]), false);
+});
+

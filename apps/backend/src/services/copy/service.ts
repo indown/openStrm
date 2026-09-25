@@ -64,8 +64,12 @@ import {
   findDuplicate,
   hasPendingCopies,
   listCopies,
+  mirrorLive,
+  queuedNow,
   sameTarget,
   saveCopies,
+  stillQueued,
+  tickRecords,
   type CopyRecord,
   type CopyStatus,
   type CopyTrigger,
@@ -196,6 +200,10 @@ export interface CopyEnqueueResult {
   duplicates?: number;
   /** 没再登记的那些里，排着的有复制完要删源的（可能是这次补上的）：调用方回显「删不删源」时要算上 */
   pendingDeletes?: boolean;
+  /** 网盘监控登记时，被还没提交的整目录复制包着、交给它一起带过去而没再登记的条数 */
+  covered?: number;
+  /** 这次新排上的记录 id */
+  ids?: string[];
 }
 
 /**
@@ -250,7 +258,10 @@ export function enqueueCopy(req: CopyRequest): CopyEnqueueResult {
     const fresh: CopyRecord[] = [];
     /** 被这次补上删源的、已经排着的记录 */
     const upgraded: CopyRecord[] = [];
+    /** 被这次的整条目并进去的监控记录 */
+    const merged: CopyRecord[] = [];
     let duplicates = 0;
+    let covered = 0;
     let pendingDeletes = false;
     for (const s of sources) {
       const srcPath = s.path.trim();
@@ -282,6 +293,12 @@ export function enqueueCopy(req: CopyRequest): CopyEnqueueResult {
         ...(req.holdForOrganize ? { holdUntil: now + ORGANIZE_HOLD_MS } : {}),
       };
       if (!rec.name) continue;
+      // 网盘监控是一个文件一条：被一条还没提交的整条目复制包着、落点一样的，那一条会把它一起带过去，不再单独登记。
+      // 单独登记的话它先按文件复制完，轮到整条目时目标里已经有了只能跳过，任务的「复制后删源」就落空了
+      if (rec.trigger === "monitor" && [...rows, ...fresh].some((w) => coversRecord(w, rec))) {
+        covered++;
+        continue;
+      }
       const dup = findDuplicate([...rows, ...fresh], rec, now);
       if (!dup) {
         fresh.push(rec);
@@ -291,19 +308,50 @@ export function enqueueCopy(req: CopyRequest): CopyEnqueueResult {
       if (upgradeDeleteSource(dup, rec)) upgraded.push(dup);
       if (dup.status === "pending" && dup.deleteSource) pendingDeletes = true;
     }
-    const counts = { dstDir: base, duplicates, pendingDeletes };
-    if (fresh.length === 0 && upgraded.length === 0) return { queued: 0, skipped: "这些条目已经在队列里或刚复制过", ...counts };
+    // 反过来：整条目来登记时，它里面还没提交、落点一样的监控记录并进来（标成用不着了），由这一条整个带过去
+    for (const w of fresh) {
+      for (const o of rows) {
+        if (o.trigger !== "monitor" || !queuedNow(o) || !coversRecord(w, o)) continue;
+        mergeInto(o, w, now);
+        mirrorLive(o.id, (live) => mergeInto(live, w, now), stillQueued);
+        merged.push(o);
+      }
+    }
+    const counts = { dstDir: base, duplicates, pendingDeletes, covered };
+    const nothing = covered > 0 && duplicates === 0 ? "整目录的复制会把它们一起带过去" : "这些条目已经在队列里或刚复制过";
+    if (fresh.length === 0 && upgraded.length === 0) return { queued: 0, skipped: nothing, ...counts };
     saveCopies([...fresh, ...rows]);
     if (upgraded.length > 0) log.info(`${upgraded.length} 个已经排着的复制补上了「复制后删源」（来自${COPY_TRIGGER_LABEL[req.trigger]}）`);
-    if (fresh.length === 0) return { queued: 0, skipped: "这些条目已经在队列里或刚复制过", ...counts };
+    if (merged.length > 0) log.info(`${merged.length} 个网盘监控按文件登记的复制并进了整目录的复制（来自${COPY_TRIGGER_LABEL[req.trigger]}）`);
+    if (fresh.length === 0) return { queued: 0, skipped: nothing, ...counts };
     log.info(`登记 ${fresh.length} 个待复制（${req.account} → ${base}，来自${COPY_TRIGGER_LABEL[req.trigger]}）`);
     startCopyWatcher();
-    return { queued: fresh.length, skipped: null, ...counts };
+    return { queued: fresh.length, skipped: null, ...counts, ids: fresh.map((c) => c.id) };
   } catch (err) {
     // 登记失败不能影响调用方：转存 / 追更本身已经成功了
     log.warn({ err }, `登记复制待办失败（${req.account}，来自${COPY_TRIGGER_LABEL[req.trigger]}），这次不复制`);
     return { queued: 0, skipped: messageOf(err) };
   }
+}
+
+/**
+ * 整条目 outer 会不会把 inner 一起带过去：outer 还没提交（整目录复制会带上里面届时的一切）、同账号、inner 在它下面，
+ * 而且按 outer 的层级摆出来的目标目录和 inner 自己的一样（弹框里另选了目的地的不算，那是两份复制）；
+ * inner 要删源的，outer 也得删源，不然删源意图就丢了
+ */
+function coversRecord(outer: CopyRecord, inner: CopyRecord): boolean {
+  if (!queuedNow(outer) || outer.adopted || outer.srcDir === "") return false;
+  if (inner.adopted || inner.srcDir === "" || outer.account !== inner.account || !isInside(fullPathOf(inner), fullPathOf(outer))) return false;
+  if (inner.deleteSource && !outer.deleteSource) return false;
+  return dstDirFor(outer.dstBase, outer.rootPath, fullPathOf(inner)).dstDir === inner.dstDir;
+}
+
+/** 监控记录并进整条目：标成用不着了（不给重试），说明里写进了谁 */
+function mergeInto(c: CopyRecord, whole: CopyRecord, now: number): void {
+  c.status = "skipped";
+  c.superseded = true;
+  c.doneAt = now;
+  c.detail = `并进了「${whole.name}」的整目录复制，由它一起带过去`;
 }
 
 /**
@@ -316,25 +364,28 @@ function upgradeDeleteSource(dup: CopyRecord, rec: CopyRecord): boolean {
   if (!rec.deleteSource || dup.deleteSource || dup.status !== "pending" || dup.adopted) return false;
   const nodeId = dup.nodeId ?? rec.nodeId;
   if (!nodeId) return false;
-  for (const c of [dup, tickRecords.get(dup.id)]) {
-    if (!c) continue;
+  const apply = (c: CopyRecord) => {
     c.deleteSource = true;
     c.nodeId = nodeId;
     c.sourceKept = undefined;
     // 整条目那边在等自动整理：还没提交的跟着等，别在整理改名之前就复制走、删掉
     if (c.stage === "waiting" && rec.holdUntil && (c.holdUntil ?? 0) < rec.holdUntil) c.holdUntil = rec.holdUntil;
-  }
+  };
+  apply(dup);
+  mirrorLive(dup.id, apply, (live) => live !== dup);
   return true;
 }
 
 /**
  * 按 copyOptionsFor 的结论登记：没开就什么都不做（undefined）；开着却卡住（设置没配好）的交给 onBlocked 记一笔，
  * 并照实回给调用方，不然用户只看到「开着复制，什么都没发生」。目标目录、删源都按结论来，调用方不用再传。
+ * onQueued 拿到这次新排上的记录 id（回给调用方的结果里不带它们）
  */
 export function enqueueCopyFor(
   opts: CopyOptions,
   req: Omit<CopyRequest, "dstDir" | "deleteSource">,
   onBlocked?: (why: string) => void,
+  onQueued?: (ids: string[]) => void,
 ): CopyOutcome | undefined {
   if (opts.blocked) {
     onBlocked?.(opts.blocked);
@@ -342,6 +393,7 @@ export function enqueueCopyFor(
   }
   if (!opts.enabled) return undefined;
   const r = enqueueCopy({ ...req, dstDir: opts.dstDir, deleteSource: opts.deleteSource });
+  if (r.ids?.length) onQueued?.(r.ids);
   // 删不删源：这次新排的按这次的结论，没再排的按已经排着的那条（可能是别的来源登记的，也可能刚补上）
   const deleteSource = (r.queued > 0 && opts.deleteSource) || r.pendingDeletes === true;
   return { queued: r.queued, dstDir: r.dstDir ?? null, deleteSource, ...(r.skipped ? { reason: r.skipped } : {}) };
@@ -400,19 +452,15 @@ function isMissingDir(err: unknown): boolean {
 export async function tickCopies(): Promise<void> {
   const pending = listCopies().filter((c) => c.status === "pending");
   if (pending.length === 0) return;
-  tickRecords = new Map(pending.map((c) => [c.id, c]));
+  // 这一轮手里的记录登记出去（见 queue.ts 的 tickRecords）：中途别处的改动要同时改到它们身上
+  tickRecords.clear();
+  for (const c of pending) tickRecords.set(c.id, c);
   try {
     await tickPending(pending);
   } finally {
-    tickRecords = new Map();
+    tickRecords.clear();
   }
 }
-
-/**
- * 正在跑的这一轮手里的记录（按 id）。循环中间夹着网络等待，这期间界面 / 智能体的重试、整条目登记补上的删源
- * 要同时改到这些对象上：这一轮是按 id 把它手里的对象写回去的，只改库里那份会被盖掉
- */
-let tickRecords = new Map<string, CopyRecord>();
 
 async function tickPending(pending: CopyRecord[]): Promise<void> {
   /**
@@ -554,8 +602,18 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], pending: CopyRe
   const groups = new Map<string, { account: string; srcDir: string; dstDir: string; items: CopyRecord[] }>();
   /** 这一轮已经分进组的目标文件：同一个目标只让一个来源提交 */
   const claimed = new Map<string, CopyRecord>();
+  /** 分组那一刻的源路径 */
+  const origin = new Map<string, string>();
+  /**
+   * 还归这一轮管吗：每过一道网络等待都核对一次。等待期间整理可能改了它的路径（rewriteCopyPaths 会改到这一轮手里的对象）、
+   * 标成了「用不着了」、界面把它去掉了……这些这一轮都不碰：不记等待、不记失败、不提交，下一轮按新样子来。
+   * 不然会拿新名字配旧目录去列、去提交，白白记一次等待或失败
+   */
+  const here = (c: CopyRecord, g: { dstDir: string }) =>
+    c.status === "pending" && c.stage === "waiting" && fullPathOf(c) === origin.get(c.id) && c.dstDir === g.dstDir;
   for (const c of items) {
     touched.add(c);
+    origin.set(c.id, fullPathOf(c));
     const srcDir = toOpenlistPath(cfg.mounts, c.account, c.srcDir);
     if (!srcDir) {
       finish(c, "failed", `账号 ${c.account} 没填「在 OpenList 里的挂载根」，不知道 ${c.srcDir} 在 OpenList 的哪里`);
@@ -577,6 +635,7 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], pending: CopyRe
     let names: string[];
     try {
       const listed = await listSource(cfg, g.account, g.srcDir);
+      g.items = g.items.filter((c) => here(c, g));
       if ("missing" in listed) {
         const mount = cfg.mounts[g.account];
         if (listed.missing === "mount") {
@@ -595,7 +654,7 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], pending: CopyRe
       names = listed.names;
     } catch (err) {
       const msg = messageOf(err);
-      for (const c of g.items) {
+      for (const c of g.items.filter((x) => here(x, g))) {
         c.attempts += 1;
         if (c.attempts >= MAX_ATTEMPTS) finish(c, "failed", `读 OpenList 的 ${g.srcDir} 失败：${msg}`);
         else c.detail = `读 OpenList 的 ${g.srcDir} 失败，稍后重试（${c.attempts}/${MAX_ATTEMPTS}）：${msg}`;
@@ -607,6 +666,7 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], pending: CopyRe
 
     const ready: CopyRecord[] = [];
     for (const c of g.items) {
+      if (!here(c, g)) continue;
       if (names.includes(c.name)) {
         ready.push(c);
         continue;
@@ -628,6 +688,7 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], pending: CopyRe
       // 目标目录还不存在（下面会建）或一时读不到，都照常往下走
     }
     const todo = ready.filter((c) => {
+      if (!here(c, g)) return false;
       if (!existing.includes(c.name)) return true;
       // 用户明确点了重试：多半是上次复制到一半留了个残缺的文件在那儿。
       // overwrite 一直是 false，覆盖不了，所以如实报失败让人去删，而不是悄悄「跳过」了事
@@ -642,12 +703,14 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], pending: CopyRe
     // 这一刻 OpenList 刚看见它，路径上就是要复制的这一份
     const pinned: CopyRecord[] = [];
     for (const c of todo) {
+      if (!here(c, g)) continue;
       if (!c.deleteSource || c.nodeId || c.adopted) {
         pinned.push(c);
         continue;
       }
       try {
         const id = await deps.resolveNodeId(c.account, joinPath(c.srcDir, c.name));
+        if (!here(c, g)) continue;
         if (id) c.nodeId = id;
         else {
           c.deleteSource = false;
@@ -655,6 +718,7 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], pending: CopyRe
         }
         pinned.push(c);
       } catch (err) {
+        if (!here(c, g)) continue;
         c.attempts += 1;
         const msg = messageOf(err);
         if (c.attempts >= MAX_ATTEMPTS) finish(c, "failed", `核对网盘上的源文件失败：${msg}`);
@@ -670,6 +734,14 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], pending: CopyRe
     try {
       // /fs/copy 不会自己建目标目录，先建一次（已存在时 OpenList 自己会说，吞掉）
       await deps.openlist.mkdir(cfg, g.dstDir).catch(() => {});
+      // 建目录那一下也在等网络：期间被改了的这一轮不提交
+      pinned.splice(0, pinned.length, ...pinned.filter((c) => here(c, g)));
+      if (pinned.length === 0) {
+        persist();
+        continue;
+      }
+      // 先记成「复制中」再去提交：提交请求还在路上时整理来改路径，看到的已经是「提交了」，不会把这一条改得和提交的不一样
+      for (const c of pinned) c.stage = "copying";
       const names = pinned.map((c) => c.name);
       const tasks = await deps.openlist.copy(cfg, g.srcDir, g.dstDir, names);
       const submittedAt = deps.now();
@@ -698,6 +770,8 @@ async function submitReady(cfg: CopyConfig, items: CopyRecord[], pending: CopyRe
     } catch (err) {
       const msg = messageOf(err);
       for (const c of pinned) {
+        // 没提交成：退回排队
+        c.stage = "waiting";
         c.attempts += 1;
         if (c.attempts >= MAX_ATTEMPTS) finish(c, "failed", `提交 OpenList 复制失败：${msg}`);
         else c.detail = `提交 OpenList 复制失败，稍后重试（${c.attempts}/${MAX_ATTEMPTS}）：${msg}`;
@@ -741,6 +815,8 @@ async function pollSubmitted(cfg: CopyConfig, items: CopyRecord[], touched: Set<
   // 别人明确认领的任务 id：按名字认的时候要避开，不然两条记录会互相抢结果
   const claimed = new Set(items.map((c) => c.copyTaskId).filter((id): id is string => Boolean(id)));
   for (const c of items) {
+    // 等任务列表、做前一条的收尾时被界面去掉了（dropCopy 会把这一轮手里的标掉）：不再归这一轮管，删源、通知这些收尾都不做
+    if (c.status !== "pending") continue;
     const key = taskKey(c);
     const mine = (rows: OpenlistTaskInfo[]) =>
       rows.filter((r) => (c.copyTaskId && r.id === c.copyTaskId) || (key !== "" && r.name.includes(key) && !claimed.has(r.id)));
@@ -1019,8 +1095,7 @@ export function retryCopies(ids: string[]): CopyRetryResult[] {
       continue;
     }
     resetForRetry(c, now);
-    const live = tickRecords.get(id);
-    if (live) resetForRetry(live, now);
+    mirrorLive(id, (live) => resetForRetry(live, now), (live) => live !== c);
     results.push({ id, ok: true, record: c });
     changed = true;
   }
@@ -1045,6 +1120,11 @@ export function dropCopy(id: string): void {
   const kept = rows.filter((c) => c.id !== id);
   if (kept.length === rows.length) throw new HttpError(404, `复制记录不存在：${id}`);
   saveCopies(kept);
+  // 推进循环这一轮手里要是也有它：标掉，这一轮就不再提交它（收尾写回时它已经不在库里，也不会复活）
+  mirrorLive(id, (live) => {
+    live.status = "skipped";
+    live.detail = "已从队列里去掉";
+  });
 }
 
 /**

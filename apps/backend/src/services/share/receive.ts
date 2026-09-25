@@ -10,8 +10,9 @@ import { HttpError } from "../../lib/http-error.js";
 import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareRef } from "../drive/types.js";
-import { enqueueCopyFor, type CopyOutcome } from "../copy/service.js";
+import { COPY_TRIGGER_LABEL, enqueueCopyFor, type CopyOutcome } from "../copy/service.js";
 import { copyBlockerFor, copyOptionsFor } from "../copy/paths.js";
+import { releaseCopyHoldsById, type CopyTrigger } from "../copy/queue.js";
 import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
 import { generateStrmForSelected, type SelectedItem } from "../strm/share-strm.js";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -46,6 +47,8 @@ export interface SaveSelectionOpts {
   organize?: boolean;
   /** 这次强制复制到 OpenList / 强制不复制；不给就按任务上的开关 */
   copy?: boolean;
+  /** 复制队列里记的来源，不给就是「分享转存」；追更复用这条路时写成「追更」 */
+  copyTrigger?: CopyTrigger;
 }
 
 /**
@@ -113,45 +116,45 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
   }
   // 网盘给了转存后的顶层 id 且一一对应时，目录直接按 id 列，省掉按路径解析那一步；删源时也靠它核对
   const ids = topIds && topIds.length === items.length ? topIds : [];
-  /** 任务开了「复制到 OpenList」（或这次勾了）：把刚转存进来的条目交给复制队列。organizing = 刚排了会直接执行的自动整理 */
-  const enqueueCopyOf = (organizing: boolean) =>
-    enqueueReceivedCopy({
-      task,
-      account: provider.account.name,
-      items: items.map((i, idx) => ({ name: i.name, isDir: i.isDir, nodeId: ids[idx] })),
-      subPath,
-      copy: opts.copy,
-      settings,
-      organizing,
-    });
+  // 任务开了自动整理（或这次勾了「转存后整理」）就交给整理；明确给了 false 就这次不整理。
+  // 后台模式不整理（整理和全量同步同时动一个目录会互相踩）
+  const organizeMode = mode === "sync" && opts.organize !== false ? forcedOrganizeMode(task, opts.organize) : undefined;
+  const organizing = mode === "sync" && opts.organize !== false && effectiveAutoMode(task, organizeMode, settings) === "auto";
+  // 任务开了「复制到 OpenList」（或这次勾了）：转存完马上登记，在生成 strm、交给整理之前。网盘监控随后按文件报上来的，
+  // 被这一条整条目包着就不再单独登记；登记晚了，它们会先按文件复制走，轮到这一条时目标里已经有了只能跳过，
+  // 任务的「复制后删源」就落空了。要直接执行的整理先压着，等它在网盘上改完名再复制
+  let copyIds: string[] = [];
+  const copy = enqueueReceivedCopy({
+    task,
+    account: provider.account.name,
+    items: items.map((i, idx) => ({ name: i.name, isDir: i.isDir, nodeId: ids[idx] })),
+    subPath,
+    copy: opts.copy,
+    settings,
+    organizing,
+    trigger: opts.copyTrigger,
+    onQueued: (queued) => (copyIds = queued),
+  });
+  const withCopy = { ...(copy ? { copy } : {}), ...(ids.length ? { receivedIds: ids } : {}) };
 
-  const withIds = ids.length ? { receivedIds: ids } : {};
   if (mode === "sync") {
     const selectedItems: SelectedItem[] = items.map((i, idx) => ({ name: i.name, isDir: i.isDir, id: ids[idx] }));
-    let copyTried = false;
     try {
       const { generatedCount, skippedCount, invalidNames } = await generateStrmForSelected({ task, provider, selectedItems, settings, subPath });
-      // 任务开了自动整理（或这次勾了「转存后整理」）：刚转存进来的这些条目交给整理，识别失败或没开都不影响这次转存。
-      // 明确给了 false 就这次不整理
-      const organizeMode = opts.organize === false ? undefined : forcedOrganizeMode(task, opts.organize);
+      // 刚转存进来的这些条目交给整理，识别失败或没开都不影响这次转存
       if (opts.organize !== false) {
         maybeAutoOrganize({ task, paths: items.map((i) => (subPath ? `${subPath}/${i.name}` : i.name)), trigger: "share", mode: organizeMode });
       }
-      copyTried = true;
-      const copy = enqueueCopyOf(opts.organize !== false && effectiveAutoMode(task, organizeMode, settings) === "auto");
-      return { mode: "sync", generatedCount, skippedCount, invalidNames, ...(copy ? { copy } : {}), ...withIds };
+      return { mode: "sync", generatedCount, skippedCount, invalidNames, ...withCopy };
     } catch (err) {
       // 走到这里时转存已经成功了，只是本地 strm 没生成好：标出来，调用方才知道别再转存一遍（网盘会再复制一份）。
-      // 复制只读网盘、不靠 strm，照常排上（这次没交给整理，不用等它）；排没排上一起带回去
-      const copy = copyTried ? undefined : enqueueCopyOf(false);
+      // 复制只读网盘、不靠 strm，前面已经排上了，排没排上一起带回去；这次没交给整理，为等它压着的那几条放行
+      if (organizing) releaseCopyHoldsById(copyIds);
       const http = driveErrorToHttp(err, "生成 strm 失败");
       throw new HttpError(http.status, http.message, { ...http.extra, received: true, ...(copy ? { copy } : {}) }, { cause: http.cause ?? err });
     }
   }
 
-  // 后台模式不整理（整理和全量同步同时动一个目录会互相踩），复制只读网盘，照常排上
-  const copy = enqueueCopyOf(false);
-  const withCopy = { ...(copy ? { copy } : {}), ...withIds };
   /**
    * 「后台」就是不等同步：startTask 要先把远端目录树拉完才返回，115 的大目录导出要好几分钟，
    * 一直等着的话前端的请求会先超时、报「保存失败」，其实转存早就成了（真机撞到过）。
@@ -185,8 +188,13 @@ export function enqueueReceivedCopy(input: {
   copy: boolean | undefined;
   settings: AppSettings;
   organizing: boolean;
+  /** 复制队列里记的来源，默认「分享转存」 */
+  trigger?: CopyTrigger;
+  /** 拿到这次新排上的记录 id */
+  onQueued?: (ids: string[]) => void;
 }): CopyOutcome | undefined {
   const { task } = input;
+  const trigger = input.trigger ?? "share";
   const dir = input.subPath ? `${task.originPath}/${input.subPath}` : task.originPath;
   return enqueueCopyFor(
     copyOptionsFor(task, input.copy, input.settings),
@@ -195,10 +203,11 @@ export function enqueueReceivedCopy(input: {
       sources: input.items.map((i) => ({ path: `${dir}/${i.name}`, isDir: i.isDir, nodeId: i.nodeId })),
       rootPath: task.originPath,
       taskId: task.id,
-      trigger: "share",
+      trigger,
       holdForOrganize: input.organizing,
     },
-    (why) => log.info(`任务 ${task.originPath} 开着复制到 OpenList，但${why}，这次转存的不复制`),
+    (why) => log.info(`任务 ${task.originPath} 开着复制到 OpenList，但${why}，这次${COPY_TRIGGER_LABEL[trigger]}来的不复制`),
+    input.onQueued,
   );
 }
 

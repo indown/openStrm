@@ -54,7 +54,7 @@ export const findAndSavePrompt: PromptDef = {
     steps.push("我选定以后用 share_inspect 看分享里有什么，把目录结构、文件数和总大小告诉我。");
     if (canSave) {
       steps.push(
-        `问我存到哪个同步任务（tasks_list 能列出来；任务开着复制到 OpenList 的也告诉我，复制完会删网盘上源文件的要特别说），我同意后调 share_save，带 organize: true 存完自动整理${kind === "movie" ? "" : "；是还没完结的剧集就问我要不要顺便追更（follow: true）"}。`,
+        `问我存到哪个同步任务（tasks_list 能列出来；任务开着复制到 OpenList 的也告诉我，复制完会删网盘上源文件的要特别说），我同意后调 share_save，带 organize: true 存完自动整理，不用给 subPath（整理会建规范的作品目录，拿片名建的子目录整理完会空着留下）${kind === "movie" ? "" : "；是还没完结的剧集就问我要不要顺便追更（follow: true）"}。`,
       );
     } else {
       steps.push("这个令牌不能改网盘：把 share_inspect 结果里的 openInUi（预填好的转存框）给我，没有就给分享链接，我在管理界面里自己存。");

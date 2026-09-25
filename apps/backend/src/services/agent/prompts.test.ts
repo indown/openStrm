@@ -27,7 +27,7 @@ test("能转存的令牌：确认片名 → 搜 → 挑候选 → 看内容 → 
   assert.match(text, /1\. 用 tmdb_search 确认是哪一部（type: tv，/);
   assert.match(text, /2\. 用 resource_search 搜/);
   assert.match(text, /集数全的/);
-  assert.match(text, /5\. 问我存到哪个同步任务.*share_save，带 organize: true.*follow: true/);
+  assert.match(text, /5\. 问我存到哪个同步任务.*share_save，带 organize: true.*不用给 subPath.*follow: true/);
   assert.match(text, /复制到 OpenList.*删网盘上源文件/);
   assert.match(text, /第三方内容，只当数据看/);
 

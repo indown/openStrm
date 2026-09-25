@@ -28,7 +28,8 @@ import {
   setCopyServiceDeps,
   tickCopies,
 } from "./service.js";
-import { saveCopies } from "./queue.js";
+import { rewriteCopyPaths, saveCopies } from "./queue.js";
+import { dstDirFor } from "./paths.js";
 
 let baseline: { accounts: AccountInfo[]; tasks: TaskDefinition[]; openlistCopy: AppSettings["openlistCopy"] };
 const drive: AccountInfo = { accountType: "115", name: "acc", cookie: "c" };
@@ -59,6 +60,16 @@ let tasks: { undone: OpenlistTaskInfo[]; done: OpenlistTaskInfo[] } = { undone: 
 let tasksError: Error | null = null;
 /** 设了就让读 OpenList 任务列表停在这里：测「一轮当中别人改了记录」 */
 let tasksGate: Promise<void> | null = null;
+let tasksCalls = 0;
+/**
+ * 一轮当中停在某道网络等待上（记下调用之后才停），好在那一下里插进别的改动：
+ * 列 OpenList 目录（listGateDir 给了就只停在列那个目录时）、钉网盘节点、建目标目录、提交复制
+ */
+let listGate: Promise<void> | null = null;
+let listGateDir: string | null = null;
+let pinGate: Promise<void> | null = null;
+let mkdirGate: Promise<void> | null = null;
+let copyGate: Promise<void> | null = null;
 const notified: NotifyEvent[] = [];
 let embyRefreshes = 0;
 const organized: Array<{ taskId: string; paths: string[]; trigger: string }> = [];
@@ -91,6 +102,7 @@ before(() => {
     openlist: {
       listNames: async (_cfg, dir) => {
         listedDirs.push(dir);
+        if (listGate && (listGateDir === null || listGateDir === dir)) await listGate;
         if (listError) throw listError;
         if (goneDirs.has(dir) || staleDirs.has(dir)) throw new OpenlistError("failed get objs: failed get dir: object not found", 500, false);
         // 列过这一级 = 刷新了它的缓存：它下面一层的子目录从此能找到了
@@ -99,13 +111,16 @@ before(() => {
       },
       mkdir: async (_cfg, dir) => {
         mkdirCalls.push(dir);
+        if (mkdirGate) await mkdirGate;
       },
       copy: async (_cfg, srcDir, dstDir, ns) => {
         copyCalls.push({ srcDir, dstDir, names: ns });
+        if (copyGate) await copyGate;
         if (copyError) throw copyError;
         return copyResultQueue.length > 0 ? (copyResultQueue.shift() ?? []) : copyResult;
       },
       copyTasks: async () => {
+        tasksCalls++;
         if (tasksGate) await tasksGate;
         if (tasksError) throw tasksError;
         return tasks;
@@ -128,6 +143,7 @@ before(() => {
     listDriveChildren: async (_account, path) => driveChildren[path] ?? [],
     resolveNodeId: async (_account, path) => {
       pinCalls.push(path);
+      if (pinGate) await pinGate;
       if (pinResult instanceof Error) throw pinResult;
       return pinResult;
     },
@@ -156,6 +172,12 @@ beforeEach(async () => {
   tasks = { undone: [], done: [] };
   tasksError = null;
   tasksGate = null;
+  tasksCalls = 0;
+  listGate = null;
+  listGateDir = null;
+  pinGate = null;
+  mkdirGate = null;
+  copyGate = null;
   notified.length = 0;
   embyRefreshes = 0;
   organized.length = 0;
@@ -533,6 +555,238 @@ test("网盘监控先登记了不删源的那条：整条目的登记（转存 /
   assert.equal(byName.get("E01.mkv")!.deleteSource, true, "带着节点 id：补上删源");
   assert.equal(byName.get("E01.mkv")!.trigger, "monitor");
   assert.equal(byName.get("E02.mkv")!.deleteSource, false, "谁都不知道节点 id：删的时候核对不了，不补");
+});
+
+test("网盘监控按文件登记：被还没提交的整目录复制包着、落点一样的不单独登记，先登记的并进去；已经提交的、落点不一样的、在外面的照旧", async () => {
+  // 监控先到：E01 还排着，E02 已经提交
+  enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }, { path: "/tv/某剧/S01/E02.mkv" }], rootPath: "/tv", taskId: "t1", trigger: "monitor" });
+  await stopCopyWatcher();
+  const rows = listCopies();
+  rows.find((c) => c.name === "E02.mkv")!.stage = "copying";
+  saveCopies(rows, now);
+  // 整条目：转存了整个「某剧」，任务开着删源
+  const whole = enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧", isDir: true, nodeId: "w1" }], rootPath: "/tv", taskId: "t1", trigger: "share", deleteSource: true });
+  assert.equal(whole.queued, 1);
+  // 监控后到：同一个目录里又来一个文件
+  const late = enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧/S01/E03.mkv", nodeId: "n3" }], rootPath: "/tv", taskId: "t1", trigger: "monitor" });
+  assert.equal(late.queued, 0);
+  assert.equal(late.covered, 1);
+  assert.match(late.skipped ?? "", /整目录的复制会把它们一起带过去/);
+  // 在外面的、另选了目的地的不沾边
+  enqueueCopy({ account: "acc", sources: [{ path: "/tv/别的剧/E01.mkv", nodeId: "x1" }], rootPath: "/tv", taskId: "t1", trigger: "monitor" });
+  enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧/S01/E04.mkv" }], rootPath: "/tv", taskId: "t1", trigger: "monitor", dstDir: "/local/other" });
+  // 要删源的不交给不删源的整条目带：删源意图不能丢
+  enqueueCopy({ account: "acc", sources: [{ path: "/tv/另一部", isDir: true }], rootPath: "/tv", taskId: "t1", trigger: "share" });
+  const keeps = enqueueCopy({ account: "acc", sources: [{ path: "/tv/另一部/E01.mkv", nodeId: "k1" }], rootPath: "/tv", taskId: "t1", trigger: "monitor", deleteSource: true });
+  assert.equal(keeps.queued, 1);
+  await stopCopyWatcher();
+
+  const at = (path: string, base = "/local/media") => listCopies().find((c) => `${c.srcDir}/${c.name}` === path && c.dstBase === base);
+  const e01 = at("/tv/某剧/S01/E01.mkv")!;
+  assert.equal(e01.status, "skipped", "先登记、还没提交的并进整目录");
+  assert.equal(e01.superseded, true);
+  assert.match(e01.detail, /并进了「某剧」的整目录复制/);
+  assert.equal(canRetryCopy(e01), false);
+  assert.equal(at("/tv/某剧/S01/E02.mkv")!.stage, "copying", "已经提交的按提交时的样子走完");
+  assert.equal(at("/tv/某剧/S01/E02.mkv")!.status, "pending");
+  assert.equal(at("/tv/某剧/S01/E03.mkv"), undefined, "后到的不单独登记");
+  assert.equal(at("/tv/某剧")!.deleteSource, true);
+  assert.equal(at("/tv/别的剧/E01.mkv")!.status, "pending");
+  assert.equal(at("/tv/某剧/S01/E04.mkv", "/local/other")!.status, "pending", "目的地不一样是两份复制");
+  assert.equal(at("/tv/另一部/E01.mkv")!.status, "pending");
+});
+
+test("整目录复制已经提交（或提交请求还在路上）：里面新来的监控记录照常登记，不算被它带着", async () => {
+  enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧", isDir: true }], rootPath: "/tv", taskId: "t1", trigger: "share" });
+  await stopCopyWatcher();
+  now += 30_000;
+  names = { "/115/tv": ["某剧"], "/local/media": [] };
+  copyResult = [olTask({ id: "d1" })];
+  let release!: () => void;
+  copyGate = new Promise<void>((r) => (release = r));
+  const ticking = tickCopies();
+  await until(() => copyCalls.length > 0);
+  // 库里还写着「排队」，这一轮手里的已经记成「复制中」
+  assert.equal(listCopies()[0].stage, "waiting");
+  const r = enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }], rootPath: "/tv", taskId: "t1", trigger: "monitor" });
+  // 登记会把真循环拉起来：先停掉，别让它和手动这一轮并着跑
+  await stopCopyWatcher();
+  assert.equal(r.queued, 1, "提交请求在路上的那一条已经带不上它了");
+  copyGate = null;
+  release();
+  await ticking;
+  const byName = new Map(listCopies().map((c) => [c.name, c]));
+  assert.equal(byName.get("某剧")!.stage, "copying");
+  assert.equal(byName.get("E01.mkv")!.status, "pending");
+});
+
+test("一轮当中被整理改了路径的：跟着改，这一轮不记等待、不提交，下一轮按新路径来", async () => {
+  await seed(["/tv/某剧/S01/E01.mkv"]);
+  names = { "/115/tv/某剧/S01": ["E01.mkv"] };
+  let release!: () => void;
+  listGate = new Promise<void>((r) => (release = r));
+  const ticking = tickCopies();
+  await until(() => listedDirs.length > 0);
+  // 列 OpenList 目录的那一下里，整理把这一集挪进作品目录并改了名
+  const layout = (base: string, rootPath: string | undefined, srcPath: string) => dstDirFor(base, rootPath, srcPath).dstDir;
+  rewriteCopyPaths("t1", "/tv", [], false, layout, [{ from: "某剧/S01/E01.mkv", to: "某剧 (2020)/Season 01/某剧 - S01E01.mkv" }], new Set(), now);
+  listGate = null;
+  release();
+  await ticking;
+  let [c] = listCopies();
+  assert.equal(c.name, "某剧 - S01E01.mkv", "新路径没被这一轮盖回去");
+  assert.equal(c.srcDir, "/tv/某剧 (2020)/Season 01");
+  assert.equal(c.waits, 0, "这一轮不记等待");
+  assert.equal(copyCalls.length, 0, "拿旧目录配新名字的提交不发");
+
+  // 下一轮按新路径提交
+  names = { "/115/tv/某剧 (2020)/Season 01": ["某剧 - S01E01.mkv"] };
+  copyResult = [olTask({ id: "tid9" })];
+  now += 30_000;
+  await tickCopies();
+  [c] = listCopies();
+  assert.equal(c.stage, "copying");
+  assert.deepEqual(copyCalls.at(-1), { srcDir: "/115/tv/某剧 (2020)/Season 01", dstDir: "/local/media/某剧 (2020)/Season 01", names: ["某剧 - S01E01.mkv"] });
+});
+
+test("提交前的每道等待都核对：列目标目录、钉节点、建目标目录时被整理改了路径的，这一轮都不提交", async () => {
+  const layout = (base: string, rootPath: string | undefined, srcPath: string) => dstDirFor(base, rootPath, srcPath).dstDir;
+  const moved = () =>
+    rewriteCopyPaths("t1", "/tv", [], false, layout, [{ from: "某剧/S01/E01.mkv", to: "某剧 (2020)/Season 01/某剧 - S01E01.mkv" }], new Set(), now);
+  // node：这一轮收尾后记录上的节点 id。钉节点之前停的还没钉；钉完才停的留着——整理挪动、改名不换网盘节点
+  const stops: Array<{ name: string; arm: () => () => void; reached: () => boolean; node: string | undefined }> = [
+    {
+      name: "列目标目录",
+      arm: () => {
+        let release!: () => void;
+        listGate = new Promise<void>((r) => (release = r));
+        listGateDir = "/local/media/某剧/S01";
+        return release;
+      },
+      reached: () => listedDirs.includes("/local/media/某剧/S01"),
+      node: undefined,
+    },
+    {
+      name: "钉节点",
+      arm: () => {
+        let release!: () => void;
+        pinGate = new Promise<void>((r) => (release = r));
+        return release;
+      },
+      reached: () => pinCalls.length > 0,
+      node: undefined,
+    },
+    {
+      name: "建目标目录",
+      arm: () => {
+        let release!: () => void;
+        mkdirGate = new Promise<void>((r) => (release = r));
+        return release;
+      },
+      reached: () => mkdirCalls.length > 0,
+      node: "pinned",
+    },
+  ];
+  for (const stop of stops) {
+    await __test_resetCopy();
+    listedDirs.length = 0;
+    pinCalls.length = 0;
+    mkdirCalls.length = 0;
+    copyCalls.length = 0;
+    // 要删源又没带节点 id：提交前会钉节点
+    await seed(["/tv/某剧/S01/E01.mkv"], { deleteSource: true, trigger: "follow" });
+    names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
+    copyResult = [olTask({ id: "tid1" })];
+    const release = stop.arm();
+    const ticking = tickCopies();
+    await until(stop.reached);
+    assert.deepEqual(moved(), ["某剧/S01/E01.mkv"], stop.name);
+    listGate = pinGate = mkdirGate = null;
+    listGateDir = null;
+    release();
+    await ticking;
+    const [c] = listCopies();
+    assert.equal(copyCalls.length, 0, `${stop.name}：拿旧目录配新名字的提交不发`);
+    assert.equal(c.name, "某剧 - S01E01.mkv", `${stop.name}：新路径没被这一轮盖回去`);
+    assert.equal(c.stage, "waiting", stop.name);
+    assert.equal(c.nodeId, stop.node, stop.name);
+    assert.equal(c.attempts + c.waits, 0, `${stop.name}：不记等待、不记失败`);
+  }
+});
+
+test("提交请求还在路上时整理来改路径：这一条已经记成复制中，不改它，按提交时的样子走完；提交失败退回排队", async () => {
+  await seed();
+  names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
+  copyResult = [olTask({ id: "tid1" })];
+  let release!: () => void;
+  copyGate = new Promise<void>((r) => (release = r));
+  const ticking = tickCopies();
+  await until(() => copyCalls.length > 0);
+  const layout = (base: string, rootPath: string | undefined, srcPath: string) => dstDirFor(base, rootPath, srcPath).dstDir;
+  const hit = rewriteCopyPaths("t1", "/tv", [], false, layout, [{ from: "某剧/S01/E01.mkv", to: "某剧 (2020)/Season 01/某剧 - S01E01.mkv" }], new Set(), now);
+  assert.deepEqual(hit, [], "已经在提交的不算整理改到的");
+  assert.equal(listCopies()[0].name, "E01.mkv", "库里的也没改");
+  copyGate = null;
+  release();
+  await ticking;
+  let [c] = listCopies();
+  assert.equal(c.stage, "copying");
+  assert.equal(c.name, "E01.mkv");
+  assert.equal(c.copyTaskId, "tid1");
+
+  // 提交失败：退回排队，下一轮还能被整理改路径
+  await __test_resetCopy();
+  copyCalls.length = 0;
+  await seed();
+  copyError = new Error("OpenList /api/fs/copy 失败：HTTP 500");
+  await tickCopies();
+  [c] = listCopies();
+  assert.equal(c.stage, "waiting");
+  assert.equal(c.attempts, 1);
+  assert.deepEqual(
+    rewriteCopyPaths("t1", "/tv", [], false, layout, [{ from: "某剧/S01/E01.mkv", to: "某剧 (2020)/Season 01/某剧 - S01E01.mkv" }], new Set(), now),
+    ["某剧/S01/E01.mkv"],
+  );
+});
+
+test("一轮当中被去掉的：这一轮不提交，收尾写回也不会复活", async () => {
+  await seed();
+  names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
+  copyResult = [olTask({ id: "tid1" })];
+  let release!: () => void;
+  listGate = new Promise<void>((r) => (release = r));
+  const ticking = tickCopies();
+  await until(() => listedDirs.length > 0);
+  dropCopy(listCopies()[0].id);
+  listGate = null;
+  release();
+  await ticking;
+  assert.equal(copyCalls.length, 0);
+  assert.equal(listCopies().length, 0);
+});
+
+test("盯任务的这一轮里被去掉的：不再收尾（不删源、不通知），也不复活", async () => {
+  await seed(["/tv/某剧/S01/E01.mkv"], { deleteSource: true, trigger: "share" });
+  names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
+  copyResult = [olTask({ id: "tid1" })];
+  await tickCopies();
+  const [c] = listCopies();
+  assert.equal(c.stage, "copying");
+  // 这一轮 OpenList 说复制完了，本来会核对、删源、通知
+  tasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: now })] };
+  names["/local/media/某剧/S01"] = ["E01.mkv"];
+  let release!: () => void;
+  tasksGate = new Promise<void>((r) => (release = r));
+  const ticking = tickCopies();
+  await until(() => tasksCalls > 0);
+  dropCopy(c.id);
+  tasksGate = null;
+  release();
+  await ticking;
+  assert.equal(removeCalls.length, 0, "用户已经不要它了：不删源");
+  assert.equal(notified.length, 0);
+  assert.equal(embyRefreshes, 0);
+  assert.equal(listCopies().length, 0);
 });
 
 test("已复制的不让重试：目标里已经有了，再来一次只会变成「失败」还发一条失败通知", async () => {

@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 import { dstDirFor } from "./paths.js";
-import { clearCopies, commitCopies, isDuplicate, listCopies, releaseCopyHolds, rewriteCopyPaths, saveCopies, type CopyRecord } from "./queue.js";
+import { clearCopies, commitCopies, isDuplicate, listCopies, releaseCopyHolds, rewriteCopyPaths, saveCopies, tickRecords, type CopyRecord } from "./queue.js";
 
 const NOW = 1_800_000_000_000;
 
@@ -32,7 +32,10 @@ const rec = (over: Partial<CopyRecord>): CopyRecord => ({
 
 const layout = (base: string, rootPath: string | undefined, srcPath: string) => dstDirFor(base, rootPath, srcPath).dstDir;
 
-beforeEach(() => clearCopies());
+beforeEach(() => {
+  clearCopies();
+  tickRecords.clear();
+});
 
 test("裁剪：pending 一条都不能丢，办完 / 失败的才按时间和条数收", () => {
   const rows: CopyRecord[] = [];
@@ -226,3 +229,32 @@ test("等整理的复制：整理开始之前登记的放行，开始之后才�
   assert.equal(byId.get("late")!.holdUntil, NOW + 600_000);
   assert.equal(byId.get("other")!.holdUntil, NOW + 600_000, "别的任务不碰");
 });
+
+test("整理改路径时，推进循环这一轮手里还没提交的同一条跟着改；这一轮已经提交出去的不动", () => {
+  saveCopies([rec({ id: "a", name: "E01.mkv" }), rec({ id: "b", name: "E02.mkv" })], NOW);
+  // 这一轮手里的对象：a 还在排队，b 这一轮刚提交（库里还是排队，没来得及写回）
+  const [a, b] = listCopies().sort((x, y) => x.id.localeCompare(y.id));
+  b.stage = "copying";
+  tickRecords.set(a.id, a);
+  tickRecords.set(b.id, b);
+  rewriteCopyPaths("t1", "/tv", [], false, layout, [
+    { from: "某剧/S01/E01.mkv", to: "某剧 (2020)/Season 01/某剧 - S01E01.mkv" },
+    { from: "某剧/S01/E02.mkv", to: "某剧 (2020)/Season 01/某剧 - S01E02.mkv" },
+  ], new Set(), NOW);
+  assert.equal(a.name, "某剧 - S01E01.mkv", "这一轮收尾写回的是新路径");
+  assert.equal(a.srcDir, "/tv/某剧 (2020)/Season 01");
+  assert.equal(a.dstDir, "/local/media/某剧 (2020)/Season 01");
+  assert.equal(b.name, "E02.mkv", "已经提交出去的不动（同「已经提交给 OpenList 的不动」）");
+  assert.equal(b.srcDir, "/tv/某剧/S01");
+});
+
+test("整理腾空删掉目录：这一轮手里还没提交的那条目录记录跟着标成「用不着了」", () => {
+  saveCopies([rec({ id: "dir", srcDir: "/tv", name: "Show.S01", isDir: true, dstDir: "/local/media" })], NOW);
+  const [live] = listCopies();
+  tickRecords.set(live.id, live);
+  rewriteCopyPaths("t1", "/tv", [], false, layout, [{ from: "Show.S01/E01.mkv", to: "某剧 (2020)/Season 01/某剧 - S01E01.mkv" }], new Set(["Show.S01"]), NOW);
+  assert.equal(live.status, "skipped");
+  assert.equal(live.superseded, true);
+  assert.match(live.detail, /按文件分别排队复制/);
+});
+
