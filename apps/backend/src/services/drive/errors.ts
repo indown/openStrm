@@ -3,7 +3,7 @@
  * 上游状态码放 extra（见 lib/http-error.ts 关于不回 502 的说明）。
  */
 import axios from "axios";
-import { isAbortError, messageOf, PermanentError } from "../../lib/errors.js";
+import { isAbortError, messageOf, networkErrorText, PermanentError } from "../../lib/errors.js";
 import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { Cloud115ApiError, Cloud115Error, ShareBusyError } from "../cloud-115/client.js";
 import { ShareApiError } from "../cloud-115/share.js";
@@ -100,5 +100,8 @@ export function driveErrorToHttp(err: unknown, fallback: string): HttpError {
   if (isAbortError(err)) return new HttpError(499, "已取消", {}, cause);
   // 其余 PermanentError 是「网盘明确说没有」：文件不存在、目录不是目录
   if (err instanceof PermanentError) return new HttpError(404, err.message, {}, cause);
+  // 超时、连不上：axios 的原话是英文，换成人话，前面带上是哪一步（「发起复制失败：网盘接口 30 秒没有回应…」）
+  const net = networkErrorText(err);
+  if (net) return upstreamError(`${fallback}：${net}`, {}, err);
   return upstreamError(err instanceof Error && err.message ? err.message : fallback, {}, err);
 }

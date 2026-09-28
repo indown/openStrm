@@ -315,7 +315,9 @@ export const copyAddTool = defineTool({
       if (!(err instanceof HttpError)) throw err;
       const code = typeof err.extra.code === "string" ? err.extra.code : undefined;
       if (code === "INSUFFICIENT_SCOPE") {
-        throw new ToolError(code, "复制完删掉网盘上的源文件要令牌有「删除」档（这个任务设的就是复制后删除）", "让用户到设置页给这个令牌勾上「删除」档；或者传 afterCopy: \"archive\"（归档，可逆）/ \"keep\"。", { required: "danger" });
+        // 删除是这次明说的，还是没说、按任务设置落到的：两种说法不一样，别把明说的说成任务设的
+        const why = args.afterCopy === "delete" ? "afterCopy: \"delete\"（复制完删掉网盘上的源文件）要令牌有「删除」档" : "复制完删掉网盘上的源文件要令牌有「删除」档（这个任务设的就是复制后删除）";
+        throw new ToolError(code, why, "让用户到设置页给这个令牌勾上「删除」档；或者传 afterCopy: \"archive\"（归档，可逆）/ \"keep\"。", { required: "danger" });
       }
       if (code === "COPY_NOT_READY") throw copyNotReady(err.message.replace(/^没法复制到 OpenList：/, ""));
       if (code === "TASK_ORGANIZING") throw new ToolError(code, err.message, "用 organize_status 等这次整理办完再调。", typeof err.extra.runId === "string" ? { runId: err.extra.runId } : {});

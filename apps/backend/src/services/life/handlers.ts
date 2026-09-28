@@ -73,6 +73,25 @@ export function matchTask(ctx: Pick<LifeContext, "tasks">, panPath: string): Tas
   return best;
 }
 
+/**
+ * 落在某个任务根下的暂存区（归档 / 重复文件）里的：回暂存区的名字，别的回 null。
+ * matchTask 对暂存区回 null（不镜像），说明里要分清「在任务里、只是在暂存区」和「根本不在任何任务里」
+ */
+function stagingOf(ctx: Pick<LifeContext, "tasks">, panPath: string): string | null {
+  for (const task of ctx.tasks) {
+    const origin = normalizeOrigin(task.originPath);
+    const rel = panPath.startsWith(`${origin}/`) ? panPath.slice(origin.length + 1) : null;
+    if (rel !== null && isStagingDir(rel)) return rel.split("/")[0];
+  }
+  return null;
+}
+
+/** 对不上任务时的说明：在暂存区里的照实说，别说成不在任何任务里 */
+function unmatchedReason(ctx: Pick<LifeContext, "tasks">, panPath: string): string {
+  const staging = stagingOf(ctx, panPath);
+  return staging ? `${panPath} 在任务的暂存区（${staging}）里，不处理` : `${panPath} 不在任何任务的 originPath 下`;
+}
+
 function extOf(name: string): string {
   return path.extname(name).toLowerCase();
 }
@@ -259,7 +278,7 @@ export async function handleCreate(ctx: LifeContext, ev: ChangeEvent): Promise<H
 
   const panPath = ev.path;
   const match = matchTask(ctx, panPath);
-  if (!match) return skipped(`${panPath} 不在任何任务的 originPath 下`);
+  if (!match) return skipped(unmatchedReason(ctx, panPath));
 
   if (ev.isDir) {
     const c = await materializeFolder(ctx, match, ev.nodeId, panPath);
@@ -282,7 +301,7 @@ export async function handleRemove(ctx: LifeContext, ev: ChangeEvent): Promise<H
 
   const panPath = ev.path;
   const match = matchTask(ctx, panPath);
-  if (!match) return skipped(`${panPath} 不在任何任务的 originPath 下`);
+  if (!match) return skipped(unmatchedReason(ctx, panPath));
   if (match.relPath === "") {
     ctx.log("warn", `${panPath} 是任务 ${match.task.id} 的 originPath 本身，拒绝整目录删除`);
     return skipped("命中任务根目录，不做删除");
@@ -329,15 +348,17 @@ async function relocate(ctx: LifeContext, ev: ChangeEvent, label: string): Promi
   const oldMatch = matchTask(ctx, oldPan);
   const newMatch = matchTask(ctx, newPan);
 
-  // 移出监控范围 → 删本地
+  // 移出监控范围 → 删本地；挪进任务的暂存区（归档 / 重复文件）也一样，说明里照实说
   if (oldMatch && !newMatch) {
+    const staging = stagingOf(ctx, newPan);
+    const where = staging ? `进任务的暂存区（${staging}）` : "出监控范围";
     const target = isDir ? path.join(oldMatch.saveDir, oldMatch.relPath) : localPathFor(oldMatch, ctx, oldMatch.relPath);
     if (target && (await pathExists(target))) {
       await fsp.rm(target, { recursive: isDir, force: true });
       await removeEmptyParents(path.dirname(target), oldMatch.saveDir);
-      return done(`${label}出监控范围，已删除 ${target}`);
+      return done(`${label}${where}，已删除 ${target}`);
     }
-    return skipped(`${label}出监控范围，本地无对应文件`);
+    return skipped(`${label}${where}，本地无对应文件`);
   }
 
   // 移入监控范围 → 当作新增

@@ -64,3 +64,13 @@ test("115 分享接口一时回不了话（太频繁、繁忙）：不是分享�
   assert.equal(driveErrorToHttp(new ShareGoneError("访问码错误", 4100012), "失败").extra.reason, "password");
   assert.equal(p115.classifyError(new ShareApiError("分享已取消", 4100010)), "gone");
 });
+
+test("driveErrorToHttp：网盘接口超时、连不上换成人话，前面带上是哪一步；原话留在括号里", () => {
+  const timeout = new AxiosError("timeout of 30000ms exceeded", "ECONNABORTED", { timeout: 30_000, headers: {} } as never);
+  const http = driveErrorToHttp(timeout, "发起复制失败");
+  assert.ok(http instanceof HttpError);
+  assert.equal(http.message, "发起复制失败：网盘接口 30 秒没有回应，稍后再试（timeout of 30000ms exceeded）");
+  assert.equal(http.cause, timeout, "原始错误还挂在 cause 上");
+  assert.equal(driveErrorToHttp(new AxiosError("socket hang up", "ECONNRESET"), "转存失败").message, "转存失败：连不上网盘接口（ECONNRESET），稍后再试");
+  assert.equal(driveErrorToHttp(new Error("别的错误"), "转存失败").message, "别的错误", "不是网络层的照旧");
+});

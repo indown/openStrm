@@ -104,6 +104,21 @@ test("云下载：复制到 OpenList 的成败共用 offline 开关", async () =
   assert.equal(await notify({ type: "offline-copy-failed", name: "y", detail: "" }), false);
 });
 
+test("复制到 OpenList：源文件稍后自动再处理的另起一行；晚点再做也没成的单发一条；都走 offline 开关", async () => {
+  assert.equal(
+    await notify({ type: "copy-done", names: ["E01.mkv"], target: "/local/tv", source: "手动", retrying: ["E01.mkv：归档没成（网盘接口 30 秒没有回应，稍后再试）"] }),
+    true,
+  );
+  assert.equal(sent[0].text, "📦 <b>已复制到 OpenList</b>（手动）\nE01.mkv\n→ /local/tv\n源文件稍后自动再处理：E01.mkv：归档没成（网盘接口 30 秒没有回应，稍后再试）");
+  assert.equal(await notify({ type: "copy-kept", source: "手动", kept: ["E01 <1>.mkv：归档源文件失败：网盘接口 30 秒没有回应（自动重试 3 次都没成）"] }), true);
+  assert.equal(
+    sent[1].text,
+    "⚠️ <b>复制后源文件没按设置处理</b>（手动）\nE01 &lt;1&gt;.mkv：归档源文件失败：网盘接口 30 秒没有回应（自动重试 3 次都没成）\n复制已经完成；网盘上那份还在原处，需要的话手动处理",
+  );
+  replaceAppSettings({ ...baseline, telegram: { botToken: "t", chatId: "-100", notify: { offline: false } } });
+  assert.equal(await notify({ type: "copy-kept", source: "手动", kept: ["x"] }), false);
+});
+
 test("Emby 入库：按剧聚合、连号折叠、电影带年份；批量只报总数；开关可关", async () => {
   const groups = [
     { kind: "tv" as const, name: "怪奇物语", season: 5, episodes: [5, 6, 7, 9], count: 4 },

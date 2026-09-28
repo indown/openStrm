@@ -6,6 +6,7 @@
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { AxiosError } from "axios";
 import path from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import type { AccountInfo, AppSettings, TaskDefinition } from "@openstrm/shared";
@@ -191,4 +192,66 @@ test("平铺复制的（没有任务目录）归档不了；网盘不支持写�
   await tickCopies();
   assert.match(detail(), /源路径上换成了别的文件，没归档/);
   assert.equal(drive.tree.get("/tv/归档/某剧/S01/E01.mkv"), undefined);
+});
+
+/** 网盘接口 30 秒没回（真机撞到过） */
+const timeoutError = () => new AxiosError("timeout of 30000ms exceeded", "ECONNABORTED", { timeout: 30_000, headers: {} } as never);
+
+test("归档碰上网盘超时：源留着、本地 strm 不动，一分钟后再挪，挪成了本地 strm 删掉、不再发通知", async () => {
+  drive.tree.addFile("/tv/某剧/S01/E01.mkv");
+  const local = localFile("某剧/S01/E01.strm");
+  names = { "/quark/tv/某剧/S01": ["E01.mkv"] };
+  afterCopy = { "/local/media/某剧/S01": ["E01.mkv"] };
+  let failMove = true;
+  drive.failWriteOn = (op) => (op === "move" && failMove ? timeoutError() : null);
+  await copyThrough({ path: "/tv/某剧/S01/E01.mkv", nodeId: drive.tree.get("/tv/某剧/S01/E01.mkv")!.id });
+  assert.match(detail(), /归档源文件没成（网盘接口 30 秒没有回应，稍后再试（timeout of 30000ms exceeded）），1 分钟后自动再试（1\/3）/);
+  assert.ok(drive.tree.get("/tv/某剧/S01/E01.mkv"), "源还在原处");
+  assert.ok(fs.existsSync(local), "没挪成，本地 strm 不动");
+
+  failMove = false;
+  now += 60_000;
+  await tickCopies();
+  assert.match(detail(), /^复制完成；网盘上那份已归档到 \/tv\/归档\/某剧\/S01，本地 strm 也删了$/);
+  assert.ok(drive.tree.get("/tv/归档/某剧/S01/E01.mkv"));
+  assert.equal(fs.existsSync(local), false);
+  assert.equal(listCopies()[0].afterRetry, undefined);
+  assert.deepEqual(notified.map((n) => n.type), ["copy-done"], "挪成了不再发通知");
+});
+
+test("上次其实挪过去了、只是没等到回话：到点再做时认出来算归档（节点 id 对得上才算），本地 strm 照删", async () => {
+  drive.tree.addFile("/tv/某剧/S01/E01.mkv");
+  const id = drive.tree.get("/tv/某剧/S01/E01.mkv")!.id;
+  const local = localFile("某剧/S01/E01.strm");
+  names = { "/quark/tv/某剧/S01": ["E01.mkv"] };
+  afterCopy = { "/local/media/某剧/S01": ["E01.mkv"] };
+  drive.failWriteOn = (op) => (op === "move" ? timeoutError() : null);
+  await copyThrough({ path: "/tv/某剧/S01/E01.mkv", nodeId: id });
+  assert.equal(listCopies()[0].afterRetry?.attempts, 1);
+  // 网盘那边其实挪成了（请求超时，挪动照样生效），id 不变
+  drive.tree.move("/tv/某剧/S01/E01.mkv", "/tv/归档/某剧/S01/E01.mkv");
+  drive.failWriteOn = null;
+  now += 60_000;
+  await tickCopies();
+  assert.match(detail(), /^复制完成；网盘上那份已归档到 \/tv\/归档\/某剧\/S01（上次其实已经挪过去了），本地 strm 也删了$/);
+  assert.equal(fs.existsSync(local), false);
+  assert.equal(drive.calls.move, 1, "没再挪一次");
+
+  // 归档里那个同名的不是它（id 对不上）：不能认成归档成了
+  await __test_resetCopy();
+  setDriveProviderFactory((a) => (a.name === "acc" ? drive : null));
+  notified.length = 0;
+  submitted = [];
+  drive.tree.addFile("/tv/某剧/S01/E02.mkv");
+  names = { "/quark/tv/某剧/S01": ["E02.mkv"] };
+  afterCopy = { "/local/media/某剧/S01": ["E01.mkv", "E02.mkv"] };
+  drive.failWriteOn = (op) => (op === "move" ? timeoutError() : null);
+  await copyThrough({ path: "/tv/某剧/S01/E02.mkv", nodeId: drive.tree.get("/tv/某剧/S01/E02.mkv")!.id });
+  drive.tree.remove("/tv/某剧/S01/E02.mkv");
+  drive.tree.addFile("/tv/归档/某剧/S01/E02.mkv");
+  drive.failWriteOn = null;
+  now += 60_000;
+  await tickCopies();
+  assert.match(detail(), /源文件已不在原处，没归档/);
+  assert.equal(notified.filter((n) => n.type === "copy-kept").length, 1, "晚点再做的那次收场没成：另发一条");
 });

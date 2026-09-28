@@ -23,7 +23,7 @@ import { ARCHIVE_DIR, underArchive } from "../organize/duplicates.js";
 import { KEY } from "../../db/keys.js";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
-import { messageOf } from "../../lib/errors.js";
+import { isAbortError, messageOf, networkErrorText } from "../../lib/errors.js";
 import { HttpError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { createPollingLoop } from "../../lib/polling.js";
@@ -44,6 +44,7 @@ import path from "node:path";
 import { removeEmptyParents } from "../../lib/fs.js";
 import { matchTask } from "../life/handlers.js";
 import { mirrorDelete } from "../organize/mirror.js";
+import { accountIssueOf, driveErrorFacts } from "../drive/errors.js";
 import { providerForAccount } from "../drive/registry.js";
 import type { DriveEntry, DriveNode, DriveProvider } from "../drive/types.js";
 import { listTasks } from "../../db/repositories/tasks.js";
@@ -61,9 +62,10 @@ import {
   type CopyOptions,
 } from "./paths.js";
 import {
+  awaitingAfterRetry,
   commitCopies,
   findDuplicate,
-  hasPendingCopies,
+  hasCopyWork,
   listCopies,
   mirrorLive,
   queuedNow,
@@ -95,6 +97,11 @@ const SETTLE_MS = 10_000;
 const ORGANIZE_HOLD_MS = 10 * 60_000;
 /** 排了这么久还没复制完就不再跟踪 */
 const PENDING_MAX_AGE_MS = 7 * 24 * 3600_000;
+/**
+ * 复制后的去向（删 / 归档）碰上临时错误（网络断、超时、网盘 5xx）隔多久再做：三次都不成才按「没按设置处理」收场。
+ * 真机撞到过 115 接口连着一两分钟不回话，当场重试多半还是卡，所以隔开一点
+ */
+const AFTER_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
 
 export const COPY_TRIGGER_LABEL: Record<CopyTrigger, string> = {
   offline: "云下载",
@@ -126,8 +133,11 @@ interface Deps {
   organize: (input: AutoOrganizeInput) => void;
   /** 删源：按网盘路径找到节点再删，找不到 / id 对不上就不删 */
   removeSource: (account: string, path: string, nodeId?: string) => Promise<"removed" | "missing" | "changed" | "unsupported">;
-  /** 归档：挪进任务目录下的「归档」，原来的层级留着。rootPath 是登记时冻结的任务目录 */
-  archiveSource: (account: string, path: string, nodeId: string | undefined, rootPath: string | undefined) => Promise<ArchiveResult>;
+  /**
+   * 归档：挪进任务目录下的「归档」，原来的层级留着。rootPath 是登记时冻结的任务目录。
+   * retry：晚点再做的那一次，源不见了要看看是不是上次其实已经挪过去了
+   */
+  archiveSource: (account: string, path: string, nodeId: string | undefined, rootPath: string | undefined, opts?: { retry?: boolean }) => Promise<ArchiveResult>;
   /** 网盘上这个目录里有哪些条目名：删源前核对目录复制全了没有 */
   listDriveChildren: (account: string, path: string) => Promise<string[]>;
   /** 网盘上这个路径现在是哪个节点：要删源又没带节点 id 的（追更、115 转存），提交时钉住 */
@@ -450,11 +460,22 @@ function finish(c: CopyRecord, status: Exclude<CopyStatus, "pending">, detail: s
 
 /** 这一轮落定的记录，收尾时合成通知 */
 let settledThisTick: CopyRecord[] = [];
+/** 这一轮里晚点再做的去向收场时没成的：早先的通知说过「稍后自动再试」，收场也得说一声 */
+let keptThisTick: CopyRecord[] = [];
 
-/** 一轮结束：成的一条、败的一条，各自带上条目名（多了就说「等 N 个」） */
+/** 去向的叫法：删除 / 归档 */
+const afterLabel = (c: CopyRecord): string => (c.afterCopy === "delete" ? "删除" : "归档");
+
+/** 一轮结束：成的一条、败的一条，各自带上条目名（多了就说「等 N 个」）；晚点再做的去向收场没成的另起一条 */
 function flushNotifications(): void {
   const settled = settledThisTick;
+  const keptLate = keptThisTick;
   settledThisTick = [];
+  keptThisTick = [];
+  if (keptLate.length > 0) {
+    const source = [...new Set(keptLate.map((c) => COPY_TRIGGER_LABEL[c.trigger]))].join(" / ");
+    void deps.notify({ type: "copy-kept", source, kept: keptLate.map((c) => `${c.name}：${c.sourceKept ?? "没处理"}`) }).catch(() => {});
+  }
   if (settled.length === 0) return;
   for (const status of ["done", "failed"] as const) {
     const rows = settled.filter((c) => c.status === status);
@@ -467,7 +488,11 @@ function flushNotifications(): void {
       const target = dirs.length > 1 ? `${dirs[0]} 等 ${dirs.length} 个目录` : dirs[0];
       // 复制成了、源文件却没按设置删 / 归档的（目标里没看全、归档里已有同名……）：通知里也说一声，别只留在队列的说明里
       const kept = rows.filter((c) => c.sourceKept).map((c) => `${c.name}：${c.sourceKept}`);
-      void deps.notify({ type: "copy-done", names, target, source, ...(kept.length ? { kept } : {}) }).catch(() => {});
+      // 删 / 归档碰上临时错误、稍后自动再做的：也说一声，免得看到「已复制」就以为源文件已经处理了
+      const retrying = rows.filter((c) => c.afterRetry).map((c) => `${c.name}：${afterLabel(c)}没成（${c.afterRetry!.why}）`);
+      void deps
+        .notify({ type: "copy-done", names, target, source, ...(kept.length ? { kept } : {}), ...(retrying.length ? { retrying } : {}) })
+        .catch(() => {});
     } else {
       void deps.notify({ type: "copy-failed", names, detail: rows[0].detail, source }).catch(() => {});
     }
@@ -486,21 +511,25 @@ export function isMissingDir(err: unknown): boolean {
  * 已经提交的共用一次任务列表。
  */
 export async function tickCopies(): Promise<void> {
-  const pending = listCopies().filter((c) => c.status === "pending");
-  if (pending.length === 0) return;
+  const rows = listCopies();
+  const pending = rows.filter((c) => c.status === "pending");
+  // 已经复制好、去向到点该再做一次的
+  const now = deps.now();
+  const due = rows.filter((c) => awaitingAfterRetry(c) && c.afterRetry!.nextAt <= now);
+  if (pending.length === 0 && due.length === 0) return;
   // 这一轮手里的记录登记出去（见 queue.ts 的 tickRecords）：中途别处的改动要同时改到它们身上
   tickRecords.clear();
   ensuredDirs.clear();
-  for (const c of pending) tickRecords.set(c.id, c);
+  for (const c of [...pending, ...due]) tickRecords.set(c.id, c);
   try {
-    await tickPending(pending);
+    await tickPending(pending, due);
   } finally {
     tickRecords.clear();
     ensuredDirs.clear();
   }
 }
 
-async function tickPending(pending: CopyRecord[]): Promise<void> {
+async function tickPending(pending: CopyRecord[], due: CopyRecord[] = []): Promise<void> {
   /**
    * 这一轮碰过的记录。循环里夹着网络等待，期间别人也在写这个键，所以只把碰过的按 id 合并回去。
    * 集合只增不清：中途 persist 过的记录后面还可能再改（分组是一组一组办的），清掉就会丢掉后面那次改动。
@@ -515,6 +544,11 @@ async function tickPending(pending: CopyRecord[]): Promise<void> {
     // 配置被删了：正在跑的这些没法再推进，说清楚原因。一条条发通知会刷屏，合成一条
     for (const c of pending) {
       finish(c, "failed", messageOf(err));
+      touched.add(c);
+    }
+    // 等着晚点再做去向的也做不了了（要先到 OpenList 核对复制全了没有）：收场
+    for (const c of due) {
+      settleAfterRetry(c, `复制到 OpenList 的设置没了（${messageOf(err)}），${afterLabel(c)}不了`);
       touched.add(c);
     }
     persist();
@@ -536,6 +570,7 @@ async function tickPending(pending: CopyRecord[]): Promise<void> {
   const copying = pending.filter((c) => c.status === "pending" && c.stage === "copying");
   await submitReady(cfg, waiting, pending, touched, persist);
   await pollSubmitted(cfg, copying, touched, persist);
+  await retryAfterCopies(cfg, due, touched, persist);
   supersedeEarlierFailures(touched, deps.now());
   persist();
   flushNotifications();
@@ -993,12 +1028,61 @@ async function afterCopiedInner(c: CopyRecord, cfg: CopyConfig): Promise<void> {
     if (c.sourceKept) c.detail += `；${c.sourceKept}，源文件没动`;
     return;
   }
+  await applyAfterCopy(c, cfg, false);
+}
+
+/**
+ * 到点的去向重做一次：复制早就成了，只再删 / 归档。说明从「复制完成」重新拼；
+ * 这一轮里等前面几条的时候被界面去掉了的（dropCopy 把这一轮手里的标成 skipped）不再归这一轮管
+ */
+async function retryAfterCopies(cfg: CopyConfig, due: CopyRecord[], touched: Set<CopyRecord>, persist: () => void): Promise<void> {
+  for (const c of due) {
+    if (!awaitingAfterRetry(c)) continue;
+    touched.add(c);
+    c.detail = "复制完成";
+    await applyAfterCopy(c, cfg, true);
+    persist();
+  }
+}
+
+/** 晚点再做的去向收场没成：和第一次就没成一样记 sourceKept，另外发一条通知（早先的通知说过「稍后自动再试」） */
+function settleAfterRetry(c: CopyRecord, why: string): void {
+  c.afterRetry = undefined;
+  c.sourceKept = why;
+  c.detail = `复制完成；${why}`;
+  keptThisTick.push(c);
+}
+
+/** 网络断、超时、网盘异步任务失败、5xx / 429：过一会儿多半就好了。账号失效、风控不算——那得人去修 */
+function transientAfterCopyError(account: string, err: unknown): boolean {
+  if (isAbortError(err)) return false;
+  let provider: DriveProvider | undefined;
+  try {
+    provider = providerForAccount(account);
+  } catch {
+    provider = undefined;
+  }
+  if (accountIssueOf(provider, err)) return false;
+  const facts = driveErrorFacts(err);
+  if (facts.transport || facts.taskFailed) return true;
+  return facts.status !== undefined && (facts.status >= 500 || facts.status === 429);
+}
+
+/**
+ * 按去向处理网盘上的源文件（删 / 归档）：先核对（目标里看得全、节点 id 对得上），过了才动。
+ * 碰上临时错误不当最终结果：记下来隔一会儿再做（afterRetry），次数用完才按「没按设置处理」收场。
+ * retry：这是晚点再做的那一次——上一次也可能其实做成了、只是没等到回话，源不见了要分情况认
+ */
+async function applyAfterCopy(c: CopyRecord, cfg: CopyConfig, retry: boolean): Promise<void> {
+  const prior = c.afterRetry?.attempts ?? 0;
+  c.afterRetry = undefined;
   /** 说明里的动词：删 / 归档 */
   const verb = c.afterCopy === "delete" ? "删" : "归档";
-  /** 没按设置处理源文件：原因记在 sourceKept（收尾的通知里也说一声），说明里带上 */
+  /** 没按设置处理源文件：原因记在 sourceKept（收尾的通知里也说一声），说明里带上；晚点再做的那次没成另发一条通知 */
   const kept = (why: string, tail = `，源文件没${verb}`) => {
     c.sourceKept = why;
     c.detail += `；${why}${tail}`;
+    if (retry) keptThisTick.push(c);
   };
   if (c.adopted || c.srcDir === "") return kept("这条是升级前接管的，不知道源在哪", `，没${verb}`);
   const src = joinPath(c.srcDir, c.name);
@@ -1009,10 +1093,15 @@ async function afterCopiedInner(c: CopyRecord, cfg: CopyConfig): Promise<void> {
     if (c.afterCopy === "delete") {
       outcome = await deps.removeSource(c.account, src, c.nodeId);
       if (outcome === "removed") c.detail += "；网盘上那份已删";
+      else if (outcome === "missing" && retry) {
+        // 上一次删的时候没等到回话，其实已经删掉了（源在复制前核对过节点，这期间别人挪走的可能很小）；本地 strm 照删
+        outcome = "removed";
+        c.detail += "；网盘上已经没有这一份（多半上次已经删掉了）";
+      }
     } else if (c.afterCopy === "archive") {
-      const r = await deps.archiveSource(c.account, src, c.nodeId, c.rootPath);
+      const r = await deps.archiveSource(c.account, src, c.nodeId, c.rootPath, { retry });
       outcome = r.kind;
-      if (r.kind === "archived") c.detail += `；网盘上那份已归档到 ${r.to}`;
+      if (r.kind === "archived") c.detail += r.earlier ? `；网盘上那份已归档到 ${r.to}（上次其实已经挪过去了）` : `；网盘上那份已归档到 ${r.to}`;
       else if (r.kind === "exists") return kept("归档目录里已经有同名的", "，源文件没动");
       else if (r.kind === "staged") return kept("它本来就在归档目录里", "，没再动");
       else if (r.kind === "no-root") return kept("不知道任务目录在哪（平铺复制的），归档不了", "，源文件没动");
@@ -1033,20 +1122,37 @@ async function afterCopiedInner(c: CopyRecord, cfg: CopyConfig): Promise<void> {
     else if (outcome === "changed") kept("源路径上换成了别的文件", `，没${verb}`);
     else if (outcome === "unsupported") kept(`这个网盘不支持${c.afterCopy === "delete" ? "删除" : "移动"}`);
   } catch (err) {
-    kept(`${verb}源文件失败：${messageOf(err)}`, "");
+    const why = networkErrorText(err) ?? messageOf(err);
+    if (transientAfterCopyError(c.account, err) && prior < AFTER_RETRY_DELAYS_MS.length) {
+      const delay = AFTER_RETRY_DELAYS_MS[prior];
+      c.afterRetry = { attempts: prior + 1, nextAt: deps.now() + delay, why };
+      c.detail += `；${verb}源文件没成（${why}），${Math.round(delay / 60_000)} 分钟后自动再试（${prior + 1}/${AFTER_RETRY_DELAYS_MS.length}）`;
+      log.warn({ err }, `复制后${verb}源文件没成，${Math.round(delay / 60_000)} 分钟后再试：${src}`);
+      return;
+    }
+    kept(`${verb}源文件失败：${why}${prior > 0 ? `（自动重试 ${prior} 次都没成）` : ""}`, "");
     log.warn({ err }, `复制后${verb}源文件失败：${src}`);
   }
 }
 
-/** 归档的结果：挪到了哪（to 是归档里的目录），或者为什么没动（staged = 它本来就在归档目录里） */
-export type ArchiveResult = { kind: "archived"; to: string } | { kind: "missing" | "changed" | "exists" | "unsupported" | "no-root" | "staged" };
+/**
+ * 归档的结果：挪到了哪（to 是归档里的目录），或者为什么没动（staged = 它本来就在归档目录里）。
+ * earlier：重做时发现上一次其实已经挪过去了（只是没等到回话）
+ */
+export type ArchiveResult = { kind: "archived"; to: string; earlier?: boolean } | { kind: "missing" | "changed" | "exists" | "unsupported" | "no-root" | "staged" };
 
 /**
  * 归档：把源挪进任务目录下的「归档」，原来的层级留着（tv/某剧/S01/E01.mkv → tv/归档/某剧/S01/E01.mkv）。
  * 和删源同一套核对：有 nodeId 就必须对得上。归档里已经有同名的不覆盖、不合并，源留着让人处理。
  * 归档目录是暂存区，全量同步 / 监控 / 整理都不进（见 organize/duplicates.ts）
  */
-async function archiveSourceReal(account: string, path: string, nodeId: string | undefined, rootPath: string | undefined): Promise<ArchiveResult> {
+async function archiveSourceReal(
+  account: string,
+  path: string,
+  nodeId: string | undefined,
+  rootPath: string | undefined,
+  opts: { retry?: boolean } = {},
+): Promise<ArchiveResult> {
   const provider = providerForAccount(account);
   if (!provider.write) return { kind: "unsupported" };
   const root = normDir(rootPath);
@@ -1055,7 +1161,15 @@ async function archiveSourceReal(account: string, path: string, nodeId: string |
   // 本来就在归档目录里的（把归档区选进来复制了）：不能把「归档」挪进「归档」
   if (underArchive(relativeTo(root, path) ?? "")) return { kind: "staged" };
   const node = await lookupFresh(account, path);
-  if (!node) return { kind: "missing" };
+  if (!node) {
+    // 晚点再做的那一次源不见了：上一次挪的时候没等到回话、其实已经挪过去了的，归档目录里会有它（知道节点 id 就得对得上）
+    if (opts.retry) {
+      const to = joinPath(joinPath(root, ARCHIVE_DIR), rel);
+      const there = await lookupFresh(account, joinPath(to, baseName(path)));
+      if (there && (!nodeId || String(there.id) === String(nodeId))) return { kind: "archived", to, earlier: true };
+    }
+    return { kind: "missing" };
+  }
   if (nodeId && String(node.id) !== String(nodeId)) return { kind: "changed" };
   const parent = await ensureDriveDir(provider, root, [ARCHIVE_DIR, ...rel.split("/").filter(Boolean)]);
   // 归档里已有同名的不覆盖、不合并（每条都要看：同一轮里前一条可能刚挪进去一个同名的）
@@ -1109,7 +1223,8 @@ const loop = createPollingLoop({
     lastTickAt = Date.now();
     await tickCopies();
   },
-  shouldContinue: hasPendingCopies,
+  // 排着的做完了，去向还等着晚点再做的也要等它们做完
+  shouldContinue: hasCopyWork,
   doneMessage: "复制队列已清空，循环停止",
 });
 
@@ -1131,7 +1246,7 @@ export function getCopyWatcherStatus(rows: CopyRecord[] = listCopies()): CopyWat
 }
 
 export function startCopyWatcher(): void {
-  if (loop.running || !hasPendingCopies()) return;
+  if (loop.running || !hasCopyWork()) return;
   log.info("复制队列循环启动");
   loop.start();
 }

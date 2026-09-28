@@ -22,7 +22,7 @@ import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { TreeSelectDialog } from "@/components/TreeSelectDialog";
 import { api, type CopyAddOutcome, type CopyAddResult, type TaskRow } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
-import { AFTER_COPY_LABEL, taskAfterCopy } from "@/lib/openlist-copy";
+import { AFTER_COPY_LABEL, STAGING_DIRS, taskAfterCopy } from "@/lib/openlist-copy";
 
 /** 从别处（strm 管理页）带进来的预填：哪个任务、哪些路径（相对任务网盘目录） */
 export interface CopyPreset {
@@ -127,7 +127,11 @@ export function AddCopyDialog({ open, onOpenChange, preset, onQueued }: AddCopyD
 
   // TreeSelectDialog 打开时按 load 拉根目录：这两个要稳定，不然每次渲染都重拉
   const loadSource = useCallback(
-    (p: string) => api.directory.remote(account, [originPath, p].filter(Boolean).join("/"), true),
+    async (p: string) => {
+      const rows = await api.directory.remote(account, [originPath, p].filter(Boolean).join("/"), true);
+      // 任务根下的暂存区（归档、重复文件）不列：选了提交也会被拒
+      return p ? rows : rows.filter((r) => !STAGING_DIRS.includes(r.name));
+    },
     [account, originPath],
   );
   const loadDst = useCallback((p: string) => api.directory.remote(olAccount, [base, p].filter(Boolean).join("/")), [olAccount, base]);
@@ -191,7 +195,9 @@ export function AddCopyDialog({ open, onOpenChange, preset, onQueued }: AddCopyD
                   );
                 })}
               </ul>
-              <p className="text-xs text-muted-foreground">复制在后台跑，大约 30 秒推进一轮；进度在云下载页的「复制到 OpenList」里看。</p>
+              {result.queued > 0 && (
+                <p className="text-xs text-muted-foreground">复制在后台跑，大约 30 秒推进一轮；进度在云下载页的「复制到 OpenList」里看。</p>
+              )}
             </div>
           ) : (
             <div className="space-y-4">

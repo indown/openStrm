@@ -72,6 +72,12 @@ export interface CopyRecord {
   /** 本来要删源、提交时核对不了网盘节点而关掉了：办完时把原因写进说明 */
   sourceKept?: string;
   /**
+   * 复制成功了，去向（删 / 归档）碰上临时错误（网络断、超时、网盘 5xx）没做成：到 nextAt（ms）再做一次。
+   * attempts 是已经晚点再做的次数（第一次失败后是 1）；why 是上一次的原因，通知里用。
+   * 做成了、或者次数用完按「没按设置处理」收场（sourceKept）就清掉。记录照旧是 done
+   */
+  afterRetry?: { attempts: number; nextAt: number; why: string };
+  /**
    * 这条用不着了（记成 skipped）：整理把目录里的文件挪走、已按文件另排；或者同一个目标后来由另一条复制好了。
    * 和「目标里已有同名」的跳过不一样，重试只会再失败一次
    */
@@ -200,6 +206,12 @@ export function findDuplicate(rows: CopyRecord[], next: CopyRecord, now = Date.n
 export const isDuplicate = (rows: CopyRecord[], next: CopyRecord, now = Date.now()): boolean => findDuplicate(rows, next, now) !== undefined;
 
 export const hasPendingCopies = (): boolean => listCopies().some((c) => c.status === "pending");
+
+/** 已经复制好、源文件的去向还等着晚点再做的 */
+export const awaitingAfterRetry = (c: CopyRecord): boolean => c.status === "done" && c.afterRetry !== undefined;
+
+/** 推进循环还有活：排着的，或者去向等着晚点再做的（循环要转到它们做完，重启后也要起） */
+export const hasCopyWork = (): boolean => listCopies().some((c) => c.status === "pending" || awaitingAfterRetry(c));
 
 /** 整理挪过 / 改过名的一个文件，任务相对路径 */
 export interface CopyMove {

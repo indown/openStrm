@@ -41,8 +41,13 @@ export type NotifyEvent =
   | { type: "offline-copied"; name: string; target: string }
   /** 云下载的「复制到 OpenList」没走完；旧名字，留一轮 */
   | { type: "offline-copy-failed"; name: string; detail: string }
-  /** OpenList 复制完了；一轮里完成的合成一条（队列是一个文件一条记录，逐条发会被限流吞掉） */
-  | { type: "copy-done"; names: string[]; target: string; source: string; kept?: string[] }
+  /**
+   * OpenList 复制完了；一轮里完成的合成一条（队列是一个文件一条记录，逐条发会被限流吞掉）。
+   * kept：源文件没按设置删 / 归档的原因；retrying：删 / 归档碰上临时错误、稍后自动再试的
+   */
+  | { type: "copy-done"; names: string[]; target: string; source: string; kept?: string[]; retrying?: string[] }
+  /** 复制早就完成了，源文件的删 / 归档晚点再做也没成（或者核对没过）：收场时说一声，不然人一直以为稍后会处理 */
+  | { type: "copy-kept"; source: string; kept: string[] }
   /** OpenList 复制失败，detail 里说清楚在哪一步 */
   | { type: "copy-failed"; names: string[]; detail: string; source: string }
   /** 追更转存了新文件 */
@@ -202,7 +207,15 @@ function render(event: NotifyEvent): string {
       const kept = event.kept?.length
         ? `\n源文件没按设置处理：${event.kept.slice(0, 5).map(esc).join("；")}${event.kept.length > 5 ? ` 等 ${event.kept.length} 个` : ""}`
         : "";
-      return `📦 <b>已复制到 OpenList</b>（${esc(event.source)}）\n${shown}${more}\n→ ${esc(event.target)}${kept}`;
+      const retrying = event.retrying?.length
+        ? `\n源文件稍后自动再处理：${event.retrying.slice(0, 5).map(esc).join("；")}${event.retrying.length > 5 ? ` 等 ${event.retrying.length} 个` : ""}`
+        : "";
+      return `📦 <b>已复制到 OpenList</b>（${esc(event.source)}）\n${shown}${more}\n→ ${esc(event.target)}${kept}${retrying}`;
+    }
+    case "copy-kept": {
+      const shown = event.kept.slice(0, 5).map(esc).join("\n");
+      const more = event.kept.length > 5 ? `\n等 ${event.kept.length} 个` : "";
+      return `⚠️ <b>复制后源文件没按设置处理</b>（${esc(event.source)}）\n${shown}${more}\n复制已经完成；网盘上那份还在原处，需要的话手动处理`;
     }
     case "copy-failed": {
       const shown = event.names.slice(0, 8).map(esc).join("、");
@@ -388,6 +401,7 @@ export async function notify(event: NotifyEvent): Promise<boolean> {
       case "offline-copied":
       case "offline-copy-failed":
       case "copy-done":
+      case "copy-kept":
       case "copy-failed":
         if (!prefs.offline) return false;
         text = render(event);

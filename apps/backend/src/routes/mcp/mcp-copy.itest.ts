@@ -763,6 +763,8 @@ test("copy_add：手动把任务目录里已有的目录交给复制；复制后
     assert.equal(del.isError, true);
     assert.equal(del.data.code, "INSUFFICIENT_SCOPE");
     assert.match(del.data.hint, /archive/);
+    assert.match(del.data.error, /^afterCopy: "delete"/, "明说的就说明说的");
+    assert.doesNotMatch(del.data.error, /这个任务设的/, "tv 任务根本没开复制，不能说成任务设的");
     assert.equal(listCopies().length, 1);
 
     // 任务设的就是复制后删除（movies）：没明说 afterCopy 也拒，网盘和队列都不动
@@ -770,6 +772,7 @@ test("copy_add：手动把任务目录里已有的目录交给复制；复制后
     const implied = await call(daily, "copy_add", { task: "movies", paths: ["M.mkv"] });
     assert.equal(implied.isError, true, JSON.stringify(implied.data));
     assert.equal(implied.data.code, "INSUFFICIENT_SCOPE");
+    assert.match(implied.data.error, /这个任务设的就是复制后删除/);
     assert.equal(listCopies().length, 1);
 
     // 归档不用「删除」档

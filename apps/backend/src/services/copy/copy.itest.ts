@@ -5,6 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
+import { AxiosError } from "axios";
 import type { AccountInfo, AppSettings, TaskDefinition } from "@openstrm/shared";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
@@ -13,7 +14,7 @@ import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
 import { OpenlistError, type OpenlistTaskInfo } from "../openlist/client.js";
 import type { NotifyEvent } from "../telegram/notify.js";
-import { releaseCopyHolds } from "./queue.js";
+import { hasCopyWork, releaseCopyHolds } from "./queue.js";
 import {
   __test_resetCopy,
   adoptLegacyCopyFollowups,
@@ -75,6 +76,8 @@ let embyRefreshes = 0;
 const organized: Array<{ taskId: string; paths: string[]; trigger: string }> = [];
 const removeCalls: Array<{ account: string; path: string; nodeId?: string }> = [];
 let removeResult: "removed" | "missing" | "changed" | "unsupported" = "removed";
+/** 删源依次抛这些错（一次取一个，取完了按 removeResult 回）：测「碰上网盘超时晚点再删」 */
+let removeErrors: Error[] = [];
 /** 网盘上某个目录里有哪些子项（删源前核对目录复制全了没有） */
 let driveChildren: Record<string, string[]> = {};
 /** 队列里「刚登记要晾一会」的门槛：测试里把时钟往前拨，不真等 */
@@ -138,6 +141,8 @@ before(() => {
     },
     removeSource: async (account, path, nodeId) => {
       removeCalls.push({ account, path, nodeId });
+      const err = removeErrors.shift();
+      if (err) throw err;
       return removeResult;
     },
     listDriveChildren: async (_account, path) => driveChildren[path] ?? [],
@@ -183,6 +188,7 @@ beforeEach(async () => {
   organized.length = 0;
   removeCalls.length = 0;
   removeResult = "removed";
+  removeErrors = [];
   driveChildren = {};
   replaceTasks([]);
   now = 1_800_000_000_000;
@@ -919,6 +925,117 @@ test("删源：源路径上换成了别的文件（整理挪过）就不删", as
   await tickCopies();
   assert.match(listCopies()[0].detail, /换成了别的文件，没删/);
   assert.equal(mirrorCalls.length, 0, "网盘上没删，本地也不能动");
+});
+
+/* ------------------------------- 去向碰上临时错误：晚点再做 ------------------------------- */
+
+/** 网盘接口 30 秒没回（真机撞到过）：axios 的超时 */
+const timeoutError = () => new AxiosError("timeout of 30000ms exceeded", "ECONNABORTED", { timeout: 30_000, headers: {} } as never);
+
+/** 登记一条复制完要删源的，一路跑到复制完成、轮到删源那一步 */
+async function copiedWithDelete(): Promise<void> {
+  enqueueCopy({ account: "acc", sources: [{ path: "/tv/某剧/S01/E01.mkv", nodeId: "n1" }], rootPath: "/tv", trigger: "monitor", afterCopy: "delete" });
+  await stopCopyWatcher();
+  now += 30_000;
+  names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": [] };
+  copyResult = [olTask({ id: "tid1" })];
+  await tickCopies();
+  names["/local/media/某剧/S01"] = ["E01.mkv"];
+  tasks = { undone: [], done: [olTask({ id: "tid1", state: 2, endedAt: now })] };
+  await tickCopies();
+}
+
+test("删源碰上网盘超时：记成晚点再删、通知里说一声；不到点不动，到点删成了说明更新、不再发通知", async () => {
+  removeErrors = [timeoutError()];
+  await copiedWithDelete();
+  let [c] = listCopies();
+  assert.equal(c.status, "done", "复制本身成了");
+  assert.equal(c.afterRetry?.attempts, 1);
+  assert.equal(c.sourceKept, undefined, "还没到收场的时候");
+  assert.equal(c.detail, "复制完成；删源文件没成（网盘接口 30 秒没有回应，稍后再试（timeout of 30000ms exceeded）），1 分钟后自动再试（1/3）");
+  assert.equal(mirrorCalls.length, 0, "网盘上没删成，本地 strm 不能动");
+  const done = notified.find((n) => n.type === "copy-done");
+  assert.ok(done && done.type === "copy-done");
+  assert.deepEqual(done.retrying, ["E01.mkv：删除没成（网盘接口 30 秒没有回应，稍后再试（timeout of 30000ms exceeded））"]);
+  assert.equal(done.kept, undefined);
+  assert.equal(hasCopyWork(), true, "只剩等着晚点再删的，循环也得接着转");
+
+  now += 30_000;
+  await tickCopies();
+  assert.equal(removeCalls.length, 1, "不到一分钟不动");
+
+  now += 30_000;
+  await tickCopies();
+  [c] = listCopies();
+  assert.equal(removeCalls.length, 2);
+  assert.equal(c.afterRetry, undefined);
+  assert.equal(c.detail, "复制完成；网盘上那份已删，本地 strm 也删了");
+  assert.equal(mirrorCalls.length, 1);
+  assert.equal(notified.length, 1, "删成了不再发通知");
+  assert.equal(hasCopyWork(), false);
+});
+
+test("删源一直超时：隔 1 / 5 / 15 分钟各再试一次，都不成才收场——说明写重试了几次，另发一条 copy-kept", async () => {
+  removeErrors = [timeoutError(), timeoutError(), timeoutError(), timeoutError()];
+  await copiedWithDelete();
+  for (const [minutes, attempt] of [[1, 2], [5, 3]] as const) {
+    now += minutes * 60_000;
+    await tickCopies();
+    assert.equal(listCopies()[0].afterRetry?.attempts, attempt);
+  }
+  assert.match(listCopies()[0].detail, /15 分钟后自动再试（3\/3）/);
+  now += 15 * 60_000;
+  await tickCopies();
+  const [c] = listCopies();
+  assert.equal(removeCalls.length, 4, "第一次 + 重试三次");
+  assert.equal(c.afterRetry, undefined);
+  assert.equal(c.sourceKept, "删源文件失败：网盘接口 30 秒没有回应，稍后再试（timeout of 30000ms exceeded）（自动重试 3 次都没成）");
+  assert.equal(c.status, "done");
+  const kept = notified.filter((n) => n.type === "copy-kept");
+  assert.equal(kept.length, 1);
+  assert.deepEqual(kept[0].type === "copy-kept" && kept[0].kept, [`E01.mkv：${c.sourceKept}`]);
+  assert.equal(hasCopyWork(), false);
+});
+
+test("晚点再删时源已经不在了（上次其实删掉了、只是没等到回话）：算删掉，本地 strm 照删", async () => {
+  removeErrors = [timeoutError()];
+  await copiedWithDelete();
+  removeResult = "missing";
+  now += 60_000;
+  await tickCopies();
+  const [c] = listCopies();
+  assert.equal(c.detail, "复制完成；网盘上已经没有这一份（多半上次已经删掉了），本地 strm 也删了");
+  assert.equal(c.sourceKept, undefined);
+  assert.equal(mirrorCalls.length, 1);
+  assert.equal(notified.filter((n) => n.type === "copy-kept").length, 0);
+});
+
+test("明确的失败不晚点再试：普通报错、账号失效当场收场", async () => {
+  removeErrors = [new Error("文件正在被别的操作占用")];
+  await copiedWithDelete();
+  let [c] = listCopies();
+  assert.equal(c.afterRetry, undefined);
+  assert.equal(c.sourceKept, "删源文件失败：文件正在被别的操作占用");
+  const done = notified.find((n) => n.type === "copy-done");
+  assert.ok(done && done.type === "copy-done" && done.kept?.length === 1 && !done.retrying, "第一次就收场的照旧写在复制完成的通知里");
+
+  await __test_resetCopy();
+  removeCalls.length = 0;
+  removeErrors = [new AxiosError("Request failed with status code 401", "ERR_BAD_REQUEST", undefined, null, { status: 401, data: "请重新登录" } as never)];
+  await copiedWithDelete();
+  [c] = listCopies();
+  assert.equal(c.afterRetry, undefined, "4xx 不是临时的");
+  assert.match(c.sourceKept ?? "", /^删源文件失败/);
+});
+
+test("等着晚点再删的被界面去掉：到点也不再删", async () => {
+  removeErrors = [timeoutError()];
+  await copiedWithDelete();
+  dropCopy(listCopies()[0].id);
+  now += 60_000;
+  await tickCopies();
+  assert.equal(removeCalls.length, 1, "只有第一次");
+  assert.equal(hasCopyWork(), false);
 });
 
 test("没开删源：一次都不调删除", async () => {

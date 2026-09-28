@@ -1,5 +1,11 @@
 import type { CopyAfterCopy, OpenlistCopySettings, TaskCopySettings } from "@openstrm/shared";
 
+/**
+ * 任务根下不进媒体库的暂存区：整理挪重复文件的「重复文件」、复制后归档的「归档」。
+ * 名字和后端 services/organize/duplicates.ts 一样（改名时两边一起动）；新建复制不给选它们，后端也不许拿它们当源
+ */
+export const STAGING_DIRS: readonly string[] = ["重复文件", "归档"];
+
 /** 复制成功后源文件去向的叫法（任务弹框、队列面板、新建复制弹框共用） */
 export const AFTER_COPY_LABEL: Record<CopyAfterCopy, string> = { keep: "不动", delete: "删除", archive: "归档" };
 

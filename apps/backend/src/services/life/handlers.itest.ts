@@ -123,6 +123,22 @@ test("监控范围外的路径跳过", async () => {
   assert.match(r.detail, /不在任何任务/);
 });
 
+test("任务暂存区（归档 / 重复文件）里的事件：说明写在暂存区里、不说成不在任何任务里；挪进归档删掉本地那份", async () => {
+  const inArchive = await handleCreate(ctx, ev({ kind: "create", path: "/tv/归档/TestShow/ep9.mkv" }));
+  assert.equal(inArchive.status, "skipped");
+  assert.equal(inArchive.detail, "/tv/归档/TestShow/ep9.mkv 在任务的暂存区（归档）里，不处理");
+  const inDup = await handleRemove(ctx, ev({ kind: "remove", path: "/tv/重复文件/TestShow/ep9.mkv" }));
+  assert.equal(inDup.detail, "/tv/重复文件/TestShow/ep9.mkv 在任务的暂存区（重复文件）里，不处理");
+
+  const local = path.join(tvDir, "TestShow", "ep8.strm");
+  assert.equal((await handleCreate(ctx, ev({ kind: "create", path: "/tv/TestShow/ep8.mkv" }))).status, "done");
+  assert.ok(fs.existsSync(local));
+  const archived = await handleMove(ctx, ev({ kind: "move", path: "/tv/归档/TestShow/ep8.mkv", oldPath: "/tv/TestShow/ep8.mkv" }));
+  assert.equal(archived.status, "done", archived.detail);
+  assert.equal(archived.detail, `移动进任务的暂存区（归档），已删除 ${local}`);
+  assert.ok(!fs.existsSync(local), "挪进归档后本地那份删掉");
+});
+
 test("拒绝整任务根目录删除", async () => {
   fs.mkdirSync(tvDir, { recursive: true });
   const r = await handleRemove(ctx, ev({ kind: "remove", path: "/tv", isDir: true }));

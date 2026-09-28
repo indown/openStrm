@@ -536,6 +536,18 @@ export async function request115<T = unknown>(
     if (shouldEnsureOk) ensureOk(respData as unknown as Record<string, unknown>, url);
     return respData;
   } catch (error) {
+    // 115 偶尔会有请求一直不回（真机撞到过，同一时刻另起的进程却很快）：记下是哪个接口，下次再卡能对上。
+    // 只记主机和路径，请求头里有 cookie、查询参数里有目录 id，都不记
+    if (axios.isAxiosError(error) && !error.response && (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT")) {
+      let endpoint = "";
+      try {
+        const u = new URL(url);
+        endpoint = `${u.host}${u.pathname}`;
+      } catch {
+        // url 解析不了就不记路径
+      }
+      log.warn({ endpoint, method, account: accountInfo?.name, channel: limiterChannel }, `115 接口 ${DEFAULT_TIMEOUT_MS / 1000} 秒没有回应`);
+    }
     if (!rawError && axios.isAxiosError(error) && error.response) {
       throw new Cloud115Error(error.response.status, error.response.data, error.config?.url);
     }
