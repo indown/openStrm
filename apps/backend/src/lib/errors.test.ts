@@ -33,6 +33,9 @@ test("networkErrorText：超时说几秒没回应、连不上说连不上，原�
   assert.equal(networkErrorText(timeout), "网盘接口 30 秒没有回应，稍后再试（timeout of 30000ms exceeded）");
   assert.equal(networkErrorText(new AxiosError("connect ETIMEDOUT 1.2.3.4:443", "ETIMEDOUT")), "网盘接口没有回应，稍后再试（connect ETIMEDOUT 1.2.3.4:443）", "不知道超时设了多久就不说秒数");
   assert.equal(networkErrorText(new AxiosError("socket hang up", "ECONNRESET")), "连不上网盘接口（ECONNRESET），稍后再试");
+  // 系统自己会再试的地方只要原因本身：不叫人「稍后再试」，也不带英文原话
+  assert.equal(networkErrorText(timeout, { brief: true }), "网盘接口 30 秒没有回应");
+  assert.equal(networkErrorText(new AxiosError("socket hang up", "ECONNRESET"), { brief: true }), "连不上网盘接口（ECONNRESET）");
   const res = { status: 500, statusText: "", headers: {}, config, data: "" } as AxiosResponse;
   assert.equal(networkErrorText(new AxiosError("Request failed with status code 500", "ERR_BAD_RESPONSE", config, null, res)), null, "接口回了话：不是网络层的事");
   assert.equal(networkErrorText(new CanceledError("canceled")), null, "自己掐的不算");

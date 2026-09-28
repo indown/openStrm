@@ -20,17 +20,18 @@ const CONNECT_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_A
 
 /**
  * 网络层的失败换成给人看的话：axios 的原话是英文，「timeout of 30000ms exceeded」原样给用户看不懂。
- * 超时说几秒没回应，连不上说连不上，原话放括号里留底；接口回了话的（有响应）、不是 axios 的错误回 null，调用方照旧用 messageOf
+ * 超时说几秒没回应，连不上说连不上；接口回了话的（有响应）、不是 axios 的错误回 null，调用方照旧用 messageOf。
+ * 默认带「稍后再试」、原话放括号里留底（给要人自己重试的报错用）；brief 只要原因本身（系统自己会再试的地方，比如复制后的去向）
  */
-export function networkErrorText(err: unknown): string | null {
+export function networkErrorText(err: unknown, opts: { brief?: boolean } = {}): string | null {
   if (!axios.isAxiosError(err) || err.response || axios.isCancel(err)) return null;
   const code = err.code ?? "";
   if (code === "ECONNABORTED" || code === "ETIMEDOUT" || /timeout/i.test(err.message)) {
     const ms = err.config?.timeout;
     const secs = typeof ms === "number" && ms > 0 ? ` ${Math.round(ms / 1000)} 秒` : "";
-    return `网盘接口${secs}没有回应，稍后再试（${err.message}）`;
+    return opts.brief ? `网盘接口${secs}没有回应` : `网盘接口${secs}没有回应，稍后再试（${err.message}）`;
   }
-  if (CONNECT_CODES.has(code)) return `连不上网盘接口（${code}），稍后再试`;
+  if (CONNECT_CODES.has(code)) return opts.brief ? `连不上网盘接口（${code}）` : `连不上网盘接口（${code}），稍后再试`;
   return null;
 }
 

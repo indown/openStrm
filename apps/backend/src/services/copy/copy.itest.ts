@@ -952,11 +952,11 @@ test("删源碰上网盘超时：记成晚点再删、通知里说一声；不�
   assert.equal(c.status, "done", "复制本身成了");
   assert.equal(c.afterRetry?.attempts, 1);
   assert.equal(c.sourceKept, undefined, "还没到收场的时候");
-  assert.equal(c.detail, "复制完成；删源文件没成（网盘接口 30 秒没有回应，稍后再试（timeout of 30000ms exceeded）），1 分钟后自动再试（1/3）");
+  assert.equal(c.detail, "复制完成；删源文件没成（网盘接口 30 秒没有回应），1 分钟后自动再试（1/3）");
   assert.equal(mirrorCalls.length, 0, "网盘上没删成，本地 strm 不能动");
   const done = notified.find((n) => n.type === "copy-done");
   assert.ok(done && done.type === "copy-done");
-  assert.deepEqual(done.retrying, ["E01.mkv：删除没成（网盘接口 30 秒没有回应，稍后再试（timeout of 30000ms exceeded））"]);
+  assert.deepEqual(done.retrying, ["E01.mkv：删除没成（网盘接口 30 秒没有回应）"]);
   assert.equal(done.kept, undefined);
   assert.equal(hasCopyWork(), true, "只剩等着晚点再删的，循环也得接着转");
 
@@ -989,7 +989,7 @@ test("删源一直超时：隔 1 / 5 / 15 分钟各再试一次，都不成才�
   const [c] = listCopies();
   assert.equal(removeCalls.length, 4, "第一次 + 重试三次");
   assert.equal(c.afterRetry, undefined);
-  assert.equal(c.sourceKept, "删源文件失败：网盘接口 30 秒没有回应，稍后再试（timeout of 30000ms exceeded）（自动重试 3 次都没成）");
+  assert.equal(c.sourceKept, "删源文件失败：网盘接口 30 秒没有回应（自动重试 3 次都没成）");
   assert.equal(c.status, "done");
   const kept = notified.filter((n) => n.type === "copy-kept");
   assert.equal(kept.length, 1);

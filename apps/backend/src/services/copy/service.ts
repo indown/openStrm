@@ -1122,7 +1122,8 @@ async function applyAfterCopy(c: CopyRecord, cfg: CopyConfig, retry: boolean): P
     else if (outcome === "changed") kept("源路径上换成了别的文件", `，没${verb}`);
     else if (outcome === "unsupported") kept(`这个网盘不支持${c.afterCopy === "delete" ? "删除" : "移动"}`);
   } catch (err) {
-    const why = networkErrorText(err) ?? messageOf(err);
+    // 原因只要一句人话：说明和通知里后面紧跟着「1 分钟后自动再试」，不能再叫人「稍后再试」
+    const why = networkErrorText(err, { brief: true }) ?? messageOf(err);
     if (transientAfterCopyError(c.account, err) && prior < AFTER_RETRY_DELAYS_MS.length) {
       const delay = AFTER_RETRY_DELAYS_MS[prior];
       c.afterRetry = { attempts: prior + 1, nextAt: deps.now() + delay, why };

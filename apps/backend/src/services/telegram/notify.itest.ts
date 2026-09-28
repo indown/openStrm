@@ -106,10 +106,10 @@ test("云下载：复制到 OpenList 的成败共用 offline 开关", async () =
 
 test("复制到 OpenList：源文件稍后自动再处理的另起一行；晚点再做也没成的单发一条；都走 offline 开关", async () => {
   assert.equal(
-    await notify({ type: "copy-done", names: ["E01.mkv"], target: "/local/tv", source: "手动", retrying: ["E01.mkv：归档没成（网盘接口 30 秒没有回应，稍后再试）"] }),
+    await notify({ type: "copy-done", names: ["E01.mkv"], target: "/local/tv", source: "手动", retrying: ["E01.mkv：归档没成（网盘接口 30 秒没有回应）"] }),
     true,
   );
-  assert.equal(sent[0].text, "📦 <b>已复制到 OpenList</b>（手动）\nE01.mkv\n→ /local/tv\n源文件稍后自动再处理：E01.mkv：归档没成（网盘接口 30 秒没有回应，稍后再试）");
+  assert.equal(sent[0].text, "📦 <b>已复制到 OpenList</b>（手动）\nE01.mkv\n→ /local/tv\n源文件稍后自动再处理：E01.mkv：归档没成（网盘接口 30 秒没有回应）");
   assert.equal(await notify({ type: "copy-kept", source: "手动", kept: ["E01 <1>.mkv：归档源文件失败：网盘接口 30 秒没有回应（自动重试 3 次都没成）"] }), true);
   assert.equal(
     sent[1].text,
