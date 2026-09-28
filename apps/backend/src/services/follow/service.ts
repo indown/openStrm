@@ -34,9 +34,8 @@ import { createPollingLoop } from "../../lib/polling.js";
 import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, KIND_LABEL, parseShareRef, providerForTask } from "../drive/registry.js";
 import type { DriveProvider, ShareEntry, ShareProvider, ShareRef, ShareSession, ShareUpdateSignal, DriveKind } from "../drive/types.js";
-import { saveSelectionToTask } from "../share/receive.js";
+import { ensureSaveDir, saveSelectionToTask } from "../share/receive.js";
 import { withAfterCopy, type CopyOutcome } from "../copy/service.js";
-import { maybeAutoOrganize } from "../organize/auto.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
 import { notify, type NotifyEvent } from "../telegram/notify.js";
@@ -520,16 +519,23 @@ async function runCheck(f: ShareFollow, sink: CheckSink): Promise<ShareFollowRun
   const diff = diffShareListing(f.known, listing.entries);
   const settings: AppSettings = readAppSettings();
   const received: string[] = [];
-  /** 落到任务目录里的相对路径（subPath/条目名），交给自动整理 */
-  const landed: string[] = [];
   const failed: string[] = [];
   const errors: string[] = [];
   /** 每组转存完各自登记的复制（在 saveSelectionToTask 里、生成 strm 之前登记，来源写成「追更」） */
   const copies: CopyOutcome[] = [];
+  /** 这一轮为转存建出来的目录：后面的组落在它里面的，交给整理时也交它（前面那组的整理可能已经跑完，留下它这个空壳） */
+  const createdInRound: string[] = [];
   let generated = 0;
   for (const group of groupByParent(diff.added)) {
     const subPath = normalizeSubPath(group.parent ? `${f.subPath}/${group.parent}` : f.subPath);
     try {
+      // 落点不在了（整理把它挪空删了、被人删了）就一级级建出来：建出来的只装这次的条目，整个交给整理，挪空了跟着删
+      const made = await ensureSaveDir(provider, task.originPath, subPath);
+      if (made) {
+        createdInRound.push(made);
+        log.info(`追更「${f.name}」的落点不在了，建了 ${task.originPath}/${made}`);
+      }
+      const createdDir = createdInRound.find((d) => subPath === d || subPath.startsWith(`${d}/`));
       const r = await saveSelectionToTask({
         task,
         provider,
@@ -539,12 +545,14 @@ async function runCheck(f: ShareFollow, sink: CheckSink): Promise<ShareFollowRun
         mode: "sync",
         // 复制按任务上的开关，转存完马上登记：网盘监控随后按文件报上来的，被整条目包着就不再单独登记
         copyTrigger: "follow",
+        // 交给整理也在这里（每组转存完、strm 生成好就交），整理记录里记成「追更」
+        organizeTrigger: "follow",
+        ...(createdDir ? { createdDir } : {}),
         settings,
       });
       if (r.copy) copies.push(r.copy);
       if ("generatedCount" in r) generated += r.generatedCount;
       received.push(...group.items.map((i) => i.path));
-      landed.push(...group.items.map((i) => normalizeSubPath(`${subPath}/${baseName(i.path)}`)));
     } catch (err) {
       // 转存成了、strm 没生成好：复制已经登记了，照样算进去
       const copy = err instanceof HttpError ? (err.extra as { copy?: CopyOutcome } | undefined)?.copy : undefined;
@@ -589,7 +597,6 @@ async function runCheck(f: ShareFollow, sink: CheckSink): Promise<ShareFollowRun
   if (received.length) {
     log.info(`追更「${f.name}」新增 ${received.length} 项 → ${target2}，生成 ${generated} 个 strm`);
     if (generated > 0) scheduleEmbyRefresh();
-    maybeAutoOrganize({ task, paths: landed, trigger: "follow" });
     void deps.notify({ type: "follow-added", name: f.name, added: received.map(baseName), generated, target: target2 }).catch(() => {});
   }
   const copy = mergeCopyOutcomes(copies);

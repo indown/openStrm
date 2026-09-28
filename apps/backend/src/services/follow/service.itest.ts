@@ -13,6 +13,7 @@ import { getShareFollow } from "../../db/repositories/share-follows.js";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { __test_resetCopy, listCopies } from "../copy/service.js";
+import { __test_flushAutoOrganize, __test_resetAutoOrganize, setAutoOrganizeDeps } from "../organize/auto.js";
 import { HttpError } from "../../lib/http-error.js";
 import { DATA_DIR } from "../../paths.js";
 import { setDriveProviderFactory } from "../drive/registry.js";
@@ -266,13 +267,14 @@ test("范围只有某几个目录：根目录的新增不管，范围目录不�
 test("转存失败：记错误、退避、失败的下次再试；连续 3 次才通知", async () => {
   const s = await subscribe({ intervalMinutes: 60 });
   share.addFile("/E03.mkv", { hash: "c" });
-  // 任务目录在网盘上没了：找不到落点就不能转存
-  drive.tree.remove("/tv/The Show");
+  // 任务目录在网盘上没了：不替它建（任务配错了、被挪走了，建出来的也不是用户要的地方），这次转存不了
+  drive.tree.remove("/tv");
   now += HOUR;
   let r = await checkFollow(s.id);
   assert.equal(r.follow.status, "error");
   assert.equal(r.follow.errorStreak, 1);
-  assert.match(r.follow.lastError, /\.：无法在网盘上找到保存目录：tv\/The Show/);
+  assert.match(r.follow.lastError, /\.：任务的网盘目录「tv」不存在/);
+  assert.equal(drive.tree.get("/tv"), undefined, "任务目录不替它建");
   assert.equal(r.follow.nextCheckAt, now + 2 * HOUR, "第一次失败等两倍间隔");
   assert.ok(!getShareFollow(s.id)!.known.some((e) => e.path === "E03.mkv"), "失败的不进快照");
   assert.equal(events("follow-failed").length, 0);
@@ -288,6 +290,93 @@ test("转存失败：记错误、退避、失败的下次再试；连续 3 次�
   assert.equal(r.follow.status, "idle");
   assert.equal(r.follow.errorStreak, 0);
   assert.deepEqual(r.run?.added, ["E03.mkv"]);
+});
+
+/** 看交给自动整理的是什么：任务开 auto、配上 TMDB，createRun 换成记账的假函数，不真建 run */
+async function withOrganizeCalls(fn: (calls: Array<{ paths: string[]; trigger: string }>) => Promise<void>): Promise<void> {
+  const settings = readAppSettings();
+  replaceAppSettings({ ...settings, tmdb: { apiKey: "x" } });
+  replaceTasks([{ ...task, organize: { mode: "auto" } }]);
+  const calls: Array<{ paths: string[]; trigger: string }> = [];
+  setAutoOrganizeDeps({
+    createRun: async (input) => {
+      calls.push({ paths: input.paths ?? [], trigger: input.trigger ?? "" });
+      return {} as never;
+    },
+  });
+  try {
+    await fn(calls);
+  } finally {
+    __test_resetAutoOrganize();
+    setAutoOrganizeDeps(null);
+    replaceAppSettings(settings);
+    replaceTasks([task]);
+  }
+}
+
+test("落点不在了（整理挪空删了、被人删了）：建出来接着转存，建出来的整个交给整理、来源「追更」；落点在的照旧交条目", async () => {
+  await withOrganizeCalls(async (calls) => {
+    const s = await subscribe();
+    const round = async () => {
+      calls.length = 0;
+      now += HOUR;
+      const r = await checkFollow(s.id);
+      await __test_flushAutoOrganize();
+      return r;
+    };
+
+    // 订阅的落点整个没了
+    drive.tree.remove("/tv/The Show");
+    share.addFile("/E03.mkv", { hash: "c" });
+    let r = await round();
+    assert.equal(r.follow.status, "idle", r.follow.lastError);
+    assert.ok(inDrive("/tv/The Show/E03.mkv"), "落点建回来、接着转存");
+    assert.deepEqual(calls, [{ paths: ["The Show"], trigger: "follow" }], "建出来的目录整个交给整理，挪空了跟着删");
+
+    // 分享里的层级（Extras）网盘上没有：只建这一层，也只交这一层
+    share.addFile("/Extras/trailer.mkv", { hash: "t" });
+    r = await round();
+    assert.equal(r.follow.status, "idle", r.follow.lastError);
+    assert.ok(inDrive("/tv/The Show/Extras/trailer.mkv"));
+    assert.deepEqual(calls, [{ paths: ["The Show/Extras"], trigger: "follow" }]);
+
+    // 落点都在：照旧交条目
+    share.addFile("/E04.mkv", { hash: "d" });
+    await round();
+    assert.deepEqual(calls, [{ paths: ["The Show/E04.mkv"], trigger: "follow" }]);
+
+    // 一轮里好几组：后面落在前面那组建的目录里的，也交前面那组建的（那组的整理可能已经跑完，只交里面那层会把它留成空壳）
+    drive.tree.remove("/tv/The Show");
+    share.addFile("/E05.mkv", { hash: "e" });
+    share.addFile("/Extras/bts.mkv", { hash: "f" });
+    r = await round();
+    assert.equal(r.follow.status, "idle", r.follow.lastError);
+    assert.ok(inDrive("/tv/The Show/E05.mkv") && inDrive("/tv/The Show/Extras/bts.mkv"));
+    assert.deepEqual([...new Set(calls.flatMap((c) => c.paths))], ["The Show"]);
+  });
+});
+
+test("转存没成：为它建出来的落点删回去（不然下一轮当成原来就有的，整理完留空壳），下一轮再建", async () => {
+  const s = await subscribe();
+  drive.tree.remove("/tv/The Show");
+  share.addFile("/E03.mkv", { hash: "c" });
+  const fake = drive.share!;
+  const receive = fake.receive.bind(fake);
+  fake.receive = async () => {
+    throw new Error("空间不足");
+  };
+  now += HOUR;
+  let r = await checkFollow(s.id);
+  assert.equal(r.follow.status, "error");
+  assert.match(r.follow.lastError, /空间不足/);
+  assert.equal(drive.tree.get("/tv/The Show"), undefined, "建出来的空目录删回去了");
+  assert.ok(drive.tree.get("/tv"), "任务目录不动");
+
+  fake.receive = receive;
+  now += 3 * HOUR;
+  r = await checkFollow(s.id);
+  assert.equal(r.follow.status, "idle", r.follow.lastError);
+  assert.ok(inDrive("/tv/The Show/E03.mkv"));
 });
 
 test("分享失效：分享接口连续 3 次说不行 → expired 并停掉，通知一次；中途恢复就清零", async () => {
@@ -451,8 +540,8 @@ test("服务端更新信号（夸克）：说没更新就不列目录；连续 3
   now += HOUR;
   assert.deepEqual((await checkFollow(s.id)).run?.added, ["E05.mkv"]);
 
-  // 上一轮转存失败（落点目录没了）→ 即使信号说没更新，也要列目录把失败的再试一次
-  drive.tree.remove("/tv/The Show");
+  // 上一轮转存失败（任务目录没了；落点没了会建回来，不算失败）→ 即使信号说没更新，也要列目录把失败的再试一次
+  drive.tree.remove("/tv");
   share.addFile("/E06.mkv", { hash: "f" });
   now += HOUR;
   const failedRun = await checkFollow(s.id);

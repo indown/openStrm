@@ -2,7 +2,8 @@
  * P3 工具的闭环：起真实端口，用官方 SDK 的客户端连 /mcp，网盘用内存假网盘，TMDB 换成桩。
  *   - 整理：预览 → 清单（要拿主意的在前）→ 改清单（编号不变、planVersion 变）→ 旧版本执行被拒 → 执行 → 撤销；
  *     冲突选删掉只是改清单（日常档就行），执行带删除项的清单要 danger 档加 confirmDelete，没有就交给人在整理页执行；
- *     冲突办法只给冲突的文件；服务重启后清单改不了但能执行；同范围预览不重做；转存带回 runId
+ *     冲突办法只给冲突的文件；服务重启后清单改不了但能执行；同范围预览不重做；转存带回 runId；
+ *     转存为它新建的子目录整个交给整理、挪空后一起删，追更的落点跟过去 / 不在了建回来
  *   - 当面确认：新协议、声明了 elicitation 的客户端弹确认框（同意 / 拒绝），老协议的照常执行
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/routes/mcp/mcp-p3.itest.ts
@@ -24,7 +25,7 @@ import { DEFAULT_AUTH } from "../../db/defaults.js";
 import { writeAuthPassword } from "../../db/repositories/auth.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { createApiToken, deleteAllApiTokens } from "../../db/repositories/api-tokens.js";
-import { __test_resetOrganize, listItems } from "../../db/repositories/organize.js";
+import { __test_resetOrganize, listItems, listRuns } from "../../db/repositories/organize.js";
 import { patchAppSettings, readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { DATA_DIR } from "../../paths.js";
@@ -32,13 +33,14 @@ import { setDriveProviderFactory } from "../../services/drive/registry.js";
 import { __test_resetAgentQuota } from "../../services/agent/rate-limit.js";
 import { __test_resetJobs } from "../../services/agent/jobs.js";
 import { __test_resetTransferCaches } from "../../services/agent/tools/transfer.js";
-import { __test_resetAutoOrganize } from "../../services/organize/auto.js";
+import { __test_flushAutoOrganize, __test_resetAutoOrganize } from "../../services/organize/auto.js";
 import { __test_resetFollows, listFollows, setFollowServiceDeps } from "../../services/follow/service.js";
-import { __test_dropPlanState, cancelAllRuns, setOrganizeDeps, waitForRun } from "../../services/organize/run.js";
+import { __test_dropPlanState, applyRun, cancelAllRuns, getRunDetail, setOrganizeDeps, waitForRun } from "../../services/organize/run.js";
 import type { TmdbApi } from "../../services/organize/identify.js";
 import type { TmdbDetails, TmdbEpisode, TmdbSearchResult } from "../../services/tmdb.js";
 import { cancelAllRunningTasks } from "../../services/task/registry.js";
-import { FakeDrive } from "../../test/fake-drive.js";
+import { FakeDrive, type FakeTree } from "../../test/fake-drive.js";
+import { HttpError } from "../../lib/http-error.js";
 
 const quark: AccountInfo = { accountType: "quark", name: "q", cookie: "c" };
 const tv: TaskDefinition = { id: "p3-tv", account: "q", accountType: "quark", originPath: "tv", targetPath: "mcp-p3/tv", strmPrefix: "/mnt" };
@@ -392,6 +394,154 @@ test("整理：转存时要整理，结果里带回清单的 runId", async () =>
     assert.equal(status.data.run.status, "ready", JSON.stringify(status.data));
     assert.equal(status.data.run.trigger, "转存");
   } finally {
+    await client.close();
+  }
+});
+
+/** 等整理把清单做好，要人确认的直接执行，一直等到做完（自动执行的会在预览完顺手起执行，撞上了就接着等它） */
+async function applyWhenReady(runId: string): Promise<void> {
+  for (let i = 0; i < 300; i++) {
+    await waitForRun(runId);
+    const { status } = getRunDetail(runId).run;
+    if (status === "done") return;
+    if (status === "ready") {
+      await applyRun(runId).catch((err) => {
+        if (!(err instanceof HttpError && err.status === 409)) throw err;
+      });
+    } else if (status !== "planning" && status !== "applying") {
+      throw new Error(`run ${runId} 停在 ${status}`);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`run ${runId} 没做完`);
+}
+
+test("整理：转存时为它新建的子目录整个交给整理，挪空后一起删；原来就有的子目录留着；转存没成的收回去", async () => {
+  const client = await connect(dailyToken);
+  /** 建一个分享、带整理转存进去、执行完，回这次整理 */
+  const save = async (code: string, build: (share: FakeTree) => void, args: Record<string, unknown>) => {
+    build(drive.share!.define(code, { title: "怒呛人生" }));
+    const saved = await call(client, "share_save", { link: `https://pan.quark.cn/s/${code}`, task: "tv", organize: true, ...args });
+    assert.equal(saved.isError, false, JSON.stringify(saved.data));
+    const runId = saved.data.organize?.runId as string;
+    assert.ok(runId, JSON.stringify(saved.data));
+    await applyWhenReady(runId);
+    return getRunDetail(runId).run;
+  };
+  const W = "/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01";
+  try {
+    // 散文件存进新建的片名目录：以前整理完留一个空的「怒呛人生」
+    let run = await save("new000000001", (t) => t.addFile("/BEEF.S01E02.1080p.WEB-DL.mkv"), { subPath: "怒呛人生" });
+    assert.deepEqual(run.scopePaths, ["怒呛人生"], "交给整理的是这次建出来的目录");
+    assert.equal(drive.tree.get("/tv/怒呛人生"), undefined, "挪空后一起删");
+    assert.ok(drive.tree.get(`${W}/怒呛人生 - S01E02.mkv`));
+
+    // 发布目录存进新建的两层目录：两层都是这次建的，都删
+    run = await save("new000000002", (t) => t.addFile("/BEEF.S01.1080p/BEEF.S01E03.1080p.WEB-DL.mkv"), { subPath: "新建/怒呛人生" });
+    assert.deepEqual(run.scopePaths, ["新建"]);
+    assert.equal(drive.tree.get("/tv/新建"), undefined);
+    assert.ok(drive.tree.get(`${W}/怒呛人生 - S01E03.mkv`));
+
+    // 上一层原来就有、只建了片名这层：只删建的这层
+    drive.tree.addDir("/tv/美剧");
+    run = await save("new000000003", (t) => t.addFile("/BEEF.S01E04.1080p.WEB-DL.mkv"), { subPath: "美剧/怒呛人生" });
+    assert.deepEqual(run.scopePaths, ["美剧/怒呛人生"]);
+    assert.equal(drive.tree.get("/tv/美剧/怒呛人生"), undefined);
+    assert.ok(drive.tree.get("/tv/美剧"), "原来就有的上一层留着");
+
+    // 原来就有的子目录：照旧只交条目，挪空了也留着
+    drive.tree.addDir("/tv/已有");
+    run = await save("new000000004", (t) => t.addFile("/BEEF.S01E05.1080p.WEB-DL.mkv"), { subPath: "已有" });
+    assert.deepEqual(run.scopePaths, ["已有/BEEF.S01E05.1080p.WEB-DL.mkv"]);
+    assert.ok(drive.tree.get("/tv/已有"), "不是这次建的，不删");
+
+    // 转存本身没成：建出来的目录收回去，不然再存一次就当成原来就有的了
+    drive.share!.define("new000000005", { title: "怒呛人生" }).addFile("/BEEF.S01E06.1080p.WEB-DL.mkv");
+    const fake = drive.share!;
+    const receive = fake.receive.bind(fake);
+    fake.receive = async () => {
+      throw new Error("空间不足");
+    };
+    try {
+      const failed = await call(client, "share_save", { link: "https://pan.quark.cn/s/new000000005", task: "tv", subPath: "失败", organize: true });
+      assert.equal(failed.isError, true, JSON.stringify(failed.data));
+    } finally {
+      fake.receive = receive;
+    }
+    assert.equal(drive.tree.get("/tv/失败"), undefined, "建出来的空目录收回去了");
+  } finally {
+    await client.close();
+  }
+});
+
+test("整理：同样的转存再来一次补整理——上次新建的子目录还只装着上次的条目就整个交，混进了别的只交条目", async () => {
+  const client = await connect(dailyToken);
+  try {
+    drive.share!.define("rep000000001", { title: "怒呛人生" }).addFile("/BEEF.S01E07.1080p.WEB-DL.mkv");
+    const args = { link: "https://pan.quark.cn/s/rep000000001", task: "tv", subPath: "补整理" };
+    const first = await call(client, "share_save", { ...args, organize: false });
+    assert.equal(first.data.state, "done", JSON.stringify(first.data));
+    assert.ok(drive.tree.get("/tv/补整理/BEEF.S01E07.1080p.WEB-DL.mkv"), "这次不整理，留在建出来的子目录里");
+    const again = await call(client, "share_save", { ...args, organize: true });
+    const runId = again.data.organize?.runId as string;
+    assert.ok(runId, JSON.stringify(again.data));
+    await applyWhenReady(runId);
+    assert.deepEqual(getRunDetail(runId).run.scopePaths, ["补整理"], "还只装着上次的条目：整个交");
+    assert.equal(drive.tree.get("/tv/补整理"), undefined);
+
+    drive.share!.define("rep000000002", { title: "怒呛人生" }).addFile("/BEEF.S01E08.1080p.WEB-DL.mkv");
+    const mixed = { link: "https://pan.quark.cn/s/rep000000002", task: "tv", subPath: "混进" };
+    await call(client, "share_save", { ...mixed, organize: false });
+    drive.tree.addFile("/tv/混进/别人放的.mkv");
+    const retry = await call(client, "share_save", { ...mixed, organize: true });
+    const retryRun = retry.data.organize?.runId as string;
+    assert.ok(retryRun, JSON.stringify(retry.data));
+    await applyWhenReady(retryRun);
+    assert.deepEqual(getRunDetail(retryRun).run.scopePaths, ["混进/BEEF.S01E08.1080p.WEB-DL.mkv"], "混进了别的：只交上次的条目");
+    assert.ok(drive.tree.get("/tv/混进/别人放的.mkv"), "别的不碰");
+  } finally {
+    await client.close();
+  }
+});
+
+test("追更：新建的子目录被整理删掉后追更跟到作品目录；分享根是片名目录的，整理删掉后下一集照样落进来、交给整理、记成「追更」", async () => {
+  const client = await connect(dailyToken);
+  try {
+    // 散文件转存进新建的子目录并追更：整理把子目录挪空删掉，追更跟到作品目录，下一集直接落进作品目录
+    const a = drive.share!.define("fol000000001", { title: "怒呛人生" });
+    a.addFile("/BEEF.S01E02.1080p.WEB-DL.mkv");
+    const savedA = await call(client, "share_save", { link: "https://pan.quark.cn/s/fol000000001", task: "tv", subPath: "追更新建", follow: true, organize: true });
+    assert.equal(savedA.isError, false, JSON.stringify(savedA.data));
+    await applyWhenReady(savedA.data.organize.runId);
+    assert.equal(drive.tree.get("/tv/追更新建"), undefined);
+    const followA = savedA.data.follow.id as string;
+    assert.equal(listFollows().follows.find((f) => f.id === followA)?.subPath, "怒呛人生 (2023) [tmdbid=153312]", "追更跟到作品目录");
+    a.addFile("/BEEF.S01E03.1080p.WEB-DL.mkv");
+    const checkedA = await call(client, "follow_check", { follow: followA });
+    assert.equal(checkedA.data.run?.added, 1, JSON.stringify(checkedA.data));
+    assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/BEEF.S01E03.1080p.WEB-DL.mkv"));
+
+    // 分享根是片名目录、不给 subPath（「找片入库」教的做法）：整理把「怒呛人生」挪空删掉，
+    // 以前下一次追更就报「无法在网盘上找到保存目录」；现在建出来接着落，任务开着自动整理的整个交给整理
+    replaceTasks([{ ...tv, organize: { mode: "auto" } }]);
+    const b = drive.share!.define("fol000000002", { title: "怒呛人生" });
+    b.addFile("/怒呛人生/BEEF.S01E04.1080p.WEB-DL.mkv");
+    const savedB = await call(client, "share_save", { link: "https://pan.quark.cn/s/fol000000002", task: "tv", follow: true, organize: true });
+    assert.equal(savedB.isError, false, JSON.stringify(savedB.data));
+    await applyWhenReady(savedB.data.organize.runId);
+    assert.equal(drive.tree.get("/tv/怒呛人生"), undefined);
+    b.addFile("/怒呛人生/BEEF.S01E05.1080p.WEB-DL.mkv");
+    const checkedB = await call(client, "follow_check", { follow: savedB.data.follow.id });
+    assert.equal(checkedB.data.run?.added, 1, JSON.stringify(checkedB.data));
+    await __test_flushAutoOrganize();
+    const followRun = listRuns({ taskId: tv.id })[0];
+    assert.equal(followRun.trigger, "follow", "追更触发的整理记成「追更」");
+    assert.deepEqual(followRun.scopePaths, ["怒呛人生"], "建出来的目录整个交");
+    await applyWhenReady(followRun.id);
+    assert.equal(drive.tree.get("/tv/怒呛人生"), undefined, "又整理干净");
+    assert.ok(drive.tree.get("/tv/怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E05.mkv"));
+  } finally {
+    replaceTasks([tv]);
     await client.close();
   }
 });

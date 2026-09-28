@@ -1,15 +1,15 @@
 /**
  * 把分享里选中的条目转存到某个同步任务的目录，然后生成 strm。
- * 分享详情弹框、影库、Telegram、追更四个入口都走这里；网盘的差异全在 Provider 里。
+ * 分享详情弹框、影库、Telegram、追更、智能体都走这里；网盘的差异全在 Provider 里。
  *
  *   sync  → 转存完立刻按条目生成 strm（目录按子树列，夸克能拿到转存后的顶层 id 就直接按 id 列）
  *   async → 转存完交给全量任务引擎在后台跑
  */
-import type { AppSettings, TaskDefinition } from "@openstrm/shared";
+import type { AppSettings, OrganizeTrigger, TaskDefinition } from "@openstrm/shared";
 import { HttpError } from "../../lib/http-error.js";
 import { driveErrorToHttp } from "../drive/errors.js";
 import { assertSameKind, providerForTask } from "../drive/registry.js";
-import type { DriveProvider, ShareRef } from "../drive/types.js";
+import { normalizePath, splitPath, type DriveProvider, type ShareRef } from "../drive/types.js";
 import { COPY_TRIGGER_LABEL, enqueueCopyFor, type CopyOutcome } from "../copy/service.js";
 import { copyBlockerFor, copyOptionsFor } from "../copy/paths.js";
 import { releaseCopyHoldsById, type CopyTrigger } from "../copy/queue.js";
@@ -49,6 +49,13 @@ export interface SaveSelectionOpts {
   copy?: boolean;
   /** 复制队列里记的来源，不给就是「分享转存」；追更复用这条路时写成「追更」 */
   copyTrigger?: CopyTrigger;
+  /**
+   * 调用方为这次转存建出来的目录（ensureSaveDir 回的那层：subPath 本身或它上级里最上面新建的那层）。它只装这次的条目，
+   * 交给整理时整个交过去，挪空了跟着删（自动整理会删腾空了的新增目录）；不给就交条目，落点目录留着
+   */
+  createdDir?: string;
+  /** 整理记录里的来源，不给就是「转存」；追更复用这条路时写成「追更」 */
+  organizeTrigger?: Extract<OrganizeTrigger, "share" | "follow">;
 }
 
 /**
@@ -76,6 +83,74 @@ export function uniqueItems<T extends { id: string }>(items: T[]): T[] {
 /** 「转存后整理」勾上时这次按哪种来：任务设了 auto 就直接执行，否则至少出一份待确认的清单；没勾就按任务设置（undefined） */
 export function forcedOrganizeMode(task: TaskDefinition, organize: boolean | undefined): "review" | "auto" | undefined {
   return organize ? (task.organize?.mode === "auto" ? "auto" : "review") : undefined;
+}
+
+/** 保存目录建不出来：任务目录本身不在（task-root）、路上撞上同名文件（not-a-dir）、这个账号建不了目录（read-only） */
+export class SaveDirError extends Error {
+  constructor(
+    readonly reason: "task-root" | "not-a-dir" | "read-only",
+    message: string,
+  ) {
+    super(message);
+    this.name = "SaveDirError";
+  }
+}
+
+/**
+ * 任务目录下的保存目录（subPath，调用方归一过）不在就一级级建出来，回这次建出来的最上一层（相对任务目录；本来都在是 ""）。
+ * 智能体转存、追更用它，回的那层交给 saveSelectionToTask 的 createdDir。
+ * 任务目录本身不在不建：任务配错了、或者在网盘上被挪走了，建出来的也不是用户要的地方
+ */
+export async function ensureSaveDir(provider: DriveProvider, originPath: string, subPath: string, signal?: AbortSignal): Promise<string> {
+  const rel = (p: string) => splitPath(p).join("/");
+  const full = rel(`${originPath}/${subPath}`);
+  const hit = await provider.resolvePath(full, signal);
+  if (hit?.isDir) return "";
+  if (hit) throw new SaveDirError("not-a-dir", `网盘上的「${full}」不是目录`);
+  const root = splitPath(originPath).length ? await provider.resolvePath(rel(originPath), signal) : { id: provider.rootId, isDir: true };
+  if (!root?.isDir) throw new SaveDirError("task-root", `任务的网盘目录「${originPath}」不存在`);
+  const segs = splitPath(subPath);
+  let parent = { id: root.id, path: normalizePath(originPath) };
+  let created = "";
+  for (let i = 0; i < segs.length; i++) {
+    const path = normalizePath(`${parent.path}/${segs[i]}`);
+    // 上一层是刚建的，下面不会有东西，不用再问网盘
+    const node = created ? null : await provider.resolvePath(rel(path), signal);
+    if (node && !node.isDir) throw new SaveDirError("not-a-dir", `网盘上的「${rel(path)}」不是目录`);
+    if (!node && !provider.write) throw new SaveDirError("read-only", `网盘上没有目录「${rel(path)}」，这个账号建不了目录`);
+    const dir = node ?? (await provider.write!.mkdir(parent, segs[i], signal));
+    if (!node && !created) created = segs.slice(0, i + 1).join("/");
+    parent = { id: dir.id, path };
+  }
+  return created;
+}
+
+/** createdDir 得是 subPath 本身或它的上级：调用方传错了就当没建过 */
+const coversSubPath = (subPath: string, createdDir: string): boolean => subPath === createdDir || subPath.startsWith(`${createdDir}/`);
+
+/**
+ * 转存没成，把调用方为它建出来的目录删回去：从落点往上删到 createdDir，只删空的（rmdirIfEmpty），碰上不空的就停。
+ * 删不掉只记日志，不盖过转存本身的错误
+ */
+async function dropCreatedDir(provider: DriveProvider, originPath: string, subPath: string, createdDir: string): Promise<void> {
+  if (!provider.write || !coversSubPath(subPath, createdDir)) return;
+  const segs = splitPath(subPath);
+  for (let n = segs.length; n >= splitPath(createdDir).length; n--) {
+    const path = normalizePath(`${originPath}/${segs.slice(0, n).join("/")}`);
+    try {
+      const node = await provider.resolvePath(splitPath(path).join("/"));
+      if (!node?.isDir || !(await provider.write.rmdirIfEmpty({ id: node.id, path, isDir: true }))) return;
+    } catch (err) {
+      log.warn({ err, path }, "转存没成，收回为它建的目录失败");
+      return;
+    }
+  }
+}
+
+/** 交给整理的新增路径：这次建出来的目录（得是 subPath 本身或它的上级）整个交，挪空了跟着删；否则交这次的条目 */
+function organizePathsOf(subPath: string, items: SaveItem[], createdDir: string | undefined): string[] {
+  if (createdDir && coversSubPath(subPath, createdDir)) return [createdDir];
+  return items.map((i) => (subPath ? `${subPath}/${i.name}` : i.name));
 }
 
 export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<SaveSelectionResult> {
@@ -112,6 +187,8 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
     const result = await share.receive(session, items.map((i) => ({ id: i.id, token: i.token })), targetId, signal);
     topIds = result.topIds;
   } catch (err) {
+    // 转存没成：调用方为它建出来的目录收回去，不然下次再存就当成原来就有的，整理完留一个空壳
+    if (opts.createdDir) await dropCreatedDir(provider, task.originPath, subPath, opts.createdDir);
     throw driveErrorToHttp(err, "转存失败");
   }
   // 网盘给了转存后的顶层 id 且一一对应时，目录直接按 id 列，省掉按路径解析那一步；删源时也靠它核对
@@ -143,7 +220,7 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
       const { generatedCount, skippedCount, invalidNames } = await generateStrmForSelected({ task, provider, selectedItems, settings, subPath });
       // 刚转存进来的这些条目交给整理，识别失败或没开都不影响这次转存
       if (opts.organize !== false) {
-        maybeAutoOrganize({ task, paths: items.map((i) => (subPath ? `${subPath}/${i.name}` : i.name)), trigger: "share", mode: organizeMode });
+        maybeAutoOrganize({ task, paths: organizePathsOf(subPath, items, opts.createdDir), trigger: opts.organizeTrigger ?? "share", mode: organizeMode });
       }
       return { mode: "sync", generatedCount, skippedCount, invalidNames, ...withCopy };
     } catch (err) {

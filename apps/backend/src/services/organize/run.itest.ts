@@ -807,7 +807,8 @@ test("留着的：名字对不上片名、只是包含片名、装着几部作�
   }
   assert.deepEqual(await planned({ taskId: "t1", subPath: "怒呛人生", mode: "review", trigger: "offline" }), [], "自动触发的：范围本身也不按片名删");
 
-  // D 智能体转存时用片名建的子目录，自动整理的新增路径是文件：自动整理不删范围外（后面几集可能还要落进来）
+  // D 转存进原来就有的子目录，自动整理的新增路径是文件：不删范围外（后面几集可能还要落进来）。
+  // 这次为转存新建的子目录，转存那边会把整个目录当新增路径交过来，挪空了跟着删（见 mcp-p3.itest）
   drive.tree.addFile("/tv/Beef/BEEF.S01E05.1080p.WEB-DL.mkv");
   const walked = drive.calls.walkSubtree;
   await organizeNow({ taskId: "t1", paths: ["Beef/BEEF.S01E05.1080p.WEB-DL.mkv"], mode: "auto", trigger: "share" });

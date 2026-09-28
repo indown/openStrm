@@ -13,12 +13,20 @@ import { readAppSettings } from "../../../db/repositories/settings.js";
 import { normalizeOfflineUrls } from "../../cloud-115/offline.js";
 import { KIND_LABEL, UNKNOWN_SHARE_LINK, assertSameKind, parseShareText, providerFor, providerForTask, shareProviderForRef } from "../../drive/registry.js";
 import { listWholeShareDir } from "../../drive/share-walk.js";
-import { normalizePath, splitPath, type DriveProvider, type ShareEntry, type ShareRef } from "../../drive/types.js";
+import { splitPath, type DriveProvider, type ShareEntry, type ShareRef } from "../../drive/types.js";
 import { scopeFromSelection } from "../../follow/diff.js";
 import { createFollowAfterSave } from "../../follow/service.js";
 import { addOfflineTasks, listOfflineTasks, type AddOfflineResponse } from "../../offline/service.js";
 import { autoOrganizeBusy, autoOrganizeFor, effectiveAutoMode, maybeAutoOrganize } from "../../organize/auto.js";
-import { enqueueReceivedCopy, forcedOrganizeMode, saveSelectionToTask, uniqueItems, type SaveSelectionResult } from "../../share/receive.js";
+import {
+  SaveDirError,
+  enqueueReceivedCopy,
+  ensureSaveDir,
+  forcedOrganizeMode,
+  saveSelectionToTask,
+  uniqueItems,
+  type SaveSelectionResult,
+} from "../../share/receive.js";
 import { withAfterCopy, type CopyOutcome } from "../../copy/service.js";
 import { HttpError } from "../../../lib/http-error.js";
 import { copyBlockerFor, copyDstProblem, copyOptionsFor, normConfigDir } from "../../copy/paths.js";
@@ -281,6 +289,8 @@ interface SaveMeta {
   items: SavedItem[];
   /** 转存后的网盘节点 id，和 items 一一对应：作业做完回填（网盘给了才有，夸克有、115 没有），补复制时核对还是不是这一份 */
   nodeIds?: string[];
+  /** 这次为转存建出来的最上一层目录（相对任务目录，见 ensureSaveDir）：作业建完回填，补整理时核对后整个交给整理 */
+  createdDir?: string;
 }
 
 interface PreviousSave {
@@ -409,23 +419,47 @@ async function savedInPlace(
   return { here, gone: saved.length - here.length };
 }
 
-/** 任务目录下的 subPath 不存在就一级级建出来：界面上是先建好目录再选，智能体只能在这里建 */
-async function ensureSubDir(provider: DriveProvider, base: string, rel: string): Promise<void> {
-  const rel2abs = (p: string) => splitPath(p).join("/");
-  const full = rel2abs(`${base}/${rel}`);
-  const hit = await provider.resolvePath(full);
-  if (hit?.isDir) return;
-  if (hit) throw new ToolError("NOT_A_DIR", `网盘上的「${full}」不是目录`, "换一个 subPath。");
-  const baseNode = splitPath(base).length ? await provider.resolvePath(rel2abs(base)) : { id: provider.rootId, isDir: true };
-  if (!baseNode?.isDir) throw new ToolError("DIR_NOT_FOUND", `任务的网盘目录「${base}」不存在`, "任务目录被挪走或改名了，需要用户在 OpenStrm 里改这个任务。");
-  let parent = { id: baseNode.id, path: normalizePath(base) };
-  for (const seg of splitPath(rel)) {
-    const path = normalizePath(`${parent.path}/${seg}`);
-    const node = await provider.resolvePath(rel2abs(path));
-    if (node && !node.isDir) throw new ToolError("NOT_A_DIR", `网盘上的「${rel2abs(path)}」不是目录`, "换一个 subPath。");
-    if (!node && !provider.write) throw new ToolError("DIR_NOT_FOUND", `网盘上没有目录「${rel2abs(path)}」，这个账号建不了目录`, "请用户先在网盘里建好，或者换一个已有的 subPath（用 drive_browse 看）。");
-    const dir = node ?? (await provider.write!.mkdir(parent, seg));
-    parent = { id: dir.id, path };
+/**
+ * 补整理之前核对：上次为转存建出来的目录（createdDir）是不是还只装着上次的条目——从它往下到落点，每一层只有下一层这一个目录，
+ * 落点里只有上次存进来的。是就整个交给整理（挪空了跟着删）；这期间别的转存也落了进来、被人放了别的东西，只交上次的条目，免得一起整理了
+ */
+async function onlySavedIn(
+  provider: DriveProvider,
+  task: TaskDefinition,
+  createdDir: string,
+  subPath: string,
+  saved: SavedItem[],
+  signal: AbortSignal,
+): Promise<boolean> {
+  const segs = splitPath(subPath);
+  const top = splitPath(createdDir);
+  if (top.length === 0 || top.join("/") !== segs.slice(0, top.length).join("/")) return false;
+  let node = await provider.resolvePath(splitPath(`${task.originPath}/${createdDir}`).join("/"), signal);
+  for (let depth = top.length; node?.isDir; depth++) {
+    const entries = await provider.listDir(node.id, signal, { fresh: true });
+    if (depth === segs.length) {
+      const names = new Set(saved.map((i) => i.name));
+      return entries.every((e) => names.has(e.name));
+    }
+    const next = entries.length === 1 && entries[0].isDir && entries[0].name === segs[depth] ? entries[0] : undefined;
+    if (!next) return false;
+    node = { id: next.id, isDir: true };
+  }
+  return false;
+}
+
+/**
+ * 任务目录下的 subPath 不存在就一级级建出来：界面上是先建好目录再选，智能体只能在这里建。
+ * 回这次建出来的最上一层（都在就是 ""），交给整理时整个交过去
+ */
+async function ensureSubDir(provider: DriveProvider, base: string, rel: string): Promise<string> {
+  try {
+    return await ensureSaveDir(provider, base, rel);
+  } catch (err) {
+    if (!(err instanceof SaveDirError)) throw err;
+    if (err.reason === "not-a-dir") throw new ToolError("NOT_A_DIR", err.message, "换一个 subPath。");
+    if (err.reason === "task-root") throw new ToolError("DIR_NOT_FOUND", err.message, "任务目录被挪走或改名了，需要用户在 OpenStrm 里改这个任务。");
+    throw new ToolError("DIR_NOT_FOUND", err.message, "请用户先在网盘里建好，或者换一个已有的 subPath（用 drive_browse 看）。");
   }
 }
 
@@ -443,7 +477,7 @@ export const shareSaveTool = defineTool({
       .string()
       .max(1000)
       .optional()
-      .describe("任务网盘目录下的子目录，用 / 分隔，不存在会自动建；不填就是任务目录本身。要整理的别拿片名建子目录：整理会建规范的作品目录，自动整理不删这个子目录，会留一个空壳"),
+      .describe("任务网盘目录下的子目录，用 / 分隔，不存在会自动建；不填就是任务目录本身。要整理的不用给：整理会把作品挪进任务目录下规范的作品目录，这次为转存新建的子目录挪空后一起删掉，原来就有的留着"),
     itemIds: z.array(z.string().min(1).max(200)).min(1).max(SAVE_ITEMS_MAX).optional().describe("要转存的条目 id（来自 share_inspect）；不填就是 dirId 这一层的全部"),
     dirId: z.string().max(200).optional().describe("itemIds 所在的分享子目录 id；不填是分享的根"),
     follow: z.boolean().optional().describe("顺手建追更订阅，默认不建"),
@@ -567,15 +601,19 @@ export const shareSaveTool = defineTool({
       // 补复制先到网盘上核对条目还在不在原处（这一步要等网盘）。整理排上之后到复制登记之间不能再有 await：
       // 整理办完只放行在它开始之前登记的复制（releaseCopyHolds）
       const inPlace = extras.copy ? await savedInPlace(target, task, subPath, saved, prev.meta.nodeIds, ctx.signal) : undefined;
+      const mode = extras.organize ? effectiveAutoMode(task, forcedOrganizeMode(task, true)) : "off";
+      // 上次为转存建出来的目录还只装着上次的条目：整个交给整理，挪空了跟着删（核对也要等网盘，同样得在整理排上之前）
+      const createdDir = prev.meta.createdDir;
+      const wholeDir = mode !== "off" && !prev.received && createdDir ? await onlySavedIn(target, task, createdDir, subPath, saved, ctx.signal) : false;
       let organizeMode: "off" | "review" | "auto" = "off";
       let organizeSince = 0;
       if (extras.organize) {
-        const mode = effectiveAutoMode(task, forcedOrganizeMode(task, true));
         if (prev.received) extra.organizeSkipped = "上次的 strm 还没生成好：先用 sync_start 补上 strm，再用 organize_preview 整理这些条目。";
         else if (mode === "off") extra.organizeSkipped = "没配 TMDB，整理不了。";
         else {
           organizeSince = Date.now();
-          maybeAutoOrganize({ task, paths: saved.map((i) => (subPath ? `${subPath}/${i.name}` : i.name)), trigger: "share", mode: forcedOrganizeMode(task, true) });
+          const paths = wholeDir && createdDir ? [createdDir] : saved.map((i) => (subPath ? `${subPath}/${i.name}` : i.name));
+          maybeAutoOrganize({ task, paths, trigger: "share", mode: forcedOrganizeMode(task, true) });
           organizeMode = mode;
         }
       }
@@ -624,7 +662,8 @@ export const shareSaveTool = defineTool({
       async (report) => {
         report({ total: items.length, message: "转存中" });
         // 不传请求的 signal：客户端断开只是不等了，建目录、转存和生成 strm 照做
-        if (subPath) await ensureSubDir(target, task.originPath, subPath);
+        const createdDir = subPath ? await ensureSubDir(target, task.originPath, subPath) : "";
+        if (createdDir) meta.createdDir = createdDir;
         const since = Date.now();
         let result: SaveSelectionResult;
         try {
@@ -638,6 +677,8 @@ export const shareSaveTool = defineTool({
             settings: readAppSettings(),
             organize: args.organize,
             copy: args.copy,
+            // 这次为转存建出来的子目录整个交给整理，挪空了跟着删；原来就有的只交条目
+            ...(createdDir ? { createdDir } : {}),
           });
         } catch (err) {
           // 转存成了、strm 没生成好的时候复制照常排上了，报错里带着排没排上：换成给模型看的样子
