@@ -5,6 +5,7 @@ export type {
   LifePullMode,
   LifeEventMode,
   PansouSettings,
+  LibrarySettings,
   TelegramSettings,
   TelegramNotifySettings,
   UpdateSettings,
@@ -31,7 +32,18 @@ export type {
   TaskStopInfo,
   FailedFileBrief,
 } from "./task.js";
-export type { MediaLibraryEntry, ScrapeStatus, MediaType } from "./media-library.js";
+export type {
+  MediaLibraryEntry,
+  ScrapeStatus,
+  MediaType,
+  LibraryIndexStatus,
+  LibraryShareStatus,
+  LibraryShareHealth,
+  LibraryHit,
+  LibraryHitFile,
+  LibraryCrumb,
+  LibrarySearchResult,
+} from "./media-library.js";
 export type {
   ShareFollow,
   ShareFollowEntry,

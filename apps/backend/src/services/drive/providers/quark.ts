@@ -181,15 +181,21 @@ class QuarkShare implements ShareProvider {
   }
 
   async receive(s: ShareSession, items: ReceiveItem[], toDirId: string, signal?: AbortSignal): Promise<ReceiveResult> {
-    // 转存要每个条目的 share_fid_token；没带的（比如只存了 id 的老数据）按路径重新列一遍分享来补
+    // 转存要每个条目的 share_fid_token，而且得是这次会话（stoken）列出来的——token 跟着 stoken 变，stoken 缓存半小时：
+    //   - 给了所在目录的（影库里记下的、弹框开了很久的）：在这次会话里把那一层重新列一遍，用新的
+    //   - 没带 token 也没给目录的（只存了 id 的老数据）：按分享根重新列一遍补
     const withToken: Array<{ id: string; token: string }> = [];
-    const missing = items.filter((i) => !i.token);
+    const dirs = new Set<string>();
+    for (const i of items) {
+      if (i.parentId) dirs.add(i.parentId);
+      else if (!i.token) dirs.add("0");
+    }
     const tokens = new Map<string, string>();
-    if (missing.length > 0) {
-      for (const e of await listWholeShareDir(this, s, "0", signal)) tokens.set(e.id, e.token ?? "");
+    for (const dir of dirs) {
+      for (const e of await listWholeShareDir(this, s, dir, signal)) if (e.token) tokens.set(e.id, e.token);
     }
     for (const i of items) {
-      const token = i.token || tokens.get(i.id);
+      const token = tokens.get(i.id) || i.token;
       if (!token) throw new PermanentError(`夸克转存缺少条目 ${i.id} 的 share_fid_token（它不在分享根目录下，请重新从分享列表里选择）`);
       withToken.push({ id: i.id, token });
     }

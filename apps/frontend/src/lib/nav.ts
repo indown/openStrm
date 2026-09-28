@@ -13,7 +13,6 @@ import {
   Telescope,
   type LucideIcon,
 } from "lucide-react";
-import { FEATURES } from "@/lib/features";
 
 export type NavItem = {
   title: string;
@@ -32,8 +31,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { title: "任务", url: "/home", icon: ListChecks, match: ["/log"] },
       { title: "strm 管理", url: "/strm", icon: Files },
       { title: "整理", url: "/organize", icon: FolderTree },
-      // 影库入口暂时隐藏（lib/features.ts）；直接访问 /library 仍可用
-      ...(FEATURES.libraryEntry ? [{ title: "影库", url: "/library", icon: Library }] : []),
+      { title: "影库", url: "/library", icon: Library },
       // 搜到、转存、追更是一条线：放在追更前面
       { title: "资源搜索", url: "/search", icon: Telescope },
       { title: "追更", url: "/follow", icon: Rss },
@@ -68,7 +66,6 @@ export function currentPage(pathname: string, search?: { get(name: string): stri
     const parent = search?.get("executionId") ? { title: "历史", url: "/history" } : { title: "任务", url: "/home" };
     return { title: "任务日志", parent };
   }
-  if (pathname.startsWith("/library")) return { title: "影库" };
   for (const group of NAV_GROUPS) {
     for (const item of group.items) {
       if (isNavActive(item, pathname)) return { title: item.title };

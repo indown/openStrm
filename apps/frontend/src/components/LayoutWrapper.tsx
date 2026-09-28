@@ -354,6 +354,15 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
         onOpenChange={setPaletteOpen}
         onOpenShare={() => setShareBoxOpen(true)}
         onInput={routeInput}
+        onOpenLibraryHit={(hit) => {
+          const root = hit.nodeId === "0";
+          void share.load(hit.shareUrl, {
+            openImmediately: true,
+            startCid: root ? undefined : hit.nodeId,
+            startCrumbs: root ? undefined : hit.crumbs,
+            failMessage: "打开分享失败",
+          });
+        }}
         onLogout={logout}
       />
       <ShareDetailDialog {...share.dialogProps} />

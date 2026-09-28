@@ -30,6 +30,7 @@ import {
   updateScrape,
 } from "../../db/repositories/media-library.js";
 import { normalizeTitle } from "../media-title.js";
+import { libraryNameOf, withSuffix } from "./name.js";
 import { messageOf } from "../../lib/errors.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { unrefTimer } from "../../lib/rx.js";
@@ -123,9 +124,11 @@ async function scrapeOne(id: string): Promise<void> {
     return;
   }
 
-  const queryBase = entry.rawName || entry.title || "";
-  const { title: normalized, year, isTv } = normalizeTitle(queryBase);
-  const query = normalized || queryBase;
+  // 子目录条目叫 `Season 2` 这种的，拿上一级的作品目录去认（见 name.ts）
+  const naming = libraryNameOf(entry);
+  const { title: normalized, year, isTv: tvByName } = normalizeTitle(naming.query);
+  const isTv = tvByName || naming.tv;
+  const query = normalized || naming.query;
 
   if (!query) {
     updateScrape(id, { status: "failed", notesAppend: "TMDB 查询失败：无标题" });
@@ -164,7 +167,7 @@ async function scrapeOne(id: string): Promise<void> {
 
   updateScrape(id, {
     status: "done",
-    title: top.title,
+    title: withSuffix(top.title, naming.suffix),
     coverUrl: top.posterUrl,
     year: top.year,
     tmdbId: top.id,

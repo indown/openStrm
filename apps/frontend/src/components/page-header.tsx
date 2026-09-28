@@ -8,13 +8,15 @@ type PageHeaderProps = {
   icon?: LucideIcon;
   /** 右侧操作区：刷新、新建之类 */
   actions?: React.ReactNode;
+  /** 操作区外框的额外样式：放的是搜索框这种要占满一行的，手机上给 w-full */
+  actionsClassName?: string;
   className?: string;
   /** 标题下面的附加内容，比如统计小标签 */
   children?: React.ReactNode;
 };
 
 /** 每个页面顶部统一的标题区：图标 + 标题 + 一句说明，右侧放操作按钮 */
-export function PageHeader({ title, description, icon: Icon, actions, className, children }: PageHeaderProps) {
+export function PageHeader({ title, description, icon: Icon, actions, actionsClassName, className, children }: PageHeaderProps) {
   return (
     <div className={cn("flex flex-wrap items-start justify-between gap-4", className)}>
       <div className="min-w-0 space-y-1">
@@ -29,7 +31,7 @@ export function PageHeader({ title, description, icon: Icon, actions, className,
         )}
         {children}
       </div>
-      {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
+      {actions && <div className={cn("flex shrink-0 flex-wrap items-center gap-2", actionsClassName)}>{actions}</div>}
     </div>
   );
 }

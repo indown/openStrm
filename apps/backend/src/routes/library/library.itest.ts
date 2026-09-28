@@ -78,6 +78,20 @@ test("115 叫访问码、夸克链接外面包着中文标点、裸分享码带 
   assert.equal(bare.entry.shareUrl, "https://115.com/s/swlib004xyz?password=v421");
 });
 
+test("季目录子目录：标题和年份从上一级的作品目录来，rawName 还是网盘上的目录名", async () => {
+  const { mode, entry } = await add({
+    shareUrl: "https://115.com/s/swlib005xyz?password=w123",
+    cid: "3087",
+    rawName: "Season 2",
+    sharePath: "美剧/怒呛人生 (2023)/Season 2",
+  });
+  assert.equal(mode, "subdir");
+  assert.equal(entry.title, "怒呛人生 · Season 2");
+  assert.equal(entry.year, "2023");
+  assert.equal(entry.rawName, "Season 2");
+  assert.equal(entry.sharePath, "/美剧/怒呛人生 (2023)/Season 2");
+});
+
 test("认不出分享的还是 400", async () => {
   const res = await app.inject({ method: "POST", url: "/api/library", headers: auth, payload: { shareUrl: "随便一句话" } });
   assert.equal(res.statusCode, 400);

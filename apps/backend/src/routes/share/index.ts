@@ -20,6 +20,8 @@ const itemSchema = z.object({
   name: z.string().refine(isSafeItemName, "文件名不能为空，也不能是 . / .. 或含有 /"),
   isDir: z.boolean(),
   token: z.string().optional(),
+  /** 条目所在的目录：夸克按它在这次会话里换新的 token（影库里记下的、弹框开了很久的会过期） */
+  parentId: z.string().min(1).optional(),
 });
 
 /**
@@ -142,7 +144,7 @@ export default async function (fastify: FastifyInstance) {
           }
           if (toDirId == null) throw new HttpError(400, "taskId, toDirId or toPath is required");
           const session = await share.open(ref);
-          const received = await share.receive(session, items.map((i) => ({ id: i.id, token: i.token })), toDirId);
+          const received = await share.receive(session, items.map((i) => ({ id: i.id, token: i.token, parentId: i.parentId })), toDirId);
           return { ...base, received: items.length, topIds: received.topIds ?? [] };
         }
       }

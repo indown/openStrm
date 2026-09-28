@@ -10,6 +10,7 @@
  * - `copy.*`    「复制到 OpenList」的队列：哪些新文件等着 OpenList 复制走，复制到哪一步了。
  * - `emby.*`    Emby 侧的运行状态，目前只有入库通知的游标。
  * - `update.*`  检查更新的运行状态：上次查到的版本、时间、失败原因。
+ * - `library.*` 影库索引的运行状态：搜索文本按哪一版规则算的（规则变了启动时就地重算，不用重抄网盘）。
  * - 无前缀的标记键：任何前缀匹配都碰不到它，用来记「已初始化」这类一次性事实。
  */
 export const KEY = {
@@ -28,4 +29,6 @@ export const KEY = {
   embyNewCursor: "emby.newCursor",
   /** 上一次检查更新的结果；不放 app. 前缀——它是运行状态，不是用户设置 */
   updateState: "update.state",
+  /** 影库节点的 search_text 是按哪一版归一化规则算的（services/library/search-text.ts 的 SEARCH_TEXT_VERSION） */
+  librarySearchTextVersion: "library.searchTextVersion",
 } as const;

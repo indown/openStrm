@@ -150,6 +150,11 @@ export interface ShareInfo {
 export interface ReceiveItem {
   id: string;
   token?: string;
+  /**
+   * 条目所在的目录。夸克的 share_fid_token 跟着会话（stoken）走，stoken 缓存半小时：影库里记下的、弹框开了很久的
+   * token 已经不是这次会话的了。给了这个，夸克就在这次会话里把那一层重新列一遍换新的
+   */
+  parentId?: string;
 }
 
 export interface ReceiveResult {

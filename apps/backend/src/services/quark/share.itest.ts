@@ -199,6 +199,37 @@ test("stoken 失效（41008）：丢掉缓存重新换一个再试一次，新 s
   }
 });
 
+test("转存：给了所在目录的，在这次会话里把那一层重新列一遍换新 token（记下来的 token 跟着 stoken 过期）", async () => {
+  const { QuarkProvider } = await import("../drive/providers/quark.js");
+  const share = new QuarkProvider(account).share!;
+  clearQuarkShareCaches();
+  const session = await share.open(share.parseLink("https://pan.quark.cn/s/abc123def456")!);
+  const before = calls.detail;
+  await share.receive(
+    session,
+    [
+      { id: "f-2", token: "stale-f-2", parentId: "d-s1" },
+      { id: "d-s1", token: "stale-d-s1", parentId: "0" },
+      { id: "f-nfo", token: "kept-f-nfo" },
+    ],
+    "dst",
+  );
+  assert.deepEqual(saved?.fid_token_list, ["tok-f-2", "tok-d-s1", "tok-f-nfo"], "给了目录的换成这次列出来的；列到了的都用新的");
+  assert.ok(calls.detail > before, "重新列了那两层");
+  // 这一批一层都不用列：带来的照用，不多发请求
+  const quiet = calls.detail;
+  await share.receive(session, [{ id: "f-nfo", token: "kept-f-nfo" }], "dst");
+  assert.deepEqual(saved?.fid_token_list, ["kept-f-nfo"]);
+  assert.equal(calls.detail, quiet);
+  // 没带 token、也没给目录的老数据：按分享根补
+  await share.receive(session, [{ id: "d-s1" }], "dst");
+  assert.deepEqual(saved?.fid_token_list, ["tok-d-s1"]);
+  // 给了目录、那一层里却没有它（上传者删了）：退回带来的 token，交给夸克去判
+  await share.receive(session, [{ id: "f-gone", token: "stale-gone", parentId: "d-s1" }], "dst");
+  assert.deepEqual(saved?.fid_token_list, ["stale-gone"]);
+  clearQuarkShareCaches();
+});
+
 test("查转存进度抖动：前两次 500 不算失败，接着轮询到完成", async () => {
   flakyTaskPolls = 2;
   const before = calls.task;

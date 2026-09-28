@@ -25,6 +25,7 @@ import { callTool, type ToolOutcome } from "../calls.js";
 import { fmtTime } from "../format.js";
 import { overviewTool } from "./core.js";
 import { resourceSearchTool } from "./resource.js";
+import { seedLibrarySource, unseedLibrarySource } from "../../../test/library-seed.js";
 
 const fake = new FakePansou();
 let baseline: { settings: AppSettings; accounts: AccountInfo[] };
@@ -80,11 +81,47 @@ function failure(outcome: ToolOutcome) {
 
 const quark = (id: string, note: string, datetime = ""): FakeLink => ({ url: `https://pan.quark.cn/s/${id}`, password: "", note, datetime, source: "tg:chan" });
 
-test("没配置：PANSOU_NOT_CONFIGURED，提示只能用户去设置页", async () => {
+const LIB = { id: "lib-res", shareCode: "swlibpack", shareUrl: "https://115.com/s/swlibpack?password=ab12", shareTitle: "老K" };
+
+test("没配 PanSou：不算错，只搜影库；影库里也没有就说清楚网上要先配", async () => {
   writeAppSetting("pansou", { baseUrl: "" });
-  const f = failure(await run({ keyword: "沙丘2" }));
-  assert.equal(f.code, "PANSOU_NOT_CONFIGURED");
-  assert.match(f.hint ?? "", /设置页.*资源搜索/);
+  const none = data(await run({ keyword: "沙丘2" }));
+  assert.equal(none.pansou, "not-configured");
+  assert.equal(none.library, undefined);
+  assert.match(none.message, /影库里没找到.*设置页.*资源搜索/);
+
+  seedLibrarySource({ ...LIB, files: { "老K/1. 电影/沙丘2 4K原盘REMUX 杜比视界/Dune.Part.Two.2024.2160p.mkv": 60 } });
+  try {
+    const d = data(await run({ keyword: "沙丘2" }));
+    assert.equal(d.pansou, "not-configured");
+    assert.equal(d.library.length, 1);
+    assert.equal(d.library[0].title, "沙丘2 4K原盘REMUX 杜比视界");
+    assert.equal(d.library[0].link, LIB.shareUrl);
+    assert.equal(d.library[0].itemId, "d:老K/1. 电影/沙丘2 4K原盘REMUX 杜比视界");
+    assert.equal(d.library[0].dirId, "d:老K/1. 电影");
+    assert.deepEqual(d.library[0].files, ["Dune.Part.Two.2024.2160p.mkv"]);
+    assert.match(d.message, /只搜了影库/);
+    assert.match(d.next, /share_inspect/);
+  } finally {
+    unseedLibrarySource(LIB.id, LIB.shareCode);
+  }
+});
+
+test("配了 PanSou：影库的放在 library，include / exclude 同一口径；只要磁力时不搜影库", async () => {
+  seedLibrarySource({ ...LIB, files: { "老K/1. 电影/沙丘2 4K原盘REMUX 杜比视界/Dune.Part.Two.2024.2160p.mkv": 60 } });
+  try {
+    fake.onSearch = () => ({ quark: [{ url: "https://pan.quark.cn/s/qdune2", password: "", note: "沙丘2 1080P", datetime: "", source: "tg:chan" }] });
+    const d = data(await run({ keyword: "沙丘2" }));
+    assert.equal(d.library?.[0]?.title, "沙丘2 4K原盘REMUX 杜比视界");
+    assert.equal(Object.keys(d)[1], "library", "影库排在网上的结果前面");
+    assert.equal(d.groups.length, 1);
+    assert.match(d.next, /影库里的条目优先/);
+    assert.equal(data(await run({ keyword: "沙丘2", exclude: ["4K"] })).library, undefined);
+    assert.equal(data(await run({ keyword: "沙丘2", include: ["杜比视界"] })).library?.length, 1);
+    assert.equal(data(await run({ keyword: "沙丘2", kinds: ["magnet"] })).library, undefined);
+  } finally {
+    unseedLibrarySource(LIB.id, LIB.shareCode);
+  }
 });
 
 test("按类型分组：分享带好提取码、磁力去掉 tracker；别家网盘只给个数；每条带日期和来源", async () => {

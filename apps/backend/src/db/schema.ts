@@ -70,6 +70,24 @@ export const mediaLibrary = sqliteTable(
     scrapeStatus: text("scrape_status").notNull().default("done"),
     createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
     updatedAt: integer("updated_at").notNull().default(sql`(unixepoch())`),
+    /** 分享自己的标题（「老K」）：来源列表、搜索结果里说「来自哪个分享」 */
+    shareTitle: text("share_title").notNull().default(""),
+    /** 抄目录树建索引：pending 排队 / indexing 在抄 / done 抄完 / failed 停了（原因在 index_error） */
+    indexStatus: text("index_status").notNull().default("pending"),
+    indexError: text("index_error").notNull().default(""),
+    /** 第几轮抄：刷新时加一，抄完删掉轮次更小的节点 */
+    indexGen: integer("index_gen").notNull().default(0),
+    indexedAt: integer("indexed_at"),
+    indexStartedAt: integer("index_started_at"),
+    /** 暂停到什么时候再续（网络、风控、疑似失效） */
+    indexRetryAt: integer("index_retry_at"),
+    dirsTotal: integer("dirs_total").notNull().default(0),
+    dirsListed: integer("dirs_listed").notNull().default(0),
+    nodeCount: integer("node_count").notNull().default(0),
+    videoCount: integer("video_count").notNull().default(0),
+    totalSize: integer("total_size").notNull().default(0),
+    /** 超过单个来源的上限没抄完 */
+    truncated: integer("truncated", { mode: "boolean" }).notNull().default(false),
   },
   (t) => ({
     shareCodeIdx: index("media_library_share_code_idx").on(t.shareCode),
@@ -78,6 +96,62 @@ export const mediaLibrary = sqliteTable(
     scrapeStatusIdx: index("media_library_scrape_status_idx").on(t.scrapeStatus),
   }),
 );
+
+/**
+ * 影库索引：来源（media_library 一行）下抄来的目录树，一行一个目录或文件。
+ * 目录的 search_text 是归一化后的「路径各段 | 名字 | 直接文件名」，搜索按它 LIKE（见 services/library/search-text.ts）
+ */
+export const libraryNodes = sqliteTable(
+  "library_nodes",
+  {
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => mediaLibrary.id, { onDelete: "cascade" }),
+    /** 分享里的 id；整个分享的来源，根是 "0" */
+    nodeId: text("node_id").notNull(),
+    parentId: text("parent_id").notNull().default(""),
+    name: text("name").notNull(),
+    /** 分享内完整路径，不带前导 / */
+    path: text("path").notNull(),
+    isDir: integer("is_dir", { mode: "boolean" }).notNull(),
+    /** 相对来源根：来源根自己是 0 */
+    depth: integer("depth").notNull(),
+    /** 文件是字节；目录抄完回填子树合计，没抄完是 null */
+    size: integer("size"),
+    /** 夸克转存要的 share_fid_token */
+    token: text("token"),
+    /** 哪一轮抄到的 */
+    gen: integer("gen").notNull(),
+    /** 目录：哪一轮列过下一层；小于来源的当前轮就是还要列 */
+    listedGen: integer("listed_gen").notNull().default(0),
+    /** 目录：直接放着的视频文件数 */
+    videoCount: integer("video_count").notNull().default(0),
+    /** 目录：子树里的视频文件数（抄完回填，没抄完是 0）；剧目录的视频在季目录里，结果里要报这个 */
+    videoTotal: integer("video_total").notNull().default(0),
+    /** 分享还在，这个目录却打不开了（上传者删了 / 挪了）：搜索不给，重抄上一级时清掉 */
+    missing: integer("missing", { mode: "boolean" }).notNull().default(false),
+    searchText: text("search_text").notNull().default(""),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.sourceId, t.nodeId] }),
+    parentIdx: index("library_nodes_parent_idx").on(t.sourceId, t.parentId),
+    crawlIdx: index("library_nodes_crawl_idx").on(t.sourceId, t.isDir, t.listedGen),
+  }),
+);
+
+/** 影库里的分享死活，按分享码：同一个分享收了几次（整包、子目录）一起算 */
+export const libraryShares = sqliteTable("library_shares", {
+  shareCode: text("share_code").primaryKey(),
+  kind: text("kind").notNull(),
+  /** unknown 没查过 / ok / suspect 疑似失效（等复查）/ expired 已失效 / locked 提取码不对 */
+  status: text("status").notNull().default("unknown"),
+  reason: text("reason").notNull().default(""),
+  failStreak: integer("fail_streak").notNull().default(0),
+  checkedAt: integer("checked_at"),
+  lastOkAt: integer("last_ok_at"),
+  expiredAt: integer("expired_at"),
+  nextCheckAt: integer("next_check_at"),
+});
 
 /**
  * 115 文件/目录 id → 绝对网盘路径 的缓存。

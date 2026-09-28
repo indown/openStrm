@@ -72,6 +72,8 @@ import libraryHdhiveRoute from "./routes/library/hdhive.js";
 import libraryBulkRoute from "./routes/library/bulk.js";
 import librarySaveToTaskRoute from "./routes/library/save-to-task.js";
 import { start as startScrapeWorker } from "./services/library/scrape-worker.js";
+import { startLibraryHealth } from "./services/library/health.js";
+import { startIndexer } from "./services/library/indexer.js";
 
 // Directory routes
 import directoryLocalRoute from "./routes/directory/local.js";
@@ -228,6 +230,13 @@ try {
   await app.listen({ port: API_PORT, host: HOST });
   app.log.info(`API server running on http://${HOST}:${API_PORT}`);
   try { startScrapeWorker(); } catch (err) { app.log.error({ err }, "scrape-worker start failed"); }
+  // 影库：先装分享旁听（记分享死活），再接着抄没抄完的目录树
+  try {
+    startLibraryHealth();
+    startIndexer();
+  } catch (err) {
+    app.log.error({ err }, "影库索引没能启动");
+  }
 
   // 网盘监控：配置里开着就跟随服务一起起来
   const settings = readAppSettings();

@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import type { AppSettings, OAuthPendingRequest, ResourceHit, ResourceKind, TaskDefinition, TaskExecutionSummary } from "@openstrm/shared";
+import type { AppSettings, LibraryHit, LibrarySearchResult, OAuthPendingRequest, ResourceHit, ResourceKind, TaskDefinition, TaskExecutionSummary } from "@openstrm/shared";
 import type { SettledResult } from "../pansou/search.js";
 import type { BotLike, InlineKeyboard, TelegramUpdate } from "./bot.js";
 import { __test_waitSearches, handleUpdate, setCommandDeps, type CommandDeps } from "./commands.js";
@@ -56,6 +56,39 @@ let olDirTree: Record<string, string[]> = {};
 /** 资源搜索的桩：配没配、搜出来什么、要不要出错 */
 let searchConfigured = false;
 let searchResult: SettledResult = { keyword: "", complete: true, counts: {}, items: [] };
+const NO_LIBRARY: LibrarySearchResult = { hits: [], total: 0, expired: 0, indexing: 0 };
+let libraryResult: LibrarySearchResult = NO_LIBRARY;
+let libraryHas = false;
+
+/** 影库里的一条（只填 Telegram 用得到的） */
+const libHit = (name: string, over: Partial<LibraryHit> = {}): LibraryHit => ({
+  sourceId: "s1",
+  nodeId: "n1",
+  parentId: "p1",
+  name,
+  path: `老K/1. 电影/${name}`,
+  crumbs: [
+    { id: "k", name: "老K" },
+    { id: "m", name: "1. 电影" },
+    { id: "n1", name },
+  ],
+  shareKind: "115",
+  shareCode: "pack",
+  shareUrl: "https://115.com/s/pack?password=ab12",
+  shareTitle: "老K",
+  size: 51 * 1024 ** 3,
+  videoCount: 1,
+  files: [],
+  subdirs: [],
+  subdirCount: 0,
+  tags: [],
+  matched: "name",
+  childHits: 0,
+  keyword: name,
+  health: { status: "ok", reason: "", checkedAt: null, expiredAt: null },
+  indexedAt: null,
+  ...over,
+});
 let searchError: Error | null = null;
 /** 设了就让搜索卡在这里，放行了才出结果 */
 let searchGate: Promise<void> | null = null;
@@ -136,6 +169,8 @@ const deps: Partial<CommandDeps> = {
     return olDirTree[path] ?? [];
   },
   resourceSearchConfigured: () => searchConfigured,
+  searchLibrary: () => libraryResult,
+  libraryHasSources: () => libraryHas,
   searchResources: async (keyword) => {
     calls.push({ fn: "searchResources", args: keyword });
     if (searchGate) await searchGate;
@@ -176,6 +211,8 @@ beforeEach(() => {
   olDirTree = {};
   searchConfigured = false;
   searchResult = { keyword: "", complete: true, counts: {}, items: [] };
+  libraryResult = NO_LIBRARY;
+  libraryHas = false;
   searchError = null;
   searchGate = null;
   editFailure = null;
@@ -443,6 +480,39 @@ test("/s：没带关键词给用法；没配资源搜索说去设置，不发请
   await handleUpdate(bot, msg("/s 沙丘2"));
   assert.match(sent[1].text, /还没配置资源搜索/);
   assert.equal(calls.length, 0);
+});
+
+test("/s：没配资源搜索、影库里有：只列影库的，说网上要先配；疑似失效的标出来", async () => {
+  libraryResult = { hits: [libHit("阿甘正传 4K原盘REMUX"), libHit("阿甘正传 1080P", { nodeId: "n2", health: { status: "suspect", reason: "", checkedAt: null, expiredAt: null } })], total: 5, expired: 0, indexing: 0 };
+  await handleUpdate(bot, msg("/s 阿甘正传"));
+  const text = sent[0].text;
+  assert.match(text, /📚 <b>影库里有 5 条<\/b>（列前 2 条）/);
+  assert.match(text, /• 阿甘正传 4K原盘REMUX · 51\.0G\n {2}<i>老K \/ 1\. 电影<\/i>/, "分享标题和第一层同名不重复");
+  assert.match(text, /阿甘正传 1080P · 51\.0G · <i>可能已失效<\/i>/);
+  assert.match(text, /只搜了影库/);
+  assert.equal(calls.length, 0, "没配 PanSou 不去问它");
+});
+
+test("/s：配了资源搜索，影库一段在列表最上面，翻页也还在；网上一条都列不出来时先给影库的", async () => {
+  searchConfigured = true;
+  libraryResult = { hits: [libHit("沙丘2 4K原盘REMUX")], total: 1, expired: 0, indexing: 0 };
+  searchResult = { keyword: "沙丘2", complete: true, counts: {}, items: Array.from({ length: 12 }, (_, i) => hit("115", i)) };
+  await searchVia(msg("/s 沙丘2"));
+  const list = edited[0];
+  assert.match(list.text, /^📚 <b>影库里有 1 条<\/b>[\s\S]*沙丘2 4K原盘REMUX[\s\S]*\n\n🔍 <b>沙丘2<\/b>/);
+  await handleUpdate(bot, cb(list.buttons!.flat().find((b) => b.text === "➡️ 下一页")!.callback_data));
+  assert.match(edited.at(-1)!.text, /^📚 <b>影库里有 1 条/);
+
+  searchResult = { keyword: "沙丘2", complete: true, counts: {}, items: [] };
+  await searchVia(msg("/s 沙丘2"));
+  assert.match(edited.at(-1)!.text, /^📚 <b>影库里有 1 条[\s\S]*网上：没搜到「沙丘2」/);
+});
+
+test("私聊直接发片名：没配资源搜索、但影库里有收藏也照样搜", async () => {
+  libraryHas = true;
+  libraryResult = { hits: [libHit("繁花")], total: 1, expired: 0, indexing: 0 };
+  await handleUpdate(bot, msg("繁花", { type: "private" }));
+  assert.match(sent[0].text, /影库里有 1 条/);
 });
 
 /** 发一条消息 / 点一个按钮，再等后台的搜索跑完 */

@@ -47,7 +47,7 @@ export function CardListSkeleton({ count = 3 }: { count?: number }) {
 /** 海报墙骨架（影库）：一格一张竖版海报 + 两行字 */
 export function PosterGridSkeleton({ count = 10 }: { count?: number }) {
   return (
-    <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+    <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
       {Array.from({ length: count }).map((_, i) => (
         <div key={i} className="overflow-hidden rounded-xl border bg-card">
           <Skeleton className="aspect-[2/3] w-full rounded-none" />

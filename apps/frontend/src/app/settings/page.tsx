@@ -35,6 +35,7 @@ const SECTIONS: Section[] = [
   { id: "emby", title: "Emby" },
   { id: "tmdb", title: "TMDB" },
   { id: "pansou", title: "资源搜索" },
+  { id: "library", title: "影库" },
   ...(FEATURES.hdhiveSearch ? [{ id: "hdhive", title: "HDHive" }] : []),
   { id: "openlist-copy", title: "复制到 OpenList" },
   { id: "organize", title: "整理与命名" },
@@ -183,6 +184,7 @@ const schema = z.object({
     apiKey: z.string(),
     baseUrl: FEATURES.hdhiveSearch ? httpUrl("填 http:// 或 https:// 开头的地址") : z.string(),
   }),
+  library: z.object({ patrol: z.boolean() }),
   openlistCopy: z.custom<OpenlistCopySettings>(),
   organize: z.custom<OrganizeSettings>(),
   update: z.custom<UpdateSettings>(),
@@ -224,6 +226,7 @@ function fromSettings(s: AppSettings): SettingsValues {
       blockWords: s.pansou?.blockWords ?? [],
     },
     hdhive: { apiKey: s.hdhive?.apiKey ?? "", baseUrl: s.hdhive?.baseUrl ?? "" },
+    library: { patrol: s.library?.patrol !== false },
     openlistCopy: s.openlistCopy ?? {},
     organize: s.organize ?? {},
     update: s.update ?? {},
@@ -254,6 +257,7 @@ function toSettings(v: SettingsValues): AppSettings {
     tmdb: v.tmdb,
     pansou: v.pansou,
     hdhive: v.hdhive,
+    library: v.library,
     openlistCopy: v.openlistCopy,
     organize: v.organize,
     update: v.update,
@@ -655,7 +659,7 @@ export default function SettingsPage() {
             <section id="tmdb" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
               <h2 className="text-base font-medium">TMDB</h2>
               <p className="text-sm text-muted-foreground">
-                「整理」按它识别影视，不配就整理不了；「strm 管理」页的海报墙在目录里没有现成图片时，也从这里补海报。
+                「整理」按它识别影视，不配就整理不了；影库里收的单部作品靠它补海报；「strm 管理」页的海报墙在目录里没有现成图片时，也从这里补海报。
               </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <FormField
@@ -819,6 +823,26 @@ export default function SettingsPage() {
               <p className="text-xs text-muted-foreground">
                 还没有的话：README「资源搜索」一节有 docker compose 片段，带网页的 PanSou 镜像自带一批 TG 频道和插件，起来就能搜（纯接口的镜像要自己配，裸起几乎搜不到东西）；国内要搜 TG 频道得给它配代理（PROXY），只开插件也能用。网上的公共实例有限流、说关就关，不建议长期用。
               </p>
+            </section>
+
+            <section id="library" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
+              <h2 className="text-base font-medium">影库</h2>
+              <p className="text-sm text-muted-foreground">
+                收藏进影库的分享会把目录树抄下来建索引，首页搜索、⌘K 和智能体都能搜到里面的每一部。抄目录时让着同步和播放，大的分享要几分钟到几十分钟。
+              </p>
+              <FormField
+                control={form.control}
+                name="library.patrol"
+                render={({ field }) => (
+                  <SwitchRow
+                    label="每天检查收藏的分享还在不在"
+                    description="每个分享只问一次网盘；确认失效的在搜索里收起来，影库页可以找替代、更新链接或清理"
+                    hint="只有分享明确说取消、过期才直接判失效；说法含糊的隔几小时再查，连着三次打不开才算。关掉以后，只在你打开、转存时顺带发现。"
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                )}
+              />
             </section>
 
             {FEATURES.hdhiveSearch && (

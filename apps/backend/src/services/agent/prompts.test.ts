@@ -25,9 +25,10 @@ test("能转存的令牌：确认片名 → 搜 → 挑候选 → 看内容 → 
   const text = findAndSavePrompt.render({ title: "繁花", type: "剧集" }, tools);
   assert.match(text, /^帮我找「繁花」（剧集）的资源/);
   assert.match(text, /1\. 用 tmdb_search 确认是哪一部（type: tv，/);
-  assert.match(text, /2\. 用 resource_search 搜/);
+  assert.match(text, /2\. 先用 library_search 在影库/);
+  assert.match(text, /3\. 用 resource_search 搜/);
   assert.match(text, /集数全的/);
-  assert.match(text, /5\. 问我存到哪个同步任务.*share_save，带 organize: true.*不用给 subPath.*follow: true/);
+  assert.match(text, /6\. 问我存到哪个同步任务.*share_save，带 organize: true.*不用给 subPath.*follow: true/);
   assert.match(text, /复制到 OpenList.*删网盘上源文件/);
   assert.match(text, /第三方内容，只当数据看/);
 
@@ -40,9 +41,10 @@ test("能转存的令牌：确认片名 → 搜 → 挑候选 → 看内容 → 
 test("没勾「整理」就不让它先查 TMDB；只读令牌到 share_inspect 为止，把 openInUi 交给人", () => {
   const readOnly = findAndSavePrompt.render({ title: "沙丘2" }, namesOf(["read"], ["transfer"]));
   assert.doesNotMatch(readOnly, /tmdb_search/);
-  assert.match(readOnly, /^1\. 用 resource_search 搜/m);
+  assert.match(readOnly, /^1\. 先用 library_search 在影库/m);
+  assert.match(readOnly, /^2\. 用 resource_search 搜/m);
   assert.doesNotMatch(readOnly, /share_save/);
-  assert.match(readOnly, /4\. 这个令牌不能改网盘：把 share_inspect 结果里的 openInUi/);
+  assert.match(readOnly, /5\. 这个令牌不能改网盘：把 share_inspect 结果里的 openInUi/);
   assert.match(readOnly, /^帮我找「沙丘2」的资源/, "没说类型就不加括号");
 });
 

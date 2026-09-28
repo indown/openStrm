@@ -58,6 +58,8 @@ export type NotifyEvent =
   | { type: "follow-expired"; id: string; name: string; reason: string }
   /** 太久没更新，订阅已自动暂停 */
   | { type: "follow-stale"; id: string; name: string; days: number }
+  /** 影库巡检确认有分享失效了（正在用时发现的由界面当场说，不推） */
+  | { type: "library-expired"; shareCode: string; shareTitle: string; sources: number }
   /** OpenStrm 有新版本（默认关，同一个版本只推一次） */
   | { type: "update-available"; version: string; current: string; url: string }
   /** Emby 把新条目收进媒体库了；groups 为空表示这批太多、只报总数 */
@@ -94,6 +96,7 @@ export const DEFAULT_NOTIFY: Required<TelegramNotifySettings> = {
   embyNew: true,
   organize: true,
   update: false,
+  library: true,
 };
 
 export function notifyPrefs(settings: AppSettings): Required<TelegramNotifySettings> {
@@ -231,6 +234,8 @@ function render(event: NotifyEvent): string {
       return `❌ <b>追更检查失败</b>\n${esc(event.name)}\n${esc(event.detail)}`;
     case "follow-expired":
       return `⚠️ <b>追更已停止</b>\n${esc(event.name)}\n分享已经打不开了：${esc(event.reason)}\n需要的话到「追更」页换个链接再继续。`;
+    case "library-expired":
+      return `⚠️ <b>影库里的分享失效了</b>\n${esc(event.shareTitle)}${event.sources > 1 ? `（收了 ${event.sources} 处）` : ""}\n里面的资源已经转存不了；到「影库」页可以找替代、更新链接或清理。`;
     case "follow-stale":
       return `💤 <b>追更已暂停</b>\n${esc(event.name)}\n${event.days} 天没有更新，先停下不再检查；要继续到「追更」页点「继续」。`;
     case "update-available":
@@ -424,6 +429,10 @@ export async function notify(event: NotifyEvent): Promise<boolean> {
       case "follow-failed":
         if (!prefs.follow) return false;
         if (throttled(`follow-failed:${event.id}`)) return false;
+        text = render(event);
+        break;
+      case "library-expired":
+        if (!prefs.library) return false;
         text = render(event);
         break;
       case "emby-new":

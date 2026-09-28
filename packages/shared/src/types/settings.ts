@@ -39,6 +39,8 @@ export type TelegramNotifySettings = {
   organize?: boolean;
   /** 有新版本；默认关（唯一一类和自己的媒体库无关的通知），同一个版本只推一次 */
   update?: boolean;
+  /** 影库：每天巡检确认有分享失效了 */
+  library?: boolean;
 };
 
 export type TelegramSettings = {
@@ -106,7 +108,15 @@ export type AppSettings = {
   agent?: AgentSettings;
   /** 资源搜索：对接用户自己部署的 PanSou */
   pansou?: PansouSettings;
+  /** 影库：收藏的分享抄目录树建索引 */
+  library?: LibrarySettings;
 } & Record<string, unknown>;
+
+/** 影库 */
+export type LibrarySettings = {
+  /** 每天检查一遍收藏的分享还在不在（每个分享一次请求）；缺省是开 */
+  patrol?: boolean;
+};
 
 /** 资源搜索：对接用户自己部署的 PanSou（网盘分享和磁力的搜索服务）。baseUrl 空着 = 功能关 */
 export type PansouSettings = {

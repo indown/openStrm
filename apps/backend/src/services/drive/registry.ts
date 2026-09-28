@@ -8,7 +8,7 @@ import { HttpError } from "../../lib/http-error.js";
 import { Cloud115Provider, parse115ShareLink } from "./providers/cloud115.js";
 import { OpenlistProvider } from "./providers/openlist.js";
 import { parseQuarkShareLink, QuarkProvider } from "./providers/quark.js";
-import type { DriveCapabilities, DriveKind, DriveProvider, ShareRef } from "./types.js";
+import type { DriveCapabilities, DriveKind, DriveProvider, ShareProvider, ShareRef } from "./types.js";
 
 export const KIND_LABEL: Record<DriveKind, string> = { "115": "115 网盘", quark: "夸克网盘", openlist: "OpenList" };
 const CAP_LABEL: Record<keyof DriveCapabilities, string> = { share: "分享转存", changes: "网盘监控", write: "整理（改名 / 移动）" };
@@ -21,15 +21,70 @@ export function setDriveProviderFactory(fn: ProviderFactory | null): void {
   override = fn;
 }
 
+/**
+ * 分享访问的旁听者：影库据此记分享死活（services/library/health.ts）。只听不改，结果和异常原样返回。
+ * at：root = 打开分享 / 看分享信息 / 列根目录（分享本身在不在），dir = 列某个子目录（那个目录在不在）
+ */
+export interface ShareObserver {
+  ok(ref: ShareRef, at: "root" | "dir", dirId: string): void;
+  fail(ref: ShareRef, err: unknown, at: "root" | "dir", dirId: string): void;
+}
+
+let shareObserver: ShareObserver | null = null;
+
+export function setShareObserver(observer: ShareObserver | null): void {
+  shareObserver = observer;
+}
+
+function observeShare(share: ShareProvider, obs: ShareObserver): ShareProvider {
+  /** okCounts = false：成功不算数（115 的 open 是空操作、不问网盘，成了也不说明分享还在） */
+  const watch = async <T>(ref: ShareRef, dirId: string, fn: () => Promise<T>, okCounts = true): Promise<T> => {
+    const at = dirId === "" || dirId === "0" ? "root" : "dir";
+    try {
+      const out = await fn();
+      if (okCounts) obs.ok(ref, at, dirId);
+      return out;
+    } catch (err) {
+      obs.fail(ref, err, at, dirId);
+      throw err;
+    }
+  };
+  return {
+    parseLink: (text) => share.parseLink(text),
+    open: (ref, signal) => watch(ref, "", () => share.open(ref, signal), false),
+    info: (s, signal) => watch(s.ref, "", () => share.info(s, signal)),
+    list: (s, dirId, cursor, opts) => watch(s.ref, dirId || "0", () => share.list(s, dirId, cursor, opts)),
+    resolvePath: (s, path, signal) => share.resolvePath(s, path, signal),
+    receive: (s, items, toDirId, signal) => share.receive(s, items, toDirId, signal),
+    ...(share.downloadUrl ? { downloadUrl: (s: Parameters<NonNullable<ShareProvider["downloadUrl"]>>[0], fileId: string) => share.downloadUrl!(s, fileId) } : {}),
+    ...(share.updates ? { updates: share.updates } : {}),
+  };
+}
+
+/**
+ * 有旁听者时只把 share 换成旁听过的那个：Proxy 其余属性的读写都原样转给原对象（Provider 里没有 # 私有字段）
+ */
+function withObserver(provider: DriveProvider): DriveProvider {
+  const obs = shareObserver;
+  if (!obs || !provider.share) return provider;
+  const share = observeShare(provider.share, obs);
+  return new Proxy(provider, {
+    get(target, prop, receiver) {
+      if (prop === "share") return share;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+}
+
 /** Provider 只是薄包装，不缓存：账号对象每次现取，cookie 在账户页改过就直接用新的 */
 export function providerFor(account: AccountInfo): DriveProvider {
   const custom = override?.(account);
-  if (custom) return custom;
+  if (custom) return withObserver(custom);
   switch (account.accountType) {
     case "115":
-      return new Cloud115Provider(account);
+      return withObserver(new Cloud115Provider(account));
     case "quark":
-      return new QuarkProvider(account);
+      return withObserver(new QuarkProvider(account));
     case "openlist":
       return new OpenlistProvider(account);
   }

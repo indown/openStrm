@@ -216,10 +216,13 @@ export const settingsPatchSchema = z.looseObject({
           embyNew: z.boolean().optional(),
           organize: z.boolean().optional(),
           update: z.boolean().optional(),
+          library: z.boolean().optional(),
         })
         .optional(),
     })
     .optional(),
+  /** 影库：每天巡检收藏的分享还在不在 */
+  library: z.looseObject({ patrol: z.boolean().optional() }).optional(),
   tmdb: z.looseObject({ apiKey: z.string().optional(), language: z.string().optional() }).optional(),
   hdhive: z.looseObject({ apiKey: z.string().optional(), baseUrl: z.string().optional() }).optional(),
   pansou: z

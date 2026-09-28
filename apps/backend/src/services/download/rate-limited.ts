@@ -58,6 +58,17 @@ function getSharedLimiter(account: string): Bottleneck {
 }
 
 /**
+ * 这个账号的每秒配额上有没有别人在排队 / 在跑：后台慢活（影库抄目录）发请求前看一眼，忙就先让，
+ * 同步、302 取直链这些人在等的请求不用排在它后面
+ */
+export function accountBusy(account: string): boolean {
+  const shared = sharedLimiters.get(account.split(":")[0]);
+  if (!shared) return false;
+  const c = shared.counts();
+  return c.QUEUED + c.RUNNING + c.EXECUTING > 0;
+}
+
+/**
  * 账号 + 通道一把并发限流器，链在账号级的每秒配额上。
  * 并发数只在第一次建的时候生效，改了设置要 clearRateLimiters 才按新值重建。
  */

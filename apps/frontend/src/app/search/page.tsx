@@ -26,6 +26,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { InputGroup, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ShareDetailDialog } from "@/components/ShareDetailDialog";
+import { LibraryHits, type LibraryHitsSummary } from "@/components/LibraryHits";
 import { AddOfflineTaskDialog } from "@/app/offline/components/AddOfflineTaskDialog";
 import { useShareDetail } from "@/hooks/use-share-detail";
 import { TOTAL_ROUNDS, useResourceSearch } from "@/hooks/use-resource-search";
@@ -54,14 +55,13 @@ const SUBMIT_LABEL = { share: "查看", offline: "云下载", unsupported: "查�
 /** 关键词最长多少字：后端 /api/resource/search 同一个数 */
 const KEYWORD_MAX = 100;
 
-const NOT_CONFIGURED_TOAST = "还没配置资源搜索：到设置页「资源搜索」填 PanSou 的地址";
 
 /** 一个 tab 先显示多少条，「显示更多」一次加多少 */
 const PAGE_SIZE = 30;
 /** 列表顶端离视口顶部不到这么多（顶栏 56 再留点余量）就算人已经滚进列表了 */
 const LIST_HOLD_TOP = 72;
 
-const DESCRIPTION = "通过 PanSou 按片名搜网盘分享和磁力：115 / 夸克的分享一键转存，磁力交给 115 云下载";
+const DESCRIPTION = "先搜影库（自己收藏的分享），再通过 PanSou 在网上搜网盘分享和磁力：115 / 夸克的分享一键转存，磁力交给 115 云下载";
 
 export default function SearchPage() {
   return (
@@ -119,6 +119,8 @@ function SearchView() {
   const [picked, setPicked] = useState<ReadonlyMap<string, string>>(new Map());
   /** 正在打开转存框的那一条 */
   const [openingKey, setOpeningKey] = useState<string | null>(null);
+  /** 影库那一块搜到多少：没配 PanSou 时据此决定下面说什么 */
+  const [libSummary, setLibSummary] = useState<LibraryHitsSummary | null>(null);
 
   const share = useShareDetail();
   const linkCheck = useLinkCheck(config?.checkLinks === true);
@@ -212,13 +214,14 @@ function SearchView() {
       else setOffline({ open: true, account: offlineAccounts[0], urls: t });
       return;
     }
-    // 没配置时这个框只收链接；片名太长的当场说，别带着它去搜（后端只收 100 个字）
-    if (!config?.configured) {
-      toast.error(NOT_CONFIGURED_TOAST);
-      return;
-    }
+    // 片名太长的当场说，别带着它去搜（后端只收 100 个字）
     if (t.length > KEYWORD_MAX) {
       toast.error(`关键词最多 ${KEYWORD_MAX} 个字`);
+      return;
+    }
+    // 没配 PanSou：只搜影库（地址换了，影库那一块自己会搜）
+    if (!config?.configured) {
+      if (t !== q) router.push(`/search?${new URLSearchParams({ q: t })}`);
       return;
     }
     if (t === q) {
@@ -387,7 +390,7 @@ function SearchView() {
               e.preventDefault();
               submit();
             }}
-            placeholder={notConfigured ? "粘贴 115 / 夸克分享或磁力链接" : "片名、剧名，或者直接粘贴分享 / 磁力链接"}
+            placeholder={notConfigured ? "片名（搜影库），或者粘贴 115 / 夸克分享、磁力链接" : "片名、剧名，或者直接粘贴分享 / 磁力链接"}
             aria-label="搜索资源"
           />
           {input && (
@@ -427,11 +430,11 @@ function SearchView() {
         )}
       </div>
 
-      {notConfigured && (
+      {notConfigured && !(q && !qProblem) && (
         <EmptyState
           icon={Telescope}
           title="还没配置资源搜索"
-          description="接上自己部署的 PanSou，就能按片名搜网盘分享和磁力：115 / 夸克的分享直接转存，磁力交给 115 云下载。没配置也能在上面的框里粘分享链接和磁力。"
+          description="上面的框现在能搜影库（自己收藏的分享）、粘分享链接和磁力。接上自己部署的 PanSou，还能按片名在网上搜网盘分享和磁力：115 / 夸克的分享直接转存，磁力交给 115 云下载。"
           action={
             <Button asChild>
               <Link href="/settings#pansou">
@@ -443,7 +446,36 @@ function SearchView() {
         />
       )}
 
-      {!notConfigured && config.tmdb && q && !qProblem && <TmdbStrip keyword={q} selected={tmdbParam} year={year} onSelect={pickTmdb} />}
+      {config.tmdb && q && !qProblem && <TmdbStrip keyword={q} selected={tmdbParam} year={year} onSelect={pickTmdb} />}
+
+      {/* 影库（本地，瞬间）排在网上的结果前面：自己收藏的优先 */}
+      {q && !qProblem && <LibraryHits query={q} variant="embedded" pageSize={5} onSummary={setLibSummary} />}
+
+      {notConfigured && q && !qProblem && (
+        // 失效分享里有的，影库那块自己会说，这里只留一行去设置
+        libSummary && !libSummary.loading && libSummary.total === 0 && libSummary.expired === 0 && !libSummary.error ? (
+          <EmptyState
+            icon={SearchX}
+            title={`影库里没有「${q}」`}
+            description="换个写法（英文名、简称）再搜。要在网上搜，先到设置页「资源搜索」接上自己部署的 PanSou。"
+            action={
+              <Button variant="outline" asChild>
+                <Link href="/settings#pansou">
+                  <SettingsIcon />
+                  去设置
+                </Link>
+              </Button>
+            }
+          />
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            网上搜要先到设置页「资源搜索」接上 PanSou，这次只搜了影库。
+            <Link href="/settings#pansou" className="ml-1 underline underline-offset-2 hover:text-foreground">
+              去设置
+            </Link>
+          </p>
+        )
+      )}
 
       {!notConfigured && qProblem === "long" && (
         <EmptyState icon={SearchX} title="关键词太长了" description={`最多 ${KEYWORD_MAX} 个字：删短一点再搜。`} />

@@ -11,7 +11,7 @@
  *   - 会产生副作用的动作各有一个开关：allowTaskStart / allowOfflineAdd / allowShareReceive，默认全关
  *   - 网页客户端的 OAuth 授权请求（批准 / 拒绝按钮）不另设开关：通知本身只发给管理员配的那个聊天，点的人还要过白名单
  */
-import type { AppSettings, OAuthPendingRequest, TaskDefinition, TaskExecutionSummary } from "@openstrm/shared";
+import type { AppSettings, LibrarySearchResult, OAuthPendingRequest, TaskDefinition, TaskExecutionSummary } from "@openstrm/shared";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { listTasks } from "../../db/repositories/tasks.js";
 import { listAccounts } from "../../db/repositories/accounts.js";
@@ -39,6 +39,8 @@ import { listWholeShareDir } from "../drive/share-walk.js";
 import { saveSelectionToTask } from "../share/receive.js";
 import { keywordFromName } from "../pansou/normalize.js";
 import { PANSOU_NOT_CONFIGURED, pansouConn, searchSettled, type SettledResult } from "../pansou/search.js";
+import { searchLibrary } from "../library/search.js";
+import { getAll } from "../../db/repositories/media-library.js";
 import { moduleLogger } from "../../lib/logger.js";
 import {
   createPending,
@@ -139,6 +141,10 @@ export interface CommandDeps {
   resourceSearchConfigured(): boolean;
   /** 资源搜索：服务端多问几轮，拿一次性的结果（没配置、PanSou 出错都抛） */
   searchResources(keyword: string): Promise<SettledResult>;
+  /** 影库里搜（本地，瞬间）：前几条；影库是空的 / 没命中返回空 */
+  searchLibrary(keyword: string): LibrarySearchResult;
+  /** 影库里有没有收藏（没配 PanSou 时，有收藏也照样能搜） */
+  libraryHasSources(): boolean;
   /** 追更订阅的名字和分享码（通知里「搜替代资源」按钮用）；订阅没了是 null */
   shareFollow(id: string): { name: string; shareCode: string } | null;
 }
@@ -263,6 +269,8 @@ const realDeps: CommandDeps = {
   },
   resourceSearchConfigured: () => pansouConn() !== null,
   searchResources: (keyword) => searchSettled(keyword),
+  searchLibrary: (keyword) => searchLibrary({ q: keyword, limit: LIBRARY_LINES }),
+  libraryHasSources: () => getAll().length > 0,
   shareFollow: (id) => {
     const f = getShareFollow(id);
     return f ? { name: f.name, shareCode: f.shareCode } : null;
@@ -349,8 +357,8 @@ async function handleMessage(bot: BotLike, msg: TelegramMessage): Promise<void> 
     await bot.sendMessage(chatId, "不认识这种链接。能收的有：115 / 夸克分享链接、磁力、ed2k、http(s)、ftp。");
     return;
   }
-  // 私聊里直接发片名就是搜：配了资源搜索才这样。群里只认 /s，免得群里每句话都去搜一次
-  if (msg.chat.type === "private" && deps.resourceSearchConfigured() && text.length <= SEARCH_KEYWORD_MAX) {
+  // 私聊里直接发片名就是搜：配了资源搜索、或者影库里有收藏才这样。群里只认 /s，免得群里每句话都去搜一次
+  if (msg.chat.type === "private" && (deps.resourceSearchConfigured() || deps.libraryHasSources()) && text.length <= SEARCH_KEYWORD_MAX) {
     await startSearch(bot, chatId, msg.from!.id, text);
     return;
   }
@@ -455,7 +463,7 @@ function helpText(settings: AppSettings): string {
     "/status 正在跑的任务、云下载回执、网盘监控",
     "/history 最近的执行记录",
     "/offline 最近的云下载",
-    `/s 片名 搜网盘分享和磁力（${deps.resourceSearchConfigured() ? "私聊里直接发片名也行" : "要先在设置页配置资源搜索"}）`,
+    `/s 片名 先搜影库，再搜网盘分享和磁力（${deps.resourceSearchConfigured() ? "私聊里直接发片名也行" : "网上搜要先在设置页配置资源搜索，现在只搜影库"}）`,
     "/cancel 取消正在运行的任务",
     "/id 查看 chat id",
   ].join("\n");
@@ -820,6 +828,7 @@ function renderSearch(token: string, s: SearchAction): { text: string; buttons: 
   // 表头是搜到的总数；每类只留了前 SEARCH_PER_KIND 条，留少了就说一声
   const clipped = kinds.some((k) => (s.totals[k] ?? 0) > SEARCH_PER_KIND);
   const lines = [
+    ...(s.library?.length ? [...s.library, ""] : []),
     `🔍 <b>${esc(s.keyword)}</b> · ${kinds.map((k) => `${SEARCH_KIND_LABEL[k]} ${s.totals[k] ?? 0}`).join(" · ")}`,
     ...(clipped ? [`每类只列前 ${SEARCH_PER_KIND} 条，全部的到网页「资源搜索」页看。`] : []),
     ...(s.blocked ? [`屏蔽词藏了 ${s.blocked} 条。`] : []),
@@ -850,6 +859,35 @@ function renderSearch(token: string, s: SearchAction): { text: string; buttons: 
   return { text: clamp(lines.join("\n")), buttons };
 }
 
+/** 影库在 /s 里列几条 */
+const LIBRARY_LINES = 3;
+
+/**
+ * 影库那一段：前几条的目录名、来自哪个分享的哪一层、大小；转存到网页「影库」页做（这里只报有，免得机器人里再长一套按钮）。
+ * 已失效分享里的不列；疑似失效的标出来
+ */
+function libraryLines(keyword: string): string[] {
+  let r: LibrarySearchResult;
+  try {
+    r = deps.searchLibrary(keyword);
+  } catch {
+    return [];
+  }
+  if (r.hits.length === 0) return [];
+  const size = (b: number | null) =>
+    b && b > 0 ? ` · ${b >= 1024 ** 4 ? `${(b / 1024 ** 4).toFixed(1)}T` : b >= 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(1)}G` : `${Math.max(1, Math.round(b / 1024 ** 2))}M`}` : "";
+  return [
+    `📚 <b>影库里有 ${r.total} 条</b>${r.total > r.hits.length ? `（列前 ${r.hits.length} 条）` : ""}`,
+    ...r.hits.map((h) => {
+      // 分享标题常和第一层目录同名（「老K / 老K / 1. 电影」）：相邻重复的只留一个
+      const where = [h.shareTitle, ...h.crumbs.slice(0, -1).map((c) => c.name)].filter((seg, i, all) => seg && seg !== all[i - 1]).join(" / ");
+      const flag = h.health.status === "suspect" ? " · <i>可能已失效</i>" : h.health.status === "locked" ? " · <i>提取码不对</i>" : "";
+      return `• ${esc(shortName(h.name, 40))}${size(h.size)}${flag}\n  <i>${esc(shortName(where, 40))}</i>`;
+    }),
+    "到网页「影库」页打开、转存。",
+  ];
+}
+
 /** 各聊天正在跑的搜索：同一个聊天一次只搜一个，免得连发几条就同时压给 PanSou 好几轮 */
 const runningSearches = new Map<string, Promise<void>>();
 
@@ -864,7 +902,13 @@ async function startSearch(bot: BotLike, chatId: string, userId: number, keyword
     return;
   }
   if (!deps.resourceSearchConfigured()) {
-    await bot.sendMessage(chatId, `${esc(PANSOU_NOT_CONFIGURED)}。`);
+    const library = libraryLines(kw);
+    await bot.sendMessage(
+      chatId,
+      library.length
+        ? [...library, "", "网上搜要先在设置页配置资源搜索，这次只搜了影库。"].join("\n")
+        : `影库里没有「${esc(kw)}」；${esc(PANSOU_NOT_CONFIGURED)}，网上搜不了。`,
+    );
     return;
   }
   if (runningSearches.has(chatId)) {
@@ -916,6 +960,7 @@ async function finishSearch(bot: BotLike, chatId: string, userId: number, kw: st
       hits.push({ kind, url: h.url, title: h.title, ...(date ? { date } : {}), ...(h.followed ? { followed: h.followed } : {}) });
     }
   }
+  const library = libraryLines(kw);
   if (hits.length === 0) {
     // 屏蔽词另外藏掉的也说一声：不然人以为能用的就只有这些
     const alsoBlocked = blocked > 0 ? `（屏蔽词另外藏了 ${blocked} 条）` : "";
@@ -932,10 +977,10 @@ async function finishSearch(bot: BotLike, chatId: string, userId: number, kw: st
     } else {
       text = `没搜到「${esc(kw)}」：换个说法（去掉年份、用别名或英文名）再试。`;
     }
-    await edit(bot, chatId, messageId, text);
+    await edit(bot, chatId, messageId, library.length ? [...library, "", `网上：${text}`].join("\n") : text);
     return;
   }
-  const action: SearchAction = { kind: "search", keyword: kw, hits, totals, ...(blocked ? { blocked } : {}), filter: null, page: 0 };
+  const action: SearchAction = { kind: "search", keyword: kw, hits, totals, ...(blocked ? { blocked } : {}), ...(library.length ? { library } : {}), filter: null, page: 0 };
   const token = createPending(chatId, userId, action);
   const { text, buttons } = renderSearch(token, action);
   await edit(bot, chatId, messageId, text, buttons);

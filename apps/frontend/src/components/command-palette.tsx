@@ -10,9 +10,11 @@ import {
   Edit,
   FileText,
   Files,
+  FolderOpen,
   FolderTree,
   History,
   KeyRound,
+  Library,
   Link2Off,
   ListChecks,
   LogOut,
@@ -27,6 +29,7 @@ import {
   Sun,
   Telescope,
 } from "lucide-react";
+import type { LibraryHit } from "@openstrm/shared";
 import type { TaskRow } from "@/lib/api";
 import {
   CommandDialog,
@@ -43,6 +46,7 @@ import { downloadBackupWithToast } from "@/lib/backup";
 import { startTaskWithToast } from "@/lib/task-start";
 import { checkForUpdate } from "@/lib/update";
 import { usePaletteData } from "@/hooks/use-palette-data";
+import { useLibraryPalette } from "@/hooks/use-library-palette";
 
 type Props = {
   open: boolean;
@@ -51,6 +55,8 @@ type Props = {
   onOpenShare: () => void;
   /** 输入框里打的字交给顶栏同一套处理：分享打开转存框、磁力去云下载、别的去资源搜索 */
   onInput: (text: string) => void;
+  /** 影库里的一条：打开分享弹框，直接定位到那个目录 */
+  onOpenLibraryHit: (hit: LibraryHit) => void;
   onLogout: () => void;
 };
 
@@ -65,6 +71,11 @@ const taskLabel = (t: TaskRow) => `${t.originPath} → ${t.targetPath}`;
 
 /** 「搜资源 / 查看分享 / 云下载」那一条的 value：固定的，和别的条目的 value 撞不上 */
 const INPUT_ITEM = "input-action:";
+/**
+ * 影库条目的 value 前缀：后端已经按词搜过了（靠文件名命中的，名字里可能根本没有打的字），
+ * cmdk 再按名字模糊筛一遍会把它们筛掉，所以和「搜资源」那一条一样总是留着
+ */
+const LIBRARY_ITEM = "library-hit:";
 
 const INPUT_ITEM_LABEL = { share: "查看分享", offline: "云下载", unsupported: "认不出的链接", search: "搜资源" } as const;
 
@@ -81,6 +92,7 @@ const FUZZY_MAX = 200;
  */
 function paletteFilter(value: string, search: string, keywords?: string[]): number {
   if (value === INPUT_ITEM) return 1;
+  if (value.startsWith(LIBRARY_ITEM)) return 1;
   return search.length > FUZZY_MAX ? 0 : defaultFilter(value, search, keywords);
 }
 
@@ -90,13 +102,15 @@ function paletteFilter(value: string, search: string, keywords?: string[]): numb
  * 两段式：第一段搜页面 / 操作 / 实体，选中一个任务进第二段，列出对它能做什么。
  * 空输入框上按 Backspace 或 Esc 退回第一段。设计见 .claude/plans/command-palette.md。
  */
-export function CommandPalette({ open, onOpenChange, onOpenShare, onInput, onLogout }: Props) {
+export function CommandPalette({ open, onOpenChange, onOpenShare, onInput, onOpenLibraryHit, onLogout }: Props) {
   const router = useRouter();
   const { setTheme } = useTheme();
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState<Stage>(null);
   const { tasks, accounts, follows } = usePaletteData(open);
   const queryKind = inputKindOf(query);
+  // 第二段（对某个任务做什么）里打的字是筛动作的，不去搜影库
+  const library = useLibraryPalette(open && !stage, query);
 
   // 每次打开都从头开始：留着上次的词和上次进的那一段，第二次打开还得先退出来
   useEffect(() => {
@@ -335,6 +349,31 @@ export function CommandPalette({ open, onOpenChange, onOpenShare, onInput, onLog
                 退出登录
               </CommandItem>
             </CommandGroup>
+
+            {library.hits.length > 0 && (
+              <CommandGroup heading={`影库${library.total > library.hits.length ? ` · 共 ${library.total} 条` : ""}`}>
+                {library.hits.map((hit) => (
+                  <CommandItem
+                    key={`${hit.sourceId}:${hit.nodeId}`}
+                    value={`${LIBRARY_ITEM}${hit.sourceId}:${hit.nodeId}`}
+                    onSelect={() => run(() => onOpenLibraryHit(hit))}
+                  >
+                    <FolderOpen />
+                    <span className="truncate" title={hit.path}>
+                      {hit.name}
+                    </span>
+                    <CommandShortcut className="max-w-[10rem] truncate tracking-normal">{hit.shareTitle}</CommandShortcut>
+                  </CommandItem>
+                ))}
+                <CommandItem
+                  value={`${LIBRARY_ITEM}all`}
+                  onSelect={() => run(() => router.push(`/library?q=${encodeURIComponent(query.trim())}`))}
+                >
+                  <Library />
+                  <span className="truncate">在影库里看全部「{query.trim()}」</span>
+                </CommandItem>
+              </CommandGroup>
+            )}
 
             {queryKind === "search" && inputGroup}
           </>

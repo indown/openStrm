@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import type { MediaLibraryEntry } from "@openstrm/shared";
 import { patchAppSettings } from "../../db/repositories/settings.js";
-import { getAll, getById, insert, remove } from "../../db/repositories/media-library.js";
+import { freshIndexFields, getAll, getById, insert, remove } from "../../db/repositories/media-library.js";
 import {
   __test_whenIdle,
   enqueue,
@@ -59,6 +59,8 @@ const entry = (id: string, rawName: string): MediaLibraryEntry => ({
   scrapeStatus: "pending",
   createdAt: 0,
   updatedAt: 0,
+  shareTitle: "",
+  ...freshIndexFields(),
 });
 
 /** 桩按顺序照 script 回；抛完的用 hit 兜底。calls 记下每次问的是哪个接口 */
@@ -172,4 +174,29 @@ test("重试只重发失败的那一次，不把已经问成功的再问一遍",
   await __test_whenIdle();
   assert.equal(getById("r1")!.scrapeStatus, "done");
   assert.deepEqual(calls, ["tv", "multi", "multi"], "重试把 searchTv 也重来一遍的话，正好在人家限速时加倍地打");
+});
+
+test("季目录条目按上一级的作品目录去认：先问剧集，标题带上季名", async () => {
+  const beef: TmdbSearchResult = { ...hit, id: 154385, title: "怒呛人生", year: "2023" };
+  const queries: string[] = [];
+  setScrapeWorkerDeps({
+    searchMulti: scripted("multi"),
+    searchTv: async (_key, query, year) => {
+      queries.push(`${query}|${year}`);
+      calls.push("tv");
+      return [beef];
+    },
+    searchMovie: scripted("movie"),
+    throttle: async () => {},
+    retryDelayMs: () => 1,
+  });
+  insert({ ...entry("s1", "Season 2"), sharePath: "/美剧/怒呛人生 (2023)/Season 2", shareRootCid: "3087" });
+  enqueue(["s1"]);
+  await __test_whenIdle();
+  const got = getById("s1")!;
+  assert.deepEqual(calls, ["tv"], "有季目录就是剧，先问 searchTv");
+  assert.deepEqual(queries, ["怒呛人生|2023"], "拿「Season 2」去搜只会搜出别的东西");
+  assert.equal(got.scrapeStatus, "done");
+  assert.equal(got.title, "怒呛人生 · Season 2", "同一部剧加了两季，两张卡要分得出来");
+  assert.equal(got.rawName, "Season 2", "rawName 是网盘上的目录名，转存要用，不能改");
 });

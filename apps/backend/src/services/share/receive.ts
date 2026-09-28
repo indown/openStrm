@@ -27,6 +27,8 @@ export interface SaveItem {
   isDir: boolean;
   /** 夸克转存要的 share_fid_token；115 没有 */
   token?: string;
+  /** 条目所在的目录：夸克按它在这次会话里换新的 token（见 drive/types.ts 的 ReceiveItem） */
+  parentId?: string;
 }
 
 export interface SaveSelectionOpts {
@@ -184,7 +186,7 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
   let topIds: string[] | undefined;
   try {
     const session = await share.open(ref, signal);
-    const result = await share.receive(session, items.map((i) => ({ id: i.id, token: i.token })), targetId, signal);
+    const result = await share.receive(session, items.map((i) => ({ id: i.id, token: i.token, parentId: i.parentId })), targetId, signal);
     topIds = result.topIds;
   } catch (err) {
     // 转存没成：调用方为它建出来的目录收回去，不然下次再存就当成原来就有的，整理完留一个空壳

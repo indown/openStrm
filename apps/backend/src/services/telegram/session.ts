@@ -55,6 +55,8 @@ export type PendingAction =
       totals: Partial<Record<SearchHitKind, number>>;
       /** 设置里的屏蔽词藏了几条 */
       blocked?: number;
+      /** 影库里的前几条，渲染好的几行（HTML 已转义），列表最上面带着 */
+      library?: string[];
       /** 只看某一类；null 是全部 */
       filter: SearchHitKind | null;
       page: number;

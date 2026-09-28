@@ -20,6 +20,8 @@ import type {
   AppSettings,
   LifeMonitorSettings,
   MediaLibraryEntry,
+  LibrarySearchResult,
+  LibraryShareHealth,
   OrganizeAttention,
   UpdateStatus,
   OrganizeCandidate,
@@ -107,7 +109,11 @@ export interface ShareInfo {
 }
 /** 翻页游标不透明：有 next 就还有下一页 */
 export type ShareListPage = { kind: DriveKind; account: string; entries: ShareEntry[]; next?: string; total?: number };
-export type ShareReceiveItem = Pick<ShareEntry, "id" | "name" | "isDir" | "token">;
+/**
+ * parentId：条目所在的目录。夸克的 token 跟着分享会话走、会过期（影库里记下的、弹框开了很久的），
+ * 带上它后端就在转存那次会话里把那一层重新列一遍换新的
+ */
+export type ShareReceiveItem = Pick<ShareEntry, "id" | "name" | "isDir" | "token"> & { parentId?: string };
 export type ShareReceiveResult = Record<string, unknown> & {
   mode?: "sync" | "async";
   taskId?: string;
@@ -139,7 +145,8 @@ export interface DirectoryNode {
   size?: number;
 }
 
-export type LibraryAddResponse = { mode: "single" | "subdir"; entry: MediaLibraryEntry };
+export type LibraryAddResponse = { mode: "single" | "subdir"; entry: MediaLibraryEntry; absorbed?: number };
+export type LibrarySearchQuery = { q: string; limit?: number; offset?: number; expired?: boolean; sourceId?: string };
 export type LibraryPatch = Partial<Pick<MediaLibraryEntry, "title" | "coverUrl" | "notes" | "tags" | "receiveCode">>;
 export type LibraryCreateInput = {
   shareUrl: string;
@@ -570,6 +577,23 @@ export const api = {
     create: (input: LibraryCreateInput) => data(axiosInstance.post<LibraryAddResponse>("/api/library", input)),
     update: (id: string, patch: LibraryPatch) => data(axiosInstance.put<MediaLibraryEntry>(`/api/library/${id}`, patch)),
     remove: (id: string) => data(axiosInstance.delete<{ success: true }>(`/api/library/${id}`)),
+    /** 清理全部已失效的分享（只删影库记录和索引） */
+    removeExpired: () => data(axiosInstance.delete<{ shares: number; sources: number }>("/api/library/expired")),
+    /** 重新抄目录树 */
+    refresh: (id: string) => data(axiosInstance.post<MediaLibraryEntry>(`/api/library/${id}/refresh`, {})),
+    /** 换链接：内容和原来差很多时 409（code RELINK_MISMATCH），确认后带 confirm 再来 */
+    relink: (id: string, shareUrl: string, confirm = false) =>
+      data(axiosInstance.post<MediaLibraryEntry>(`/api/library/${id}/relink`, { shareUrl, ...(confirm ? { confirm: true } : {}) }, { timeout: 60_000 })),
+    search: (query: LibrarySearchQuery, signal?: AbortSignal) =>
+      data(
+        axiosInstance.get<LibrarySearchResult>("/api/library/search", {
+          params: { q: query.q, limit: query.limit, offset: query.offset, ...(query.expired ? { expired: "1" } : {}), ...(query.sourceId ? { sourceId: query.sourceId } : {}) },
+          signal,
+        }),
+      ),
+    /** 查一下这些分享还在不在（超过 6 小时没查过的才真去问网盘） */
+    checkShares: (codes: string[]) =>
+      data(axiosInstance.post<{ health: Record<string, LibraryShareHealth> }>("/api/library/shares/check", { codes }, { timeout: 60_000 })),
     scrapeStatus: () => data(axiosInstance.get<ScrapeStatusSummary>("/api/library/scrape-status")),
     scrape: (id: string) => data(axiosInstance.post<{ id: string; status: string }>(`/api/library/${id}/scrape`)),
     saveToTask: (id: string, choice: SaveToTaskChoice) =>

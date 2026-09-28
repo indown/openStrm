@@ -23,6 +23,7 @@ import { api, type ShareEntry, type ShareInfo, type ShareReceiveItem } from "@/l
 import { SHARE_PAGE_SIZE } from "@/hooks/use-share-detail";
 import { apiErrorMessage } from "@/lib/axios";
 import { notifyFollowResult, notifySaveToTaskResult } from "@/lib/save-result";
+import { notifyLibraryChanged } from "@/lib/library";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DirectoryPickerDialog } from "@/components/DirectoryPickerDialog";
@@ -196,7 +197,8 @@ export function ShareDetailDialog({
       if (copy.has(item.id)) {
         copy.delete(item.id);
       } else {
-        copy.set(item.id, { id: item.id, name: item.name, isDir: item.isDir, token: item.token });
+        // 换目录会清空勾选：勾着的都在当前这一层
+        copy.set(item.id, { id: item.id, name: item.name, isDir: item.isDir, token: item.token, parentId: currentDirId || "0" });
       }
       return copy;
     });
@@ -292,8 +294,9 @@ export function ShareDetailDialog({
         if (fail > 0) parts.push(`${fail} 条失败`);
         const msg = parts.join("，");
         if (ok > 0) {
-          toast.success(`${msg}，后台刮削中`);
+          toast.success(`${msg}，正在建索引`);
           setSelectedItems(new Map());
+          notifyLibraryChanged();
         } else if (fail === 0) {
           toast.info(msg);
           setSelectedItems(new Map());
@@ -303,9 +306,11 @@ export function ShareDetailDialog({
         return;
       }
 
-      // 情况 2：按面包屑当前层级（根目录 → 后端自动判断合集/单片；子目录 → 入这一条）
+      // 情况 2：按面包屑当前层级（根目录 → 整个分享一条；子目录 → 入这一层）。
+      // 只勾了文件的也是这样：影库按目录收，这一层整个加进来，里面的文件照样都能搜到
       const atRoot = breadcrumb.length <= 1;
       const current = breadcrumb[breadcrumb.length - 1];
+      const filesOnly = selectedItems.size > 0;
       const data = await api.library.create(
         atRoot
           ? { shareUrl: url }
@@ -317,7 +322,12 @@ export function ShareDetailDialog({
               fileCount: totalCount,
             },
       );
-      toast.success(`已加入影库：${data.entry.title || data.entry.rawName || data.entry.shareCode}`);
+      const name = data.entry.title || data.entry.rawName || data.entry.shareCode;
+      toast.success(
+        `${filesOnly ? `影库按目录收：已把「${atRoot ? name : current.name}」整个加进来` : `已加入影库：${name}`}，正在建索引${data.absorbed ? `；之前单独收的 ${data.absorbed} 个子目录并进来了` : ""}`,
+      );
+      if (filesOnly) setSelectedItems(new Map());
+      notifyLibraryChanged();
     } catch (err) {
       const status = (err as { response?: { status?: number } })?.response?.status;
       toast.error(apiErrorMessage(err, status === 409 ? "该内容已在影库中" : "加入影库失败"));
@@ -372,8 +382,8 @@ export function ShareDetailDialog({
                     selectedDirCount > 0
                       ? `加入选中的 ${selectedDirCount} 个文件夹`
                       : breadcrumb.length > 1
-                        ? `加入「${breadcrumb[breadcrumb.length - 1].name}」`
-                        : "自动判断合集/单片并入库"
+                        ? `把「${breadcrumb[breadcrumb.length - 1].name}」整个加入影库（影库按目录收，只勾文件也是这样）`
+                        : "把整个分享加入影库：目录树会抄下来建索引，里面的每一部都能搜到"
                   }
                 >
                   <BookmarkPlus className="h-4 w-4 mr-1" />
