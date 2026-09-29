@@ -16,7 +16,7 @@ import { writeAuthPassword } from "../../db/repositories/auth.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { getAll, getIndexGen, remove } from "../../db/repositories/media-library.js";
 import { getShare } from "../../db/repositories/library-shares.js";
-import { deleteAppSetting, patchAppSettings, readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
+import { deleteAppSetting, readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { setDriveProviderFactory } from "../../services/drive/registry.js";
 import { ShareGoneError } from "../../services/drive/types.js";
 import { checkShare, patrolOnce, setLibraryHealthDeps, startLibraryHealth, stopLibraryHealth } from "../../services/library/health.js";
@@ -25,7 +25,6 @@ import { SEARCH_TEXT_VERSION } from "../../services/library/search-text.js";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
 import { sqlite } from "../../db/client.js";
-import { setScrapeWorkerDeps } from "../../services/library/scrape-worker.js";
 import { FakeDrive, type FakeTree } from "../../test/fake-drive.js";
 
 const acc: AccountInfo = { accountType: "115", name: "a", cookie: "c" };
@@ -107,7 +106,6 @@ after(async () => {
   stopLibraryHealth();
   setIndexerDeps(null);
   setLibraryHealthDeps(null);
-  setScrapeWorkerDeps(null);
   await app.close();
   for (const s of getAll()) remove(s.id);
   setDriveProviderFactory(null);
@@ -587,23 +585,5 @@ test("超过上限：停下标 truncated，已经抄到的照样能搜", async (
     assert.equal((await search("1. 电影")).total, 1);
   } finally {
     Object.assign(INDEX_LIMITS, saved);
-  }
-});
-
-test("刮海报：看起来是一部作品才刮，整包不刮", async () => {
-  patchAppSettings({ tmdb: { apiKey: "k", language: "zh-CN" } });
-  setScrapeWorkerDeps({ searchMulti: async () => [], searchTv: async () => [], searchMovie: async () => [], throttle: async () => {}, retryDelayMs: () => 1 });
-  try {
-    await addWhole();
-    assert.equal((await sources())[0].scrapeStatus, "done", "整包不刮");
-    const single = share.define("one", { title: "阿甘正传" });
-    single.addFile("/阿甘正传 4K/Forrest.Gump.1994.mkv", { size: 1 });
-    const res = await post("/api/library", { shareUrl: "https://115.com/s/one" });
-    assert.equal(res.statusCode, 201, res.body);
-    await __test_whenIdle();
-    const one = (await sources()).find((x) => x.shareCode === "one")!;
-    assert.notEqual(one.scrapeStatus, "done", "一部作品排进刮削（stub 回空会记 failed）");
-  } finally {
-    deleteAppSetting("tmdb");
   }
 });

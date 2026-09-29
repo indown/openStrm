@@ -1,3 +1,5 @@
+import type { OrganizeCandidate } from "./organize.js";
+
 export type ScrapeStatus = "pending" | "done" | "failed";
 export type MediaType = "movie" | "tv" | "collection" | "unknown";
 
@@ -54,6 +56,8 @@ export interface MediaLibraryEntry {
   truncated: boolean;
   /** 所在分享的死活；列表接口带，别处可能没有 */
   health?: LibraryShareHealth;
+  /** 切出来的作品单元：几个、认出几个、还有几个等着认；整个来源就一部作品时带它的海报和名字 */
+  works?: { total: number; identified: number; pending: number; poster: string; title: string };
 }
 
 /** 搜索结果里目录下的一个文件（给人 / 智能体判断对不对：英文原名、年份、集数都在这） */
@@ -108,6 +112,103 @@ export interface LibraryHit {
   health: LibraryShareHealth;
   /** 来源最近一次抄完的时间；还没抄完是 null */
   indexedAt: number | null;
+  /** 这个目录是（或者在）一部认出来的作品：海报、正式名、年份 */
+  work?: LibraryWorkRef;
+}
+
+/** 单元识别的把握：high 标题年份都对上（或手动指定）/ medium / low 待确认 / none 没认出 */
+export type LibraryConfidence = "high" | "medium" | "low" | "none";
+/** pending 待认 / done 认过（没认出是 confidence none）/ manual 手动指定 / ignored 不是影视 */
+export type LibraryUnitStatus = "pending" | "done" | "manual" | "ignored";
+
+/** 认出来的是 TMDB 上哪一部 */
+export interface LibraryWorkRef {
+  tmdbId: number;
+  mediaType: "movie" | "tv";
+  title: string;
+  year: string;
+  posterUrl: string;
+  confidence: LibraryConfidence;
+}
+
+/** 作品单元：从抄来的目录树里切出来的一部电影 / 一部剧，和它认成了什么 */
+export interface LibraryUnit {
+  sourceId: string;
+  unitKey: string;
+  /** 单元根目录的节点 id（打开分享详情定位到这里；ownsDir 时转存它） */
+  nodeId: string;
+  /** 根目录的上一级（转存时的 dirId） */
+  parentId: string;
+  path: string;
+  crumbs: LibraryCrumb[];
+  rawName: string;
+  /** 根目录就是这部作品自己的：转存整个目录；否则转存 fileIds */
+  ownsDir: boolean;
+  fileIds: string[];
+  /** 转存交这些：自己的目录就是这个目录；散放在分类目录里的是那几个文件。parentId 给夸克在转存那次会话里换新 token */
+  saveItems: Array<{ id: string; name: string; isDir: boolean; parentId: string; token?: string }>;
+  parsedTitle: string;
+  parsedYear: string;
+  kindHint: "movie" | "tv" | "unknown";
+  seasons: number[];
+  videoCount: number;
+  size: number;
+  sampleFile: string;
+  /** 从目录名 / 样例文件名认出的画质标签 */
+  tags: string[];
+  status: LibraryUnitStatus;
+  /** 认出来的；没认出 / 待认 / 忽略是 null */
+  work: (LibraryWorkRef & { originalTitle: string; enTitle: string; reason: string }) | null;
+  /** 识别时的备选：换匹配时先列这些 */
+  candidates: OrganizeCandidate[];
+  shareKind: "115" | "quark";
+  shareCode: string;
+  shareUrl: string;
+  shareTitle: string;
+  /** 夸克转存要的 share_fid_token（根目录的）；转存时后端会重新拿 */
+  token?: string;
+  health: LibraryShareHealth;
+  identifiedAt: number | null;
+  error: string;
+}
+
+/** 海报墙上的一张卡：同一个 tmdbId 的单元合在一起；没认出的单元自己一张 */
+export interface LibraryWork {
+  /** `movie:123` / `tv:456`；没认出的是 `unit:<sourceId>:<unitKey>` */
+  key: string;
+  tmdbId: number | null;
+  mediaType: "movie" | "tv" | null;
+  title: string;
+  year: string;
+  posterUrl: string;
+  /** 几个单元里最有把握的那个 */
+  confidence: LibraryConfidence;
+  /** 几个单元（版本 / 季） */
+  versions: number;
+  /** 来自几个分享 */
+  shares: number;
+  videoCount: number;
+  /** 单元里最大的那个 */
+  size: number;
+  seasons: number[];
+  /** 最近一个单元入库的时间 */
+  addedAt: number;
+}
+
+export type LibraryWorksView = "all" | "movie" | "tv" | "low" | "none";
+export type LibraryWorksSort = "recent" | "year" | "title";
+
+export interface LibraryWorksResult {
+  works: LibraryWork[];
+  total: number;
+  counts: { all: number; movie: number; tv: number; low: number; none: number; pending: number };
+  /** 配了 TMDB 才识别 */
+  tmdbConfigured: boolean;
+}
+
+export interface LibraryWorkDetail {
+  work: LibraryWork;
+  units: LibraryUnit[];
 }
 
 export interface LibrarySearchResult {

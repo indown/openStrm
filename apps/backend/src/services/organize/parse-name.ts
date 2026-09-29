@@ -89,6 +89,39 @@ const NOISE = new Set([
   "简体", "繁体", "高清", "超清", "完结", "全集", "合集", "高码", "修复", "国粤", "台配", "国配", "官方", "无字", "生肉", "熟肉",
   "简日", "繁日", "简繁日", "简繁内封", "简体中字", "繁体中字", "中文字幕", "内嵌字幕", "外挂字幕", "更新至", "连载",
 ]);
+/**
+ * 中文分享包目录名里粘在一起的发布信息（`4K原盘REMUX`、`国英双音`、`内封简英字幕`、`豆瓣8.8`、`单集9G`、`全5季`、`两部4K…`）：
+ * 含汉字的词里出现就当技术词，切断标题。只看含汉字的词，英文发布名照旧走上面的词表。
+ * 正常片名里也会有的字眼卡严一点：「国英」要跟着双 / 音 / 字 / 语（「中国英雄」不算），中文数字加「季」不算（《四季》），
+ * 国家 / 地区只认整个词（「36总局 势不两立 法国 2025」；《法国贩毒网》不算）
+ */
+const CJK_RELEASE =
+  /原盘|remux|蓝光|bluray|杜比|全景声|双音|三音|音轨|双语|双字|国英[双音字语]|国粤[双音字语]|中英[双字]|简英|繁英|字幕|中字|高码|码率|豆瓣|评分|奥斯卡|金像|金马|金球|戛纳|提名|影帝|影后|单集|收藏版|珍藏版|典藏版|纪念版|周年|加长版|日版|美版|港版|台版|韩版|国版|意版|法版|英版|剪辑版|未删减|重制版|终极版|完整版|洗版|奈飞|网飞|4k|8k|2160p|1080p|720p|hdr|web-?dl|^共\d|^(?:法国|韩国|日本|美国|英国|德国|意大利|西班牙|泰国|印度|香港|台湾|大陆|国产|华语|欧美|日韩|俄罗斯|加拿大|澳大利亚|丹麦|瑞典|伊朗|巴西|墨西哥)$|^全[\d两二三四五六七八九十]+[季部集]|^\d+[季部集]|^[两二三四五六七八九十]部|\d(?:g|gb)$/;
+/** 英文 / 数字粘在一起的技术词（`1080Web`、`4KHDR`）和体积（`760G`、`26.38GB`） */
+const GLUED_TECH = /^(?:4k|8k|2160p?|1080p?|720p?)(?:web|bluray|remux|hdr|dv|sdr|hdtv|uhd)/;
+const RE_SIZE = /^(?:\d{2,}|\d+\.\d+)(?:g|gb|t|tb)$/;
+
+/** 粘在中文词里的发布信息顺手记成标签（整理的命名模板用得上） */
+function cjkReleaseTags(w: string, tags: ParsedTags): void {
+  if (/4k|2160p/.test(w)) tags.resolution ??= "4K";
+  else if (/1080p/.test(w)) tags.resolution ??= "1080p";
+  else if (/720p/.test(w)) tags.resolution ??= "720p";
+  if (/remux|原盘/.test(w)) tags.source ??= "Remux";
+  else if (/蓝光|bluray/.test(w)) tags.source ??= "BluRay";
+  else if (/web-?dl/.test(w)) tags.source ??= "WEB-DL";
+  if (/杜比视界/.test(w)) tags.hdr ??= "DV";
+  else if (/hdr10\+/.test(w)) tags.hdr ??= "HDR10+";
+  else if (/hdr/.test(w)) tags.hdr ??= "HDR";
+}
+
+/** 罗马数字（冰雪奇缘Ⅱ）：比对时当阿拉伯数字，搜 TMDB 时多给一个阿拉伯数字的候选 */
+const ROMAN_DIGITS: Record<string, string> = {
+  Ⅰ: "1", Ⅱ: "2", Ⅲ: "3", Ⅳ: "4", Ⅴ: "5", Ⅵ: "6", Ⅶ: "7", Ⅷ: "8", Ⅸ: "9", Ⅹ: "10", Ⅺ: "11", Ⅻ: "12",
+  ⅰ: "1", ⅱ: "2", ⅲ: "3", ⅳ: "4", ⅴ: "5", ⅵ: "6", ⅶ: "7", ⅷ: "8", ⅸ: "9", ⅹ: "10", ⅺ: "11", ⅻ: "12",
+};
+const RE_ROMAN = /[Ⅰ-Ⅻⅰ-ⅻ]/g;
+const romanToArabic = (s: string): string => s.replace(RE_ROMAN, (ch) => ROMAN_DIGITS[ch] ?? ch);
+
 const CJK_DIGITS: Record<string, number> = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
 
 /** 多词版本名：小写、按空格分好；顺序从长到短，先匹配长的 */
@@ -255,7 +288,9 @@ function unglue(s: string): string {
     .replace(/([぀-ヿ一-鿿가-힯])(?=(?:19|20)\d{2}\s*$)/g, "$1 ")
     .replace(/([぀-ヿ一-鿿가-힯])(?=第[零〇一二两三四五六七八九十百\d]+[季集话話期部回])/g, "$1 ")
     .replace(/(第[零〇一二两三四五六七八九十百\d]+[季集话話期部回])(?=[぀-ヿ一-鿿가-힯])/g, "$1 ")
-    .replace(/\b((?:19|20)\d{2})(?=[぀-ヿ一-鿿])/g, "$1 ");
+    .replace(/\b((?:19|20)\d{2})(?=[぀-ヿ一-鿿])/g, "$1 ")
+    // 片名和发布信息粘在一起（`阿甘正传4K原盘REMUX`、`怒火重案国粤双音`）：从发布信息那里拆开，片名才留得下来
+    .replace(/([㐀-䶿一-鿿])(?=4k|8k|2160p|1080p|720p|原盘|remux|蓝光|杜比|国英[双音字语]|国粤[双音字语]|内封|中字|高码|豆瓣|单集|全\d{1,2}[季部集])/gi, "$1 ");
 }
 
 function stripEdges(w: string): string {
@@ -264,6 +299,16 @@ function stripEdges(w: string): string {
 
 /** 标题候选：`中文 / English`、`中文 English` 拆成多个，中文优先 */
 export function titleCandidates(title: string): string[] {
+  const out = titleCandidatesRaw(title);
+  // 《冰雪奇缘Ⅱ》：TMDB 上叫「冰雪奇缘2」
+  for (const c of [...out]) {
+    const arabic = romanToArabic(c);
+    if (arabic !== c && !out.includes(arabic)) out.push(arabic);
+  }
+  return out;
+}
+
+function titleCandidatesRaw(title: string): string[] {
   const t = title.trim();
   if (!t) return [];
   const out: string[] = [];
@@ -294,7 +339,7 @@ export function titleCandidates(title: string): string[] {
 
 /** 标题归一化（比对用）：小写、去标点和空白、全角转半角 */
 export function normalizeTitle(s: string): string {
-  return s
+  return romanToArabic(s)
     .toLowerCase()
     .replace(/[！-～]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
     .replace(/[\s\-–—_.,:：;；!！?？'’"“”()（）[\]【】《》「」『』·・&+]/g, "")
@@ -432,6 +477,11 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
     if (/^\d{1,2}bit$/.test(w)) return true;
     if (/^\d+fps$/.test(w)) return true;
     if (/^v\d$/.test(w)) return true;
+    if (RE_CJK.test(w) && CJK_RELEASE.test(w)) {
+      cjkReleaseTags(w, result.tags);
+      return true;
+    }
+    if (GLUED_TECH.test(w) || RE_SIZE.test(w)) return true;
     return false;
   };
 
@@ -579,7 +629,7 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
 
   const isTechWord = (w: string): boolean => {
     const s = lower(stripEdges(w));
-    return !!(RESOLUTION[s] || SOURCE[s] || VIDEO[s] || AUDIO[s] || HDR[s] || NOISE.has(s));
+    return !!(RESOLUTION[s] || SOURCE[s] || VIDEO[s] || AUDIO[s] || HDR[s] || NOISE.has(s)) || (RE_CJK.test(s) && CJK_RELEASE.test(s)) || GLUED_TECH.test(s) || RE_SIZE.test(s);
   };
 
   let bracketIndex = 0;
@@ -661,6 +711,11 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
         continue;
       }
       afterDash = false;
+      // 中文包：年份后面跟着的汉字词是演员、卖点（「七宗罪 1995 布拉德皮特」），标题到年份为止
+      if (!cut && yearBeforeCut !== undefined && titleWords.length > 0 && RE_CJK.test(w)) {
+        cutAt("year");
+        continue;
+      }
       if (!cut) titleWords.push(w);
       else if (result.tags.group === undefined && i === words.length - 1 && ci === chunks.length - 1 && /^-[A-Za-z0-9@_]{2,}$/.test(w)) {
         result.tags.group = w.slice(1);

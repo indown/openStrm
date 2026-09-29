@@ -51,6 +51,7 @@ import {
   RefreshCw,
   Search,
   Share2,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -58,7 +59,9 @@ import type { MediaLibraryEntry, ShareFollowSummary } from "@openstrm/shared";
 import { api } from "@/lib/api";
 import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 import { formatSize, fmtWhen } from "@/lib/format";
-import { LIBRARY_CHANGED_EVENT } from "@/lib/library";
+import { LIBRARY_CHANGED_EVENT, notifyLibraryChanged } from "@/lib/library";
+import { ViewChip } from "@/components/view-chip";
+import { LibraryWorks } from "@/components/LibraryWorks";
 import { notifyFollowResult, notifySaveToTaskResult } from "@/lib/save-result";
 import { useShareDetail } from "@/hooks/use-share-detail";
 import { shareKindOf } from "@/lib/share";
@@ -101,6 +104,7 @@ function LibraryContent() {
   const [input, setInput] = useState(urlQ);
   const [query, setQuery] = useState(urlQ);
   const [view, setView] = useState<View>(params.get("view") === "expired" ? "expired" : "all");
+  const [tab, setTab] = useState<"works" | "shares">(params.get("tab") === "shares" || params.get("view") === "expired" ? "shares" : "works");
   const searchRef = useRef<HTMLInputElement>(null);
 
   const [entries, setEntries] = useState<MediaLibraryEntry[]>([]);
@@ -134,10 +138,15 @@ function LibraryContent() {
       const q = input.trim();
       if (q === query.trim()) return;
       setQuery(q);
-      router.replace(q ? `/library?q=${encodeURIComponent(q)}` : "/library", { scroll: false });
+      router.replace(q ? `/library?q=${encodeURIComponent(q)}` : tab === "shares" ? "/library?tab=shares" : "/library", { scroll: false });
     }, 300);
     return () => clearTimeout(t);
-  }, [input, query, router]);
+  }, [input, query, router, tab]);
+
+  const switchTab = (next: "works" | "shares") => {
+    setTab(next);
+    router.replace(next === "shares" ? "/library?tab=shares" : "/library", { scroll: false });
+  };
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -201,7 +210,8 @@ function LibraryContent() {
   }, [fetchEntries]);
 
   // 有来源在建索引 / 刮海报：每 3 秒刷一次进度
-  const busy = entries.some((e) => indexing(e) || e.scrapeStatus === "pending");
+  // 在抄目录、还有作品在认：来源卡片上的进度要跟着动
+  const busy = entries.some((e) => indexing(e) || (e.works?.pending ?? 0) > 0);
   useEffect(() => {
     if (!busy) return;
     const t = setInterval(() => void fetchEntries(true), 3000);
@@ -246,7 +256,7 @@ function LibraryContent() {
   };
 
   const openEditor = (entry: MediaLibraryEntry) => {
-    setEditing({ id: entry.id, shareUrl: entry.shareUrl, title: entry.title, coverUrl: entry.coverUrl, tags: entry.tags, notes: entry.notes, scrapeStatus: entry.scrapeStatus });
+    setEditing({ id: entry.id, shareUrl: entry.shareUrl, title: entry.title, coverUrl: entry.coverUrl, tags: entry.tags, notes: entry.notes });
     setEditorOpen(true);
   };
 
@@ -260,6 +270,18 @@ function LibraryContent() {
       void fetchEntries(true);
     } catch (err) {
       toast.error(apiErrorMessage(err, recheck ? "没查成" : "没能开始重新建索引"));
+    }
+  };
+
+  // 改了识别词以后用：自动认的放回去重认，手动指定的、忽略的不动
+  const reidentify = async (entry: MediaLibraryEntry) => {
+    try {
+      const r = await api.library.reidentify(entry.id);
+      toast.success(r.count > 0 ? `放回去重新识别了 ${r.count} 部：${labelOf(entry)}` : "没有要重新识别的（都是手动指定或忽略的）");
+      void fetchEntries(true);
+      notifyLibraryChanged();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "重新识别失败"));
     }
   };
 
@@ -348,8 +370,33 @@ function LibraryContent() {
         }
       />
 
+      {!searching && loaded && entries.length > 0 && (
+        <div role="tablist" aria-label="影库视图" className="inline-flex rounded-lg border p-0.5 text-sm">
+          {(
+            [
+              ["works", "作品"],
+              ["shares", "分享"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={tab === key}
+              onClick={() => switchTab(key)}
+              className={cn("rounded-md px-3 py-1", tab === key ? "bg-muted font-medium" : "text-muted-foreground hover:text-foreground")}
+            >
+              {label}
+              {key === "shares" && <span className="ml-1 text-xs tabular-nums text-muted-foreground">{entries.length}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+
       {searching ? (
         <LibraryHits query={query} variant="page" pageSize={30} />
+      ) : loaded && entries.length > 0 && tab === "works" ? (
+        <LibraryWorks onShowShares={() => switchTab("shares")} />
       ) : !loaded ? (
         <TableSkeleton rows={5} />
       ) : entries.length === 0 ? (
@@ -408,6 +455,7 @@ function LibraryContent() {
                 onSave={() => setSaveToTaskEntry(entry)}
                 onEdit={() => openEditor(entry)}
                 onRefresh={() => void refreshIndex(entry)}
+                onReidentify={() => void reidentify(entry)}
                 onRelink={() => setRelinkTarget(entry)}
                 onCode={() => setCodeTarget(entry)}
                 onDelete={() => setDeleteTarget(entry)}
@@ -500,23 +548,6 @@ function LibraryContent() {
   );
 }
 
-function ViewChip({ active, onClick, label, count, tone }: { active: boolean; onClick: () => void; label: string; count: number; tone?: "danger" }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors",
-        active ? "border-brand/50 bg-brand/10 font-medium text-brand" : "text-muted-foreground hover:text-foreground",
-        tone === "danger" && !active && "text-destructive/80",
-      )}
-    >
-      {label}
-      <span className="tabular-nums">{count}</span>
-    </button>
-  );
-}
-
 interface SourceRowProps {
   entry: MediaLibraryEntry;
   followed: boolean;
@@ -525,6 +556,7 @@ interface SourceRowProps {
   onSave: () => void;
   onEdit: () => void;
   onRefresh: () => void;
+  onReidentify: () => void;
   onRelink: () => void;
   onCode: () => void;
   onDelete: () => void;
@@ -534,8 +566,11 @@ interface SourceRowProps {
 /** 分享本身打不开（失效、提取码不对）：「重新建索引」换成「再查一次」 */
 const isRecheck = (entry: MediaLibraryEntry) => entry.health?.status === "expired" || entry.health?.status === "locked";
 
-function SourceRow({ entry, followed, savingToTask, onOpen, onSave, onEdit, onRefresh, onRelink, onCode, onDelete }: SourceRowProps) {
+function SourceRow({ entry, followed, savingToTask, onOpen, onSave, onEdit, onRefresh, onReidentify, onRelink, onCode, onDelete }: SourceRowProps) {
   const label = labelOf(entry);
+  // 自己没封面：整个来源就是一部作品时用它的海报
+  const cover = entry.coverUrl || entry.works?.poster || "";
+  const works = entry.works;
   const whole = isWhole(entry);
   const where = whole ? "整个分享" : entry.sharePath.replace(/^\/+/, "");
   const status = entry.health?.status ?? "unknown";
@@ -545,8 +580,8 @@ function SourceRow({ entry, followed, savingToTask, onOpen, onSave, onEdit, onRe
   return (
     <div className={cn("flex gap-3 px-4 py-3", dead && "opacity-70")}>
       <button type="button" onClick={onOpen} className="relative h-[4.5rem] w-12 shrink-0 overflow-hidden rounded-md border bg-muted" title="打开分享" disabled={dead}>
-        {entry.coverUrl ? (
-          <Image src={entry.coverUrl} alt="" fill className="object-cover" sizes="48px" unoptimized />
+        {cover ? (
+          <Image src={cover} alt="" fill className="object-cover" sizes="48px" unoptimized />
         ) : (
           <span className="flex h-full w-full items-center justify-center text-muted-foreground">
             <Share2 className="size-5" />
@@ -583,6 +618,12 @@ function SourceRow({ entry, followed, savingToTask, onOpen, onSave, onEdit, onRe
                   <RefreshCw />
                   {recheck ? "再查一次" : "重新建索引"}
                 </DropdownMenuItem>
+                {works && works.total > 0 && (
+                  <DropdownMenuItem onSelect={onReidentify}>
+                    <Sparkles />
+                    重新识别作品
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem onSelect={() => afterMenuClosed(onRelink)}>
                   <Link2 />
                   更新链接
@@ -630,6 +671,11 @@ function SourceRow({ entry, followed, savingToTask, onOpen, onSave, onEdit, onRe
             <span className="tabular-nums" title={entry.indexedAt ? `索引于 ${new Date(entry.indexedAt * 1000).toLocaleString("zh-CN", { hour12: false })}` : undefined}>
               {entry.videoCount} 个视频 · {formatSize(entry.totalSize)}
               {entry.indexedAt ? ` · ${fmtWhen(entry.indexedAt * 1000)}索引` : ""}
+            </span>
+          )}
+          {works && works.total > 0 && (
+            <span className="tabular-nums" title="从目录树里切出来的作品，用 TMDB 认">
+              {works.pending > 0 ? `认作品 ${works.total - works.pending}/${works.total}` : works.title ? `认出《${works.title}》` : `${works.total} 部作品 · 认出 ${works.identified}`}
             </span>
           )}
           {entry.truncated && <span className="text-warning">{entry.indexError || "太大了，只抄了一部分"}</span>}

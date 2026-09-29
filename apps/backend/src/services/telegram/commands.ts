@@ -882,7 +882,10 @@ function libraryLines(keyword: string): string[] {
       // 分享标题常和第一层目录同名（「老K / 老K / 1. 电影」）：相邻重复的只留一个
       const where = [h.shareTitle, ...h.crumbs.slice(0, -1).map((c) => c.name)].filter((seg, i, all) => seg && seg !== all[i - 1]).join(" / ");
       const flag = h.health.status === "suspect" ? " · <i>可能已失效</i>" : h.health.status === "locked" ? " · <i>提取码不对</i>" : "";
-      return `• ${esc(shortName(h.name, 40))}${size(h.size)}${flag}\n  <i>${esc(shortName(where, 40))}</i>`;
+      // 认出来的作品：TMDB 上的名字和年份（和目录名不一样才写，low 的说「可能是」）
+      const w = h.work;
+      const work = w && (w.title !== h.name || w.year) ? ` · ${w.confidence === "low" ? "可能是" : ""}《${esc(shortName(w.title, 30))}》${w.year ? w.year : ""}` : "";
+      return `• ${esc(shortName(h.name, 40))}${work}${size(h.size)}${flag}\n  <i>${esc(shortName(where, 40))}</i>`;
     }),
     "到网页「影库」页打开、转存。",
   ];

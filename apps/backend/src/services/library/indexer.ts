@@ -13,7 +13,6 @@ import type { LibraryShareHealth, MediaLibraryEntry } from "@openstrm/shared";
 import * as sources from "../../db/repositories/media-library.js";
 import * as nodes from "../../db/repositories/library-nodes.js";
 import { getShare } from "../../db/repositories/library-shares.js";
-import { readAppSettings } from "../../db/repositories/settings.js";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
 import { isAbortError, messageOf } from "../../lib/errors.js";
@@ -23,7 +22,8 @@ import { KIND_LABEL, parseShareRef, shareProviderForRef } from "../drive/registr
 import { listWholeShareDir } from "../drive/share-walk.js";
 import { ShareGoneError, type DriveProvider, type ShareEntry, type ShareRef } from "../drive/types.js";
 import { accountBusy } from "../download/rate-limited.js";
-import { enqueueOne as enqueueScrape } from "./scrape-worker.js";
+import { kickIdentify } from "./identify.js";
+import { rebuildUnits } from "./units.js";
 import { SEARCH_TEXT_VERSION, dirSearchText, isVideoName } from "./search-text.js";
 
 const log = moduleLogger("library-index");
@@ -261,20 +261,10 @@ async function crawl(source: MediaLibraryEntry, signal: AbortSignal): Promise<vo
     truncated,
   });
   log.info({ id, share: ref.code, dirs: p.dirsTotal, nodes: stats.nodeCount }, "影库来源抄完了");
-  maybeScrape(id);
-}
-
-/**
- * 看起来是一部作品（直接放着视频的目录最多一个）、没封面、配了 TMDB 的才去刮海报；
- * 整包（「老K」这种几百部）不刮，免得配上一张不相干的海报。第二阶段换成按作品识别
- */
-function maybeScrape(id: string): void {
-  const source = sources.getById(id);
-  if (!source || source.coverUrl || source.scrapeStatus === "pending") return;
-  if (!readAppSettings().tmdb?.apiKey?.trim()) return;
-  if (nodes.countVideoDirs(id) > 1) return;
-  sources.setScrapeStatus(id, "pending");
-  enqueueScrape(id);
+  // 切作品单元（本地，不请求网盘），交给识别工人去认
+  const u = rebuildUnits(id);
+  log.info({ id, units: u.total, added: u.added, removed: u.removed }, "影库来源切好了作品单元");
+  kickIdentify();
 }
 
 /* ------------------------------- 工人 ------------------------------- */

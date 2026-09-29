@@ -43,6 +43,15 @@ export type {
   LibraryHitFile,
   LibraryCrumb,
   LibrarySearchResult,
+  LibraryConfidence,
+  LibraryUnitStatus,
+  LibraryWorkRef,
+  LibraryUnit,
+  LibraryWork,
+  LibraryWorksView,
+  LibraryWorksSort,
+  LibraryWorksResult,
+  LibraryWorkDetail,
 } from "./media-library.js";
 export type {
   ShareFollow,

@@ -99,6 +99,8 @@ export function queryTerms(q: string): string[] {
 
 /** 视频文件：统计「直接放着几个视频」、结果里挑文件名给人看 */
 const VIDEO_EXT = new Set(["mkv", "mp4", "ts", "m2ts", "mts", "iso", "avi", "rmvb", "rm", "wmv", "mov", "flv", "webm", "mpg", "mpeg", "vob", "m4v", "3gp", "divx"]);
+/** 同一份，带点（整理的 buildUnits 按 `.mkv` 认）：切作品单元和数视频一个口径 */
+export const VIDEO_EXTS_DOTTED: ReadonlySet<string> = new Set([...VIDEO_EXT].map((e) => `.${e}`));
 
 export function isVideoName(name: string): boolean {
   const i = name.lastIndexOf(".");

@@ -493,6 +493,22 @@ test("/s：没配资源搜索、影库里有：只列影库的，说网上要先
   assert.equal(calls.length, 0, "没配 PanSou 不去问它");
 });
 
+test("/s：影库里认出来的作品带上 TMDB 的名字和年份，把握低的说「可能是」", async () => {
+  libraryResult = {
+    hits: [
+      libHit("Forrest.Gump.1994.2160p", { work: { tmdbId: 13, mediaType: "movie", title: "阿甘正传", year: "1994", posterUrl: "", confidence: "high" } }),
+      libHit("第1部 4K原盘REMUX", { nodeId: "n2", work: { tmdbId: 102899, mediaType: "movie", title: "蚁人", year: "2015", posterUrl: "", confidence: "low" } }),
+    ],
+    total: 2,
+    expired: 0,
+    indexing: 0,
+  };
+  await handleUpdate(bot, msg("/s 阿甘正传"));
+  const text = sent[0].text;
+  assert.match(text, /• Forrest\.Gump\.1994\.2160p · 《阿甘正传》1994 · 51\.0G/);
+  assert.match(text, /• 第1部 4K原盘REMUX · 可能是《蚁人》2015/);
+});
+
 test("/s：配了资源搜索，影库一段在列表最上面，翻页也还在；网上一条都列不出来时先给影库的", async () => {
   searchConfigured = true;
   libraryResult = { hits: [libHit("沙丘2 4K原盘REMUX")], total: 1, expired: 0, indexing: 0 };

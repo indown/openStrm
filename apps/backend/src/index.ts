@@ -69,11 +69,10 @@ import { startEmbyNewWatcher, stopEmbyNewWatcher } from "./services/emby/library
 import libraryRoute from "./routes/library/index.js";
 import libraryTmdbRoute from "./routes/library/tmdb.js";
 import libraryHdhiveRoute from "./routes/library/hdhive.js";
-import libraryBulkRoute from "./routes/library/bulk.js";
 import librarySaveToTaskRoute from "./routes/library/save-to-task.js";
-import { start as startScrapeWorker } from "./services/library/scrape-worker.js";
-import { startLibraryHealth } from "./services/library/health.js";
-import { startIndexer } from "./services/library/indexer.js";
+import { startLibraryHealth, stopLibraryHealth } from "./services/library/health.js";
+import { startIndexer, stopIndexer } from "./services/library/indexer.js";
+import { startLibraryIdentify, stopLibraryIdentify } from "./services/library/identify.js";
 
 // Directory routes
 import directoryLocalRoute from "./routes/directory/local.js";
@@ -169,7 +168,6 @@ await app.register(resourceRoute);
 await app.register(libraryRoute);
 await app.register(libraryTmdbRoute);
 await app.register(libraryHdhiveRoute);
-await app.register(libraryBulkRoute);
 await app.register(librarySaveToTaskRoute);
 
 // Directory routes
@@ -229,11 +227,11 @@ const HOST = process.env.BACKEND_HOST || "0.0.0.0";
 try {
   await app.listen({ port: API_PORT, host: HOST });
   app.log.info(`API server running on http://${HOST}:${API_PORT}`);
-  try { startScrapeWorker(); } catch (err) { app.log.error({ err }, "scrape-worker start failed"); }
-  // 影库：先装分享旁听（记分享死活），再接着抄没抄完的目录树
+  // 影库：先装分享旁听（记分享死活），再接着抄没抄完的目录树，再认作品（抄完的来源补切单元）
   try {
     startLibraryHealth();
     startIndexer();
+    startLibraryIdentify();
   } catch (err) {
     app.log.error({ err }, "影库索引没能启动");
   }
@@ -278,6 +276,8 @@ async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
 
+  // 影库的后台工人先停：关库之后别再写
+  try { stopIndexer(); stopLibraryIdentify(); stopLibraryHealth(); } catch { /* ignore */ }
   try { await stopLifeMonitor(); } catch { /* ignore */ }
   try { await stopOfflineWatcher(); } catch { /* ignore */ }
   try { await stopCopyWatcher(); } catch { /* ignore */ }

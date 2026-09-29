@@ -86,6 +86,31 @@ const samples: Array<[string, Expect]> = [
   ["Class.of.09.2023", { title: "Class of 09", year: "2023", absolute: undefined }],
   ["名侦探柯南剧场版01", { title: "名侦探柯南剧场版01", absolute: undefined }],
   ["名侦探柯南 剧场版 01", { title: "名侦探柯南", edition: "剧场版", absolute: undefined }],
+  // 中文分享包的目录名：发布信息粘在一起、演员 / 奖项 / 豆瓣分 / 体积跟在片名后面
+  ["阿甘正传 4K原盘REMUX 杜比视界 国英双音 特效字幕", { title: "阿甘正传", tags: { resolution: "4K", source: "Remux" } }],
+  ["阿甘正传4K原盘REMUX", { title: "阿甘正传", tags: { resolution: "4K", source: "Remux" } }],
+  ["一次别离 奥斯卡提名 豆瓣8.8 蓝光原盘REMUX 26.38GB", { title: "一次别离" }],
+  ["七宗罪 1995 布拉德皮特 豆瓣8.8 4K原盘REMUX", { title: "七宗罪", year: "1995" }],
+  ["比得兔2 逃跑计划 4K原盘REMUX 国英双音", { title: "比得兔2 逃跑计划" }],
+  ["沙丘 两部4K原盘REMUX 杜比视界 内封字幕", { title: "沙丘" }],
+  ["漫威 复仇者联盟 全4部 4K原盘REMUX 国英双音", { title: "漫威 复仇者联盟" }],
+  ["共助2  1080Web 内封字幕", { title: "共助2" }],
+  ["越狱 全5季+番外 760G 原盘REMUX 终极收藏版", { title: "越狱" }],
+  ["末日地堡 S01 2023 4K高码率 内封简英字幕 单集9G 共87.59G", { title: "末日地堡", year: "2023", season: 1 }],
+  ["特工同盟 2024 4K Web SDR 内封简英双语字幕", { title: "特工同盟", year: "2024" }],
+  ["怒火重案国粤双音", { title: "怒火重案" }],
+  ["指环王 三部曲 4K", { title: "指环王" }],
+  ["冰雪奇缘Ⅱ 4K原盘REMUX 杜比视界", { title: "冰雪奇缘Ⅱ", titles: ["冰雪奇缘Ⅱ", "冰雪奇缘2"], tags: { hdr: "DV" } }],
+  ["与狼共舞 20周年加长版 蓝光原盘REMUX 内封字幕", { title: "与狼共舞" }],
+  ["36总局 势不两立 法国 2025 奈飞 4K Web 杜比视界 精修简体中字", { title: "36总局 势不两立", year: "2025" }],
+  ["乘船而去 华语 蓝光原盘REMUX 内封字幕", { title: "乘船而去" }],
+  ["午夜凶铃1 日版1998 4K原盘REMUX 杜比视界 内封字幕", { title: "午夜凶铃1" }],
+  // 正常片名里也有的字眼不能误伤
+  ["法国贩毒网", { title: "法国贩毒网" }],
+  ["中国英雄", { title: "中国英雄" }],
+  ["四季", { title: "四季" }],
+  ["一代宗师 2013", { title: "一代宗师", year: "2013" }],
+  ["三十五岁在东京", { title: "三十五岁在东京" }],
 ];
 
 for (const [name, expect] of samples) {

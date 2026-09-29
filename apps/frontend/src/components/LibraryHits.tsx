@@ -24,6 +24,7 @@ import { formatSize } from "@/lib/format";
 import { displayTags } from "@/lib/resource";
 import { notifyFollowResult, notifySaveToTaskResult } from "@/lib/save-result";
 import { cn } from "@/lib/utils";
+import { WorkPoster } from "@/components/work-poster";
 
 /** 一行最多挂几个标签 */
 const TAGS_SHOWN = 6;
@@ -107,55 +108,67 @@ interface RowProps {
 
 const LibraryHitRow = memo(function LibraryHitRow({ hit, keyword, health, expired, opening, onOpen, onSave, onFindAlt, canFindAlt }: RowProps) {
   const tags = displayTags(hit.tags);
+  const work = hit.work;
   const where = whereOf(hit);
   const indexed = hit.indexedAt ? new Date(hit.indexedAt * 1000).toLocaleString("zh-CN", { hour12: false }) : null;
   // 分享根（整包）没法当一个条目转存：点「转存」先打开挑
   const canSaveDirect = hit.nodeId !== "0";
   return (
     <div className={cn("flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:gap-4", expired && "opacity-60")}>
-      <div className="min-w-0 flex-1 space-y-1">
-        <div className="flex items-start gap-2">
-          <FolderOpen className="mt-0.5 size-4 shrink-0 text-warning" />
-          <p className="line-clamp-2 min-w-0 text-sm leading-snug font-medium [overflow-wrap:anywhere]" title={hit.name}>
-            {highlight(hit.name, keyword)}
-          </p>
-        </div>
-        <div className="flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <span className="max-w-[22rem] truncate" title={`${hit.path}${indexed ? `\n索引于 ${indexed}` : ""}`}>
-            {where || "分享根目录"}
-          </span>
-          {hit.size != null && hit.size > 0 && <span className="tabular-nums">{formatSize(hit.size)}</span>}
-          {hit.videoCount > 0 && <span className="tabular-nums">{hit.videoCount} 个视频</span>}
-          {tags.length > 0 && (
-            <span className="flex flex-wrap items-center gap-1" title={tags.join(" · ")}>
-              {tags.slice(0, TAGS_SHOWN).map((t) => (
-                <span key={t} className="rounded border px-1 text-[11px] leading-4 text-muted-foreground">
-                  {t}
-                </span>
-              ))}
-              {tags.length > TAGS_SHOWN && <span className="text-[11px]">+{tags.length - TAGS_SHOWN}</span>}
-            </span>
+      <div className="flex min-w-0 flex-1 gap-3">
+        {work && <WorkPoster url={work.posterUrl} mediaType={work.mediaType} className="w-11 shrink-0 self-start" sizes="44px" />}
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex items-start gap-2">
+            {!work && <FolderOpen className="mt-0.5 size-4 shrink-0 text-warning" />}
+            <p className="line-clamp-2 min-w-0 text-sm leading-snug font-medium [overflow-wrap:anywhere]" title={hit.name}>
+              {highlight(hit.name, keyword)}
+            </p>
+          </div>
+          {/* 认出来的作品：TMDB 上的名字、年份；把握低的说「可能是」 */}
+          {work && (
+            <p className="text-xs text-muted-foreground">
+              {work.confidence === "low" && "可能是 "}
+              <span className="font-medium text-foreground">《{work.title}》</span>
+              {[work.year, work.mediaType === "tv" ? "剧集" : "电影"].filter(Boolean).join(" · ")}
+            </p>
           )}
-          <ShareHealthBadge health={health} />
-        </div>
-        {/* 剧目录、分类目录：视频在下一层，先报下一层是些什么（季目录名里常有画质、集数、体积） */}
-        {hit.subdirs.length > 0 && (
-          <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground" title={hit.subdirs.join("\n")}>
-            <Folders className="size-3.5 shrink-0" />
-            <span className="truncate">
-              {hit.subdirs.join(" · ")}
-              {hit.subdirCount > hit.subdirs.length && ` 等 ${hit.subdirCount} 个`}
+          <div className="flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <span className="max-w-[22rem] truncate" title={`${hit.path}${indexed ? `\n索引于 ${indexed}` : ""}`}>
+              {where || "分享根目录"}
             </span>
-          </p>
-        )}
-        {hit.files.length > 0 && (
-          <p className="truncate font-mono text-xs text-muted-foreground" title={hit.files.map((f) => f.name).join("\n")}>
-            {highlight(hit.files[0].name, keyword)}
-            {hit.videoCount > 1 && <span className="font-sans"> 等 {hit.videoCount} 个</span>}
-          </p>
-        )}
-        {/* 已经列出下一层目录名的不再说「里面还有几个也对得上」：看得见是哪几个 */}
-        {hit.childHits > 0 && hit.subdirs.length === 0 && <p className="text-xs text-muted-foreground">里面还有 {hit.childHits} 个子目录也对得上</p>}
+            {hit.size != null && hit.size > 0 && <span className="tabular-nums">{formatSize(hit.size)}</span>}
+            {hit.videoCount > 0 && <span className="tabular-nums">{hit.videoCount} 个视频</span>}
+            {tags.length > 0 && (
+              <span className="flex flex-wrap items-center gap-1" title={tags.join(" · ")}>
+                {tags.slice(0, TAGS_SHOWN).map((t) => (
+                  <span key={t} className="rounded border px-1 text-[11px] leading-4 text-muted-foreground">
+                    {t}
+                  </span>
+                ))}
+                {tags.length > TAGS_SHOWN && <span className="text-[11px]">+{tags.length - TAGS_SHOWN}</span>}
+              </span>
+            )}
+            <ShareHealthBadge health={health} />
+          </div>
+          {/* 剧目录、分类目录：视频在下一层，先报下一层是些什么（季目录名里常有画质、集数、体积） */}
+          {hit.subdirs.length > 0 && (
+            <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground" title={hit.subdirs.join("\n")}>
+              <Folders className="size-3.5 shrink-0" />
+              <span className="truncate">
+                {hit.subdirs.join(" · ")}
+                {hit.subdirCount > hit.subdirs.length && ` 等 ${hit.subdirCount} 个`}
+              </span>
+            </p>
+          )}
+          {hit.files.length > 0 && (
+            <p className="truncate font-mono text-xs text-muted-foreground" title={hit.files.map((f) => f.name).join("\n")}>
+              {highlight(hit.files[0].name, keyword)}
+              {hit.videoCount > 1 && <span className="font-sans"> 等 {hit.videoCount} 个</span>}
+            </p>
+          )}
+          {/* 已经列出下一层目录名的不再说「里面还有几个也对得上」：看得见是哪几个 */}
+          {hit.childHits > 0 && hit.subdirs.length === 0 && <p className="text-xs text-muted-foreground">里面还有 {hit.childHits} 个子目录也对得上</p>}
+        </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5 self-end sm:self-auto">
         {expired ? (

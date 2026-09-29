@@ -152,37 +152,6 @@ export function update(id: string, updates: Partial<MediaLibraryEntry>): MediaLi
   return merged;
 }
 
-export interface ScrapeUpdate {
-  title?: string;
-  coverUrl?: string;
-  year?: string;
-  tmdbId?: number | null;
-  mediaType?: MediaType;
-  overview?: string;
-  status: ScrapeStatus;
-  notesAppend?: string;
-}
-
-export function updateScrape(id: string, patch: ScrapeUpdate): MediaLibraryEntry | null {
-  const row = db.select().from(mediaLibrary).where(eq(mediaLibrary.id, id)).get();
-  if (!row) return null;
-  const current = deserialize(row);
-  const merged: MediaLibraryEntry = {
-    ...current,
-    title: patch.title !== undefined && patch.title !== "" ? patch.title : current.title,
-    coverUrl: patch.coverUrl !== undefined && patch.coverUrl !== "" ? patch.coverUrl : current.coverUrl,
-    year: patch.year !== undefined ? patch.year : current.year,
-    tmdbId: patch.tmdbId !== undefined ? patch.tmdbId : current.tmdbId,
-    mediaType: patch.mediaType !== undefined ? patch.mediaType : current.mediaType,
-    overview: patch.overview !== undefined ? patch.overview : current.overview,
-    scrapeStatus: patch.status,
-    notes: patch.notesAppend ? `${current.notes ? current.notes + "\n" : ""}${patch.notesAppend}` : current.notes,
-    updatedAt: Math.floor(Date.now() / 1000),
-  };
-  db.update(mediaLibrary).set(toUpdateRow(merged)).where(eq(mediaLibrary.id, id)).run();
-  return merged;
-}
-
 /** 抄目录的进度 / 结果：只写这几列，不动 updatedAt（列表按它排序，进度一变就跳位置不好） */
 export interface IndexState {
   indexStatus: LibraryIndexStatus;
@@ -292,16 +261,4 @@ export function listWithHealth(): MediaLibraryEntry[] {
     .orderBy(desc(mediaLibrary.updatedAt))
     .all();
   return rows.map((r) => ({ ...deserialize(r.entry), health: healthOf(r.share) }));
-}
-
-export function getPending(): MediaLibraryEntry[] {
-  const rows = db.select().from(mediaLibrary).where(eq(mediaLibrary.scrapeStatus, "pending")).all();
-  return rows.map(deserialize);
-}
-
-export function setScrapeStatus(id: string, status: ScrapeStatus): void {
-  db.update(mediaLibrary)
-    .set({ scrapeStatus: status, updatedAt: Math.floor(Date.now() / 1000) })
-    .where(eq(mediaLibrary.id, id))
-    .run();
 }

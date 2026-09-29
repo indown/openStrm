@@ -131,6 +131,8 @@ export const libraryNodes = sqliteTable(
     /** 分享还在，这个目录却打不开了（上传者删了 / 挪了）：搜索不给，重抄上一级时清掉 */
     missing: integer("missing", { mode: "boolean" }).notNull().default(false),
     searchText: text("search_text").notNull().default(""),
+    /** 作品单元的根目录：识别出来的正式名 / 原名 / 英文名 / 别名（归一化，| 连着），搜索时和 search_text 一起算 */
+    aka: text("aka").notNull().default(""),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.sourceId, t.nodeId] }),
@@ -152,6 +154,69 @@ export const libraryShares = sqliteTable("library_shares", {
   expiredAt: integer("expired_at"),
   nextCheckAt: integer("next_check_at"),
 });
+
+/**
+ * 影库的作品单元：从抄来的目录树里切出来的一部电影 / 一部剧（整理的 buildUnits），和它在 TMDB 上认出来的是哪一部。
+ * 同一个 tmdbId 的几个单元在界面上合成一张作品卡（几个版本 / 几季）。重建单元时按单元键保留识别结果。
+ */
+export const libraryUnits = sqliteTable(
+  "library_units",
+  {
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => mediaLibrary.id, { onDelete: "cascade" }),
+    /** 根目录节点 id；一个目录里按标题拆出来的几部再带上标题（`<nodeId>|<标题>|<年份>`） */
+    unitKey: text("unit_key").notNull(),
+    /** 单元根目录的节点 id（整个分享的根是 "0"） */
+    nodeId: text("node_id").notNull(),
+    path: text("path").notNull(),
+    /** 根目录名；拆出来的是文件里的标题 */
+    rawName: text("raw_name").notNull(),
+    /** 根目录就是这部作品自己的：转存整个目录；不是（分类目录里散放的文件）转存 fileIds */
+    ownsDir: integer("owns_dir", { mode: "boolean" }).notNull(),
+    /** 单元里的文件节点 id（JSON 数组，视频在前） */
+    fileIds: text("file_ids").notNull().default("[]"),
+    parsedTitle: text("parsed_title").notNull().default(""),
+    /** 搜索候选（JSON 数组）：目录名的、文件名的 */
+    parsedTitles: text("parsed_titles").notNull().default("[]"),
+    parsedYear: text("parsed_year").notNull().default(""),
+    /** movie / tv / unknown：按结构猜的 */
+    kindHint: text("kind_hint").notNull().default("unknown"),
+    /** 季号（JSON 数组）；剧才有 */
+    seasons: text("seasons").notNull().default("[]"),
+    videoCount: integer("video_count").notNull().default(0),
+    size: integer("size").notNull().default(0),
+    /** 最大的那个视频的文件名 */
+    sampleFile: text("sample_file").notNull().default(""),
+    /** pending 待认 / done 认过（没认出是 confidence none）/ manual 手动指定 / ignored 不是影视 */
+    status: text("status").notNull().default("pending"),
+    tmdbId: integer("tmdb_id"),
+    mediaType: text("media_type"),
+    title: text("title").notNull().default(""),
+    originalTitle: text("original_title").notNull().default(""),
+    enTitle: text("en_title").notNull().default(""),
+    year: text("year").notNull().default(""),
+    posterUrl: text("poster_url").notNull().default(""),
+    /** high / medium / low / none */
+    confidence: text("confidence").notNull().default("none"),
+    reason: text("reason").notNull().default(""),
+    /** 备选（JSON 数组，OrganizeCandidate） */
+    candidates: text("candidates").notNull().default("[]"),
+    /** 认出来的名字（归一化、| 连着）：写到根节点的 aka */
+    aka: text("aka").notNull().default(""),
+    identifiedAt: integer("identified_at"),
+    /** TMDB 一时出错：多久以后再认 */
+    retryAt: integer("retry_at"),
+    error: text("error").notNull().default(""),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.sourceId, t.unitKey] }),
+    tmdbIdx: index("library_units_tmdb_idx").on(t.mediaType, t.tmdbId),
+    statusIdx: index("library_units_status_idx").on(t.status, t.retryAt),
+    nodeIdx: index("library_units_node_idx").on(t.sourceId, t.nodeId),
+  }),
+);
 
 /**
  * 115 文件/目录 id → 绝对网盘路径 的缓存。

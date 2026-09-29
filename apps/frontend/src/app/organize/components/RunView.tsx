@@ -27,7 +27,7 @@ import { fmtTime } from "@/lib/format";
 import { RUN_STATUS_META, TRIGGER_LABEL, handPicked, isBusyStatus, notifyOrganizeChanged } from "@/lib/organize";
 import { AdjustDialog } from "./AdjustDialog";
 import { FailurePanel } from "./FailurePanel";
-import { MatchDialog } from "./MatchDialog";
+import { MatchDialog } from "@/components/MatchDialog";
 import { RenameDialog } from "./RenameDialog";
 import { UnitList } from "./UnitList";
 import { POLL_MS, plannedText, toastRunError } from "./helpers";
@@ -533,7 +533,12 @@ export function RunView({
         />
       )}
 
-      <MatchDialog unit={matching} onOpenChange={(o) => !o && setMatching(null)} onPick={(pick) => (matching ? patchUnit(matching, { match: pick }) : Promise.resolve(false))} />
+      <MatchDialog
+        unit={matching}
+        onOpenChange={(o) => !o && setMatching(null)}
+        onPick={(pick) => (matching ? patchUnit(matching, { match: pick }) : Promise.resolve(false))}
+        pickingNote="正在按新的匹配重新规划…"
+      />
       <AdjustDialog unit={adjusting} onOpenChange={(o) => !o && setAdjusting(null)} onSave={(p) => (adjusting ? patchUnit(adjusting, p) : Promise.resolve(false))} />
       <RenameDialog
         item={renaming?.item ?? null}

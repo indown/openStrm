@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Image from "next/image";
 import { Film, Loader2, Search, Tv } from "lucide-react";
 import { toast } from "sonner";
-import type { OrganizeCandidate, OrganizeMediaType, OrganizeUnit } from "@openstrm/shared";
+import type { OrganizeCandidate, OrganizeMediaType } from "@openstrm/shared";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -67,16 +67,28 @@ function PickButton({ item, current, onPick }: { item: Choice; current: boolean;
   );
 }
 
+/** 要换匹配的东西：整理的作品单元、影库的作品单元都给得出这几样 */
+export interface MatchTarget {
+  rawName: string;
+  parsedTitle: string;
+  parsedYear: string;
+  /** 现在认成的；没认出是 null */
+  match?: { mediaType: OrganizeMediaType; tmdbId: number; title: string; year: string; candidates?: OrganizeCandidate[] } | null;
+}
+
 /** 换匹配：先列识别时的备选；可以按关键词搜（限定类型、年份），也可以直接填 TMDB 编号或贴 TMDB 链接 */
 export function MatchDialog({
   unit,
   onOpenChange,
   onPick,
+  pickingNote = "正在换…",
 }: {
-  unit: OrganizeUnit | null;
+  unit: MatchTarget | null;
   onOpenChange: (open: boolean) => void;
   /** 成功返回 true 才关弹框；失败的提示由调用方给 */
   onPick: (pick: { mediaType: OrganizeMediaType; tmdbId: number }) => Promise<boolean>;
+  /** 点了海报、还没换好时的一句话 */
+  pickingNote?: string;
 }) {
   const open = unit != null;
   const [query, setQuery] = useState("");
@@ -87,8 +99,11 @@ export function MatchDialog({
   const [searching, setSearching] = useState(false);
   const [picking, setPicking] = useState(false);
 
+  // 关的时候 unit 先变成 null：说明文字留着上一个，淡出时别闪成「」
+  const [shown, setShown] = useState<MatchTarget | null>(unit);
   useEffect(() => {
     if (!unit) return;
+    setShown(unit);
     setQuery(unit.parsedTitle || unit.rawName);
     setKind(unit.match?.mediaType ?? "");
     setYear(unit.parsedYear);
@@ -133,8 +148,8 @@ export function MatchDialog({
     }
   };
 
-  const candidates: Choice[] = unit?.match?.candidates ?? [];
-  const currentId = unit?.match ? `${unit.match.mediaType}:${unit.match.tmdbId}` : "";
+  const candidates: Choice[] = shown?.match?.candidates ?? [];
+  const currentId = shown?.match ? `${shown.match.mediaType}:${shown.match.tmdbId}` : "";
 
   return (
     <Dialog open={open} onOpenChange={(o) => !picking && onOpenChange(o)}>
@@ -142,7 +157,7 @@ export function MatchDialog({
         <DialogHeader>
           <DialogTitle>换匹配</DialogTitle>
           <DialogDescription className="break-all">
-            「{unit?.rawName}」现在识别为 {unit?.match ? `${unit.match.title}${unit.match.year ? ` (${unit.match.year})` : ""}` : "（没识别出来）"}
+            「{shown?.rawName}」现在识别为 {shown?.match ? `${shown.match.title}${shown.match.year ? ` (${shown.match.year})` : ""}` : "（没识别出来）"}
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
@@ -176,7 +191,7 @@ export function MatchDialog({
             </InputGroup>
             <p className="text-xs text-muted-foreground">直接填编号（如 693134）或贴 TMDB 链接就按编号查；片名搜不到时限定类型、年份更准。</p>
           </div>
-          {picking && <div className="text-xs text-muted-foreground">正在按新的匹配重新规划…</div>}
+          {picking && <div className="text-xs text-muted-foreground">{pickingNote}</div>}
           {results.length > 0 && (
             <section className="space-y-2">
               <h3 className="text-xs font-medium text-muted-foreground">{byId ? "按编号查到" : "搜索结果"}</h3>

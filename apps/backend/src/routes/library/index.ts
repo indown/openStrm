@@ -14,6 +14,9 @@ import {
 } from "../../db/repositories/media-library.js";
 import { getShare, listExpiredCodes } from "../../db/repositories/library-shares.js";
 import { childrenOf, deleteAll } from "../../db/repositories/library-nodes.js";
+import { deleteUnits, getUnit, unitSummaries } from "../../db/repositories/library-units.js";
+import { ignoreUnit, matchUnit, reidentifySource, reidentifyUnit } from "../../services/library/identify.js";
+import { listWorks, unitView, workDetail } from "../../services/library/works.js";
 import { matchShareLink, parseShareText } from "../../services/drive/registry.js";
 import { listWholeShareDir } from "../../services/drive/share-walk.js";
 import { driveErrorToHttp } from "../../services/drive/errors.js";
@@ -60,6 +63,29 @@ const checkSchema = z.object({
   codes: z.array(z.string().trim().min(1).max(100)).min(1, "至少给一个分享码").max(10, "一次最多查 10 个"),
 });
 
+const worksSchema = z.object({
+  view: z.enum(["all", "movie", "tv", "low", "none"]).default("all"),
+  sort: z.enum(["recent", "year", "title"]).default("recent"),
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
+  limit: z.coerce.number().int().min(1).max(200).default(60),
+});
+
+const workDetailSchema = z.object({
+  key: z.string().trim().min(1).max(600),
+});
+
+/** 作品单元：换匹配 / 不是影视 / 重新认 */
+const unitActionSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("match"),
+    sourceId: z.string().min(1).max(100),
+    unitKey: z.string().min(1).max(500),
+    mediaType: z.enum(["movie", "tv"]),
+    tmdbId: z.number().int().positive(),
+  }),
+  z.object({ action: z.enum(["ignore", "reidentify"]), sourceId: z.string().min(1).max(100), unitKey: z.string().min(1).max(500) }),
+]);
+
 const relinkSchema = z.object({
   shareUrl: z.string().trim().min(1, "shareUrl is required"),
   /** 新链接的内容和原来差很多时，第一次会 409 要确认；确认了再带 true */
@@ -87,7 +113,45 @@ const normPath = (p: string) => p.replace(/^\/+|\/+$/g, "");
 const isUnder = (child: string, parent: string) => parent === "" || child === parent || child.startsWith(`${parent}/`);
 
 export default async function (fastify: FastifyInstance) {
-  fastify.get("/api/library", { preHandler: [fastify.authenticate] }, async () => listWithHealth());
+  fastify.get("/api/library", { preHandler: [fastify.authenticate] }, async () => {
+    const summaries = unitSummaries();
+    return listWithHealth().map((e) => {
+      const w = summaries.get(e.id);
+      return w ? { ...e, works: w } : e;
+    });
+  });
+
+  // 作品：海报墙（同一个 tmdbId 的单元合成一张卡）
+  fastify.get("/api/library/works", { preHandler: [fastify.authenticate] }, async (request) => {
+    const q = parse(worksSchema, request.query, "query");
+    return listWorks(q);
+  });
+
+  fastify.get("/api/library/works/detail", { preHandler: [fastify.authenticate] }, async (request) => {
+    const q = parse(workDetailSchema, request.query, "query");
+    const detail = workDetail(q.key);
+    if (!detail) throw new HttpError(404, "这部作品在影库里找不到了（分享重新抄过、或者清理掉了）：刷新一下");
+    return detail;
+  });
+
+  fastify.post("/api/library/units", { preHandler: [fastify.authenticate] }, async (request) => {
+    const body = parse(unitActionSchema, request.body);
+    if (body.action === "match") {
+      const u = await matchUnit(body.sourceId, body.unitKey, body.mediaType, body.tmdbId);
+      return { unit: unitView(u) };
+    }
+    if (body.action === "ignore") ignoreUnit(body.sourceId, body.unitKey);
+    else reidentifyUnit(body.sourceId, body.unitKey);
+    const u = getUnit(body.sourceId, body.unitKey);
+    return { unit: u ? unitView(u) : null };
+  });
+
+  /** 一个来源里自动认的都重新认（改了识别词以后用）；手动指定的、忽略的不动 */
+  fastify.post("/api/library/:id/reidentify", { preHandler: [fastify.authenticate] }, async (request) => {
+    const { id } = parse(idParamsSchema, request.params, "params");
+    if (!getById(id)) throw new HttpError(404, "Entry not found");
+    return { count: reidentifySource(id) };
+  });
 
   fastify.get("/api/library/search", { preHandler: [fastify.authenticate], config: { agentScope: "read", agentToolset: "transfer" } }, async (request) => {
     const q = parse(searchSchema, request.query, "query");
@@ -329,6 +393,8 @@ export default async function (fastify: FastifyInstance) {
     if (oldCode !== match.ref.code) untrackShareIfUnused(oldCode);
     // 旧分享的索引作废：新旧分享的节点 id 不相干，先清干净再抄
     deleteAll(id);
+    // 作品单元跟着换：新分享抄完再切
+    deleteUnits(id);
     enqueueIndex(id);
     return getById(id);
   });

@@ -1,0 +1,410 @@
+/**
+ * 影库的作品单元：抄来的目录树里切出来的一部电影 / 一部剧，和它在 TMDB 上认成了哪一部（services/library/units.ts、identify.ts）。
+ * 重建单元时按单元键保留识别结果；海报墙按 tmdbId 聚合（services/library/works.ts）。
+ */
+import type { LibraryConfidence, LibraryUnitStatus, OrganizeCandidate } from "@openstrm/shared";
+import { and, asc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { db } from "../client.js";
+import { libraryShares, libraryUnits, mediaLibrary } from "../schema.js";
+
+type Row = typeof libraryUnits.$inferSelect;
+
+/** 切出来的一个单元（还没认） */
+export interface BuiltUnit {
+  unitKey: string;
+  nodeId: string;
+  path: string;
+  rawName: string;
+  ownsDir: boolean;
+  fileIds: string[];
+  parsedTitle: string;
+  parsedTitles: string[];
+  parsedYear: string;
+  kindHint: "movie" | "tv" | "unknown";
+  seasons: number[];
+  videoCount: number;
+  size: number;
+  sampleFile: string;
+}
+
+export interface UnitRow extends BuiltUnit {
+  sourceId: string;
+  status: LibraryUnitStatus;
+  tmdbId: number | null;
+  mediaType: "movie" | "tv" | null;
+  title: string;
+  originalTitle: string;
+  enTitle: string;
+  year: string;
+  posterUrl: string;
+  confidence: LibraryConfidence;
+  reason: string;
+  candidates: OrganizeCandidate[];
+  aka: string;
+  identifiedAt: number | null;
+  retryAt: number | null;
+  error: string;
+  createdAt: number;
+}
+
+function parseJson<T>(raw: string, fallback: T): T {
+  try {
+    const v = JSON.parse(raw) as T | null;
+    return v ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+const coerceStatus = (v: string): LibraryUnitStatus => (v === "done" || v === "manual" || v === "ignored" ? v : "pending");
+const coerceConfidence = (v: string): LibraryConfidence => (v === "high" || v === "medium" || v === "low" ? v : "none");
+const coerceKind = (v: string): BuiltUnit["kindHint"] => (v === "movie" || v === "tv" ? v : "unknown");
+
+export function toUnit(r: Row): UnitRow {
+  return {
+    sourceId: r.sourceId,
+    unitKey: r.unitKey,
+    nodeId: r.nodeId,
+    path: r.path,
+    rawName: r.rawName,
+    ownsDir: r.ownsDir,
+    fileIds: parseJson<string[]>(r.fileIds, []),
+    parsedTitle: r.parsedTitle,
+    parsedTitles: parseJson<string[]>(r.parsedTitles, []),
+    parsedYear: r.parsedYear,
+    kindHint: coerceKind(r.kindHint),
+    seasons: parseJson<number[]>(r.seasons, []),
+    videoCount: r.videoCount,
+    size: r.size,
+    sampleFile: r.sampleFile,
+    status: coerceStatus(r.status),
+    tmdbId: r.tmdbId ?? null,
+    mediaType: r.mediaType === "movie" || r.mediaType === "tv" ? r.mediaType : null,
+    title: r.title,
+    originalTitle: r.originalTitle,
+    enTitle: r.enTitle,
+    year: r.year,
+    posterUrl: r.posterUrl,
+    confidence: coerceConfidence(r.confidence),
+    reason: r.reason,
+    candidates: parseJson<OrganizeCandidate[]>(r.candidates, []),
+    aka: r.aka,
+    identifiedAt: r.identifiedAt ?? null,
+    retryAt: r.retryAt ?? null,
+    error: r.error,
+    createdAt: r.createdAt,
+  };
+}
+
+/** 识别结果清空、回到待认 */
+const RESET = {
+  status: "pending",
+  tmdbId: null,
+  mediaType: null,
+  title: "",
+  originalTitle: "",
+  enTitle: "",
+  year: "",
+  posterUrl: "",
+  confidence: "none",
+  reason: "",
+  candidates: "[]",
+  aka: "",
+  identifiedAt: null,
+  retryAt: null,
+  error: "",
+} as const;
+
+const keyOf = (sourceId: string, unitKey: string) => and(eq(libraryUnits.sourceId, sourceId), eq(libraryUnits.unitKey, unitKey));
+
+/**
+ * 重建一个来源的单元：同一个单元键的更新结构字段、保留识别结果——解析出来的名字 / 年份 / 类型猜测变了才回到待认，
+ * 手动指定的、忽略的一直保留；新的待认；没了的删掉
+ */
+export function replaceUnits(sourceId: string, built: BuiltUnit[], now: number): { added: number; removed: number; reset: number } {
+  const existing = new Map(
+    db
+      .select()
+      .from(libraryUnits)
+      .where(eq(libraryUnits.sourceId, sourceId))
+      .all()
+      .map((r) => [r.unitKey, r]),
+  );
+  const keep = new Set<string>();
+  let added = 0;
+  let reset = 0;
+  db.transaction((tx) => {
+    for (const b of built) {
+      if (keep.has(b.unitKey)) continue;
+      keep.add(b.unitKey);
+      const structural = {
+        nodeId: b.nodeId,
+        path: b.path,
+        rawName: b.rawName,
+        ownsDir: b.ownsDir,
+        fileIds: JSON.stringify(b.fileIds),
+        parsedTitle: b.parsedTitle,
+        parsedTitles: JSON.stringify(b.parsedTitles),
+        parsedYear: b.parsedYear,
+        kindHint: b.kindHint,
+        seasons: JSON.stringify(b.seasons),
+        videoCount: b.videoCount,
+        size: b.size,
+        sampleFile: b.sampleFile,
+      };
+      const old = existing.get(b.unitKey);
+      if (!old) {
+        tx.insert(libraryUnits)
+          .values({ sourceId, unitKey: b.unitKey, ...structural, createdAt: now })
+          .run();
+        added++;
+        continue;
+      }
+      const renamed = old.parsedTitle !== b.parsedTitle || old.parsedYear !== b.parsedYear || old.kindHint !== b.kindHint || old.parsedTitles !== structural.parsedTitles;
+      const sticky = old.status === "manual" || old.status === "ignored";
+      const again = renamed && !sticky && old.status !== "pending";
+      if (again) reset++;
+      tx.update(libraryUnits)
+        .set({ ...structural, ...(again ? RESET : {}) })
+        .where(keyOf(sourceId, b.unitKey))
+        .run();
+    }
+    for (const key of existing.keys()) {
+      if (!keep.has(key)) tx.delete(libraryUnits).where(keyOf(sourceId, key)).run();
+    }
+  });
+  return { added, removed: [...existing.keys()].filter((k) => !keep.has(k)).length, reset };
+}
+
+export function deleteUnits(sourceId: string): void {
+  db.delete(libraryUnits).where(eq(libraryUnits.sourceId, sourceId)).run();
+}
+
+export function getUnit(sourceId: string, unitKey: string): UnitRow | null {
+  const r = db.select().from(libraryUnits).where(keyOf(sourceId, unitKey)).get();
+  return r ? toUnit(r) : null;
+}
+
+export function unitsOfSource(sourceId: string): UnitRow[] {
+  return db.select().from(libraryUnits).where(eq(libraryUnits.sourceId, sourceId)).orderBy(asc(libraryUnits.path)).all().map(toUnit);
+}
+
+/** 一个来源里没被忽略的单元有几个（整个来源就一部时，它的名字写到来源根上） */
+export function countActiveUnits(sourceId: string): number {
+  const r = db
+    .select({ n: sql<number>`count(*)` })
+    .from(libraryUnits)
+    .where(and(eq(libraryUnits.sourceId, sourceId), sql`${libraryUnits.status} != 'ignored'`))
+    .get();
+  return r?.n ?? 0;
+}
+
+/** 根目录落在这些节点上的单元（给搜索结果挂作品） */
+export function unitsAtNodes(sourceId: string, nodeIds: string[]): UnitRow[] {
+  if (nodeIds.length === 0) return [];
+  return db
+    .select()
+    .from(libraryUnits)
+    .where(and(eq(libraryUnits.sourceId, sourceId), inArray(libraryUnits.nodeId, nodeIds)))
+    .all()
+    .map(toUnit);
+}
+
+/** 下一个该认的：先来的来源先认，同一个来源按路径；一时出错的等到点 */
+export function nextPendingUnit(nowSec: number): UnitRow | null {
+  const r = db
+    .select({ u: libraryUnits })
+    .from(libraryUnits)
+    .innerJoin(mediaLibrary, eq(mediaLibrary.id, libraryUnits.sourceId))
+    .where(and(eq(libraryUnits.status, "pending"), or(isNull(libraryUnits.retryAt), lte(libraryUnits.retryAt, nowSec))))
+    .orderBy(asc(mediaLibrary.createdAt), asc(libraryUnits.path))
+    .limit(1)
+    .get();
+  return r ? toUnit(r.u) : null;
+}
+
+/** 等着重试的最早什么时候到点（工人空闲时按它定下次醒来） */
+export function nextUnitRetryAt(): number | null {
+  const r = db
+    .select({ at: sql<number | null>`min(${libraryUnits.retryAt})` })
+    .from(libraryUnits)
+    .where(and(eq(libraryUnits.status, "pending"), isNotNull(libraryUnits.retryAt)))
+    .get();
+  return r?.at ?? null;
+}
+
+export interface Identified {
+  status: "done" | "manual";
+  tmdbId: number | null;
+  mediaType: "movie" | "tv" | null;
+  title: string;
+  originalTitle: string;
+  enTitle: string;
+  year: string;
+  posterUrl: string;
+  confidence: LibraryConfidence;
+  reason: string;
+  candidates: OrganizeCandidate[];
+  aka: string;
+}
+
+export function saveIdentified(sourceId: string, unitKey: string, v: Identified, now: number): void {
+  db.update(libraryUnits)
+    .set({ ...v, candidates: JSON.stringify(v.candidates), identifiedAt: now, retryAt: null, error: "" })
+    .where(keyOf(sourceId, unitKey))
+    .run();
+}
+
+export function setUnitRetry(sourceId: string, unitKey: string, retryAt: number, error: string): void {
+  db.update(libraryUnits).set({ retryAt, error }).where(keyOf(sourceId, unitKey)).run();
+}
+
+/** 不是影视（花絮合集、字幕包……）：不再认，海报墙不出 */
+export function ignoreUnit(sourceId: string, unitKey: string, now: number): void {
+  db.update(libraryUnits)
+    .set({ ...RESET, status: "ignored", identifiedAt: now })
+    .where(keyOf(sourceId, unitKey))
+    .run();
+}
+
+/** 重新认：回到待认（手动指定的也放掉） */
+export function resetUnit(sourceId: string, unitKey: string): void {
+  db.update(libraryUnits).set(RESET).where(keyOf(sourceId, unitKey)).run();
+}
+
+/** 自动认过的都放回待认（识别规则改了）：手动指定的、忽略的不动。返回放回去几个 */
+export function resetAutoIdentified(): number {
+  return db.update(libraryUnits).set(RESET).where(eq(libraryUnits.status, "done")).run().changes;
+}
+
+/** 各状态的单元数（没认出 = 认过但没有 tmdbId） */
+export function unitStatusCounts(): { pending: number; identified: number; none: number; ignored: number } {
+  const rows = db
+    .select({ status: libraryUnits.status, hasId: sql<number>`${libraryUnits.tmdbId} is not null`, n: sql<number>`count(*)` })
+    .from(libraryUnits)
+    .groupBy(libraryUnits.status, sql`${libraryUnits.tmdbId} is not null`)
+    .all();
+  const out = { pending: 0, identified: 0, none: 0, ignored: 0 };
+  for (const r of rows) {
+    if (r.status === "pending") out.pending += r.n;
+    else if (r.status === "ignored") out.ignored += r.n;
+    else if (r.hasId) out.identified += r.n;
+    else out.none += r.n;
+  }
+  return out;
+}
+
+/** 海报墙的一组：同一个 tmdbId 的单元（已失效分享里的不算，转存不了） */
+export interface WorkGroup {
+  mediaType: "movie" | "tv";
+  tmdbId: number;
+  title: string;
+  year: string;
+  posterUrl: string;
+  /** 3 高（含手动）/ 2 中 / 1 低 */
+  conf: number;
+  versions: number;
+  shares: number;
+  videoCount: number;
+  size: number;
+  seasons: number[];
+  addedAt: number;
+}
+
+const CONF_RANK = sql<number>`max(case when ${libraryUnits.status} = 'manual' or ${libraryUnits.confidence} = 'high' then 3 when ${libraryUnits.confidence} = 'medium' then 2 when ${libraryUnits.confidence} = 'low' then 1 else 0 end)`;
+const NOT_EXPIRED = sql`coalesce(${libraryShares.status}, 'unknown') != 'expired'`;
+
+export function workGroups(): WorkGroup[] {
+  return db
+    .select({
+      mediaType: libraryUnits.mediaType,
+      tmdbId: libraryUnits.tmdbId,
+      title: sql<string>`max(${libraryUnits.title})`,
+      year: sql<string>`max(${libraryUnits.year})`,
+      posterUrl: sql<string>`max(${libraryUnits.posterUrl})`,
+      conf: CONF_RANK,
+      versions: sql<number>`count(*)`,
+      shares: sql<number>`count(distinct ${libraryUnits.sourceId})`,
+      videoCount: sql<number>`sum(${libraryUnits.videoCount})`,
+      size: sql<number>`max(${libraryUnits.size})`,
+      seasons: sql<string>`group_concat(${libraryUnits.seasons}, ';')`,
+      addedAt: sql<number>`max(${libraryUnits.createdAt})`,
+    })
+    .from(libraryUnits)
+    .innerJoin(mediaLibrary, eq(mediaLibrary.id, libraryUnits.sourceId))
+    .leftJoin(libraryShares, eq(libraryShares.shareCode, mediaLibrary.shareCode))
+    .where(and(inArray(libraryUnits.status, ["done", "manual"]), isNotNull(libraryUnits.tmdbId), NOT_EXPIRED))
+    .groupBy(libraryUnits.mediaType, libraryUnits.tmdbId)
+    .all()
+    .map((r) => ({
+      mediaType: r.mediaType === "movie" ? "movie" : "tv",
+      tmdbId: r.tmdbId ?? 0,
+      title: r.title ?? "",
+      year: r.year ?? "",
+      posterUrl: r.posterUrl ?? "",
+      conf: r.conf,
+      versions: r.versions,
+      shares: r.shares,
+      videoCount: r.videoCount ?? 0,
+      size: r.size ?? 0,
+      seasons: [...new Set((r.seasons ?? "").split(";").flatMap((s) => parseJson<number[]>(s, [])))].sort((a, b) => a - b),
+      addedAt: r.addedAt ?? 0,
+    }));
+}
+
+/** 认过但没认出的单元（已失效分享里的不算） */
+export function unidentifiedUnits(): UnitRow[] {
+  return db
+    .select({ u: libraryUnits })
+    .from(libraryUnits)
+    .innerJoin(mediaLibrary, eq(mediaLibrary.id, libraryUnits.sourceId))
+    .leftJoin(libraryShares, eq(libraryShares.shareCode, mediaLibrary.shareCode))
+    .where(and(eq(libraryUnits.status, "done"), isNull(libraryUnits.tmdbId), NOT_EXPIRED))
+    .all()
+    .map((r) => toUnit(r.u));
+}
+
+/** 一部作品的所有单元（作品弹框里的版本列表；已失效分享里的也给，标出来） */
+export function unitsOfWork(mediaType: "movie" | "tv", tmdbId: number): UnitRow[] {
+  return db
+    .select()
+    .from(libraryUnits)
+    .where(and(eq(libraryUnits.mediaType, mediaType), eq(libraryUnits.tmdbId, tmdbId), inArray(libraryUnits.status, ["done", "manual"])))
+    .orderBy(asc(libraryUnits.createdAt))
+    .all()
+    .map(toUnit);
+}
+
+export interface SourceUnitSummary {
+  total: number;
+  identified: number;
+  pending: number;
+  /** 整个来源就是一部作品（认出来的都是同一个 tmdbId、没有没认出的）：它的海报和名字 */
+  poster: string;
+  title: string;
+}
+
+/** 每个来源的单元统计（来源列表用）；忽略的不算 */
+export function unitSummaries(): Map<string, SourceUnitSummary> {
+  const rows = db
+    .select({
+      sourceId: libraryUnits.sourceId,
+      total: sql<number>`count(*)`,
+      identified: sql<number>`sum(case when ${libraryUnits.tmdbId} is not null then 1 else 0 end)`,
+      pending: sql<number>`sum(case when ${libraryUnits.status} = 'pending' then 1 else 0 end)`,
+      works: sql<number>`count(distinct ${libraryUnits.tmdbId})`,
+      poster: sql<string>`max(${libraryUnits.posterUrl})`,
+      title: sql<string>`max(${libraryUnits.title})`,
+    })
+    .from(libraryUnits)
+    .where(sql`${libraryUnits.status} != 'ignored'`)
+    .groupBy(libraryUnits.sourceId)
+    .all();
+  const out = new Map<string, SourceUnitSummary>();
+  for (const r of rows) {
+    const single = r.works === 1 && r.identified === r.total;
+    out.set(r.sourceId, { total: r.total, identified: r.identified ?? 0, pending: r.pending ?? 0, poster: single ? (r.poster ?? "") : "", title: single ? (r.title ?? "") : "" });
+  }
+  return out;
+}
+

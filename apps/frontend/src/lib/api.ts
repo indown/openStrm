@@ -22,6 +22,11 @@ import type {
   MediaLibraryEntry,
   LibrarySearchResult,
   LibraryShareHealth,
+  LibraryUnit,
+  LibraryWorkDetail,
+  LibraryWorksResult,
+  LibraryWorksSort,
+  LibraryWorksView,
   OrganizeAttention,
   UpdateStatus,
   OrganizeCandidate,
@@ -159,7 +164,6 @@ export type LibraryCreateInput = {
   rawName?: string;
   sharePath?: string;
 };
-export type ScrapeStatusSummary = { pendingIds: string[]; pendingCount: number; active: number; queued: number };
 /** 设置里值是对象的顶层键（emby / telegram / lifeMonitor …），可以按组读-改-写 */
 export type SettingsGroupKey = {
   [K in keyof AppSettings]-?: NonNullable<AppSettings[K]> extends readonly unknown[]
@@ -594,8 +598,18 @@ export const api = {
     /** 查一下这些分享还在不在（超过 6 小时没查过的才真去问网盘） */
     checkShares: (codes: string[]) =>
       data(axiosInstance.post<{ health: Record<string, LibraryShareHealth> }>("/api/library/shares/check", { codes }, { timeout: 60_000 })),
-    scrapeStatus: () => data(axiosInstance.get<ScrapeStatusSummary>("/api/library/scrape-status")),
-    scrape: (id: string) => data(axiosInstance.post<{ id: string; status: string }>(`/api/library/${id}/scrape`)),
+    /** 海报墙：同一个 tmdbId 的单元合成一张卡 */
+    works: (query: { view?: LibraryWorksView; sort?: LibraryWorksSort; offset?: number; limit?: number }) =>
+      data(axiosInstance.get<LibraryWorksResult>("/api/library/works", { params: query })),
+    workDetail: (key: string) => data(axiosInstance.get<LibraryWorkDetail>("/api/library/works/detail", { params: { key } })),
+    /** 作品单元：换匹配 / 不是影视 / 重新认 */
+    unitAction: (
+      body:
+        | { action: "match"; sourceId: string; unitKey: string; mediaType: "movie" | "tv"; tmdbId: number }
+        | { action: "ignore" | "reidentify"; sourceId: string; unitKey: string },
+    ) => data(axiosInstance.post<{ unit: LibraryUnit | null }>("/api/library/units", body, { timeout: 60_000 })),
+    /** 一个来源里自动认的都重新认（手动指定的、忽略的不动） */
+    reidentify: (id: string) => data(axiosInstance.post<{ count: number }>(`/api/library/${id}/reidentify`, {})),
     saveToTask: (id: string, choice: SaveToTaskChoice) =>
       data(axiosInstance.post<ShareReceiveResult>(`/api/library/${id}/save-to-task`, choice, { timeout: 180_000 })),
   },

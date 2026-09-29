@@ -31,4 +31,8 @@ export const KEY = {
   updateState: "update.state",
   /** 影库节点的 search_text 是按哪一版归一化规则算的（services/library/search-text.ts 的 SEARCH_TEXT_VERSION） */
   librarySearchTextVersion: "library.searchTextVersion",
+  /** 影库的作品单元是按哪一版切的（services/library/units.ts 的 UNITS_VERSION） */
+  libraryUnitsVersion: "library.unitsVersion",
+  /** 影库的作品是按哪一版识别规则认的（services/library/identify.ts 的 IDENTIFY_VERSION） */
+  libraryIdentifyVersion: "library.identifyVersion",
 } as const;

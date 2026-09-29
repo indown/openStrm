@@ -15,9 +15,9 @@ import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { TagInput } from "@/components/ui/tag-input";
 import { Textarea } from "@/components/ui/textarea";
-import { Search, Film, RefreshCw } from "lucide-react";
+import { Search, Film } from "lucide-react";
 import { toast } from "sonner";
-import type { MediaLibraryEntry, ScrapeStatus } from "@openstrm/shared";
+import type { MediaLibraryEntry } from "@openstrm/shared";
 import { api, type LibraryAddResponse, type TmdbSearchResult } from "@/lib/api";
 import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 
@@ -28,7 +28,6 @@ export interface AddToLibraryInitial {
   coverUrl?: string;
   tags?: string[];
   notes?: string;
-  scrapeStatus?: ScrapeStatus;
 }
 
 interface AddToLibraryDialogProps {
@@ -51,7 +50,6 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
   const [tmdbQuery, setTmdbQuery] = useState("");
   const [tmdbLoading, setTmdbLoading] = useState(false);
   const [tmdbResults, setTmdbResults] = useState<TmdbSearchResult[]>([]);
-  const [rescraping, setRescraping] = useState(false);
 
   const isEdit = Boolean(initial?.id);
 
@@ -102,24 +100,6 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
     const label = item.year ? `${item.title} (${item.year})` : item.title;
     setTitle(label);
     if (item.posterUrl) setCoverUrl(item.posterUrl);
-  };
-
-  const handleRescrape = async () => {
-    if (!initial?.id) return;
-    if (!tmdbEnabled) {
-      toast.error("TMDB 未配置，请先在设置中填入 API Key");
-      return;
-    }
-    setRescraping(true);
-    try {
-      await api.library.scrape(initial.id);
-      toast.success("已加入刮削队列，稍后刷新查看");
-      onOpenChange(false);
-    } catch (err) {
-      toast.error(apiErrorMessage(err, "触发重新刮削失败"));
-    } finally {
-      setRescraping(false);
-    }
   };
 
   const handleConfirm = async () => {
@@ -246,20 +226,7 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
         </div>
 
         <DialogFooter className="flex-col sm:flex-row sm:justify-between gap-2">
-          {isEdit ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleRescrape}
-              disabled={rescraping || saving || !tmdbEnabled}
-              title={tmdbEnabled ? "触发 TMDB 重新刮削" : "TMDB 未配置，请先去设置页填入 API Key"}
-            >
-              <RefreshCw className={`h-4 w-4 mr-1 ${rescraping ? "animate-spin" : ""}`} />
-              重新刮削
-            </Button>
-          ) : (
-            <span />
-          )}
+          <span />
           <div className="flex items-center gap-2">
             <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
               取消

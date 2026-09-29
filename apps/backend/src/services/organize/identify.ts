@@ -150,6 +150,10 @@ export interface IdentifyOptions {
   libraryType?: "movie" | "tv" | "mixed";
   /** 拉季集标题（开了集标题才要） */
   episodeTitles: boolean;
+  /** 搜前几个标题候选（默认 3）：影库补了中文候选，要多搜两个才轮得到文件名里的英文 */
+  maxTitles?: number;
+  /** 标题一样还要年份对上才停止往后搜（影库：候选里有演员名、品牌前缀这种可能撞上同名条目的） */
+  strictStop?: boolean;
 }
 
 export interface IdentifyResult {
@@ -182,8 +186,18 @@ async function fromDetails(tmdb: TmdbApi, kind: OrganizeMediaType, id: number, c
   };
 }
 
-/** 按候选标题依次搜；带年份先搜，没结果再不带 */
-async function searchAll(tmdb: TmdbApi, titles: string[], year: string | undefined, kind: OrganizeMediaType | "multi"): Promise<TmdbSearchResult[]> {
+/**
+ * 按候选标题依次搜（最多 max 个）；带年份先搜，没结果再不带；搜到标题一样的就停。
+ * strictStop：还要年份也对上（差一年以内；结果没年份的不算）才停——候选里混着演员名、品牌前缀时，同名的纪录片别把后面真正的片名挡掉
+ */
+async function searchAll(
+  tmdb: TmdbApi,
+  titles: string[],
+  year: string | undefined,
+  kind: OrganizeMediaType | "multi",
+  max = 3,
+  strictStop = false,
+): Promise<TmdbSearchResult[]> {
   const seen = new Set<string>();
   const out: TmdbSearchResult[] = [];
   const add = (list: TmdbSearchResult[]) => {
@@ -194,10 +208,12 @@ async function searchAll(tmdb: TmdbApi, titles: string[], year: string | undefin
       out.push(r);
     }
   };
-  for (const t of titles.slice(0, 3)) {
+  for (const t of titles.slice(0, max)) {
     if (year && kind !== "multi") add(await tmdb.search(t, kind, year));
     if (out.length === 0 || !year) add(await tmdb.search(t, kind));
-    if (out.some((r) => normalizeTitle(r.title) === normalizeTitle(t))) break;
+    // 年份差一年也算（跨年上映的片子：影展年 / 上映年）
+    const yearOk = (r: TmdbSearchResult) => !strictStop || !year || (!!r.year && Math.abs(Number(r.year) - Number(year)) <= 1);
+    if (out.some((r) => normalizeTitle(r.title) === normalizeTitle(t) && yearOk(r))) break;
   }
   return out.filter((r) => r.mediaType === "movie" || r.mediaType === "tv");
 }
@@ -243,9 +259,11 @@ export async function identifyUnit(opts: IdentifyOptions, tmdb: TmdbApi): Promis
     const year = unit.parsed.year;
     const kindHint: Unit["kindHint"] = unit.kindHint !== "unknown" ? unit.kindHint : opts.libraryType && opts.libraryType !== "mixed" ? opts.libraryType : "unknown";
     const searchKind: OrganizeMediaType | "multi" = kindHint === "unknown" ? "multi" : kindHint;
-    let results = await searchAll(tmdb, titles, year, searchKind);
+    const max = opts.maxTitles ?? 3;
+    const strict = opts.strictStop === true;
+    let results = await searchAll(tmdb, titles, year, searchKind, max, strict);
     // 剧集库里搜不到就放宽到 multi（电影 / 剧集分错了的情况）
-    if (results.length === 0 && searchKind !== "multi") results = await searchAll(tmdb, titles, year, "multi");
+    if (results.length === 0 && searchKind !== "multi") results = await searchAll(tmdb, titles, year, "multi", max, strict);
     if (results.length === 0) {
       // 最后一搏：去掉最后一个词再搜（标题尾巴带了没认出的噪音）
       const tokens = titles[0].split(/\s+/);

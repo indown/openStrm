@@ -10,8 +10,9 @@
  *   - 每条带上够判断对不对的东西：子树视频数、视频样例、没有直接视频的给下一层目录名（季目录）
  *   - 失效分享里的单独数，要明细才给：不和有效的混在一起
  */
-import type { LibraryCrumb, LibraryHit, LibraryHitFile, LibrarySearchResult } from "@openstrm/shared";
+import type { LibraryCrumb, LibraryHit, LibraryHitFile, LibrarySearchResult, LibraryWorkRef } from "@openstrm/shared";
 import { filesOfDirs, getNode, searchCandidates, subdirsOfDirs, type NodeRow, type SearchRow } from "../../db/repositories/library-nodes.js";
+import { unitsAtNodes, type UnitRow } from "../../db/repositories/library-units.js";
 import { countIndexing, healthOf } from "../../db/repositories/media-library.js";
 import { parseShareRef } from "../drive/registry.js";
 import { titleTags } from "../pansou/tags.js";
@@ -43,13 +44,18 @@ function splitTerms(terms: string[]): { required: string[]; years: string[] } {
 
 function rank(row: SearchRow, terms: string[], years: string[]): Ranked {
   const name = normalizeForSearch(row.name);
+  // 认出来的正式名 / 原名 / 别名（作品单元的根目录才有）：和目录名一样算「名字命中」
+  const aka = row.aka ? row.aka.split("|") : [];
+  const inName = (t: string) => name.includes(t) || aka.some((a) => a.includes(t));
   const files = filePartOf(row.searchText);
   let matched: Matched;
   let score: number;
-  if (terms.every((t) => name.includes(t))) {
+  if (terms.every(inName)) {
     matched = "name";
-    score = terms.length === 1 && name === terms[0] ? 100 : name.startsWith(terms[0]) ? 85 : 70;
-  } else if (terms.every((t) => name.includes(t) || files.includes(t))) {
+    const exact = terms.length === 1 && (name === terms[0] || aka.includes(terms[0]));
+    const starts = name.startsWith(terms[0]) || aka.some((a) => a.startsWith(terms[0]));
+    score = exact ? 100 : starts ? 85 : 70;
+  } else if (terms.every((t) => inName(t) || files.includes(t))) {
     matched = "files";
     score = 50;
   } else {
@@ -145,6 +151,12 @@ export function keywordOf(name: string): string {
     pickTitle(spaced.replace(/【[^】]*】|\[[^\]]*\]|\{[^}]*\}/g, " ").replace(/[(（][^)）]*[)）]/g, " | ")) ||
     pickTitle(spaced.replace(/[【】[\]{}()（）]/g, " "))
   );
+}
+
+/** 一个节点的面包屑（作品弹框里的版本打开分享详情用） */
+export function crumbsForNode(sourceId: string, nodeId: string): LibraryCrumb[] {
+  const row = getNode(sourceId, nodeId);
+  return row ? crumbsOf(row, new Map()) : [];
 }
 
 function crumbsOf(row: NodeRow, cache: Map<string, NodeRow | null>): LibraryCrumb[] {
@@ -267,6 +279,52 @@ function toHits(ranked: Ranked[]): LibraryHit[] {
   });
 }
 
+/** 认出来的单元 → 结果上挂的作品 */
+export function workRefOf(u: UnitRow): LibraryWorkRef | undefined {
+  if (u.tmdbId == null || !u.mediaType || (u.status !== "done" && u.status !== "manual")) return undefined;
+  return { tmdbId: u.tmdbId, mediaType: u.mediaType, title: u.title, year: u.year, posterUrl: u.posterUrl, confidence: u.status === "manual" ? "high" : u.confidence };
+}
+
+/**
+ * 结果挂上作品：命中的目录自己是作品单元的根，或者在某个单元里面（季目录在剧目录里）——从它往上找最近的一个。
+ * 一个目录上挂着几个按标题拆出来的单元（分类目录里散放的几部）说不清是哪部，不挂
+ */
+function attachWorks(hits: LibraryHit[]): void {
+  const bySource = new Map<string, LibraryHit[]>();
+  for (const h of hits) {
+    const list = bySource.get(h.sourceId) ?? [];
+    list.push(h);
+    bySource.set(h.sourceId, list);
+  }
+  for (const [sourceId, list] of bySource) {
+    const ids = new Set<string>(["0"]);
+    for (const h of list) {
+      ids.add(h.nodeId);
+      for (const c of h.crumbs) if (c.id) ids.add(c.id);
+    }
+    const byNode = new Map<string, UnitRow[]>();
+    for (const u of unitsAtNodes(sourceId, [...ids])) {
+      if (u.status === "ignored") continue;
+      const arr = byNode.get(u.nodeId) ?? [];
+      arr.push(u);
+      byNode.set(u.nodeId, arr);
+    }
+    if (byNode.size === 0) continue;
+    for (const h of list) {
+      const chain = [h.nodeId, ...h.crumbs.map((c) => c.id).filter(Boolean).reverse(), "0"];
+      for (const id of chain) {
+        const at = byNode.get(id);
+        if (!at) continue;
+        if (at.length === 1) {
+          const ref = workRefOf(at[0]);
+          if (ref) h.work = ref;
+        }
+        break;
+      }
+    }
+  }
+}
+
 export interface LibrarySearchOptions {
   q: string;
   limit?: number;
@@ -288,11 +346,14 @@ export function searchLibrary(opts: LibrarySearchOptions): LibrarySearchResult {
   ranked.sort((a, b) => b.score - a.score || a.row.path.localeCompare(b.row.path));
   const expired = ranked.filter((r) => r.row.shareStatus === "expired");
   const alive = ranked.filter((r) => r.row.shareStatus !== "expired");
+  const hits = toHits(alive.slice(offset, offset + limit));
+  const expiredHits = opts.includeExpired ? toHits(expired.slice(0, limit)) : undefined;
+  attachWorks(expiredHits ? [...hits, ...expiredHits] : hits);
   return {
-    hits: toHits(alive.slice(offset, offset + limit)),
+    hits,
     total: alive.length,
     expired: expired.length,
-    ...(opts.includeExpired ? { expiredHits: toHits(expired.slice(0, limit)) } : {}),
+    ...(expiredHits ? { expiredHits } : {}),
     indexing,
   };
 }

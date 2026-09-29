@@ -21,6 +21,8 @@ export interface NodeRow {
   videoTotal: number;
   missing: boolean;
   searchText: string;
+  /** 作品单元的根目录：认出来的名字（归一化，| 连着） */
+  aka: string;
 }
 
 interface RawNode {
@@ -39,6 +41,7 @@ interface RawNode {
   video_total: number;
   missing: number;
   search_text: string;
+  aka: string;
 }
 
 function toNode(r: RawNode): NodeRow {
@@ -58,6 +61,7 @@ function toNode(r: RawNode): NodeRow {
     videoTotal: r.video_total ?? 0,
     missing: r.missing === 1,
     searchText: r.search_text,
+    aka: r.aka ?? "",
   };
 }
 
@@ -224,12 +228,6 @@ export function rebuildSearchTexts(sourceId: string, compute: (pathSegments: str
   return n;
 }
 
-/** 直接放着视频的目录有几个：抄完判断「是不是一部作品」（一部才去刮海报，整包不刮） */
-export function countVideoDirs(sourceId: string): number {
-  const r = stmt("videoDirs", `SELECT COUNT(*) AS n FROM library_nodes WHERE source_id = ? AND is_dir = 1 AND video_count > 0 AND missing = 0`).get(sourceId) as { n: number };
-  return r.n;
-}
-
 export function getNode(sourceId: string, nodeId: string): NodeRow | null {
   const r = stmt("getNode", `SELECT * FROM library_nodes WHERE source_id = ? AND node_id = ?`).get(sourceId, nodeId) as RawNode | undefined;
   return r ? toNode(r) : null;
@@ -284,8 +282,9 @@ export interface SearchRow extends NodeRow {
  */
 export function searchCandidates(terms: string[], limit: number, sourceId?: string): SearchRow[] {
   if (terms.length === 0) return [];
-  const where = terms.map(() => "n.search_text LIKE ?").join(" AND ");
-  const params: unknown[] = terms.map((t) => `%${t}%`);
+  // 每个词在 search_text（路径 + 名字 + 直接文件名）或 aka（认出来的正式名 / 原名 / 别名）里有就算
+  const where = terms.map(() => "(n.search_text LIKE ? OR n.aka LIKE ?)").join(" AND ");
+  const params: unknown[] = terms.flatMap((t) => [`%${t}%`, `%${t}%`]);
   const scope = sourceId ? " AND n.source_id = ?" : "";
   if (sourceId) params.push(sourceId);
   params.push(limit);
@@ -343,6 +342,20 @@ function childrenOfDirs(sourceId: string, dirIds: string[], isDir: boolean): Nod
     out.push(...rows.map(toNode));
   }
   return out;
+}
+
+/** 切作品单元要的整棵树（不含打不开了的） */
+export function treeOf(sourceId: string): NodeRow[] {
+  return (stmt("tree", `SELECT * FROM library_nodes WHERE source_id = ? AND missing = 0`).all(sourceId) as RawNode[]).map(toNode);
+}
+
+/** 一个来源的 aka 全清掉（重新按单元写之前） */
+export function clearAka(sourceId: string): void {
+  stmt("clearAka", `UPDATE library_nodes SET aka = '' WHERE source_id = ? AND aka != ''`).run(sourceId);
+}
+
+export function setAka(sourceId: string, nodeId: string, aka: string): void {
+  stmt("setAka", `UPDATE library_nodes SET aka = ? WHERE source_id = ? AND node_id = ?`).run(aka, sourceId, nodeId);
 }
 
 /** 一批目录的直接文件（结果里挑视频文件名、给人判断） */

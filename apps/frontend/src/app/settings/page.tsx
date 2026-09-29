@@ -659,7 +659,7 @@ export default function SettingsPage() {
             <section id="tmdb" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
               <h2 className="text-base font-medium">TMDB</h2>
               <p className="text-sm text-muted-foreground">
-                「整理」按它识别影视，不配就整理不了；影库里收的单部作品靠它补海报；「strm 管理」页的海报墙在目录里没有现成图片时，也从这里补海报。
+                「整理」按它识别影视，不配就整理不了；影库靠它认出分享里的一部部作品（海报墙、正式名和英文名搜索）；「strm 管理」页的海报墙在目录里没有现成图片时，也从这里补海报。
               </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <FormField
