@@ -1265,6 +1265,14 @@
           "type": "string",
           "maxLength": 20
         },
+        "genre": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "country": {
+          "type": "string",
+          "maxLength": 30
+        },
         "sort": {
           "type": "string",
           "enum": [
@@ -1281,6 +1289,16 @@
         "cursor": {
           "type": "string",
           "maxLength": 20
+        },
+        "titles": {
+          "minItems": 1,
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
         }
       },
       "additionalProperties": false
@@ -1344,6 +1362,97 @@
       "required": [
         "text"
       ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "library_match",
+    "scope": "run",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "minItems": 1,
+          "maxItems": 20,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "unit": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "tmdbId": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "movie",
+                  "tv"
+                ]
+              },
+              "ignore": {
+                "type": "boolean"
+              },
+              "reidentify": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "unit"
+            ]
+          }
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "library_sources",
+    "scope": "read",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "all",
+            "expired",
+            "locked",
+            "indexing"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cursor": {
+          "type": "string",
+          "maxLength": 20
+        }
+      },
       "additionalProperties": false
     }
   },

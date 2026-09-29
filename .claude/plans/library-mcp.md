@@ -175,9 +175,17 @@ REST 有、智能体用不了的：加分享（单个、批量预览）、作品
 4. 测试：add 服务、works 筛选、seriesGroups、owned 两个来源、三个工具、快照 / schema 可移植性。
 5. 真机：实验库（配置只读拷贝、外部服务全关）看界面改名；建令牌打 `/mcp` 调新工具（没有 TMDB 令牌时，在实验库里给几个单元手写识别结果）。
 
-### 阶段 C：P2（P1 验完再做）
+### 阶段 C：P2（P1 验完再做；2026-09-29 晚用户：「先提交一下，然后按你的推荐继续往下做，完成整个计划后再真机测试」，P1 连同前面几批已提交 ee8212c）
 
-library_match + `library_fix`、library_sources + `library_rescue`、`library_series`、片单模式、TMDB 类型 / 地区入库。
+按推荐的顺序：
+
+1. 收藏纠错：library_work 的每个版本带单元引用 `unit`；library_works 里把握低 / 没认出的带目录名、样例文件名和识别时的前几个备选；`library_match`（run，一次最多 20 条：指定 TMDB 编号 / 不是影视 / 重新认，和界面「换匹配」同一个 matchUnit）；prompt `library_fix`「收藏纠错」。
+2. 失效找回：`library_sources`（read：收藏的分享、死活、建索引进度、作品数；失效的附上里面认出的作品）；prompt `library_rescue`「失效找回」。
+3. 补全剧集：prompt `library_series`（参数剧名）：library_work 对比本地已有的季和收藏里的季，同意后 share_save。
+4. 片单模式：library_works 加 `titles`（一串片名，最多 50 个），逐个说收藏里有没有、本地有没有。
+5. TMDB 类型 / 地区：迁移加列（类型、国家 / 地区、原语言），识别和换匹配时存上；已经认过的在后台按 TMDB 详情（多半有缓存）补，不重认；library_works 加 `genre` / `country` 筛，条目带上。
+
+PromptDef 改成各带各的参数（现在只有找片入库那一种）。真机测试放在最后一起做（换匹配、类型要真 TMDB，到时候再要令牌）。
 
 ## 实施记录（2026-09-29 晚，未提交）
 
@@ -206,4 +214,26 @@ library_match + `library_fix`、library_sources + `library_rescue`、`library_se
   - `library_search`「权力的游戏」命中的是剧目录（它自己不是单元，各季才是），不带 `work`，智能体接不上 `library_work`：搜索挂作品往上找不到单元时再往下看，里面的单元全认成同一部才挂（`unitsUnder`，分类目录、合集里好几部的不挂）；真机上权力的游戏、纸牌屋的剧目录都带上了 work，「2. 剧集」不带。
   - 海报墙的「已有」补拉：原来只在没有待认单元时补拉，可待认的轮询只在配了 TMDB 时跑——没配 TMDB、又有待认的（实验库就是）两边都不拉。改成「没在轮询就补拉」。
 - 没做：真转存（`share_save` 会写进用户网盘，要用户点头）；参数用 `share_inspect` 对过真分享。清理：实验库、令牌、密码、浏览器登录都删了。
+
+### 阶段 C：P2（做完，未提交）
+
+- 收藏纠错：library_work 的每个版本带 `unit`（单元引用，和没认出的作品键同一个写法 `unit:<来源>:<单元键>`）；library_works 里把握低 / 没认出的条目带 `unit`、`name`（目录名）、`sampleFile`、识别时的前 3 个备选 `candidates`；`library_match`（run，一次最多 20 条，每条三选一：tmdbId + type / ignore / reidentify，走界面换匹配同一个 matchUnit，一条错不影响别的）；prompt `library_fix`「收藏纠错」（参数 which：没认出 / 待确认 / 都看；有 tmdb_search 才让它核对、没有就只用备选；能改的写回，只读的交给人在界面上换匹配）。
+- 失效找回：`library_sources`（read：标题、链接、死活和原因、建索引进度、视频数、作品数；失效 / 提取码不对的附上里面认出来的作品 `worksInside` 最多 10 部；按 all / expired / locked / indexing 筛）；prompt `library_rescue`「失效找回」（library_sources → library_work 看收藏夹别处 → resource_search → 同意后 library_add；清理、换链接留给人）。
+- 补全剧集：prompt `library_series`（参数剧名）：library_work → 对比 owned 和 versions 的季 → 建议版本 → 同意后 share_save 带 organize（只读的交 openInUi）。
+- 片单模式：library_works 的 `titles`（最多 50 个，可以带年份：年份在最后、隔着空格或括号、不晚于明后年才拆，「银翼杀手2049」「Blade Runner 2049」不拆）；整个名字（正式名、原名、英文名）对上的优先，没有就只有一部名字包含它才算，重名 / 说不准的给 `maybe` 前 3 部；works.ts 的 `lookupWorks`。
+- 类型 / 地区：迁移 0020 给 library_units 加 `genres`、`countries`、`original_language`（null = 还没补）；认出来时（详情本来就为别名拿了）和换匹配时顺手存；以前认的由识别工人在没有要认的单元时一个一个补（详情多半有缓存，TMDB 上没了的记成空的，一时出错歇一会儿），不重认；`genres.ts` 把 TMDB 类型编号 / 地区代码和中文名互换（口头叫法：动漫、综艺、韩剧、港剧、国产、华语、欧美……，「印度」不连印度尼西亚）；library_works 加 `genre` / `country`（认不出报错并给写法），条目、library_work 的 work 带中文的类型、地区；筛的时候还有没补完的给 `detailsNote`。
+- PromptDef 改成各带各的参数，第三方内容的提醒统一加在末尾；server.ts 注册 prompt 的回调写明参数类型。工具 42 个（新加 library_match、library_sources），快照只加。
+- 测试：类型 / 地区换算、片名拆年份、存类型 + 按类型 / 地区筛 + 补类型不重认、片单、library_match（指定 / 忽略 / 重认 / 各种错）、library_sources（失效的附作品、按状态筛）、library_works 的片单和类型 / 地区筛、三个 prompt 按令牌展开。
+
+### 阶段 C 真机（lab6，配置只读拷贝、外部服务全关；用户给的 TMDB 令牌只放实验库、验完删了）
+
+老K 全新抄完（2261 个目录）、真 TMDB 认完（2052 个单元，认出 2038、没认出 14，认的时候类型 / 地区就存上了），全走真 `/mcp`：
+
+- prompts/list 四个；「失效找回」「收藏纠错」不带 arguments 也展得开（测试时发现的 SDK 问题修了之后），「补全剧集」按剧名展开。
+- `overview` 收藏夹一行：1 个分享，认出 2038、没认出 14。
+- `library_works` 按类型、地区：科幻片 323 部；韩剧（view tv + 韩国）5 部（王国、恶缘、血谜拼图……）；日本动画 1 部；纪录剧 8 部；国产电影 56 部。
+- 片单：肖申克的救赎、阿甘正传 1994、星际穿越、权力的游戏（owned）、蝙蝠侠、The Dark Knight（按原名对上《蝙蝠侠：黑暗骑士》）都找到；请回答1988（老K 里没有）和编的片名是 missing。
+- 纠错流程照 prompt 手走一遍：view none 列出 14 个没认出的（目录名 + 样例文件名，备选都是空的），tmdb_search 核对编号，`library_match` 一次写回 5 条（剌杀小说家 → 刺杀小说家、巨尺沙2 → 巨齿鲨2：深渊、角斗土2 → 角斗士2、月球损落 → 月球陨落、无间道F云 → 无间道风云），全成；没认出的 14 → 9；改过的带上了类型、地区；用正确的名字「巨齿鲨2」能搜到写错的「巨尺沙2」目录。
+- `library_work` 按 title「权力的游戏」+ tv：类型、地区、本地已有第 1、2 季、8 个版本、一次存全季；`library_sources`：老K 抄完、4185 个视频、认出 2043；把老K 在实验库里临时标成失效：worksInside 列出 1819 部、海报墙里没了，改回来就回来。
+- 升级补类型：把 2043 个认出来的单元的类型、地区全清掉再重启（模拟从 rc.2 升上来），5 秒内全补上（详情全走缓存），识别结果（含 5 条手动的）逐条一样。
 

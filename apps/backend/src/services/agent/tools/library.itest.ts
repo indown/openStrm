@@ -3,6 +3,7 @@
  *   - library_search：按名字找目录，给得出判断对不对的东西（文件名、画质、大小、位置）和直接转存要的 id；失效分享里的只报个数；没找到给下一步
  *   - library_works / library_work：按作品看，一部作品的全部版本、本地有没有、交给 share_save 的参数、剧分季的一起转存
  *   - library_add：收藏分享（一个或几个），已经收着的、认不出的
+ *   - library_match / library_sources：纠错写回、收藏的分享和失效分享里的作品；library_works 的片单、类型 / 地区筛、纠错要看的东西
  *
  *   CONFIG_DIR=... DATA_DIR=... pnpm test:file src/services/agent/tools/library.itest.ts
  */
@@ -12,14 +13,16 @@ import type { AgentToken } from "@openstrm/shared";
 import { createApiToken, deleteAllApiTokens } from "../../../db/repositories/api-tokens.js";
 import { writeAppSetting } from "../../../db/repositories/settings.js";
 import { seedLibrarySource, unseedLibrarySource } from "../../../test/library-seed.js";
-import { saveIdentified, unitsOfSource } from "../../../db/repositories/library-units.js";
+import { getUnit, saveDetails, saveIdentified, unitsOfSource } from "../../../db/repositories/library-units.js";
+import { setIdentifyDeps } from "../../library/identify.js";
+import type { TmdbDetails } from "../../tmdb.js";
 import { getAll, remove } from "../../../db/repositories/media-library.js";
 import { rebuildUnits } from "../../library/units.js";
 import { recordLibrarySave } from "../../library/saves.js";
 import { __test_resetOwned } from "../../library/owned.js";
 import type { ToolDef } from "../define.js";
 import { callTool, type ToolOutcome } from "../calls.js";
-import { libraryAddTool, librarySearchTool, libraryWorkTool, libraryWorksTool } from "./library.js";
+import { libraryAddTool, libraryMatchTool, librarySearchTool, librarySourcesTool, libraryWorkTool, libraryWorksTool } from "./library.js";
 import { toolsFor } from "./index.js";
 
 let reader: AgentToken;
@@ -208,5 +211,146 @@ test("library_add：一段话里几个链接一个一个收，已经收着的是
   } finally {
     for (const s of getAll()) if (s.id !== A.id && s.id !== B.id) remove(s.id);
   }
+});
+
+/** 换匹配要拿 TMDB 详情：假的几部 */
+const DETAILS: Record<string, Partial<TmdbDetails>> = {
+  "movie:13": { title: "阿甘正传", originalTitle: "Forrest Gump", year: "1994", genreIds: [35, 18], countries: ["US"] },
+  "tv:19885": { title: "神探夏洛克", originalTitle: "Sherlock", year: "2010", genreIds: [80, 18], countries: ["GB"] },
+};
+function stubTmdb(): void {
+  setIdentifyDeps({
+    tmdb: () => ({
+      search: async () => [],
+      season: async () => [],
+      details: async (kind: "movie" | "tv", id: number) => {
+        const d = DETAILS[`${kind}:${id}`];
+        return d
+          ? ({ id, mediaType: kind, enTitle: "", posterUrl: "", imdbId: "", genreIds: [], countries: [], originalLanguage: "en", aliases: [], ...d } as TmdbDetails)
+          : null;
+      },
+    }),
+  });
+}
+
+test("library_works：把握低 / 没认出的带纠错要看的（单元引用、目录名、样例文件名、备选）；library_match 写回：指定、不是影视、重新认，一条错不影响别的", async () => {
+  identifyPack();
+  stubTmdb();
+  try {
+    // 阿甘正传认得没把握，备选里有对的那部
+    const gump = unitsOfSource(A.id).find((u) => u.path.includes("阿甘正传"))!;
+    saveIdentified(
+      A.id,
+      gump.unitKey,
+      {
+        status: "done",
+        tmdbId: 999,
+        mediaType: "movie",
+        title: "阿甘外传",
+        originalTitle: "",
+        enTitle: "",
+        year: "1994",
+        posterUrl: "",
+        confidence: "low",
+        reason: "",
+        candidates: [{ tmdbId: 13, mediaType: "movie", title: "阿甘正传", year: "1994", posterUrl: "", overview: "", score: 5 }],
+        aka: "",
+      },
+      Math.floor(Date.now() / 1000),
+    );
+    const low = await runTool(libraryWorksTool, { view: "low" });
+    assert.equal(low.items.length, 1);
+    const item = low.items[0];
+    assert.equal(item.unit, `unit:${A.id}:${gump.unitKey}`);
+    assert.equal(item.name, "阿甘正传 4K原盘REMUX 杜比视界");
+    assert.equal(item.sampleFile, "Forrest.Gump.1994.2160p.BluRay.REMUX.mkv");
+    assert.deepEqual(item.candidates, [{ tmdbId: 13, type: "movie", title: "阿甘正传", year: "1994" }]);
+
+    const sherlock = unitsOfSource(A.id).filter((u) => u.path.includes("神探夏洛克"));
+    const d = await runTool(
+      libraryMatchTool,
+      {
+        items: [
+          { unit: item.unit, tmdbId: 13, type: "movie" },
+          { unit: `unit:${A.id}:${sherlock[0].unitKey}`, ignore: true },
+          { unit: `unit:${A.id}:${sherlock[1].unitKey}`, reidentify: true },
+          { unit: "不是单元引用", ignore: true },
+          { unit: item.unit, tmdbId: 13 },
+          { unit: item.unit, tmdbId: 424242, type: "movie" },
+        ],
+      },
+      runner,
+    );
+    assert.deepEqual(
+      d.results.map((r: { status: string }) => r.status),
+      ["matched", "ignored", "requeued", "failed", "failed", "failed"],
+    );
+    assert.equal(d.results[0].work, "movie:13");
+    assert.equal(d.results[0].title, "阿甘正传");
+    assert.match(d.results[5].error, /TMDB 上没有编号 424242/);
+    assert.equal(d.matched, 1);
+    assert.equal(d.failed, 3);
+    const fixed = getUnit(A.id, gump.unitKey)!;
+    assert.equal(fixed.status, "manual");
+    assert.deepEqual(fixed.genres, [35, 18], "换匹配顺手存上类型");
+    assert.equal(getUnit(A.id, sherlock[0].unitKey)!.status, "ignored");
+    assert.equal(getUnit(A.id, sherlock[1].unitKey)!.status, "pending");
+  } finally {
+    setIdentifyDeps(null);
+  }
+});
+
+test("library_sources：收藏的分享、死活、建索引、作品数；失效的附上里面认出来的作品；按状态筛", async () => {
+  identifyPack();
+  rebuildUnits(B.id);
+  const bUnit = unitsOfSource(B.id)[0];
+  saveIdentified(
+    B.id,
+    bUnit.unitKey,
+    { status: "done", tmdbId: 13, mediaType: "movie", title: "阿甘正传", originalTitle: "Forrest Gump", enTitle: "", year: "1994", posterUrl: "", confidence: "high", reason: "", candidates: [], aka: "" },
+    Math.floor(Date.now() / 1000),
+  );
+  const all = await runTool(librarySourcesTool, {});
+  assert.equal(all.counts.all, 2);
+  assert.equal(all.counts.expired, 1);
+  const a = all.items.find((i: { id: string }) => i.id === A.id);
+  assert.equal(a.title, "老K");
+  assert.equal(a.shareStatus, "ok");
+  assert.equal(a.index.status, "done");
+  assert.ok(a.works.total >= 3 && a.works.identified >= 3);
+  assert.equal(a.worksInside, undefined, "能用的分享不附作品");
+  const expired = await runTool(librarySourcesTool, { status: "expired" });
+  assert.deepEqual(expired.items.map((i: { id: string }) => i.id), [B.id]);
+  assert.deepEqual(expired.items[0].worksInside, { total: 1, works: [{ work: "movie:13", title: "阿甘正传", year: "1994" }] });
+  assert.match(expired.next, /library_work.*resource_search.*library_add/);
+  assert.equal((await runTool(librarySourcesTool, { status: "indexing" })).items.length, 0);
+});
+
+test("library_works：片单逐个查；按类型、地区筛（认不出的报错）；条目带类型、地区的中文名", async () => {
+  identifyPack();
+  for (const u of unitsOfSource(A.id)) {
+    if (u.path.includes("阿甘正传")) saveDetails(A.id, u.unitKey, { genres: [35, 18], countries: ["US"], originalLanguage: "en" });
+    if (u.path.includes("神探夏洛克")) saveDetails(A.id, u.unitKey, { genres: [80, 18, 9648], countries: ["GB"], originalLanguage: "en" });
+  }
+  const list = await runTool(libraryWorksTool, { titles: ["阿甘正传 1994", "sherlock", "不存在的片"] });
+  assert.deepEqual(
+    list.lookup.map((r: { query: string; found: boolean; work?: string }) => [r.query, r.found, r.work ?? null]),
+    [
+      ["阿甘正传 1994", true, "movie:13"],
+      ["sherlock", true, "tv:19885"],
+      ["不存在的片", false, null],
+    ],
+  );
+  assert.equal(list.found, 2);
+  assert.equal(list.missing, 1);
+
+  const crime = await runTool(libraryWorksTool, { genre: "犯罪" });
+  assert.deepEqual(crime.items.map((i: { work: string }) => i.work), ["tv:19885"]);
+  assert.deepEqual(crime.items[0].genres, ["犯罪", "剧情", "悬疑"]);
+  assert.deepEqual(crime.items[0].countries, ["英国"]);
+  assert.deepEqual((await runTool(libraryWorksTool, { country: "美国", view: "movie" })).items.map((i: { work: string }) => i.work), ["movie:13"]);
+  assert.deepEqual((await runTool(libraryWorksTool, { genre: "剧情", country: "英剧" })).items.map((i: { work: string }) => i.work), ["tv:19885"]);
+  assert.equal((await call(libraryWorksTool, { genre: "不存在的类型" })).ok, false);
+  assert.equal((await call(libraryWorksTool, { country: "火星" })).ok, false);
 });
 

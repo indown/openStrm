@@ -40,6 +40,8 @@ function groupToWork(g: units.WorkGroup): LibraryWork {
     size: g.size,
     seasons: g.seasons,
     addedAt: g.addedAt,
+    ...(g.genres.length ? { genres: g.genres } : {}),
+    ...(g.countries.length ? { countries: g.countries } : {}),
   };
 }
 
@@ -72,6 +74,10 @@ export interface WorksQuery {
   keyword?: string;
   /** `2024` 或者 `2020-2024` */
   year?: string;
+  /** TMDB 类型编号（任一对上）：genres.ts 的 genreIdsOf 从「科幻」换来 */
+  genres?: number[];
+  /** 国家 / 地区代码（任一对上）：countryCodesOf 从「韩国」换来 */
+  countries?: string[];
 }
 
 /** `2024` / `2020-2024` / `2024-2020`：认不出返回 null（不筛） */
@@ -125,6 +131,8 @@ export function listWorks(q: WorksQuery, owned?: Set<string>): LibraryWorksResul
   }
   const years = yearRange(q.year);
   if (years) list = list.filter((w) => Number(w.year) >= years[0] && Number(w.year) <= years[1]);
+  if (q.genres?.length) list = list.filter((w) => w.genres?.some((g) => q.genres!.includes(g)));
+  if (q.countries?.length) list = list.filter((w) => w.countries?.some((c) => q.countries!.includes(c)));
   if (q.sort === "title") list.sort(byTitle);
   else if (q.sort === "year") list.sort((a, b) => (b.year || "0").localeCompare(a.year || "0") || byTitle(a, b));
   else list.sort((a, b) => b.addedAt - a.addedAt || byTitle(a, b));
@@ -134,6 +142,43 @@ export function listWorks(q: WorksQuery, owned?: Set<string>): LibraryWorksResul
     counts,
     tmdbConfigured: !!readAppSettings().tmdb?.apiKey?.trim(),
   };
+}
+
+/**
+ * 「片名 年份」「片名 (2011)」→ 片名 + 年份：年份在最后、前面隔着空格或括号、不晚于明后年才算
+ * （「2012」「银翼杀手2049」「Blade Runner 2049」这种片名本身不拆）
+ */
+export function splitTitleYear(text: string): { name: string; year?: string } {
+  const m = /^(.*?\S)[\s(（]+((?:19|20)\d{2})[)）]?\s*$/.exec(text.trim());
+  return m && Number(m[2]) <= new Date().getFullYear() + 2 ? { name: m[1].trim(), year: m[2] } : { name: text.trim() };
+}
+
+export interface WorkLookup {
+  query: string;
+  /** 对上的那一部；对不上、或者说不准是哪部时是 null */
+  work: LibraryWork | null;
+  /** 名字对得上好几部（重名、翻拍）：前几部，让人挑 */
+  maybe: LibraryWork[];
+}
+
+/**
+ * 片单：一串片名逐个找收藏夹里认出来的作品。名字整个对上（正式名、原名、英文名）的优先；没有整个对上的，
+ * 只有一部名字包含它（或者它包含那部的名字）也算；给了年份要对上。owned 同 listWorks
+ */
+export function lookupWorks(titles: string[], owned?: Set<string>): WorkLookup[] {
+  const works = units.workGroups().map((g) => {
+    const w = groupToWork(g);
+    if (owned?.has(w.key)) w.owned = true;
+    return { w, names: [g.title, g.originalTitle, g.enTitle].map(normalizeTitle).filter(Boolean) };
+  });
+  return titles.map((query) => {
+    const { name, year } = splitTitleYear(query);
+    const n = normalizeTitle(name);
+    const pool = year ? works.filter((x) => x.w.year === year) : works;
+    const exact = n ? pool.filter((x) => x.names.includes(n)) : [];
+    const hits = exact.length || !n ? exact : pool.filter((x) => x.names.some((m) => m.includes(n) || (m.length >= 2 && n.includes(m))));
+    return hits.length === 1 ? { query, work: hits[0].w, maybe: [] } : { query, work: null, maybe: hits.slice(0, 3).map((x) => x.w) };
+  });
 }
 
 /** 一个单元连同它在哪个分享、分享死活、打开 / 转存要的东西 */
@@ -249,6 +294,7 @@ export function workDetail(key: string, local: LocalOwned | null = null): Librar
       size: Math.max(...list.map((u) => u.size)),
       seasons: [...new Set(list.flatMap((u) => u.seasons))].sort((a, b) => a - b),
       addedAt: Math.max(...list.map((u) => u.createdAt)),
+      ...detailsOfUnits(list),
     };
     const owned = ownedOfWork(work.mediaType!, work.tmdbId!, local);
     if (owned.length) work.owned = true;
@@ -262,6 +308,13 @@ export function workDetail(key: string, local: LocalOwned | null = null): Librar
   if (!view) return null;
   const owned = ownedOfUnit(row);
   return { work: { ...unitToWork(row), ...(owned.length ? { owned: true } : {}) }, units: [view], owned, seriesGroups: [] };
+}
+
+/** 作品的类型、国家 / 地区：几个单元是同一部，取第一个补上了的 */
+function detailsOfUnits(list: units.UnitRow[]): Pick<LibraryWork, "genres" | "countries"> {
+  const u = list.find((x) => x.genres !== null);
+  if (!u) return {};
+  return { ...(u.genres?.length ? { genres: u.genres } : {}), ...(u.countries?.length ? { countries: u.countries } : {}) };
 }
 
 function rankOf(u: units.UnitRow): number {

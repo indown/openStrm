@@ -237,7 +237,7 @@ test("只读令牌只看到只读工具；新旧两版协议的客户端都连�
   }
 });
 
-test("prompts：「找片入库」按令牌展开（只读令牌不提 share_save）；用不上的令牌不声明 prompts 能力", async () => {
+test("prompts：「找片入库」和收藏夹的三个流程按令牌展开（只读令牌不提 share_save）；用不上的令牌不声明 prompts 能力", async () => {
   const read = await connect(readToken);
   const daily = await connect(dailyToken, true);
   const syncOnly = await connect(createApiToken({ name: "只同步", scopes: ["read"], toolsets: ["sync"], expiresAt: null }).token);
@@ -245,7 +245,12 @@ test("prompts：「找片入库」按令牌展开（只读令牌不提 share_sav
     const { prompts } = await read.listPrompts();
     assert.deepEqual(
       prompts.map((p) => [p.name, p.title, p.arguments?.map((a) => [a.name, a.required])]),
-      [["find_and_save", "找片入库", [["title", true], ["type", false]]]],
+      [
+        ["find_and_save", "找片入库", [["title", true], ["type", false]]],
+        ["library_fix", "收藏纠错", [["which", false]]],
+        ["library_rescue", "失效找回", []],
+        ["library_series", "补全剧集", [["title", true]]],
+      ],
     );
     const readText = (await read.getPrompt({ name: "find_and_save", arguments: { title: "沙丘2" } })).messages[0].content as { type: string; text: string };
     assert.equal(readText.type, "text");
@@ -255,6 +260,13 @@ test("prompts：「找片入库」按令牌展开（只读令牌不提 share_sav
     const dailyText = (await daily.getPrompt({ name: "find_and_save", arguments: { title: "繁花", type: "剧集" } })).messages[0].content as { text: string };
     assert.match(dailyText.text, /share_save，带 organize: true/);
     await assert.rejects(daily.getPrompt({ name: "find_and_save", arguments: { title: "" } }), /Invalid arguments/);
+    // 没参数的、带参数的收藏夹流程都展得开
+    const rescue = (await daily.getPrompt({ name: "library_rescue" })).messages[0].content as { text: string };
+    assert.match(rescue.text, /library_sources（status: expired）/);
+    const series = (await read.getPrompt({ name: "library_series", arguments: { title: "权力的游戏" } })).messages[0].content as { text: string };
+    assert.match(series.text, /^帮我把「权力的游戏」缺的季补上/);
+    assert.doesNotMatch(series.text, /share_save，带/, "只读令牌不转存");
+    await assert.rejects(read.getPrompt({ name: "library_series", arguments: {} }), /Invalid arguments/);
 
     assert.equal(syncOnly.getServerCapabilities()?.prompts, undefined);
   } finally {

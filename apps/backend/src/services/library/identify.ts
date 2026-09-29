@@ -114,10 +114,12 @@ async function identifyOne(u: units.UnitRow, tmdb: TmdbApi): Promise<OrganizeMat
   const r = await identifyUnit({ unit, evidence: { known: idTagFromName(u.rawName, u.kindHint) }, episodeTitles: false, maxTitles: 5, strictStop: true }, tmdb);
   const m = r.match ? adjustConfidence(r.match, titles, u.parsedYear) : null;
   let aka = "";
+  let details: units.UnitDetails | undefined;
   if (m) {
-    // 别名在详情里（有缓存，不多花请求）
+    // 别名、类型、国家 / 地区在详情里（有缓存，不多花请求）
     const d = await tmdb.details(m.mediaType, m.tmdbId);
     aka = akaOf([m.title, m.originalTitle, m.enTitle, ...(d?.aliases ?? [])]);
+    if (d) details = detailsOf(d);
   }
   units.saveIdentified(
     u.sourceId,
@@ -135,11 +137,27 @@ async function identifyOne(u: units.UnitRow, tmdb: TmdbApi): Promise<OrganizeMat
       reason: m?.reason ?? (titles.length ? "TMDB 上没搜到" : "名字里没有片名"),
       candidates: m?.candidates ?? [],
       aka,
+      details,
     },
     deps.now(),
   );
   applyAka(u.sourceId, u.unitKey);
   return m;
+}
+
+const detailsOf = (d: { genreIds: number[]; countries: string[]; originalLanguage: string }): units.UnitDetails => ({
+  genres: d.genreIds,
+  countries: d.countries,
+  originalLanguage: d.originalLanguage,
+});
+
+/**
+ * 以前认出来的补类型、国家 / 地区（识别工人闲下来时一个一个补，不重认）。详情多半有缓存；
+ * TMDB 上没了的记成空的，别一直补
+ */
+async function backfillDetails(u: units.UnitRow, tmdb: TmdbApi): Promise<void> {
+  const d = await tmdb.details(u.mediaType!, u.tmdbId!);
+  units.saveDetails(u.sourceId, u.unitKey, d ? detailsOf(d) : { genres: [], countries: [], originalLanguage: "" });
 }
 
 /** 一个单元的 aka 写到根节点：自己的目录，或者整个来源就这一部 */
@@ -182,6 +200,7 @@ export async function matchUnit(sourceId: string, unitKey: string, mediaType: "m
       reason: "手动指定",
       candidates: u.candidates,
       aka: akaOf([d.title, d.originalTitle, d.enTitle, ...d.aliases]),
+      details: detailsOf(d),
     },
     deps.now(),
   );
@@ -256,6 +275,23 @@ async function loop(): Promise<void> {
       if (!tmdb) break;
       const u = units.nextPendingUnit(now);
       if (!u) {
+        // 没有要认的：以前认出来的补类型、国家 / 地区；一时出错就歇一会儿，别的错记成空的跳过
+        const missing = units.nextMissingDetails();
+        if (missing) {
+          try {
+            await backfillDetails(missing, tmdb);
+          } catch (err) {
+            if (isAbortError(err)) break;
+            if (tmdbRetryable(err) || isAxiosLike(err)) {
+              pausedUntil = now + (tmdbRetryable(err) ? deps.pauseS : deps.authPauseS);
+              log.warn({ unit: missing.path, err: messageOf(err).slice(0, 200) }, "补类型时 TMDB 出错，过一阵再补");
+            } else {
+              units.saveDetails(missing.sourceId, missing.unitKey, { genres: [], countries: [], originalLanguage: "" });
+              log.error({ err, unit: missing.path }, "补类型出错，跳过这一个");
+            }
+          }
+          continue;
+        }
         const at = units.nextUnitRetryAt();
         if (at !== null) scheduleWake(at - now);
         break;

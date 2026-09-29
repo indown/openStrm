@@ -26,6 +26,8 @@ import { __test_whenIdle as indexerIdle, setIndexerDeps, startIndexer, stopIndex
 import { __test_whenIdle as identifyIdle, akaOf, kickIdentify, setIdentifyDeps, startLibraryIdentify, stopLibraryIdentify } from "../../services/library/identify.js";
 import { rebuildUnits, rebuildUnitsIfStale } from "../../services/library/units.js";
 import { recordLibrarySave } from "../../services/library/saves.js";
+import { listWorks, lookupWorks } from "../../services/library/works.js";
+import { sqlite } from "../../db/client.js";
 import type { TmdbApi } from "../../services/organize/identify.js";
 import type { TmdbDetails, TmdbSearchResult } from "../../services/tmdb.js";
 import { FakeDrive, type FakeTree } from "../../test/fake-drive.js";
@@ -75,6 +77,12 @@ const catalog: Record<string, TmdbSearchResult[]> = {
   "the matrix": [MOVIE(603, "黑客帝国", "The Matrix", "1999")],
 };
 const aliases: Record<number, string[]> = { 19885: ["新福尔摩斯", "BBC Sherlock"], 13: ["福雷斯特·冈普"] };
+/** 详情里的类型、国家 / 地区（收藏夹按类型、地区筛） */
+const facts: Record<number, { genreIds: number[]; countries: string[]; originalLanguage: string }> = {
+  13: { genreIds: [35, 18, 10749], countries: ["US"], originalLanguage: "en" },
+  60243: { genreIds: [18], countries: ["IR"], originalLanguage: "fa" },
+  19885: { genreIds: [80, 18, 9648], countries: ["GB"], originalLanguage: "en" },
+};
 let tmdbCalls = 0;
 let tmdbDown = false;
 const fakeTmdb: TmdbApi = {
@@ -98,9 +106,9 @@ const fakeTmdb: TmdbApi = {
       year: hit.year,
       posterUrl: hit.posterUrl,
       imdbId: "",
-      genreIds: [],
-      countries: [],
-      originalLanguage: "",
+      genreIds: facts[id]?.genreIds ?? [],
+      countries: facts[id]?.countries ?? [],
+      originalLanguage: facts[id]?.originalLanguage ?? "",
       aliases: aliases[id] ?? [],
     };
   },
@@ -402,6 +410,53 @@ test("从收藏夹存过的记下来：存了剧所在的目录也算里面的�
   remove(entry.id);
   await addPack();
   assert.equal((await detail("tv:19885")).owned.length, 0, "来源删掉，记录跟着删");
+});
+
+test("认出来的顺手存上类型、国家 / 地区，能按它们筛；以前认的（没存）识别工人闲下来时补，不重认", async () => {
+  const entry = await addPack();
+  const gump = unitsOfSource(entry.id).find((u) => u.parsedTitle === "阿甘正传")!;
+  assert.deepEqual(gump.genres, [35, 18, 10749]);
+  assert.deepEqual(gump.countries, ["US"]);
+  assert.equal(gump.originalLanguage, "en");
+  const q = { view: "all" as const, sort: "title" as const, offset: 0, limit: 50 };
+  assert.deepEqual(listWorks({ ...q, genres: [18] }).works.map((w) => w.key).sort(), ["movie:13", "movie:60243", "tv:19885"]);
+  assert.deepEqual(listWorks({ ...q, genres: [9648] }).works.map((w) => w.key), ["tv:19885"]);
+  assert.deepEqual(listWorks({ ...q, countries: ["GB", "IR"] }).works.map((w) => w.key).sort(), ["movie:60243", "tv:19885"]);
+  assert.deepEqual(listWorks({ ...q, genres: [18], countries: ["US"] }).works.map((w) => w.key), ["movie:13"]);
+  assert.deepEqual((await detail("tv:19885")).work.countries, ["GB"]);
+
+  // 升级上来的：认过但没存类型——工人补上，识别结果（手动的也一样）不动
+  sqlite.prepare("UPDATE library_units SET genres = NULL, countries = NULL, original_language = NULL WHERE source_id = ?").run(entry.id);
+  const before = tmdbCalls;
+  kickIdentify();
+  await settle();
+  const after = unitsOfSource(entry.id).find((u) => u.parsedTitle === "阿甘正传")!;
+  assert.deepEqual(after.genres, [35, 18, 10749]);
+  assert.equal(after.status, "done");
+  assert.equal(after.tmdbId, 13);
+  assert.ok(tmdbCalls > before, "补的时候问了详情");
+  assert.ok(unitsOfSource(entry.id).every((u) => u.tmdbId == null || u.genres !== null), "认出来的都补上了");
+});
+
+test("片单：一串片名逐个找，整个名字对上的优先，原名也算，带年份要对上；重名给几部让人挑；owned 同海报墙", async () => {
+  await addPack();
+  const rows = lookupWorks(["阿甘正传 1994", "Forrest Gump", "大白鲨", "神探夏洛克 2010", "阿甘正传 2001", "不存在的片"], new Set(["movie:13"]));
+  assert.deepEqual(
+    rows.map((r) => [r.query, r.work?.key ?? null, r.maybe.map((w) => w.key)]),
+    [
+      ["阿甘正传 1994", "movie:13", []],
+      ["Forrest Gump", "movie:13", []],
+      ["大白鲨", "movie:578", []],
+      ["神探夏洛克 2010", "tv:19885", []],
+      ["阿甘正传 2001", null, []],
+      ["不存在的片", null, []],
+    ],
+  );
+  assert.equal(rows[0].work?.owned, true);
+  // 名字只包含、又有好几部：说不准，给几部
+  const loose = lookupWorks(["大白"]);
+  assert.equal(loose[0].work, null);
+  assert.deepEqual(loose[0].maybe.map((w) => w.key).sort(), ["movie:578", "movie:579"]);
 });
 
 test("aka：名字归一化、去重、限长", () => {

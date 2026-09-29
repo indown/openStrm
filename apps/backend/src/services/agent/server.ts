@@ -13,6 +13,7 @@
  * 老协议按请求无状态服务，拿不到客户端能力，SDK 的 legacy shim 发不出确认框、会直接回错，所以 canConfirm 是 false，
  * 工具退回对话里确认。
  */
+import type { z } from "zod";
 import {
   CLIENT_CAPABILITIES_META_KEY,
   McpServer,
@@ -142,8 +143,12 @@ export function buildAgentServer(caller: AgentCaller): McpServer {
   // prompt 展开只是拼一段文字，不调工具；注册了才声明 prompts 能力，用不上的令牌连这一项都看不到
   const names = new Set(tools.map((t) => t.name));
   for (const prompt of promptsFor(names)) {
-    server.registerPrompt(prompt.name, { title: prompt.title, description: prompt.description, argsSchema: prompt.args }, (args) => ({
-      messages: [{ role: "user", content: { type: "text", text: prompt.render(args, names) } }],
+    // 各个 prompt 的参数不一样（都是字符串）：SDK 按 argsSchema 校验过再交给这里。
+    // 参数全是可选的（包括一个都没有的）：客户端 prompts/get 可以不带 arguments，SDK 拿 undefined 去校验对象会拒，套一层 optional
+    const allOptional = Object.values(prompt.args.shape).every((field) => (field as z.ZodType).safeParse(undefined).success);
+    const argsSchema = allOptional ? prompt.args.optional() : prompt.args;
+    server.registerPrompt(prompt.name, { title: prompt.title, description: prompt.description, argsSchema }, (args?: Record<string, string | undefined>) => ({
+      messages: [{ role: "user" as const, content: { type: "text" as const, text: prompt.render(args ?? {}, names) } }],
     }));
   }
   return server;

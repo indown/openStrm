@@ -202,6 +202,13 @@ export const libraryUnits = sqliteTable(
     reason: text("reason").notNull().default(""),
     /** 备选（JSON 数组，OrganizeCandidate） */
     candidates: text("candidates").notNull().default("[]"),
+    /**
+     * 认出来的作品在 TMDB 上的类型编号、国家 / 地区代码（JSON 数组）、原语言：收藏夹按「科幻」「韩国」筛。
+     * null = 还没从 TMDB 详情补（认出来的时候顺手存；以前认的由识别工人闲下来时补，不重认）
+     */
+    genres: text("genres"),
+    countries: text("countries"),
+    originalLanguage: text("original_language"),
     /** 认出来的名字（归一化、| 连着）：写到根节点的 aka */
     aka: text("aka").notNull().default(""),
     identifiedAt: integer("identified_at"),

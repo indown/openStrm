@@ -40,6 +40,10 @@ export interface UnitRow extends BuiltUnit {
   confidence: LibraryConfidence;
   reason: string;
   candidates: OrganizeCandidate[];
+  /** TMDB 类型编号、国家 / 地区代码、原语言；null = 还没从详情补 */
+  genres: number[] | null;
+  countries: string[] | null;
+  originalLanguage: string | null;
   aka: string;
   identifiedAt: number | null;
   retryAt: number | null;
@@ -88,6 +92,9 @@ export function toUnit(r: Row): UnitRow {
     confidence: coerceConfidence(r.confidence),
     reason: r.reason,
     candidates: parseJson<OrganizeCandidate[]>(r.candidates, []),
+    genres: r.genres == null ? null : parseJson<number[]>(r.genres, []),
+    countries: r.countries == null ? null : parseJson<string[]>(r.countries, []),
+    originalLanguage: r.originalLanguage ?? null,
     aka: r.aka,
     identifiedAt: r.identifiedAt ?? null,
     retryAt: r.retryAt ?? null,
@@ -109,6 +116,9 @@ const RESET = {
   confidence: "none",
   reason: "",
   candidates: "[]",
+  genres: null,
+  countries: null,
+  originalLanguage: null,
   aka: "",
   identifiedAt: null,
   retryAt: null,
@@ -257,13 +267,54 @@ export interface Identified {
   reason: string;
   candidates: OrganizeCandidate[];
   aka: string;
+  /** 顺手从 TMDB 详情拿到的类型、国家 / 地区；没给就留空等工人补 */
+  details?: UnitDetails;
 }
 
 export function saveIdentified(sourceId: string, unitKey: string, v: Identified, now: number): void {
+  const { details, ...rest } = v;
   db.update(libraryUnits)
-    .set({ ...v, candidates: JSON.stringify(v.candidates), identifiedAt: now, retryAt: null, error: "" })
+    .set({ ...rest, ...detailColumns(v.tmdbId != null ? details : undefined), candidates: JSON.stringify(v.candidates), identifiedAt: now, retryAt: null, error: "" })
     .where(keyOf(sourceId, unitKey))
     .run();
+}
+
+/** 从 TMDB 详情来的类型、国家 / 地区、原语言 */
+export interface UnitDetails {
+  genres: number[];
+  countries: string[];
+  originalLanguage: string;
+}
+
+/** 没给（没认出、详情没拿到）就是 null：以后由识别工人补 */
+const detailColumns = (d: UnitDetails | undefined) =>
+  d ? { genres: JSON.stringify(d.genres), countries: JSON.stringify(d.countries), originalLanguage: d.originalLanguage } : { genres: null, countries: null, originalLanguage: null };
+
+/** 补类型、国家 / 地区（不动识别结果） */
+export function saveDetails(sourceId: string, unitKey: string, d: UnitDetails): void {
+  db.update(libraryUnits).set(detailColumns(d)).where(keyOf(sourceId, unitKey)).run();
+}
+
+/** 认出来了、还没补类型的：先来的先补 */
+export function nextMissingDetails(): UnitRow | null {
+  const r = db
+    .select()
+    .from(libraryUnits)
+    .where(and(inArray(libraryUnits.status, ["done", "manual"]), isNotNull(libraryUnits.tmdbId), isNull(libraryUnits.genres)))
+    .orderBy(asc(libraryUnits.createdAt))
+    .limit(1)
+    .get();
+  return r ? toUnit(r) : null;
+}
+
+/** 认出来了、还没补类型的有几个（按类型、地区筛时告诉人结果可能不全） */
+export function countMissingDetails(): number {
+  const r = db
+    .select({ n: sql<number>`count(*)` })
+    .from(libraryUnits)
+    .where(and(inArray(libraryUnits.status, ["done", "manual"]), isNotNull(libraryUnits.tmdbId), isNull(libraryUnits.genres)))
+    .get();
+  return r?.n ?? 0;
 }
 
 export function setUnitRetry(sourceId: string, unitKey: string, retryAt: number, error: string): void {
@@ -323,6 +374,8 @@ export interface WorkGroup {
   size: number;
   seasons: number[];
   addedAt: number;
+  genres: number[];
+  countries: string[];
 }
 
 const CONF_RANK = sql<number>`max(case when ${libraryUnits.status} = 'manual' or ${libraryUnits.confidence} = 'high' then 3 when ${libraryUnits.confidence} = 'medium' then 2 when ${libraryUnits.confidence} = 'low' then 1 else 0 end)`;
@@ -345,6 +398,8 @@ export function workGroups(): WorkGroup[] {
       size: sql<number>`max(${libraryUnits.size})`,
       seasons: sql<string>`group_concat(${libraryUnits.seasons}, ';')`,
       addedAt: sql<number>`max(${libraryUnits.createdAt})`,
+      genres: sql<string | null>`max(${libraryUnits.genres})`,
+      countries: sql<string | null>`max(${libraryUnits.countries})`,
     })
     .from(libraryUnits)
     .innerJoin(mediaLibrary, eq(mediaLibrary.id, libraryUnits.sourceId))
@@ -367,6 +422,8 @@ export function workGroups(): WorkGroup[] {
       size: r.size ?? 0,
       seasons: [...new Set((r.seasons ?? "").split(";").flatMap((s) => parseJson<number[]>(s, [])))].sort((a, b) => a - b),
       addedAt: r.addedAt ?? 0,
+      genres: parseJson<number[]>(r.genres ?? "[]", []),
+      countries: parseJson<string[]>(r.countries ?? "[]", []),
     }));
 }
 

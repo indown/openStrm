@@ -195,6 +195,9 @@ export interface LibraryWork {
   addedAt: number;
   /** 已经有了：本地 strm 目录里认得出是这一部，或者从收藏夹转存过（没标的不等于没有：没整理过的目录认不出） */
   owned?: boolean;
+  /** TMDB 类型编号、国家 / 地区代码（认出来以后从详情补的，还没补上时没有） */
+  genres?: number[];
+  countries?: string[];
 }
 
 export type LibraryWorksView = "all" | "movie" | "tv" | "low" | "none";
