@@ -14,7 +14,7 @@ import {
   FolderTree,
   History,
   KeyRound,
-  Library,
+  Bookmark,
   Link2Off,
   ListChecks,
   LogOut,
@@ -351,7 +351,7 @@ export function CommandPalette({ open, onOpenChange, onOpenShare, onInput, onOpe
             </CommandGroup>
 
             {library.hits.length > 0 && (
-              <CommandGroup heading={`影库${library.total > library.hits.length ? ` · 共 ${library.total} 条` : ""}`}>
+              <CommandGroup heading={`收藏夹${library.total > library.hits.length ? ` · 共 ${library.total} 条` : ""}`}>
                 {library.hits.map((hit) => (
                   <CommandItem
                     key={`${hit.sourceId}:${hit.nodeId}`}
@@ -369,8 +369,8 @@ export function CommandPalette({ open, onOpenChange, onOpenShare, onInput, onOpe
                   value={`${LIBRARY_ITEM}all`}
                   onSelect={() => run(() => router.push(`/library?q=${encodeURIComponent(query.trim())}`))}
                 >
-                  <Library />
-                  <span className="truncate">在影库里看全部「{query.trim()}」</span>
+                  <Bookmark />
+                  <span className="truncate">在收藏夹里看全部「{query.trim()}」</span>
                 </CommandItem>
               </CommandGroup>
             )}

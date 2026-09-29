@@ -235,7 +235,7 @@ function render(event: NotifyEvent): string {
     case "follow-expired":
       return `⚠️ <b>追更已停止</b>\n${esc(event.name)}\n分享已经打不开了：${esc(event.reason)}\n需要的话到「追更」页换个链接再继续。`;
     case "library-expired":
-      return `⚠️ <b>影库里的分享失效了</b>\n${esc(event.shareTitle)}${event.sources > 1 ? `（收了 ${event.sources} 处）` : ""}\n里面的资源已经转存不了；到「影库」页可以找替代、更新链接或清理。`;
+      return `⚠️ <b>收藏夹里的分享失效了</b>\n${esc(event.shareTitle)}${event.sources > 1 ? `（收了 ${event.sources} 处）` : ""}\n里面的资源已经转存不了；到「收藏夹」页可以找替代、更新链接或清理。`;
     case "follow-stale":
       return `💤 <b>追更已暂停</b>\n${esc(event.name)}\n${event.days} 天没有更新，先停下不再检查；要继续到「追更」页点「继续」。`;
     case "update-available":

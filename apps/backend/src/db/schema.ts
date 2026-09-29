@@ -219,6 +219,27 @@ export const libraryUnits = sqliteTable(
 );
 
 /**
+ * 从收藏夹转存过的作品单元：存进了哪个任务、什么时候（「已经有了」的一个来源，另一个是本地 strm 目录里认得出 tmdbId 的）。
+ * 单元键重切时不变，来源删掉时跟着删
+ */
+export const librarySaves = sqliteTable(
+  "library_saves",
+  {
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => mediaLibrary.id, { onDelete: "cascade" }),
+    unitKey: text("unit_key").notNull(),
+    taskId: text("task_id").notNull(),
+    /** 存进任务目录下的哪个子目录 */
+    subPath: text("sub_path").notNull().default(""),
+    savedAt: integer("saved_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.sourceId, t.unitKey, t.taskId] }),
+  }),
+);
+
+/**
  * 115 文件/目录 id → 绝对网盘路径 的缓存。
  * 生活事件只带 parent_id，必须靠这张表把 cid 还原成路径，
  * 同时也是 move / rename 事件定位「旧路径」的唯一依据。

@@ -463,7 +463,7 @@ function helpText(settings: AppSettings): string {
     "/status 正在跑的任务、云下载回执、网盘监控",
     "/history 最近的执行记录",
     "/offline 最近的云下载",
-    `/s 片名 先搜影库，再搜网盘分享和磁力（${deps.resourceSearchConfigured() ? "私聊里直接发片名也行" : "网上搜要先在设置页配置资源搜索，现在只搜影库"}）`,
+    `/s 片名 先搜收藏夹，再搜网盘分享和磁力（${deps.resourceSearchConfigured() ? "私聊里直接发片名也行" : "网上搜要先在设置页配置资源搜索，现在只搜收藏夹"}）`,
     "/cancel 取消正在运行的任务",
     "/id 查看 chat id",
   ].join("\n");
@@ -877,7 +877,7 @@ function libraryLines(keyword: string): string[] {
   const size = (b: number | null) =>
     b && b > 0 ? ` · ${b >= 1024 ** 4 ? `${(b / 1024 ** 4).toFixed(1)}T` : b >= 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(1)}G` : `${Math.max(1, Math.round(b / 1024 ** 2))}M`}` : "";
   return [
-    `📚 <b>影库里有 ${r.total} 条</b>${r.total > r.hits.length ? `（列前 ${r.hits.length} 条）` : ""}`,
+    `🔖 <b>收藏夹里有 ${r.total} 条</b>${r.total > r.hits.length ? `（列前 ${r.hits.length} 条）` : ""}`,
     ...r.hits.map((h) => {
       // 分享标题常和第一层目录同名（「老K / 老K / 1. 电影」）：相邻重复的只留一个
       const where = [h.shareTitle, ...h.crumbs.slice(0, -1).map((c) => c.name)].filter((seg, i, all) => seg && seg !== all[i - 1]).join(" / ");
@@ -887,7 +887,7 @@ function libraryLines(keyword: string): string[] {
       const work = w && (w.title !== h.name || w.year) ? ` · ${w.confidence === "low" ? "可能是" : ""}《${esc(shortName(w.title, 30))}》${w.year ? w.year : ""}` : "";
       return `• ${esc(shortName(h.name, 40))}${work}${size(h.size)}${flag}\n  <i>${esc(shortName(where, 40))}</i>`;
     }),
-    "到网页「影库」页打开、转存。",
+    "到网页「收藏夹」页打开、转存。",
   ];
 }
 
@@ -909,8 +909,8 @@ async function startSearch(bot: BotLike, chatId: string, userId: number, keyword
     await bot.sendMessage(
       chatId,
       library.length
-        ? [...library, "", "网上搜要先在设置页配置资源搜索，这次只搜了影库。"].join("\n")
-        : `影库里没有「${esc(kw)}」；${esc(PANSOU_NOT_CONFIGURED)}，网上搜不了。`,
+        ? [...library, "", "网上搜要先在设置页配置资源搜索，这次只搜了收藏夹。"].join("\n")
+        : `收藏夹里没有「${esc(kw)}」；${esc(PANSOU_NOT_CONFIGURED)}，网上搜不了。`,
     );
     return;
   }

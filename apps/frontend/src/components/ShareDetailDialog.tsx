@@ -324,13 +324,13 @@ export function ShareDetailDialog({
       );
       const name = data.entry.title || data.entry.rawName || data.entry.shareCode;
       toast.success(
-        `${filesOnly ? `影库按目录收：已把「${atRoot ? name : current.name}」整个加进来` : `已加入影库：${name}`}，正在建索引${data.absorbed ? `；之前单独收的 ${data.absorbed} 个子目录并进来了` : ""}`,
+        `${filesOnly ? `收藏夹按目录收：已把「${atRoot ? name : current.name}」整个收进来` : `已收藏：${name}`}，正在建索引${data.absorbed ? `；之前单独收的 ${data.absorbed} 个子目录并进来了` : ""}`,
       );
       if (filesOnly) setSelectedItems(new Map());
       notifyLibraryChanged();
     } catch (err) {
       const status = (err as { response?: { status?: number } })?.response?.status;
-      toast.error(apiErrorMessage(err, status === 409 ? "该内容已在影库中" : "加入影库失败"));
+      toast.error(apiErrorMessage(err, status === 409 ? "该内容已在收藏夹里" : "收藏失败"));
     } finally {
       setAddingToLibrary(false);
     }
@@ -382,16 +382,16 @@ export function ShareDetailDialog({
                     selectedDirCount > 0
                       ? `加入选中的 ${selectedDirCount} 个文件夹`
                       : breadcrumb.length > 1
-                        ? `把「${breadcrumb[breadcrumb.length - 1].name}」整个加入影库（影库按目录收，只勾文件也是这样）`
-                        : "把整个分享加入影库：目录树会抄下来建索引，里面的每一部都能搜到"
+                        ? `把「${breadcrumb[breadcrumb.length - 1].name}」整个收进收藏夹（收藏夹按目录收，只勾文件也是这样）`
+                        : "把整个分享收进收藏夹：目录树会抄下来建索引，里面的每一部都能搜到"
                   }
                 >
                   <BookmarkPlus className="h-4 w-4 mr-1" />
                   {addingToLibrary
                     ? "加入中..."
                     : selectedDirCount > 0
-                      ? `加入影库（${selectedDirCount}）`
-                      : "加入影库"}
+                      ? `收藏（${selectedDirCount}）`
+                      : "收藏"}
                 </Button>
               </div>
             )}

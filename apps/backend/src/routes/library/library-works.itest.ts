@@ -25,6 +25,7 @@ import { setLibraryHealthDeps, startLibraryHealth, stopLibraryHealth } from "../
 import { __test_whenIdle as indexerIdle, setIndexerDeps, startIndexer, stopIndexer } from "../../services/library/indexer.js";
 import { __test_whenIdle as identifyIdle, akaOf, kickIdentify, setIdentifyDeps, startLibraryIdentify, stopLibraryIdentify } from "../../services/library/identify.js";
 import { rebuildUnits, rebuildUnitsIfStale } from "../../services/library/units.js";
+import { recordLibrarySave } from "../../services/library/saves.js";
 import type { TmdbApi } from "../../services/organize/identify.js";
 import type { TmdbDetails, TmdbSearchResult } from "../../services/tmdb.js";
 import { FakeDrive, type FakeTree } from "../../test/fake-drive.js";
@@ -233,6 +234,9 @@ test("识别：认出来的挂到结果上，正式名 / 原名 / 别名进搜�
   assert.deepEqual(item.tmdb, { id: 13, type: "movie", title: "阿甘正传", year: "1994", confidence: "high" });
   // 一个分类目录不因为里面有作品就挂作品
   assert.equal((await search("1. 电影")).hits.find((h) => h.name === "1. 电影")?.work, undefined);
+  // 剧目录自己不是单元、里面的两季都认成了同一部：挂上；合集目录里是两部，不挂
+  assert.equal((await search("神探夏洛克")).hits.find((h) => h.name === "神探夏洛克")?.work?.tmdbId, 19885);
+  assert.equal((await search("大白鲨 4部")).hits.find((h) => h.name.startsWith("大白鲨 4部"))?.work, undefined);
 
   const w = await works();
   assert.equal(w.tmdbConfigured, true);
@@ -358,6 +362,46 @@ test("已失效分享里的作品不进海报墙，作品弹框里照样列出�
   assert.equal(w.works.length, 0);
   const d = await detail("movie:13");
   assert.equal(d.units[0].health.status, "expired");
+});
+
+test("按名字 / 年份筛（原名、英文名也算）；剧的几季分开放在同一个目录下的，作品详情给一组「一起转存」", async () => {
+  await addPack();
+  assert.deepEqual((await works("?keyword=forrest")).works.map((w) => w.key), ["movie:13"], "英文原名");
+  assert.deepEqual((await works("?keyword=%E5%A4%A7%E7%99%BD%E9%B2%A8")).works.map((w) => w.key).sort(), ["movie:578", "movie:579"]);
+  assert.deepEqual((await works("?year=1975-1978&sort=year")).works.map((w) => w.key), ["movie:579", "movie:578"]);
+  assert.deepEqual((await works("?year=1994")).works.map((w) => w.key), ["movie:13"]);
+  const sherlock = await detail("tv:19885");
+  assert.equal(sherlock.seriesGroups.length, 1);
+  assert.equal(sherlock.seriesGroups[0].folder, "神探夏洛克");
+  assert.deepEqual(sherlock.seriesGroups[0].seasons, [1, 2]);
+  const bySeason = sherlock.seriesGroups[0].units.map((k) => sherlock.units.find((u) => `${u.sourceId}:${u.unitKey}` === k)!.seasons[0]);
+  assert.deepEqual(bySeason, [1, 2], "按季排好");
+  assert.deepEqual((await detail("movie:13")).seriesGroups, [], "电影不给");
+});
+
+test("从收藏夹存过的记下来：存了剧所在的目录也算里面的每一季；作品详情列出存到哪，海报墙标「已有」；来源删掉记录跟着没", async () => {
+  const entry = await addPack();
+  assert.equal(recordLibrarySave({ shareCode: "pack", itemIds: [tree.get("/老K/2. 剧集/神探夏洛克")!.id], taskId: "t-tv", subPath: "美剧" }, now), 2);
+  const sherlock = await detail("tv:19885");
+  assert.equal(sherlock.work.owned, true);
+  assert.equal(sherlock.owned.length, 2);
+  assert.ok(sherlock.owned.every((o) => o.via === "saved" && o.taskId === "t-tv" && o.path.startsWith("美剧/神探夏洛克 第") && o.savedAt === now));
+  const wall = await works();
+  assert.equal(wall.works.find((w) => w.key === "tv:19885")?.owned, true);
+  assert.equal(wall.works.find((w) => w.key === "movie:13")?.owned, undefined);
+
+  // 只存了目录里的一个文件也算存过这一部；同一个任务再存一次只留一条
+  const gumpFile = tree.get("/老K/1. 电影/阿甘正传 4K原盘REMUX 杜比视界/Forrest.Gump.1994.2160p.BluRay.REMUX.mkv")!.id;
+  recordLibrarySave({ shareCode: "pack", itemIds: [gumpFile], taskId: "t-movie", subPath: "" }, now);
+  recordLibrarySave({ shareCode: "pack", itemIds: [gumpFile], taskId: "t-movie", subPath: "" }, now + 5);
+  const gump = await detail("movie:13");
+  assert.deepEqual(gump.owned.map((o) => [o.via, o.taskId, o.savedAt]), [["saved", "t-movie", now + 5]]);
+  assert.equal((await detail("movie:578")).owned.length, 0, "同一个分类目录里别的片不算");
+  assert.equal(recordLibrarySave({ shareCode: "other", itemIds: [gumpFile], taskId: "t-movie", subPath: "" }, now), 0, "不在收藏夹里的分享不记");
+
+  remove(entry.id);
+  await addPack();
+  assert.equal((await detail("tv:19885")).owned.length, 0, "来源删掉，记录跟着删");
 });
 
 test("aka：名字归一化、去重、限长", () => {

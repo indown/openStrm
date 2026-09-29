@@ -26,6 +26,7 @@ import { USAGE_NOTES } from "../instructions.js";
 import { taskBrief } from "../resolve.js";
 import { organizeUiPath, runBrief } from "./organize-view.js";
 import { copyOverview, taskCopyView } from "./copy.js";
+import { libraryOverview } from "./library.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** waitSeconds 的上限：客户端普遍 60 秒超时，Cloudflare 对源站 100 秒，留足余量 */
@@ -47,7 +48,7 @@ export const overviewTool = defineTool({
   name: "overview",
   title: "总览",
   description:
-    "一眼看全 OpenStrm 的现状：版本、网盘账号、正在跑的同步、网盘监控、要人管的整理（待确认的清单、有失败的，最近 5 条）、云下载待回执、「复制到 OpenList」配没配好和队列里在跑的 / 失败的、资源搜索配没配、最近 24 小时失败的同步，以及当前令牌的权限。开始干活前先调它。",
+    "一眼看全 OpenStrm 的现状：版本、网盘账号、正在跑的同步、网盘监控、要人管的整理（待确认的清单、有失败的，最近 5 条）、云下载待回执、「复制到 OpenList」配没配好和队列里在跑的 / 失败的、资源搜索配没配、收藏夹（收藏了几个分享、失效的、在建索引的、认出了几部作品）、最近 24 小时失败的同步，以及当前令牌的权限。开始干活前先调它。",
   scope: "read",
   toolset: null,
   annotations: LOCAL_READ,
@@ -106,6 +107,8 @@ export const overviewTool = defineTool({
       openlistCopy: copyOverview(),
       // 只看设置、不联网：没配置时 resource_search 调了也只会报错
       resourceSearch: { configured: pansouConn() !== null },
+      // 收藏夹（收藏的分享）：几个分享、失效的、在抄的，认出了几部；是空的就不给
+      ...withLibrary(libraryOverview()),
       recentFailures,
       notes: USAGE_NOTES,
       ...openInUi("/"),
@@ -116,6 +119,7 @@ export const overviewTool = defineTool({
 const TASKS_LIMIT = 50;
 
 const withCopy = (view: Record<string, unknown> | undefined) => (view ? { copyToOpenlist: view } : {});
+const withLibrary = (view: Record<string, unknown> | undefined) => (view ? { library: view } : {});
 
 export const tasksListTool = defineTool({
   name: "tasks_list",

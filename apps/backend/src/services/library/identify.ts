@@ -273,11 +273,11 @@ async function loop(): Promise<void> {
           // 401 / 403 这类：令牌不对，换多少个单元都一样
           units.setUnitRetry(u.sourceId, u.unitKey, now + deps.authPauseS, reason);
           pausedUntil = now + deps.authPauseS;
-          log.warn({ err: reason }, "TMDB 拒绝了请求（令牌不对？），影库识别停一小时");
+          log.warn({ err: reason }, "TMDB 拒绝了请求（令牌不对？），收藏夹识别停一小时");
         } else {
           // 代码里的意外：这个单元记下原因、跳过，别卡住后面的
           units.setUnitRetry(u.sourceId, u.unitKey, now + deps.authPauseS, reason);
-          log.error({ err, unit: u.path }, "影库识别出错");
+          log.error({ err, unit: u.path }, "收藏夹识别出错");
         }
       }
     }
@@ -305,8 +305,8 @@ export function kickIdentify(): void {
   void loop();
 }
 
-/** 识别规则的版本：打分 / 候选的口径改了加一，启动时自动认的都重认（手动的、忽略的不动）。2 = 标题相近 + 年份对上算「中」；3 = 搜前 5 个候选；4 = 标题一样还要年份对上才停、「相近」卡严；5 = 年份差一年也算对上 */
-export const IDENTIFY_VERSION = 5;
+/** 识别规则的版本：打分 / 候选的口径改了加一，启动时自动认的都重认（手动的、忽略的不动）。2 = 标题相近 + 年份对上算「中」；3 = 搜前 5 个候选；4 = 标题一样还要年份对上才停、「相近」卡严；5 = 年份差一年也算对上；6 = 停搜又要年份一样，中文名英文名都对上的加分、分数咬得紧时挑热门得多的那部，第一个候选对上冒号前的主标题也算对上 */
+export const IDENTIFY_VERSION = 6;
 
 export function reidentifyAllIfStale(): number {
   if (readKv<number>(KEY.libraryIdentifyVersion) === IDENTIFY_VERSION) return 0;
@@ -314,7 +314,7 @@ export function reidentifyAllIfStale(): number {
   // 放回待认的名字清掉了：节点上的 aka 跟着清（认回来再写），不然没认出来的还能靠旧名字搜到
   if (n > 0) for (const src of getAll()) syncAka(src.id);
   writeKv(KEY.libraryIdentifyVersion, IDENTIFY_VERSION);
-  if (n > 0) log.info({ units: n, version: IDENTIFY_VERSION }, "影库识别规则更新了，自动认的作品重新认");
+  if (n > 0) log.info({ units: n, version: IDENTIFY_VERSION }, "收藏夹识别规则更新了，自动认的作品重新认");
   return n;
 }
 

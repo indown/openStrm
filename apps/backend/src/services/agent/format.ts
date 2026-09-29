@@ -38,7 +38,7 @@ export function toFailure(err: unknown): ToolFailure {
     return {
       error: `分享不可用：${cause.message}`,
       code: "SHARE_GONE",
-      hint: "分享已失效、被取消或提取码不对，换一个链接。从影库拿的链接也一样：影库已经记下了，先用 library_search 看别的分享里有没有同一部，没有再用 resource_search 在网上找。",
+      hint: "分享已失效、被取消或提取码不对，换一个链接。从收藏夹拿的链接也一样：收藏夹已经记下了，先用 library_search 看别的分享里有没有同一部，没有再用 resource_search 在网上找。",
     };
   }
   const code = typeof http.extra.code === "string" ? http.extra.code : `HTTP_${http.status}`;

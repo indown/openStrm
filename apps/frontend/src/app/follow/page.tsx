@@ -264,7 +264,7 @@ export default function FollowPage() {
           <EmptyState
             icon={Rss}
             title="还没有追更订阅"
-            description="转存分享时（分享详情或影库的「保存到任务目录」）勾选「转存后追更」，新集就会自动跟过来。"
+            description="转存分享时（分享详情或收藏夹的「保存到任务目录」）勾选「转存后追更」，新集就会自动跟过来。"
           />
         )
       ) : (

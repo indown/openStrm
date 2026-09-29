@@ -1235,6 +1235,119 @@
     }
   },
   {
+    "name": "library_works",
+    "scope": "read",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "view": {
+          "type": "string",
+          "enum": [
+            "all",
+            "movie",
+            "tv",
+            "low",
+            "none"
+          ]
+        },
+        "keyword": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "year": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "sort": {
+          "type": "string",
+          "enum": [
+            "recent",
+            "year",
+            "title"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cursor": {
+          "type": "string",
+          "maxLength": 20
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "library_work",
+    "scope": "read",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": true,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "work": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "year": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "movie",
+            "tv"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "library_add",
+    "scope": "run",
+    "toolset": "transfer",
+    "annotations": {
+      "readOnly": false,
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": true
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "copy_list",
     "scope": "read",
     "toolset": "transfer",

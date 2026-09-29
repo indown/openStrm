@@ -3,7 +3,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronDown, ChevronRight, Copy, Download, FolderOpen, Folders, Library, Loader2, MoreHorizontal, Search } from "lucide-react";
+import { Bookmark, ChevronDown, ChevronRight, Copy, Download, FolderOpen, Folders, Loader2, MoreHorizontal, Search } from "lucide-react";
 import { toast } from "sonner";
 import type { LibraryHit, LibrarySearchResult, LibraryShareHealth } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
@@ -65,7 +65,7 @@ export function ShareHealthBadge({ health }: { health: LibraryShareHealth }) {
   }
   if (health.status === "locked") {
     return (
-      <StatusBadge tone="danger" title="提取码不对：到影库页改提取码">
+      <StatusBadge tone="danger" title="提取码不对：到收藏夹页改提取码">
         提取码不对
       </StatusBadge>
     );
@@ -270,7 +270,7 @@ export function LibraryHits({ query, variant = "page", pageSize = 20, onSummary 
         setError(null);
       } catch (err) {
         if (my !== seq.current) return;
-        setError(apiErrorMessage(err, "搜影库失败"));
+        setError(apiErrorMessage(err, "搜收藏夹失败"));
       } finally {
         if (my === seq.current) setLoading(false);
       }
@@ -418,15 +418,15 @@ export function LibraryHits({ query, variant = "page", pageSize = 20, onSummary 
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b px-4 py-2.5">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
           <span className="flex items-center gap-2 text-sm font-medium whitespace-nowrap">
-            <Library className="size-4 text-brand" />
-            影库
+            <Bookmark className="size-4 text-brand" />
+            收藏夹
             {result && <span className="text-xs font-normal text-muted-foreground tabular-nums">{result.total} 条</span>}
           </span>
           {(result?.indexing ?? 0) > 0 && <span className="text-xs text-muted-foreground">还有分享在建索引，结果可能不全</span>}
         </div>
         {result && result.total > 0 && (
           <Link href={`/library?q=${encodeURIComponent(q)}`} className="text-xs whitespace-nowrap text-muted-foreground hover:text-foreground">
-            在影库里看全部 →
+            在收藏夹里看全部 →
           </Link>
         )}
       </div>
@@ -441,13 +441,13 @@ export function LibraryHits({ query, variant = "page", pageSize = 20, onSummary 
         {loading && !result ? (
           <div className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />
-            在影库里找…
+            在收藏夹里找…
           </div>
         ) : error ? (
           <div className="px-4 py-6 text-sm text-destructive">{error}</div>
         ) : visible.length === 0 ? (
           <div className="px-4 py-6 text-sm text-muted-foreground">
-            {(result?.expired ?? 0) > 0 ? `能转存的分享里没有和「${q}」对得上的，只有下面已失效的。` : `影库里没有和「${q}」对得上的。`}
+            {(result?.expired ?? 0) > 0 ? `能转存的分享里没有和「${q}」对得上的，只有下面已失效的。` : `收藏夹里没有和「${q}」对得上的。`}
             换个写法（英文名、简称）再试。
           </div>
         ) : (
@@ -478,7 +478,7 @@ export function LibraryHits({ query, variant = "page", pageSize = 20, onSummary 
         {variant === "embedded" && result && result.total > visible.length && visible.length > 0 && (
           <div className="border-t px-4 py-2 text-right">
             <Link href={`/library?q=${encodeURIComponent(q)}`} className="text-xs text-muted-foreground hover:text-foreground">
-              还有 {result.total - visible.length} 条，在影库里看 →
+              还有 {result.total - visible.length} 条，在收藏夹里看 →
             </Link>
           </div>
         )}
@@ -490,7 +490,7 @@ export function LibraryHits({ query, variant = "page", pageSize = 20, onSummary 
                 已失效的分享里还有 {result!.expired} 条（转存不了）
               </button>
               <Link href="/library?view=expired" className="text-xs text-muted-foreground hover:text-foreground">
-                去影库清理 →
+                去收藏夹清理 →
               </Link>
             </div>
             {showExpired && (

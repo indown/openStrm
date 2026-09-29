@@ -13,6 +13,8 @@ export interface TmdbSearchResult {
   year: string;
   posterUrl: string;
   overview: string;
+  /** TMDB 的热度：两个候选分数差不多时挑热门的（同名的冷门短片、纪录片常常年份更「准」） */
+  popularity?: number;
 }
 
 interface TmdbRawItem {
@@ -27,6 +29,7 @@ interface TmdbRawItem {
   poster_path?: string | null;
   profile_path?: string | null;
   overview?: string;
+  popularity?: number;
 }
 
 export async function searchMulti(
@@ -58,6 +61,7 @@ export async function searchMulti(
         year: date ? date.slice(0, 4) : "",
         posterUrl: poster ? `${IMAGE_BASE}${poster}` : "",
         overview: r.overview ?? "",
+        popularity: typeof r.popularity === "number" ? r.popularity : 0,
       };
     });
 }
@@ -97,6 +101,7 @@ export async function searchTv(
       year: date ? date.slice(0, 4) : "",
       posterUrl: poster ? `${IMAGE_BASE}${poster}` : "",
       overview: r.overview ?? "",
+      popularity: typeof r.popularity === "number" ? r.popularity : 0,
     };
   });
 }
@@ -136,6 +141,7 @@ export async function searchMovie(
       year: date ? date.slice(0, 4) : "",
       posterUrl: poster ? `${IMAGE_BASE}${poster}` : "",
       overview: r.overview ?? "",
+      popularity: typeof r.popularity === "number" ? r.popularity : 0,
     };
   });
 }

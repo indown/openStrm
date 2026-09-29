@@ -12,7 +12,7 @@
  */
 import type { LibraryCrumb, LibraryHit, LibraryHitFile, LibrarySearchResult, LibraryWorkRef } from "@openstrm/shared";
 import { filesOfDirs, getNode, searchCandidates, subdirsOfDirs, type NodeRow, type SearchRow } from "../../db/repositories/library-nodes.js";
-import { unitsAtNodes, type UnitRow } from "../../db/repositories/library-units.js";
+import { unitsAtNodes, unitsUnder, type UnitRow } from "../../db/repositories/library-units.js";
 import { countIndexing, healthOf } from "../../db/repositories/media-library.js";
 import { parseShareRef } from "../drive/registry.js";
 import { titleTags } from "../pansou/tags.js";
@@ -287,7 +287,8 @@ export function workRefOf(u: UnitRow): LibraryWorkRef | undefined {
 
 /**
  * 结果挂上作品：命中的目录自己是作品单元的根，或者在某个单元里面（季目录在剧目录里）——从它往上找最近的一个。
- * 一个目录上挂着几个按标题拆出来的单元（分类目录里散放的几部）说不清是哪部，不挂
+ * 一个目录上挂着几个按标题拆出来的单元（分类目录里散放的几部）说不清是哪部，不挂。
+ * 往上没有单元的（剧目录里一季一个单元、剧目录自己不是）：里面的单元全都认成了同一部才挂；分类目录、合集里是好几部，不挂
  */
 function attachWorks(hits: LibraryHit[]): void {
   const bySource = new Map<string, LibraryHit[]>();
@@ -309,18 +310,20 @@ function attachWorks(hits: LibraryHit[]): void {
       arr.push(u);
       byNode.set(u.nodeId, arr);
     }
-    if (byNode.size === 0) continue;
     for (const h of list) {
       const chain = [h.nodeId, ...h.crumbs.map((c) => c.id).filter(Boolean).reverse(), "0"];
-      for (const id of chain) {
-        const at = byNode.get(id);
-        if (!at) continue;
-        if (at.length === 1) {
-          const ref = workRefOf(at[0]);
-          if (ref) h.work = ref;
-        }
-        break;
+      const at = chain.map((id) => byNode.get(id)).find((units) => units !== undefined);
+      if (at) {
+        const ref = at.length === 1 ? workRefOf(at[0]) : undefined;
+        if (ref) h.work = ref;
+        continue;
       }
+      if (!h.path) continue;
+      const refs = unitsUnder(sourceId, h.path)
+        .filter((u) => u.status !== "ignored")
+        .map(workRefOf);
+      const first = refs[0];
+      if (first && refs.every((r) => r && r.mediaType === first.mediaType && r.tmdbId === first.tmdbId)) h.work = first;
     }
   }
 }

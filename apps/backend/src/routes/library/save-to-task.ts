@@ -28,7 +28,7 @@ export default async function (fastify: FastifyInstance) {
   fastify.post("/api/library/:id/save-to-task", { preHandler: [fastify.authenticate] }, async (request) => {
     const { id } = parse(idParamsSchema, request.params, "params");
     const entry = getById(id);
-    if (!entry) throw new HttpError(404, "影库条目不存在");
+    if (!entry) throw new HttpError(404, "收藏夹条目不存在");
 
     const body = parse(bodySchema, request.body);
     const subPath = normalizeSubPath(body.subPath);
@@ -57,7 +57,7 @@ export default async function (fastify: FastifyInstance) {
       const session = await share.open(ref);
       if (isShareSubtreeEntry) {
         const dirName = entry.rawName || entry.title;
-        if (!dirName) throw new HttpError(400, "影库条目缺少目录名");
+        if (!dirName) throw new HttpError(400, "收藏夹条目缺少目录名");
         // 115 转存只要 id，存过的 id 直接用；夸克还要每个条目的 token，必须按路径重新找一遍
         if (rootCid && rootCid !== "0" && provider.kind === "115") {
           items = [{ id: rootCid, name: dirName, isDir: true }];

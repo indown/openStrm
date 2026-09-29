@@ -293,6 +293,17 @@ test("判重叠：整包收了再收子目录 409；先收子目录再收整包�
   assert.match(again.json().message, /整个分享「老K」/);
 });
 
+test("批量添加的预览：一段话认成几个分享，同一个只留一条，已经整包收着的标出来", async () => {
+  await addWhole();
+  const res = await post("/api/library/links", { text: `${LINK}\n链接：https://pan.quark.cn/s/abc123 提取码：zz99\n${LINK}` });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.deepEqual(res.json().links, [
+    { kind: "115", code: "pack", url: LINK, hasPassword: true, inLibrary: true, title: "老K" },
+    { kind: "quark", code: "abc123", url: "https://pan.quark.cn/s/abc123?pwd=zz99", hasPassword: true, inLibrary: false },
+  ]);
+  assert.deepEqual((await post("/api/library/links", { text: "随便写的一段话" })).json().links, []);
+});
+
 test("分享失效：根上明确说不存在就判失效；搜索里折叠成个数；清理按钮删掉记录", async () => {
   await addWhole();
   share.shares.get("pack")!.gone = true;

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parse115ShareLink } from "./providers/cloud115.js";
 import { parseQuarkShareLink } from "./providers/quark.js";
-import { findShareLink, parseShareRef, parseShareText, withPassword } from "./registry.js";
+import { findShareLink, findShareLinks, parseShareRef, parseShareText, withPassword } from "./registry.js";
 
 test("夸克：只认 pan.quark.cn/s/<pwd_id>；提取码在 pwd= 或后面的「提取码：」里", () => {
   assert.deepEqual(parseQuarkShareLink("https://pan.quark.cn/s/1ed94d530d63"), {
@@ -117,3 +117,24 @@ test("withPassword：提取码拼在 # 前面（115 的链接常以 # 结尾）�
   assert.equal(withPassword({ kind: "quark", code: "abc", password: "", url: "https://pan.quark.cn/s/abc#/list/share" }, "ab12").url, "https://pan.quark.cn/s/abc?pwd=ab12");
   assert.equal(withPassword({ ...ref, password: "zzzz" }, "u796").password, "zzzz");
 });
+
+test("一段话里的全部分享链接（影库批量添加）：各配各的提取码、同一个分享只留一条、只有一个链接时和 findShareLink 一样", () => {
+  const brief = (text: string) => findShareLinks(text).map((r) => `${r.kind} ${r.code} ${r.password}`.trim());
+  // 好几段：提取码只看链接后面、下一个链接前面那段——第三个没写码的不能拿到第一个的
+  assert.deepEqual(
+    brief(["【电影】阿甘正传 链接：https://pan.quark.cn/s/abc123 提取码：ab12", "https://115cdn.com/s/swbbb222?password=cd34#", "剧集合集 链接：https://pan.quark.cn/s/def456"].join("\n")),
+    ["quark abc123 ab12", "115 swbbb222 cd34", "quark def456"],
+  );
+  assert.equal(findShareLinks("链接：https://pan.quark.cn/s/abc123 提取码：ab12\nhttps://pan.quark.cn/s/def456")[0].url, "https://pan.quark.cn/s/abc123?pwd=ab12");
+  // 同一个分享贴了两次：前面没码、后面有，用有码的
+  assert.deepEqual(brief("https://pan.quark.cn/s/abc123\nhttps://pan.quark.cn/s/abc123 提取码：ab12"), ["quark abc123 ab12"]);
+  // 只有一个链接：提取码写在前面也认（单个添加原来就这样）
+  assert.deepEqual(brief("提取码：ab12 链接：https://pan.quark.cn/s/abc123"), ["quark abc123 ab12"]);
+  // 别家网址不算
+  assert.deepEqual(brief("豆瓣 https://movie.douban.com/subject/1292720/ 资源 https://pan.quark.cn/s/abc123"), ["quark abc123"]);
+  // 没有网址：整段一个裸分享码认；一行一个的不认（随便一个英文词都能当成 115 的码）
+  assert.deepEqual(brief("swhk9bx3wwq-sff1"), ["115 swhk9bx3wwq sff1"]);
+  assert.deepEqual(brief("Movie\n4K"), []);
+  assert.deepEqual(brief(""), []);
+});
+

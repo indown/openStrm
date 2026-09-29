@@ -151,6 +151,8 @@ export interface DirectoryNode {
 }
 
 export type LibraryAddResponse = { mode: "single" | "subdir"; entry: MediaLibraryEntry; absorbed?: number };
+/** 批量添加前的预览：贴进来的一段话里认出的一个分享（url 里带着提取码，拿去 create 就行）；已经收着的带着它在影库里的名字 */
+export type LibraryShareLink = { kind: "115" | "quark"; code: string; url: string; hasPassword: boolean; inLibrary: boolean; title?: string };
 export type LibrarySearchQuery = { q: string; limit?: number; offset?: number; expired?: boolean; sourceId?: string };
 export type LibraryPatch = Partial<Pick<MediaLibraryEntry, "title" | "coverUrl" | "notes" | "tags" | "receiveCode">>;
 export type LibraryCreateInput = {
@@ -579,6 +581,8 @@ export const api = {
   library: {
     list: () => data(axiosInstance.get<MediaLibraryEntry[]>("/api/library")),
     create: (input: LibraryCreateInput) => data(axiosInstance.post<LibraryAddResponse>("/api/library", input)),
+    /** 一段话里认出的分享（批量添加先列给人看，加还是一个一个 create） */
+    links: (text: string) => data(axiosInstance.post<{ links: LibraryShareLink[] }>("/api/library/links", { text })),
     update: (id: string, patch: LibraryPatch) => data(axiosInstance.put<MediaLibraryEntry>(`/api/library/${id}`, patch)),
     remove: (id: string) => data(axiosInstance.delete<{ success: true }>(`/api/library/${id}`)),
     /** 清理全部已失效的分享（只删影库记录和索引） */

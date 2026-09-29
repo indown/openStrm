@@ -120,7 +120,7 @@ const ROMAN_DIGITS: Record<string, string> = {
   ⅰ: "1", ⅱ: "2", ⅲ: "3", ⅳ: "4", ⅴ: "5", ⅵ: "6", ⅶ: "7", ⅷ: "8", ⅸ: "9", ⅹ: "10", ⅺ: "11", ⅻ: "12",
 };
 const RE_ROMAN = /[Ⅰ-Ⅻⅰ-ⅻ]/g;
-const romanToArabic = (s: string): string => s.replace(RE_ROMAN, (ch) => ROMAN_DIGITS[ch] ?? ch);
+export const romanToArabic = (s: string): string => s.replace(RE_ROMAN, (ch) => ROMAN_DIGITS[ch] ?? ch);
 
 const CJK_DIGITS: Record<string, number> = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
 

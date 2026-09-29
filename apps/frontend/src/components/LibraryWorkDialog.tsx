@@ -2,13 +2,13 @@
 
 /**
  * 影库的作品弹框：海报、名字、认的把握和理由；下面是这部作品在影库里的每个版本（哪个分享、哪个目录、几季、多大），
- * 每个版本能打开、转存、换匹配、标成不是影视、重新认。
+ * 每个版本能打开、转存、换匹配、标成不是影视、重新认。一部剧的几季分开放在同一个目录下的，上面多一行「一起转存」。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Copy, Download, ExternalLink, EyeOff, FolderOpen, Loader2, MoreHorizontal, RefreshCw, Replace } from "lucide-react";
 import { toast } from "sonner";
-import type { LibraryUnit, LibraryWorkDetail } from "@openstrm/shared";
+import type { LibraryOwned, LibraryUnit, LibraryWorkDetail } from "@openstrm/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -48,6 +48,16 @@ function whereOf(u: LibraryUnit): string {
 }
 
 const CONFIDENCE_NOTE: Record<string, string> = { high: "", medium: "", low: "待确认", none: "没认出" };
+
+const seasonsOf = (list: LibraryUnit[]) => [...new Set(list.flatMap((u) => u.seasons))].sort((a, b) => a - b);
+
+/** 「已经有了」的一处：本地的写任务和目录，从收藏夹存过的写存到哪、哪天 */
+function ownedText(o: LibraryOwned): string {
+  const seasons = o.seasons.length ? `（${seasonsLabel(o.seasons)}）` : "";
+  if (o.via === "local") return `本地「${o.taskLabel}」里的 ${o.path}${seasons}`;
+  const day = o.savedAt ? new Date(o.savedAt * 1000).toLocaleDateString() : "";
+  return `从收藏夹存到了「${o.taskLabel}」的 ${o.path}${seasons}${day ? `（${day}）` : ""}`;
+}
 
 function UnitRow({
   unit,
@@ -152,7 +162,8 @@ export function LibraryWorkDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
-  const [saving, setSaving] = useState<LibraryUnit | null>(null);
+  // 一个版本，或者「一起转存」的那几季（同一个分享）
+  const [saving, setSaving] = useState<LibraryUnit[] | null>(null);
   const [matching, setMatching] = useState<LibraryUnit | null>(null);
   // 关的时候 workKey 先变成 null：标题留着上一个，淡出时别闪空
   const [shownKey, setShownKey] = useState<string | null>(null);
@@ -221,21 +232,24 @@ export function LibraryWorkDialog({
   };
 
   const confirmSave = async (choice: SaveToTaskChoice) => {
-    const unit = saving;
-    if (!unit) return;
+    const list = saving;
+    if (!list || list.length === 0) return;
     setSaving(null);
-    const label = detail?.work.title || unit.rawName;
-    const id = toast.loading(`正在转存「${label}」…`);
+    const unit = list[0];
+    const single = list.length === 1 ? unit : null;
+    const title = detail?.work.title || unit.rawName;
+    const id = toast.loading(`正在转存「${title}」${single ? "" : seasonsLabel(seasonsOf(list))}…`);
     try {
       const result = await api.share.receive({
         url: unit.shareUrl,
-        items: unit.saveItems,
+        items: list.flatMap((u) => u.saveItems),
         taskId: choice.taskId,
         subPath: choice.subPath,
         mode: choice.mode,
         ...(choice.organize ? { organize: true } : {}),
         ...(choice.copy ? { copy: true } : {}),
-        ...(choice.follow && unit.ownsDir ? { follow: choice.follow, watchDirId: unit.nodeId, watchPath: unit.path, name: label } : {}),
+        // 追更只盯一个目录：一起转存的几季不建
+        ...(choice.follow && single?.ownsDir ? { follow: choice.follow, watchDirId: single.nodeId, watchPath: single.path, name: title } : {}),
       });
       toast.dismiss(id);
       notifySaveToTaskResult(result, router);
@@ -282,6 +296,13 @@ export function LibraryWorkDialog({
         : null,
     [matching],
   );
+  // 一起转存的几组是后端算好的（智能体的 library_work 用同一份）：这里只把单元键换回单元
+  const groups = useMemo(() => {
+    const byKey = new Map((detail?.units ?? []).map((u) => [`${u.sourceId}:${u.unitKey}`, u]));
+    return (detail?.seriesGroups ?? [])
+      .map((g) => ({ ...g, list: g.units.map((k) => byKey.get(k)).filter((u): u is LibraryUnit => u !== undefined) }))
+      .filter((g) => g.list.length === g.units.length);
+  }, [detail]);
   const tmdbLink = work?.tmdbId && work.mediaType ? `https://www.themoviedb.org/${work.mediaType}/${work.tmdbId}` : "";
 
   return (
@@ -309,6 +330,12 @@ export function LibraryWorkDialog({
                       </p>
                     )}
                     {!first?.work && first && <p className="text-xs">目录名「{first.rawName}」在 TMDB 上没搜到：点版本右边的「⋯ → 换匹配」手动指定。</p>}
+                    {detail && detail.owned.length > 0 && (
+                      <p className="text-xs text-success [overflow-wrap:anywhere]" title={detail.owned.map(ownedText).join("\n")}>
+                        已经有了：{detail.owned.slice(0, 2).map(ownedText).join("；")}
+                        {detail.owned.length > 2 ? ` 等 ${detail.owned.length} 处` : ""}
+                      </p>
+                    )}
                     {tmdbLink && (
                       <a href={tmdbLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs hover:text-foreground">
                         <ExternalLink className="size-3" />
@@ -330,13 +357,24 @@ export function LibraryWorkDialog({
               <div className="px-4 py-6 text-sm text-destructive">{error}</div>
             ) : (
               <div className="divide-y">
+                {groups.map((g) => (
+                  <div key={g.units[0]} className="flex flex-col gap-2 bg-muted/40 px-4 py-3 sm:flex-row sm:items-center sm:gap-4">
+                    <p className="min-w-0 flex-1 text-sm [overflow-wrap:anywhere]">
+                      「{g.folder}」里分开放着{seasonsLabel(g.seasons)}（{g.list.length} 份），可以一起转存到同一个位置
+                    </p>
+                    <Button size="sm" className="shrink-0 self-end sm:self-auto" onClick={() => setSaving(g.list)}>
+                      <Download />
+                      一起转存
+                    </Button>
+                  </div>
+                ))}
                 {(detail?.units ?? []).map((u) => (
                   <UnitRow
                     key={`${u.sourceId}:${u.unitKey}`}
                     unit={u}
                     opening={openingKey === `${u.sourceId}:${u.unitKey}`}
                     onOpen={() => void onOpen(u)}
-                    onSave={() => setSaving(u)}
+                    onSave={() => setSaving([u])}
                     onMatch={() => setMatching(u)}
                     onIgnore={() => void unitAction(u, "ignore")}
                     onReidentify={() => void unitAction(u, "reidentify")}
@@ -352,9 +390,9 @@ export function LibraryWorkDialog({
         open={saving != null}
         onOpenChange={(open) => !open && setSaving(null)}
         onConfirm={(choice) => void confirmSave(choice)}
-        selectedCount={saving?.saveItems.length ?? 1}
-        kind={saving?.shareKind}
-        followHint={saving?.ownsDir ? `之后定期检查「${saving.rawName}」里新增的文件，自动转存到同一位置并生成 strm。` : undefined}
+        selectedCount={saving?.reduce((n, u) => n + u.saveItems.length, 0) ?? 1}
+        kind={saving?.[0]?.shareKind}
+        followHint={saving?.length === 1 && saving[0].ownsDir ? `之后定期检查「${saving[0].rawName}」里新增的文件，自动转存到同一位置并生成 strm。` : undefined}
       />
       <MatchDialog unit={matchTarget} onOpenChange={(o) => !o && setMatching(null)} onPick={pickMatch} />
     </>

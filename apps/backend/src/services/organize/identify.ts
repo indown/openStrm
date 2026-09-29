@@ -55,8 +55,8 @@ export class TmdbClient implements TmdbApi {
   search(query: string, kind: OrganizeMediaType | "multi", year?: string): Promise<TmdbSearchResult[]> {
     const q = query.trim();
     if (!q) return Promise.resolve([]);
-    // 键里带版本：搜索结果的缓存形状变过（2026-09-11 加了 originalTitle），旧条目让它自然过期
-    const key = `search:v2:${kind}:${q.toLowerCase()}:${year ?? ""}`;
+    // 键里带版本：搜索结果的缓存形状变过（2026-09-11 加了 originalTitle，2026-09-29 加了 popularity），旧条目让它自然过期
+    const key = `search:v3:${kind}:${q.toLowerCase()}:${year ?? ""}`;
     return this.cached(key, SEARCH_TTL, () => {
       if (kind === "movie") return searchMovie(this.apiKey, q, year, this.language);
       if (kind === "tv") return searchTv(this.apiKey, q, year, this.language);
@@ -79,17 +79,41 @@ interface Scored {
   item: TmdbSearchResult;
   score: number;
   titleEqual: boolean;
+  /** 只对上了冒号前的主标题（整个标题、原名都没对上） */
+  mainOnly: boolean;
   yearEqual: boolean;
+  /** 对上的是第几个标题候选（越靠前越具体）；没对上是候选个数 */
+  titleIndex: number;
+  /** 对上的那个候选（归一化过的） */
+  matched: string;
 }
 
+/** 冒号前的主标题：「碟中谍5：神秘国度」→ 碟中谍5（中文续集常这么起名，文件名里多半只写主标题） */
+const mainTitleOf = (t: string): string => t.split(/[：:]/)[0];
+
 function scoreCandidate(item: TmdbSearchResult, titles: string[], year: string | undefined, kindHint: Unit["kindHint"]): Scored {
-  const norm = titles.map(normalizeTitle).filter(Boolean);
+  const norm = titles.map(normalizeTitle);
   // 搜索结果的 title 是本地化的（zh-CN 下是译名），文件名里多半是原名：两个都对
-  const itemTitles = [item.title, item.originalTitle ?? ""].map(normalizeTitle).filter(Boolean);
-  const titleEqual = norm.some((t) => itemTitles.includes(t));
+  const full = [item.title, item.originalTitle ?? ""].map(normalizeTitle).filter(Boolean);
+  // 主标题只拿第一个候选对：后面补的首尾词常是演员名、系列名，「李小龙」会对上《李小龙：遗失的访谈》、「蝙蝠侠」对上《蝙蝠侠：漫长的万圣节》
+  const main = [item.title, item.originalTitle ?? ""].map((t) => normalizeTitle(mainTitleOf(t))).filter(Boolean);
+  const hits = new Set<string>();
+  let hit = -1;
+  let fullHit = false;
+  norm.forEach((t, i) => {
+    const isFull = t !== "" && full.includes(t);
+    if (!isFull && !(i === 0 && t !== "" && main.includes(t))) return;
+    hits.add(t);
+    if (hit === -1) hit = i;
+    if (isFull) fullHit = true;
+  });
+  const titleEqual = hit !== -1;
   let score = 0;
   if (titleEqual) score += 3;
-  else if (norm.some((t) => t.length >= 2 && itemTitles.some((it) => it.includes(t) || t.includes(it)))) score += 1;
+  else if (norm.some((t) => t.length >= 2 && full.some((it) => it.includes(t) || t.includes(it)))) score += 1;
+  // 中文名、英文名（不同的候选）都对上同一部：几乎不会错，压得过年份差一年（跨年上映：「撞车 2004」↔ 2005，「爱我 2024」↔ 2025，
+  // 同名同年的冷门片只对上英文名）
+  if (hits.size >= 2) score += 2;
   let yearEqual = false;
   if (year && item.year) {
     const d = Math.abs(Number(year) - Number(item.year));
@@ -100,7 +124,38 @@ function scoreCandidate(item: TmdbSearchResult, titles: string[], year: string |
     else score -= 1;
   }
   if (kindHint !== "unknown" && item.mediaType === kindHint) score += 1;
-  return { item, score, titleEqual, yearEqual };
+  return { item, score, titleEqual, mainOnly: titleEqual && !fullHit, yearEqual, titleIndex: hit === -1 ? norm.length : hit, matched: hit === -1 ? "" : norm[hit] };
+}
+
+/**
+ * 同分的先后：只对上主标题的让给整个标题对上的（《龙之家族：幕后特辑》让给原名就叫 House of the Dragon 的那部），
+ * 除非它对上的候选更具体（「碟中谍5」对《碟中谍5：神秘国度》，另一部只对上「碟中谍」）；再按对上的候选先后
+ */
+function tieOrder(a: Scored, b: Scored): number {
+  if (a.titleEqual && b.titleEqual && a.mainOnly !== b.mainOnly) {
+    const [main, other] = a.mainOnly ? [a, b] : [b, a];
+    const mainFirst = main.matched !== other.matched && main.matched.includes(other.matched);
+    return (main === a) === mainFirst ? -1 : 1;
+  }
+  return a.titleIndex - b.titleIndex;
+}
+
+/**
+ * 领先不到一分的里面，有标题一样对得上而且热门得多（比排在它前面的都热门 5 倍以上）的：换成它。
+ * 同名的冷门短片、纪录片常常年份更「准」（影展年 / 上映年差一年），分数就压过了真正那部（还可能不止一部）。
+ * 对上的候选没第一名的具体时不换：「碟中谍5」对上的第五部不让给只对上「碟中谍」的第一部
+ */
+function preferPopular(scored: Scored[]): void {
+  const top = scored[0];
+  if (!top) return;
+  const pop = (s: Scored) => s.item.popularity ?? 0;
+  let best = -1;
+  for (let i = 1; i < scored.length && scored[i].score >= top.score - 1; i++) {
+    const s = scored[i];
+    if (s.titleEqual && s.titleIndex <= top.titleIndex && (best === -1 || pop(s) > pop(scored[best]))) best = i;
+  }
+  if (best === -1 || pop(scored[best]) < 5 * Math.max(0.5, ...scored.slice(0, best).map(pop))) return;
+  scored.unshift(...scored.splice(best, 1));
 }
 
 function toCandidate(s: Scored): OrganizeCandidate {
@@ -188,7 +243,7 @@ async function fromDetails(tmdb: TmdbApi, kind: OrganizeMediaType, id: number, c
 
 /**
  * 按候选标题依次搜（最多 max 个）；带年份先搜，没结果再不带；搜到标题一样的就停。
- * strictStop：还要年份也对上（差一年以内；结果没年份的不算）才停——候选里混着演员名、品牌前缀时，同名的纪录片别把后面真正的片名挡掉
+ * strictStop：还要年份也对上（结果没年份的不算）才停——候选里混着演员名、品牌前缀时，同名的纪录片别把后面真正的片名挡掉
  */
 async function searchAll(
   tmdb: TmdbApi,
@@ -211,8 +266,8 @@ async function searchAll(
   for (const t of titles.slice(0, max)) {
     if (year && kind !== "multi") add(await tmdb.search(t, kind, year));
     if (out.length === 0 || !year) add(await tmdb.search(t, kind));
-    // 年份差一年也算（跨年上映的片子：影展年 / 上映年）
-    const yearOk = (r: TmdbSearchResult) => !strictStop || !year || (!!r.year && Math.abs(Number(r.year) - Number(year)) <= 1);
+    // 年份要完全对上：差一年的（跨年上映）接着搜，打分时中文名英文名都对上的、热门得多的会把它挑回来（见 scoreCandidate、preferPopular）
+    const yearOk = (r: TmdbSearchResult) => !strictStop || !year || r.year === year;
     if (out.some((r) => normalizeTitle(r.title) === normalizeTitle(t) && yearOk(r))) break;
   }
   return out.filter((r) => r.mediaType === "movie" || r.mediaType === "tv");
@@ -271,7 +326,9 @@ export async function identifyUnit(opts: IdentifyOptions, tmdb: TmdbApi): Promis
     }
     if (results.length === 0) return { match: null, episodeTitles, notes };
 
-    const scored = results.map((r) => scoreCandidate(r, titles, year, kindHint)).sort((a, b) => b.score - a.score);
+    // 同分的见 tieOrder；再同就按 TMDB 给的顺序
+    const scored = results.map((r) => scoreCandidate(r, titles, year, kindHint)).sort((a, b) => b.score - a.score || tieOrder(a, b));
+    preferPopular(scored);
     const kindOf = (s: Scored): OrganizeMediaType => (s.item.mediaType === "movie" ? "movie" : "tv");
     let pick = scored[0];
     const second = scored[1];
@@ -287,10 +344,13 @@ export async function identifyUnit(opts: IdentifyOptions, tmdb: TmdbApi): Promis
       confidence = pick.titleEqual ? "medium" : "low";
       reason = pick.titleEqual ? "标题对上，年份对不上" : "搜索结果里明显领先";
     }
-    if (!pick.titleEqual) {
-      // 标题和原名都没对上（文件名用的是别的语言的译名）：拿前五名的详情看别名，谁的别名命中就选谁；详情有缓存，不多花请求
-      const norm = titles.map(normalizeTitle);
+    if (!pick.titleEqual || pick.mainOnly) {
+      // 标题和原名都没对上（文件名用的是别的语言的译名）：拿前五名的详情看别名，谁的别名命中就选谁；详情有缓存，不多花请求。
+      // 只对上主标题的（「龙之家族」对上《龙之家族：幕后特辑》）也看一眼：别的没对上标题的，别名整个是第一个候选（《权力的游戏前传：龙族》
+      // 在台湾叫龙之家族）更可信；标题对上了的已经比过（热度、具体程度）不再翻出来
+      const norm = pick.mainOnly ? titles.slice(0, pick.titleIndex + 1).map(normalizeTitle) : titles.map(normalizeTitle);
       for (const s of scored.slice(0, 5)) {
+        if (pick.mainOnly && s.titleEqual) continue;
         const d = await tmdb.details(kindOf(s), s.item.id);
         if (!d) continue;
         const aliases = [d.title, d.originalTitle, d.enTitle ?? "", ...d.aliases].map(normalizeTitle);

@@ -640,7 +640,7 @@ function libraryEvidence(unit: Unit, entries: ReturnType<typeof listLibraryEntri
   if (!unit.rootPath) return null;
   const name = baseOf(unit.rootPath);
   const hit = entries.find((e) => e.tmdbId && (e.mediaType === "movie" || e.mediaType === "tv") && (e.rawName === name || e.title === name));
-  return hit ? { tmdbId: hit.tmdbId!, mediaType: hit.mediaType as OrganizeMediaType, source: "影库条目" } : null;
+  return hit ? { tmdbId: hit.tmdbId!, mediaType: hit.mediaType as OrganizeMediaType, source: "收藏夹条目" } : null;
 }
 
 /** 范围之外的目标目录里现有的条目（连目录本身一起），给冲突检测和 mkdir 判断用 */

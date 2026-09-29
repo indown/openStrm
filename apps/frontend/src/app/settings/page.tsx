@@ -35,7 +35,7 @@ const SECTIONS: Section[] = [
   { id: "emby", title: "Emby" },
   { id: "tmdb", title: "TMDB" },
   { id: "pansou", title: "资源搜索" },
-  { id: "library", title: "影库" },
+  { id: "library", title: "收藏夹" },
   ...(FEATURES.hdhiveSearch ? [{ id: "hdhive", title: "HDHive" }] : []),
   { id: "openlist-copy", title: "复制到 OpenList" },
   { id: "organize", title: "整理与命名" },
@@ -659,7 +659,7 @@ export default function SettingsPage() {
             <section id="tmdb" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
               <h2 className="text-base font-medium">TMDB</h2>
               <p className="text-sm text-muted-foreground">
-                「整理」按它识别影视，不配就整理不了；影库靠它认出分享里的一部部作品（海报墙、正式名和英文名搜索）；「strm 管理」页的海报墙在目录里没有现成图片时，也从这里补海报。
+                「整理」按它识别影视，不配就整理不了；收藏夹靠它认出分享里的一部部作品（海报墙、正式名和英文名搜索）；「strm 管理」页的海报墙在目录里没有现成图片时，也从这里补海报。
               </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <FormField
@@ -826,9 +826,9 @@ export default function SettingsPage() {
             </section>
 
             <section id="library" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
-              <h2 className="text-base font-medium">影库</h2>
+              <h2 className="text-base font-medium">收藏夹</h2>
               <p className="text-sm text-muted-foreground">
-                收藏进影库的分享会把目录树抄下来建索引，首页搜索、⌘K 和智能体都能搜到里面的每一部。抄目录时让着同步和播放，大的分享要几分钟到几十分钟。
+                收藏夹里的分享会把目录树抄下来建索引，首页搜索、⌘K 和智能体都能搜到里面的每一部。抄目录时让着同步和播放，大的分享要几分钟到几十分钟。
               </p>
               <FormField
                 control={form.control}
@@ -836,7 +836,7 @@ export default function SettingsPage() {
                 render={({ field }) => (
                   <SwitchRow
                     label="每天检查收藏的分享还在不在"
-                    description="每个分享只问一次网盘；确认失效的在搜索里收起来，影库页可以找替代、更新链接或清理"
+                    description="每个分享只问一次网盘；确认失效的在搜索里收起来，收藏夹页可以找替代、更新链接或清理"
                     hint="只有分享明确说取消、过期才直接判失效；说法含糊的隔几小时再查，连着三次打不开才算。关掉以后，只在你打开、转存时顺带发现。"
                     checked={field.value}
                     onCheckedChange={field.onChange}

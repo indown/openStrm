@@ -95,6 +95,8 @@ interface Library {
   libraryType?: OrganizeMediaType;
   /** 整理记录的索引，懒加载：一次计算里只解析一遍 */
   runs?: Map<string, OrganizeMatch>;
+  /** 同上，不管有没有海报（收藏夹判断「已经有了」只要 tmdbId） */
+  matches?: Map<string, OrganizeMatch>;
 }
 
 function libraryOf(task: TaskDefinition, tasks: TaskDefinition[]): Library {
@@ -108,18 +110,20 @@ function libraryOf(task: TaskDefinition, tasks: TaskDefinition[]): Library {
  * 最近几次整理记录里，按整理后的作品目录索引识别结果；新的记录先占。
  * unit.dstRoot 是相对任务 originPath 的，本地 strm 目录相对 targetPath 是同一串，可以直接对上。
  */
-function runIndex(lib: Library): Map<string, OrganizeMatch> {
-  if (lib.runs) return lib.runs;
+function runIndex(lib: Library, needPoster = true): Map<string, OrganizeMatch> {
+  const hit = needPoster ? lib.runs : lib.matches;
+  if (hit) return hit;
   const runs = lib.taskIds.flatMap((taskId) => listRuns({ taskId, limit: POSTER_LIMITS.RUNS }));
   runs.sort((a, b) => b.createdAt - a.createdAt);
   const out = new Map<string, OrganizeMatch>();
   for (const run of runs) {
     for (const unit of listUnits(run.id)) {
-      if (!unit.dstRoot || !unit.match?.posterUrl) continue;
+      if (!unit.dstRoot || !unit.match || (needPoster && !unit.match.posterUrl)) continue;
       if (!out.has(unit.dstRoot)) out.set(unit.dstRoot, unit.match);
     }
   }
-  lib.runs = out;
+  if (needPoster) lib.runs = out;
+  else lib.matches = out;
   return out;
 }
 
@@ -475,7 +479,9 @@ function ownersOf(tasks: TaskDefinition[]): Owner[] {
  *   - 其余（分类目录）接着往下；系统目录和隐藏目录不进；
  *   - 目录名自带 id 标签的任务根（只同步了一部作品）就是那一部，不再往下。
  */
-async function findWorks(owners: Owner[]): Promise<WallCandidate[]> {
+async function findWorks(owners: Owner[], limits: { READS: number; STATS: number; MTIME?: boolean } = WALL_LIMITS): Promise<WallCandidate[]> {
+  // 不排新旧的（收藏夹扫全部作品目录）不 stat：NAS 的机械盘上几十万次 stat 很慢
+  const stamp = limits.MTIME === false ? async () => 0 : mtimeOf;
   const works = new Map<string, WallCandidate>();
   const add = (owner: Owner, rel: string, mtimeMs: number) => {
     const key = JSON.stringify([owner.root, rel]);
@@ -491,9 +497,9 @@ async function findWorks(owners: Owner[]): Promise<WallCandidate[]> {
   }
 
   let reads = 0;
-  while (level.length > 0 && reads < WALL_LIMITS.READS) {
+  while (level.length > 0 && reads < limits.READS) {
     level.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    const batch = level.slice(0, WALL_LIMITS.READS - reads);
+    const batch = level.slice(0, limits.READS - reads);
     reads += batch.length;
     const next: WallCandidate[] = [];
     await mapLimit(batch, 4, async (dir) => {
@@ -517,9 +523,9 @@ async function findWorks(owners: Owner[]): Promise<WallCandidate[]> {
       const holds = entries.some((e) => !e.isDirectory() && isWorkFile(e.name));
       if (holds) add(owner, rel, dir.mtimeMs);
       const rest = holds ? subdirs.filter((e) => !isExtrasDirName(e.name) && !isArtDirName(e.name)) : subdirs;
-      const picked = rest.slice(0, Math.max(0, WALL_LIMITS.STATS - stats));
+      const picked = rest.slice(0, Math.max(0, limits.STATS - stats));
       stats += picked.length;
-      const stamped = await mapLimit(picked, 16, async (e) => ({ e, mtimeMs: await mtimeOf(fullOf(owner.root, joinRel(rel, e.name))) }));
+      const stamped = await mapLimit(picked, 16, async (e) => ({ e, mtimeMs: await stamp(fullOf(owner.root, joinRel(rel, e.name))) }));
       for (const { e, mtimeMs } of stamped) {
         if (mtimeMs === null) continue;
         const sub = joinRel(rel, e.name);
@@ -530,6 +536,52 @@ async function findWorks(owners: Owner[]): Promise<WallCandidate[]> {
     level = next;
   }
   return [...works.values()];
+}
+
+/* ------------------------------- 本地已有的作品（收藏夹用） ------------------------------- */
+
+/** 本地 strm 目录里认得出是哪一部的作品目录 */
+export interface LocalWork {
+  taskId: string;
+  /** 作品目录，相对任务的本地 strm 目录 */
+  rel: string;
+  mediaType: OrganizeMediaType;
+  tmdbId: number;
+  /** 剧：有哪几季（季目录，或者直接放着的 strm 名字里的 SxxEyy） */
+  seasons: number[];
+}
+
+/** 要全，不是抽一批：读目录的额度比海报墙大得多；不排新旧，不用 stat */
+export const LOCAL_WORKS_LIMITS = { READS: 20_000, STATS: 200_000, MTIME: false } as const;
+
+/**
+ * 各任务的本地目录里认得出 tmdbId 的作品目录（收藏夹判断「已经有了」）：目录名的 id 标签、作品 nfo、整理记录，
+ * 都是离线的。没整理过、目录名里也没有 id 的认不出——所以「没标」不等于没有
+ */
+export async function scanLocalWorks(tasks: TaskDefinition[] = listTasks()): Promise<LocalWork[]> {
+  const works = await findWorks(ownersOf(tasks), LOCAL_WORKS_LIMITS);
+  const out: LocalWork[] = [];
+  await mapLimit(works, 8, async (w) => {
+    const full = fullOf(w.owner.root, w.rel);
+    let entries: Dirent[];
+    try {
+      entries = await fsp.readdir(full, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    const clue = await clueOf(w.owner.lib, full, entries);
+    const run = clue ? undefined : runIndex(w.owner.lib, false).get(w.rel);
+    const tmdbId = clue?.tmdbId ?? run?.tmdbId;
+    const mediaType = clue?.kinds[0] ?? run?.mediaType;
+    if (!tmdbId || !mediaType) return;
+    const seasons = new Set<number>();
+    for (const e of entries) {
+      const n = e.isDirectory() ? seasonDirNumber(e.name) : e.name.toLowerCase().endsWith(".strm") ? (episodeKey(e.name)?.season ?? null) : null;
+      if (n !== null) seasons.add(n);
+    }
+    out.push({ taskId: w.owner.lib.task.id, rel: w.rel, mediaType, tmdbId, seasons: [...seasons].sort((a, b) => a - b) });
+  });
+  return out;
 }
 
 interface WallPending {

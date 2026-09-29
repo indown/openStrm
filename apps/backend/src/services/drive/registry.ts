@@ -159,6 +159,33 @@ export function findShareLink(text: string): ShareRef | null {
   return null;
 }
 
+/**
+ * 一段话里的全部分享链接（影库批量添加：一行一个，或者贴好几段「链接：… 提取码：…」），按出现的先后。
+ * 提取码：只有一个链接时整段里找（和 findShareLink 一样，写在链接前面也认）；好几个时各找各的——链接后面、下一个链接前面那段。
+ * 同一个分享（同一家、同一个码）只留一条：前面那条没提取码、后面的有，就用后面的。
+ * 一个网址都没有时，整段是一个裸分享码（`swxxxx-提取码`）也认；一行一个的不认：随便一个英文词都能当成 115 的码
+ */
+export function findShareLinks(text: string): ShareRef[] {
+  const found: Array<{ ref: ShareRef; start: number; end: number }> = [];
+  for (const m of text.matchAll(URL_IN_TEXT)) {
+    const ref = parseShareRef(m[0].replace(URL_TRAILING, ""));
+    if (ref) found.push({ ref, start: m.index, end: m.index + m[0].length });
+  }
+  if (found.length === 0) {
+    const bare = parseShareRef(text.trim());
+    return bare ? [bare] : [];
+  }
+  const out = new Map<string, ShareRef>();
+  found.forEach((f, i) => {
+    const scope = found.length === 1 ? text : text.slice(f.end, found[i + 1]?.start ?? text.length);
+    const ref = withPassword(f.ref, PASSCODE_IN_TEXT.exec(scope)?.[1] ?? "");
+    const key = `${ref.kind}:${ref.code}`;
+    const prev = out.get(key);
+    if (!prev || (!prev.password && ref.password)) out.set(key, ref);
+  });
+  return [...out.values()];
+}
+
 export interface ShareMatch {
   provider: DriveProvider;
   ref: ShareRef;

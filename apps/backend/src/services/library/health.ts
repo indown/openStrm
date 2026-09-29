@@ -102,7 +102,7 @@ function recordOk(code: string): void {
   if (row.status === "ok" && row.checkedAt != null && now - row.checkedAt < OK_WRITE_INTERVAL_S) return;
   updateShare(code, { status: "ok", reason: "", failStreak: 0, checkedAt: now, lastOkAt: now, nextCheckAt: null, expiredAt: null });
   if (row.status !== "ok") {
-    log.info({ code, from: row.status }, "影库里的分享又能打开了");
+    log.info({ code, from: row.status }, "收藏夹里的分享又能打开了");
     deps.onShareStatus(code, "ok");
   }
 }
@@ -112,7 +112,7 @@ function expire(code: string, reason: string, streak: number): void {
   const row = getShare(code);
   if (!row || row.status === "expired") return;
   updateShare(code, { status: "expired", reason, failStreak: streak, checkedAt: now, expiredAt: now, nextCheckAt: null });
-  log.warn({ code, reason }, "影库里的分享已失效");
+  log.warn({ code, reason }, "收藏夹里的分享已失效");
   deps.onShareStatus(code, "expired");
   if (patrolling.has(code)) {
     const sources = listByShareCode(code);
@@ -266,7 +266,7 @@ export function startLibraryHealth(opts: { patrol?: boolean } = {}): void {
   setShareObserver(observer);
   if (opts.patrol === false || timer) return;
   timer = setInterval(() => {
-    void patrolOnce().catch((err: unknown) => log.warn({ err }, "影库巡检出错"));
+    void patrolOnce().catch((err: unknown) => log.warn({ err }, "收藏夹巡检出错"));
   }, TICK_MS);
   timer.unref?.();
 }

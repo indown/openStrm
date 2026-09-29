@@ -48,11 +48,15 @@ export const findAndSavePrompt: PromptDef = {
       );
     }
     if (tools.has("library_search")) {
-      steps.push("先用 library_search 在影库（我收藏的分享）里找：中文名、英文名都试试，看 files 里的文件名和年份对不对得上；有合适的就直接用它，跳过下一步。");
+      steps.push(
+        tools.has("library_work")
+          ? "先用 library_search 在收藏夹（我收藏的分享）里找：中文名、英文名都试试，看 files 里的文件名和年份对不对得上；结果带 work 的，用 library_work 看这部的全部版本和我本地是不是已经有了（owned 里有就先问我还要不要存）。有合适的就直接用它，跳过下一步。"
+          : "先用 library_search 在收藏夹（我收藏的分享）里找：中文名、英文名都试试，看 files 里的文件名和年份对不对得上；有合适的就直接用它，跳过下一步。",
+      );
     }
-    steps.push("用 resource_search 搜：关键词只写片名，年份、画质这些用 year / include 参数，别塞进关键词（结果里的 library 是影库里的，优先考虑）。");
+    steps.push("用 resource_search 搜：关键词只写片名，年份、画质这些用 year / include 参数，别塞进关键词（结果里的 library 是收藏夹里的，优先考虑）。");
     steps.push(
-      `从结果里挑最多 3 个候选给我看：优先影库里的、能转存的 115 / 夸克分享、没失效的、更新时间近的${kind === "tv" ? "、集数全的" : ""}；标题里看得出的画质、大小、集数写出来。磁力 / 电驴只能走 115 云下载，分享都不合适时再提。`,
+      `从结果里挑最多 3 个候选给我看：优先收藏夹里的、能转存的 115 / 夸克分享、没失效的、更新时间近的${kind === "tv" ? "、集数全的" : ""}；标题里看得出的画质、大小、集数写出来。磁力 / 电驴只能走 115 云下载，分享都不合适时再提。`,
     );
     steps.push("我选定以后用 share_inspect 看分享里有什么，把目录结构、文件数和总大小告诉我。");
     if (canSave) {

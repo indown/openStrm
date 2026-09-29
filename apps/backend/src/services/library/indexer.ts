@@ -260,10 +260,10 @@ async function crawl(source: MediaLibraryEntry, signal: AbortSignal): Promise<vo
     totalSize: stats.totalSize,
     truncated,
   });
-  log.info({ id, share: ref.code, dirs: p.dirsTotal, nodes: stats.nodeCount }, "影库来源抄完了");
+  log.info({ id, share: ref.code, dirs: p.dirsTotal, nodes: stats.nodeCount }, "收藏夹来源抄完了");
   // 切作品单元（本地，不请求网盘），交给识别工人去认
   const u = rebuildUnits(id);
-  log.info({ id, units: u.total, added: u.added, removed: u.removed }, "影库来源切好了作品单元");
+  log.info({ id, units: u.total, added: u.added, removed: u.removed }, "收藏夹来源切好了作品单元");
   kickIdentify();
 }
 
@@ -300,7 +300,7 @@ async function runOne(source: MediaLibraryEntry): Promise<void> {
     const now = deps.now();
     if (err instanceof PauseError) {
       sources.setIndexState(source.id, { indexStatus: "indexing", indexError: err.message, indexRetryAt: now + err.retryAfterS });
-      log.info({ id: source.id, err: err.message }, "影库抄目录暂停");
+      log.info({ id: source.id, err: err.message }, "收藏夹抄目录暂停");
       return;
     }
     if (err instanceof StopError) {
@@ -318,7 +318,7 @@ async function runOne(source: MediaLibraryEntry): Promise<void> {
       }
       return;
     }
-    log.error({ err, id: source.id }, "影库抄目录出错");
+    log.error({ err, id: source.id }, "收藏夹抄目录出错");
     sources.setIndexState(source.id, { indexStatus: "failed", indexError: `抄目录出错：${messageOf(err).slice(0, 200)}`, indexRetryAt: null });
   } finally {
     current = null;
@@ -400,7 +400,7 @@ export function rebuildSearchTextIfStale(): void {
     if (s.indexStatus === "done") nodes.finalizeSizes(s.id, isVideoName);
   }
   writeKv(KEY.librarySearchTextVersion, SEARCH_TEXT_VERSION);
-  if (dirs > 0) log.info({ dirs, version: SEARCH_TEXT_VERSION }, "影库搜索规则更新了，按已有的目录树重算了搜索文本");
+  if (dirs > 0) log.info({ dirs, version: SEARCH_TEXT_VERSION }, "收藏夹搜索规则更新了，按已有的目录树重算了搜索文本");
 }
 
 export function startIndexer(): void {

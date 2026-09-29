@@ -13,7 +13,23 @@ const videoExts = new Set([".mkv"]);
 const unitOf = (paths: string[], taskRootName = "root") =>
   buildUnits(paths.map((p, i): ScopeEntry => ({ path: p, isDir: false, id: `n${i}` })), { scopePath: "", taskRootName, videoExts, rules: [] })[0];
 
-const hit = (id: number, mediaType: "movie" | "tv", title: string, year: string, originalTitle?: string): TmdbSearchResult => ({ id, mediaType, title, year, originalTitle, posterUrl: "", overview: "" });
+const hit = (id: number, mediaType: "movie" | "tv", title: string, year: string, originalTitle?: string, popularity?: number): TmdbSearchResult => ({
+  id,
+  mediaType,
+  title,
+  year,
+  originalTitle,
+  posterUrl: "",
+  overview: "",
+  ...(popularity !== undefined ? { popularity } : {}),
+});
+
+/** 直接给标题候选和年份的单元（影库那种：候选是切单元时补好的） */
+const titlesUnit = (titles: string[], year?: string, kindHint: "movie" | "tv" | "unknown" = "movie") => ({
+  ...unitOf(["x.mkv"]),
+  kindHint,
+  parsed: { title: titles[0], titles, ...(year ? { year } : {}), tags: {} },
+});
 
 class StubTmdb implements TmdbApi {
   readonly calls: string[] = [];
@@ -144,3 +160,112 @@ test("分集 nfo 里的剧 id 没写剧名：拿单元的标题核对", async ()
   assert.equal(bad.match, null, "对不上：不采用，也搜不到");
   assert.deepEqual(bad.notes, ["本地 x.nfo 里的 tmdbid（42009）在 TMDB 上是「黑镜」，和目录名对不上，没采用"]);
 });
+
+test("主标题对上也算标题对上：「碟中谍5」对《碟中谍5：神秘国度》；同分时它对上的候选更具体（「碟中谍5」⊃「碟中谍」）就排在整个标题对上的前面", async () => {
+  const tmdb = new StubTmdb(
+    {
+      碟中谍5: [hit(177677, "movie", "碟中谍5：神秘国度", "2015", "Mission: Impossible - Rogue Nation", 30)],
+      // 第一部热门得多也不换：「碟中谍5」对上的更具体
+      碟中谍: [hit(954, "movie", "碟中谍", "1996", "Mission: Impossible", 400), hit(177677, "movie", "碟中谍5：神秘国度", "2015", "Mission: Impossible - Rogue Nation", 30)],
+    },
+    { "movie:177677": { title: "碟中谍5：神秘国度", year: "2015" } },
+  );
+  const r = await identifyUnit({ unit: titlesUnit(["碟中谍5", "碟中谍"]), evidence: {}, episodeTitles: false, maxTitles: 5, strictStop: true }, tmdb);
+  assert.equal(r.match?.tmdbId, 177677);
+  assert.equal(r.match?.confidence, "medium", "标题对上、没有年份");
+});
+
+test("跨年上映：中文名、英文名都对上的那部压过年份更「准」、只对上英文名的同名冷门片（撞车 2004 ↔ 2005、爱我 2024 ↔ 2025）", async () => {
+  const tmdb = new StubTmdb(
+    {
+      撞车: [hit(1640, "movie", "撞车", "2005", "Crash", 10.6)],
+      // 同名同年的冷门片还不止一部，真正那部排第三
+      crash: [hit(1353802, "movie", "Crash", "2004", "Crash", 1.2), hit(1319271, "movie", "Crash", "2004", "Crash", 0.5), hit(1640, "movie", "撞车", "2005", "Crash", 10.6)],
+    },
+    { "movie:1640": { title: "撞车", originalTitle: "Crash", year: "2005" } },
+  );
+  const r = await identifyUnit({ unit: titlesUnit(["撞车", "Crash"], "2004"), evidence: {}, episodeTitles: false, maxTitles: 5, strictStop: true }, tmdb);
+  assert.equal(r.match?.tmdbId, 1640);
+  assert.equal(r.match?.confidence, "medium", "年份差一年");
+  // 热度只差两倍也认得出（靠两个名字，不靠热度）
+  const love = new StubTmdb(
+    { 爱我: [hit(881415, "movie", "爱我", "2025", "Love Me", 3.7)], "love me": [hit(881415, "movie", "爱我", "2025", "Love Me", 3.7), hit(763325, "movie", "Love Me", "2024", "Love Me", 1.8)] },
+    { "movie:881415": { title: "爱我", originalTitle: "Love Me", year: "2025" } },
+  );
+  const r2 = await identifyUnit({ unit: titlesUnit(["爱我", "Love Me"], "2024"), evidence: {}, episodeTitles: false, maxTitles: 5, strictStop: true }, love);
+  assert.equal(r2.match?.tmdbId, 881415);
+});
+
+test("跨年上映、只有一个名字：领先不到一分的里面热门得多（比前面的都热门 5 倍以上）的挑回来；标题对不上的不换", async () => {
+  const tmdb = new StubTmdb(
+    { 撞车: [hit(1353802, "movie", "撞车", "2004", "", 1.2), hit(1319271, "movie", "撞车", "2004", "", 0.5), hit(1640, "movie", "撞车", "2005", "Crash", 10.6)] },
+    { "movie:1640": { title: "撞车", originalTitle: "Crash", year: "2005" } },
+  );
+  const r = await identifyUnit({ unit: titlesUnit(["撞车"], "2004"), evidence: {}, episodeTitles: false }, tmdb);
+  assert.equal(r.match?.tmdbId, 1640);
+  const off = new StubTmdb({ crash: [hit(1353802, "movie", "Crash", "2004", "Crash", 0.6), hit(9, "movie", "Crash Course", "2005", "Crash Course", 30)] }, { "movie:1353802": { title: "Crash", year: "2004" } });
+  const r2 = await identifyUnit({ unit: titlesUnit(["Crash"], "2004"), evidence: {}, episodeTitles: false }, off);
+  assert.equal(r2.match?.tmdbId, 1353802);
+});
+
+test("主标题只拿第一个候选对：后面补的演员名 / 系列名对不上《李小龙：遗失的访谈》《蝙蝠侠：漫长的万圣节》", async () => {
+  const tmdb = new StubTmdb(
+    {
+      李小龙: [hit(115955, "movie", "李小龙：遗失的访谈", "1971", "Bruce Lee: The Lost Interview", 1)],
+      唐山大兄: [hit(12481, "movie", "唐山大兄", "1971", "唐山大兄", 6.2)],
+    },
+    { "movie:12481": { title: "唐山大兄", year: "1971" } },
+  );
+  const r = await identifyUnit({ unit: titlesUnit(["李小龙 唐山大兄", "李小龙", "唐山大兄"], "1971"), evidence: {}, episodeTitles: false, maxTitles: 5, strictStop: true }, tmdb);
+  assert.equal(r.match?.tmdbId, 12481);
+  assert.equal(r.match?.confidence, "high");
+  const bat = new StubTmdb(
+    { 蝙蝠侠: [hit(414906, "movie", "新蝙蝠侠", "2022", "The Batman", 43), hit(1010830, "movie", "蝙蝠侠：漫长的万圣节", "2022", "Batman: The Long Halloween Deluxe Edition", 5)] },
+    {
+      "movie:414906": { title: "新蝙蝠侠", originalTitle: "The Batman", year: "2022", aliases: ["Betmen", "Batman"] },
+      "movie:1010830": { title: "蝙蝠侠：漫长的万圣节", originalTitle: "Batman: The Long Halloween Deluxe Edition", year: "2022" },
+    },
+  );
+  const r2 = await identifyUnit({ unit: titlesUnit(["蝙蝠侠 新2022", "蝙蝠侠", "新2022", "The Betmen"], "2022"), evidence: {}, episodeTitles: false, maxTitles: 5, strictStop: true }, bat);
+  assert.equal(r2.match?.tmdbId, 414906);
+  assert.equal(r2.match?.reason, "别名和年份都对上");
+});
+
+test("只对上主标题的让给整个标题对上的（《龙之家族：幕后特辑》让给原名 House of the Dragon 的那部）；只有中文名时看别名", async () => {
+  const both = new StubTmdb(
+    {
+      龙之家族: [hit(325709, "tv", "龙之家族：幕后特辑", "2024", "House of the Dragon: The House That Dragons Built", 13.7), hit(94997, "tv", "权力的游戏前传：龙族", "2022", "House of the Dragon", 127)],
+      "house of the dragon": [hit(94997, "tv", "权力的游戏前传：龙族", "2022", "House of the Dragon", 127), hit(325709, "tv", "龙之家族：幕后特辑", "2024", "House of the Dragon: The House That Dragons Built", 13.7)],
+    },
+    { "tv:94997": { title: "权力的游戏前传：龙族", originalTitle: "House of the Dragon", year: "2022", aliases: ["龙之家族"] } },
+  );
+  const r = await identifyUnit({ unit: titlesUnit(["龙之家族", "House of the Dragon"], undefined, "tv"), evidence: {}, episodeTitles: false, maxTitles: 5, strictStop: true }, both);
+  assert.equal(r.match?.tmdbId, 94997);
+  const r2 = await identifyUnit({ unit: titlesUnit(["龙之家族"], undefined, "tv"), evidence: {}, episodeTitles: false, maxTitles: 5, strictStop: true }, both);
+  assert.equal(r2.match?.tmdbId, 94997);
+  assert.equal(r2.match?.reason, "别名对上，文件名里没有年份");
+});
+
+test("中文名对上主标题、英文名对上原名：两个名字都对上，压过只对上中文名的同名冷门条目（小丑2）", async () => {
+  const tmdb = new StubTmdb(
+    { 小丑2: [hit(1522023, "movie", "小丑2", "2024", "Joker 2", 0.3), hit(889737, "movie", "小丑2: 双重妄想", "2024", "Joker: Folie à Deux", 21)] },
+    { "movie:889737": { title: "小丑2: 双重妄想", originalTitle: "Joker: Folie à Deux", year: "2024" } },
+  );
+  const r = await identifyUnit({ unit: titlesUnit(["小丑2", "Joker Folie à Deux"]), evidence: {}, episodeTitles: false, maxTitles: 5, strictStop: true }, tmdb);
+  assert.equal(r.match?.tmdbId, 889737);
+});
+
+test("strictStop：标题一样但年份不对的不停，接着搜后面的候选（「2012 世界末日」→《2012》2009）", async () => {
+  const tmdb = new StubTmdb(
+    {
+      "2012 世界末日": [hit(16266, "movie", "2012世界末日", "2008", "2012 Doomsday", 1)],
+      "2012": [hit(14161, "movie", "2012", "2009", "2012", 40)],
+    },
+    { "movie:14161": { title: "2012", year: "2009" } },
+  );
+  const r = await identifyUnit({ unit: titlesUnit(["2012 世界末日", "2012"], "2009"), evidence: {}, episodeTitles: false, maxTitles: 5, strictStop: true }, tmdb);
+  assert.equal(r.match?.tmdbId, 14161);
+  assert.equal(r.match?.confidence, "high");
+  assert.ok(tmdb.calls.some((c) => c.startsWith("search movie 2012 ")), "接着搜了第二个候选");
+});
+

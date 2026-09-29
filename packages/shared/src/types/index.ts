@@ -52,6 +52,8 @@ export type {
   LibraryWorksSort,
   LibraryWorksResult,
   LibraryWorkDetail,
+  LibraryOwned,
+  LibrarySeriesGroup,
 } from "./media-library.js";
 export type {
   ShareFollow,

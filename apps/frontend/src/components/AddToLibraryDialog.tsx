@@ -120,14 +120,14 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
         return;
       }
       onSaved((await api.library.create(payload)).entry);
-      toast.success("已加入影库");
+      toast.success("已收藏");
       onOpenChange(false);
     } catch (err) {
       const status = (err as { response?: { status?: number } }).response?.status;
       // 409 的错误体里带着已存在的条目
       const body = apiErrorBody(err) as { message?: string; data?: MediaLibraryEntry };
       if (status === 409) {
-        toast.error(body.message || "该分享已在影库中");
+        toast.error(body.message || "该分享已在收藏夹里");
         if (body.data) onSaved(body.data);
         onOpenChange(false);
       } else {
@@ -142,7 +142,7 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[90vh] flex-col">
         <DialogHeader>
-          <DialogTitle>{isEdit ? "编辑影库条目" : "加入影库"}</DialogTitle>
+          <DialogTitle>{isEdit ? "编辑收藏" : "加入收藏夹"}</DialogTitle>
           <DialogDescription className="truncate">{initial?.shareUrl}</DialogDescription>
         </DialogHeader>
 
@@ -232,7 +232,7 @@ export function AddToLibraryDialog({ open, onOpenChange, initial, onSaved }: Add
               取消
             </Button>
             <Button onClick={handleConfirm} disabled={saving || !initial}>
-              {saving ? "保存中..." : isEdit ? "保存修改" : "加入影库"}
+              {saving ? "保存中..." : isEdit ? "保存修改" : "收藏"}
             </Button>
           </div>
         </DialogFooter>

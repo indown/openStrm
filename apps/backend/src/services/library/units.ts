@@ -15,17 +15,38 @@ import { moduleLogger } from "../../lib/logger.js";
 import { parseRules } from "../organize/rules.js";
 import { resolveOrganizeSettings } from "../organize/settings.js";
 import { buildUnits, type ScopeEntry } from "../organize/units.js";
-import { parseCjkNumber, parseMediaName } from "../organize/parse-name.js";
+import { parseCjkNumber, parseMediaName, romanToArabic } from "../organize/parse-name.js";
 import { VIDEO_EXTS_DOTTED } from "./search-text.js";
 
 const log = moduleLogger("library-units");
 
-/** 切单元的规则版本：规则改了加一，启动时把抄完的来源重切一遍（按单元键保留识别结果；候选变了的重认）。2 = 补中文候选；3 = 品牌前缀、合集上一级、第一部的 1；4 = 电影合集里的「第 N 部」不当季 */
-export const UNITS_VERSION = 4;
+/** 切单元的规则版本：规则改了加一，启动时把抄完的来源重切一遍（按单元键保留识别结果；候选变了的重认）。2 = 补中文候选；3 = 品牌前缀、合集上一级、第一部的 1；4 = 电影合集里的「第 N 部」不当季；5 = 故意写错的英文名补还原的候选、拆出来的中文名也补阿拉伯数字 */
+export const UNITS_VERSION = 5;
 
 const HAN = /\p{Script=Han}/u;
 /** 大包里常加在片名前面的系列 / 厂牌词：单拿出来去搜只会搜到不相干的纪录片 */
 const BRAND = /^(?:漫威|迪士尼|皮克斯|梦工厂|吉卜力|宫崎骏|华纳|环球|DC)$/i;
+
+/** 希腊 / 西里尔字母里长得像拉丁字母的：上传者拿它们混进英文名躲关键词（The αccouηtαηt、Wαr） */
+const LOOKALIKE: Record<string, string> = {
+  α: "a", β: "b", ε: "e", η: "n", ι: "i", κ: "k", μ: "u", ν: "v", ο: "o", ρ: "p", τ: "t", υ: "u", χ: "x", ω: "w",
+  Α: "A", Β: "B", Ε: "E", Ζ: "Z", Η: "H", Ι: "I", Κ: "K", Μ: "M", Ν: "N", Ο: "O", Ρ: "P", Τ: "T", Υ: "Y", Χ: "X",
+  а: "a", е: "e", ё: "e", к: "k", м: "m", о: "o", р: "p", с: "c", у: "y", х: "x",
+  А: "A", В: "B", Е: "E", К: "K", М: "M", Н: "H", О: "O", Р: "P", С: "C", Т: "T", У: "Y", Х: "X",
+};
+const RE_GREEK_CYRILLIC = /[\p{Script=Greek}\p{Script=Cyrillic}]/u;
+
+/**
+ * 故意写错的英文名还原：一个词里拉丁字母和希腊 / 西里尔字母混着用的，把形似的换回拉丁字母（纯希腊文的片名不动）；
+ * 夹在两个小写字母中间的大写 I 换成 l（GoIdenEye、WorId、SiIenced）。只多给一个候选，原名照样在前面
+ */
+export function unobfuscate(title: string): string {
+  return title
+    .split(/(\s+)/)
+    .map((w) => (/[A-Za-z]/.test(w) && RE_GREEK_CYRILLIC.test(w) ? [...w].map((ch) => LOOKALIKE[ch] ?? ch).join("") : w))
+    .join("")
+    .replace(/(?<=[a-z])I(?=[a-z])/g, "l");
+}
 
 /** 名字就是「第 1 部」「Part 2」「03」这种：片名在上一级（合集目录）上 */
 const RE_PART_DIR = /^(?:第\s*[\d一二三四五六七八九十]+\s*[部集]|part\s*\d+|\d{1,2})(?:\s|$)/i;
@@ -36,6 +57,8 @@ const RE_PART_DIR = /^(?:第\s*[\d一二三四五六七八九十]+\s*[部集]|pa
  *     拼错：GoIdenEye、Ait-Men）：年份后面的中文片名（「007-17 (1995) 黄金眼」→ 黄金眼）、上一级合集的片名（「漫威 蚁人 全3部」→
  *     漫威 蚁人、蚁人），排最前面
  *   - 几个词的中文标题：第一个词和最后一个词（「僵尸世界大战 布拉德皮特」后面是演员，「李小龙 猛龙过江」前面是演员），紧跟在它后面
+ *   - 带罗马数字的（包括上面拆出来的「漫威 惊奇队长Ⅱ」→ 惊奇队长Ⅱ）：阿拉伯数字的紧跟在后面（TMDB 上叫「惊奇队长2」）
+ *   - 故意写错的英文名（混进希腊 / 西里尔字母的 The αccouηtαηt、大写 I 冒充 l 的 GoIdenEye）：还原的紧跟在原名后面
  *   - 第一部带着「1」的（「侏罗纪公园1」「惊天营救1」）：去掉「1」（TMDB 上第一部不带数字）
  */
 export function libraryTitleCandidates(rawName: string, titles: string[], parentName = ""): string[] {
@@ -66,6 +89,17 @@ export function libraryTitleCandidates(rawName: string, titles: string[], parent
       extra.push(words[words.length - 1]);
     }
     out.splice(firstHan + 1, 0, ...extra);
+  }
+  // 罗马数字：解析名字时只给整个标题补了阿拉伯数字的（排在最后），拆出来的也补上、紧跟在后面
+  for (let i = out.length - 1; i >= 0; i--) {
+    const arabic = romanToArabic(out[i]);
+    if (arabic !== out[i] && !out.includes(arabic)) out.splice(i + 1, 0, arabic);
+  }
+  // 故意写错的英文名：还原的紧跟在原名后面
+  for (let i = out.length - 1; i >= 0; i--) {
+    if (HAN.test(out[i])) continue;
+    const plain = unobfuscate(out[i]);
+    if (plain !== out[i]) out.splice(i + 1, 0, plain);
   }
   // 第一部的「1」：「侏罗纪公园1」→ 侏罗纪公园（紧跟在带 1 的后面）
   for (let i = out.length - 1; i >= 0; i--) {
@@ -170,6 +204,6 @@ export function rebuildUnitsIfStale(): number {
     n++;
   }
   writeKv(KEY.libraryUnitsVersion, UNITS_VERSION);
-  if (n > 0) log.info({ sources: n, version: UNITS_VERSION }, "影库按新规则重切了作品单元");
+  if (n > 0) log.info({ sources: n, version: UNITS_VERSION }, "收藏夹按新规则重切了作品单元");
   return n;
 }

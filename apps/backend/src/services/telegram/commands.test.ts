@@ -482,18 +482,18 @@ test("/s：没带关键词给用法；没配资源搜索说去设置，不发请
   assert.equal(calls.length, 0);
 });
 
-test("/s：没配资源搜索、影库里有：只列影库的，说网上要先配；疑似失效的标出来", async () => {
+test("/s：没配资源搜索、收藏夹里有：只列收藏夹的，说网上要先配；疑似失效的标出来", async () => {
   libraryResult = { hits: [libHit("阿甘正传 4K原盘REMUX"), libHit("阿甘正传 1080P", { nodeId: "n2", health: { status: "suspect", reason: "", checkedAt: null, expiredAt: null } })], total: 5, expired: 0, indexing: 0 };
   await handleUpdate(bot, msg("/s 阿甘正传"));
   const text = sent[0].text;
-  assert.match(text, /📚 <b>影库里有 5 条<\/b>（列前 2 条）/);
+  assert.match(text, /🔖 <b>收藏夹里有 5 条<\/b>（列前 2 条）/);
   assert.match(text, /• 阿甘正传 4K原盘REMUX · 51\.0G\n {2}<i>老K \/ 1\. 电影<\/i>/, "分享标题和第一层同名不重复");
   assert.match(text, /阿甘正传 1080P · 51\.0G · <i>可能已失效<\/i>/);
-  assert.match(text, /只搜了影库/);
+  assert.match(text, /只搜了收藏夹/);
   assert.equal(calls.length, 0, "没配 PanSou 不去问它");
 });
 
-test("/s：影库里认出来的作品带上 TMDB 的名字和年份，把握低的说「可能是」", async () => {
+test("/s：收藏夹里认出来的作品带上 TMDB 的名字和年份，把握低的说「可能是」", async () => {
   libraryResult = {
     hits: [
       libHit("Forrest.Gump.1994.2160p", { work: { tmdbId: 13, mediaType: "movie", title: "阿甘正传", year: "1994", posterUrl: "", confidence: "high" } }),
@@ -509,26 +509,26 @@ test("/s：影库里认出来的作品带上 TMDB 的名字和年份，把握低
   assert.match(text, /• 第1部 4K原盘REMUX · 可能是《蚁人》2015/);
 });
 
-test("/s：配了资源搜索，影库一段在列表最上面，翻页也还在；网上一条都列不出来时先给影库的", async () => {
+test("/s：配了资源搜索，收藏夹一段在列表最上面，翻页也还在；网上一条都列不出来时先给收藏夹的", async () => {
   searchConfigured = true;
   libraryResult = { hits: [libHit("沙丘2 4K原盘REMUX")], total: 1, expired: 0, indexing: 0 };
   searchResult = { keyword: "沙丘2", complete: true, counts: {}, items: Array.from({ length: 12 }, (_, i) => hit("115", i)) };
   await searchVia(msg("/s 沙丘2"));
   const list = edited[0];
-  assert.match(list.text, /^📚 <b>影库里有 1 条<\/b>[\s\S]*沙丘2 4K原盘REMUX[\s\S]*\n\n🔍 <b>沙丘2<\/b>/);
+  assert.match(list.text, /^🔖 <b>收藏夹里有 1 条<\/b>[\s\S]*沙丘2 4K原盘REMUX[\s\S]*\n\n🔍 <b>沙丘2<\/b>/);
   await handleUpdate(bot, cb(list.buttons!.flat().find((b) => b.text === "➡️ 下一页")!.callback_data));
-  assert.match(edited.at(-1)!.text, /^📚 <b>影库里有 1 条/);
+  assert.match(edited.at(-1)!.text, /^🔖 <b>收藏夹里有 1 条/);
 
   searchResult = { keyword: "沙丘2", complete: true, counts: {}, items: [] };
   await searchVia(msg("/s 沙丘2"));
-  assert.match(edited.at(-1)!.text, /^📚 <b>影库里有 1 条[\s\S]*网上：没搜到「沙丘2」/);
+  assert.match(edited.at(-1)!.text, /^🔖 <b>收藏夹里有 1 条[\s\S]*网上：没搜到「沙丘2」/);
 });
 
-test("私聊直接发片名：没配资源搜索、但影库里有收藏也照样搜", async () => {
+test("私聊直接发片名：没配资源搜索、但收藏夹里有收藏也照样搜", async () => {
   libraryHas = true;
   libraryResult = { hits: [libHit("繁花")], total: 1, expired: 0, indexing: 0 };
   await handleUpdate(bot, msg("繁花", { type: "private" }));
-  assert.match(sent[0].text, /影库里有 1 条/);
+  assert.match(sent[0].text, /收藏夹里有 1 条/);
 });
 
 /** 发一条消息 / 点一个按钮，再等后台的搜索跑完 */

@@ -15,6 +15,7 @@ import { copyBlockerFor, copyOptionsFor } from "../copy/paths.js";
 import { releaseCopyHoldsById, type CopyTrigger } from "../copy/queue.js";
 import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
 import { generateStrmForSelected, type SelectedItem } from "../strm/share-strm.js";
+import { recordLibrarySave } from "../library/saves.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { moduleLogger } from "../../lib/logger.js";
 import { startTask } from "../task/runner.js";
@@ -192,6 +193,12 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
     // 转存没成：调用方为它建出来的目录收回去，不然下次再存就当成原来就有的，整理完留一个空壳
     if (opts.createdDir) await dropCreatedDir(provider, task.originPath, subPath, opts.createdDir);
     throw driveErrorToHttp(err, "转存失败");
+  }
+  // 从收藏夹里的分享存的：记一笔，收藏夹里这部作品就显示「已经有了」；记不上不影响转存
+  try {
+    recordLibrarySave({ shareCode: ref.code, itemIds: items.map((i) => i.id), taskId: task.id, subPath });
+  } catch (err) {
+    log.warn({ err, share: ref.code }, "收藏夹的转存记录没记上");
   }
   // 网盘给了转存后的顶层 id 且一一对应时，目录直接按 id 列，省掉按路径解析那一步；删源时也靠它核对
   const ids = topIds && topIds.length === items.length ? topIds : [];

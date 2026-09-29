@@ -61,7 +61,7 @@ const PAGE_SIZE = 30;
 /** 列表顶端离视口顶部不到这么多（顶栏 56 再留点余量）就算人已经滚进列表了 */
 const LIST_HOLD_TOP = 72;
 
-const DESCRIPTION = "先搜影库（自己收藏的分享），再通过 PanSou 在网上搜网盘分享和磁力：115 / 夸克的分享一键转存，磁力交给 115 云下载";
+const DESCRIPTION = "先搜收藏夹（自己收藏的分享），再通过 PanSou 在网上搜网盘分享和磁力：115 / 夸克的分享一键转存，磁力交给 115 云下载";
 
 export default function SearchPage() {
   return (
@@ -390,7 +390,7 @@ function SearchView() {
               e.preventDefault();
               submit();
             }}
-            placeholder={notConfigured ? "片名（搜影库），或者粘贴 115 / 夸克分享、磁力链接" : "片名、剧名，或者直接粘贴分享 / 磁力链接"}
+            placeholder={notConfigured ? "片名（搜收藏夹），或者粘贴 115 / 夸克分享、磁力链接" : "片名、剧名，或者直接粘贴分享 / 磁力链接"}
             aria-label="搜索资源"
           />
           {input && (
@@ -434,7 +434,7 @@ function SearchView() {
         <EmptyState
           icon={Telescope}
           title="还没配置资源搜索"
-          description="上面的框现在能搜影库（自己收藏的分享）、粘分享链接和磁力。接上自己部署的 PanSou，还能按片名在网上搜网盘分享和磁力：115 / 夸克的分享直接转存，磁力交给 115 云下载。"
+          description="上面的框现在能搜收藏夹（自己收藏的分享）、粘分享链接和磁力。接上自己部署的 PanSou，还能按片名在网上搜网盘分享和磁力：115 / 夸克的分享直接转存，磁力交给 115 云下载。"
           action={
             <Button asChild>
               <Link href="/settings#pansou">
@@ -448,7 +448,7 @@ function SearchView() {
 
       {config.tmdb && q && !qProblem && <TmdbStrip keyword={q} selected={tmdbParam} year={year} onSelect={pickTmdb} />}
 
-      {/* 影库（本地，瞬间）排在网上的结果前面：自己收藏的优先 */}
+      {/* 收藏夹（本地，瞬间）排在网上的结果前面：自己收藏的优先 */}
       {q && !qProblem && <LibraryHits query={q} variant="embedded" pageSize={5} onSummary={setLibSummary} />}
 
       {notConfigured && q && !qProblem && (
@@ -456,7 +456,7 @@ function SearchView() {
         libSummary && !libSummary.loading && libSummary.total === 0 && libSummary.expired === 0 && !libSummary.error ? (
           <EmptyState
             icon={SearchX}
-            title={`影库里没有「${q}」`}
+            title={`收藏夹里没有「${q}」`}
             description="换个写法（英文名、简称）再搜。要在网上搜，先到设置页「资源搜索」接上自己部署的 PanSou。"
             action={
               <Button variant="outline" asChild>
@@ -469,7 +469,7 @@ function SearchView() {
           />
         ) : (
           <p className="text-xs text-muted-foreground">
-            网上搜要先到设置页「资源搜索」接上 PanSou，这次只搜了影库。
+            网上搜要先到设置页「资源搜索」接上 PanSou，这次只搜了收藏夹。
             <Link href="/settings#pansou" className="ml-1 underline underline-offset-2 hover:text-foreground">
               去设置
             </Link>

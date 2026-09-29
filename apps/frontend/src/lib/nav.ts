@@ -5,7 +5,7 @@ import {
   FolderTree,
   History,
   KeyRound,
-  Library,
+  Bookmark,
   ListChecks,
   Radar,
   Rss,
@@ -31,7 +31,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { title: "任务", url: "/home", icon: ListChecks, match: ["/log"] },
       { title: "strm 管理", url: "/strm", icon: Files },
       { title: "整理", url: "/organize", icon: FolderTree },
-      { title: "影库", url: "/library", icon: Library },
+      { title: "收藏夹", url: "/library", icon: Bookmark },
       // 搜到、转存、追更是一条线：放在追更前面
       { title: "资源搜索", url: "/search", icon: Telescope },
       { title: "追更", url: "/follow", icon: Rss },

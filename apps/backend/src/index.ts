@@ -233,7 +233,7 @@ try {
     startIndexer();
     startLibraryIdentify();
   } catch (err) {
-    app.log.error({ err }, "影库索引没能启动");
+    app.log.error({ err }, "收藏夹索引没能启动");
   }
 
   // 网盘监控：配置里开着就跟随服务一起起来

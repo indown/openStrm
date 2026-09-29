@@ -5,7 +5,7 @@
 import type { LibraryConfidence, LibraryUnitStatus, OrganizeCandidate } from "@openstrm/shared";
 import { and, asc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { db } from "../client.js";
-import { libraryShares, libraryUnits, mediaLibrary } from "../schema.js";
+import { librarySaves, libraryShares, libraryUnits, mediaLibrary } from "../schema.js";
 
 type Row = typeof libraryUnits.$inferSelect;
 
@@ -210,6 +210,17 @@ export function unitsAtNodes(sourceId: string, nodeIds: string[]): UnitRow[] {
     .map(toUnit);
 }
 
+/** 根目录在这个目录下面的单元（按分享里的路径；剧目录里的各季、合集里的几部） */
+export function unitsUnder(sourceId: string, path: string): UnitRow[] {
+  const prefix = `${path.replace(/[\\%_]/g, (c) => `\\${c}`)}/%`;
+  return db
+    .select()
+    .from(libraryUnits)
+    .where(and(eq(libraryUnits.sourceId, sourceId), sql`${libraryUnits.path} like ${prefix} escape '\\'`))
+    .all()
+    .map(toUnit);
+}
+
 /** 下一个该认的：先来的来源先认，同一个来源按路径；一时出错的等到点 */
 export function nextPendingUnit(nowSec: number): UnitRow | null {
   const r = db
@@ -299,6 +310,9 @@ export interface WorkGroup {
   mediaType: "movie" | "tv";
   tmdbId: number;
   title: string;
+  /** 按名字筛的时候原名、英文名也算 */
+  originalTitle: string;
+  enTitle: string;
   year: string;
   posterUrl: string;
   /** 3 高（含手动）/ 2 中 / 1 低 */
@@ -320,6 +334,8 @@ export function workGroups(): WorkGroup[] {
       mediaType: libraryUnits.mediaType,
       tmdbId: libraryUnits.tmdbId,
       title: sql<string>`max(${libraryUnits.title})`,
+      originalTitle: sql<string>`max(${libraryUnits.originalTitle})`,
+      enTitle: sql<string>`max(${libraryUnits.enTitle})`,
       year: sql<string>`max(${libraryUnits.year})`,
       posterUrl: sql<string>`max(${libraryUnits.posterUrl})`,
       conf: CONF_RANK,
@@ -340,6 +356,8 @@ export function workGroups(): WorkGroup[] {
       mediaType: r.mediaType === "movie" ? "movie" : "tv",
       tmdbId: r.tmdbId ?? 0,
       title: r.title ?? "",
+      originalTitle: r.originalTitle ?? "",
+      enTitle: r.enTitle ?? "",
       year: r.year ?? "",
       posterUrl: r.posterUrl ?? "",
       conf: r.conf,
@@ -406,5 +424,53 @@ export function unitSummaries(): Map<string, SourceUnitSummary> {
     out.set(r.sourceId, { total: r.total, identified: r.identified ?? 0, pending: r.pending ?? 0, poster: single ? (r.poster ?? "") : "", title: single ? (r.title ?? "") : "" });
   }
   return out;
+}
+
+/* ------------------------------- 从收藏夹转存过 ------------------------------- */
+
+export interface SaveRecord {
+  sourceId: string;
+  unitKey: string;
+  taskId: string;
+  subPath: string;
+  savedAt: number;
+}
+
+/** 记一笔「从收藏夹存过」：同一个单元存进同一个任务的只留最近一次 */
+export function recordSaves(rows: Array<Omit<SaveRecord, "savedAt">>, now: number): void {
+  if (rows.length === 0) return;
+  db.insert(librarySaves)
+    .values(rows.map((r) => ({ ...r, savedAt: now })))
+    .onConflictDoUpdate({
+      target: [librarySaves.sourceId, librarySaves.unitKey, librarySaves.taskId],
+      set: { subPath: sql`excluded.sub_path`, savedAt: sql`excluded.saved_at` },
+    })
+    .run();
+}
+
+/** 一部作品的哪些单元存过、存到哪（带单元的名字和季） */
+export function savesOfWork(mediaType: "movie" | "tv", tmdbId: number): Array<SaveRecord & { rawName: string; seasons: number[] }> {
+  return db
+    .select({ s: librarySaves, rawName: libraryUnits.rawName, seasons: libraryUnits.seasons })
+    .from(librarySaves)
+    .innerJoin(libraryUnits, and(eq(libraryUnits.sourceId, librarySaves.sourceId), eq(libraryUnits.unitKey, librarySaves.unitKey)))
+    .where(and(eq(libraryUnits.mediaType, mediaType), eq(libraryUnits.tmdbId, tmdbId), inArray(libraryUnits.status, ["done", "manual"])))
+    .all()
+    .map((r) => ({ ...r.s, rawName: r.rawName, seasons: parseJson<number[]>(r.seasons, []) }));
+}
+
+/** 一个单元存过哪儿（没认出的作品就是它自己） */
+export function savesOfUnit(sourceId: string, unitKey: string): SaveRecord[] {
+  return db.select().from(librarySaves).where(and(eq(librarySaves.sourceId, sourceId), eq(librarySaves.unitKey, unitKey))).all();
+}
+
+/** 存过的作品键：认出来的是 `movie:1` / `tv:2`，没认出的是 `unit:<来源>:<单元键>`（海报墙「已有」角标） */
+export function savedWorkKeys(): Set<string> {
+  const rows = db
+    .select({ sourceId: libraryUnits.sourceId, unitKey: libraryUnits.unitKey, mediaType: libraryUnits.mediaType, tmdbId: libraryUnits.tmdbId })
+    .from(librarySaves)
+    .innerJoin(libraryUnits, and(eq(libraryUnits.sourceId, librarySaves.sourceId), eq(libraryUnits.unitKey, librarySaves.unitKey)))
+    .all();
+  return new Set(rows.map((r) => (r.tmdbId != null && r.mediaType ? `${r.mediaType}:${r.tmdbId}` : `unit:${r.sourceId}:${r.unitKey}`)));
 }
 

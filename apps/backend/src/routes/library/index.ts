@@ -1,34 +1,23 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { MediaLibraryEntry } from "@openstrm/shared";
-import {
-  freshIndexFields,
-  getById,
-  healthOf,
-  insert,
-  listByShareCode,
-  listWithHealth,
-  remove,
-  setIndexState,
-  update,
-} from "../../db/repositories/media-library.js";
+import { getById, healthOf, listByShareCode, listWithHealth, remove, update } from "../../db/repositories/media-library.js";
 import { getShare, listExpiredCodes } from "../../db/repositories/library-shares.js";
 import { childrenOf, deleteAll } from "../../db/repositories/library-nodes.js";
 import { deleteUnits, getUnit, unitSummaries } from "../../db/repositories/library-units.js";
 import { ignoreUnit, matchUnit, reidentifySource, reidentifyUnit } from "../../services/library/identify.js";
 import { listWorks, unitView, workDetail } from "../../services/library/works.js";
-import { matchShareLink, parseShareText } from "../../services/drive/registry.js";
+import { localOwned, ownedWorkKeys } from "../../services/library/owned.js";
+import { findShareLinks, matchShareLink, parseShareText } from "../../services/drive/registry.js";
 import { listWholeShareDir } from "../../services/drive/share-walk.js";
 import { driveErrorToHttp } from "../../services/drive/errors.js";
-import { libraryNameOf, withSuffix } from "../../services/library/name.js";
 import { checkShare, checkShares, trackShare, untrackShareIfUnused } from "../../services/library/health.js";
-import { SHARE_EXPIRED_ERROR, SHARE_LOCKED_ERROR, enqueueIndex, isWholeShare, stopIndexing } from "../../services/library/indexer.js";
+import { enqueueIndex, isWholeShare, stopIndexing } from "../../services/library/indexer.js";
 import { searchLibrary } from "../../services/library/search.js";
-import { normalizeTitle } from "../../services/media-title.js";
 import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 import { cidSchema, idParamsSchema } from "../../schemas/entities.js";
-import { randomId, sanitizeTags, shareRootCidForDb } from "./_util.js";
+import { addToLibrary, coveringOf, sanitizeTags } from "../../services/library/add.js";
 
 const createSchema = z.looseObject({
   shareUrl: z.string().trim().min(1, "shareUrl is required"),
@@ -41,6 +30,8 @@ const createSchema = z.looseObject({
   rawName: z.string().optional(),
   sharePath: z.string().optional(),
 });
+
+const linksSchema = z.object({ text: z.string().max(200_000) });
 
 const patchSchema = z.object({
   title: z.string().optional(),
@@ -68,6 +59,8 @@ const worksSchema = z.object({
   sort: z.enum(["recent", "year", "title"]).default("recent"),
   offset: z.coerce.number().int().min(0).max(100_000).default(0),
   limit: z.coerce.number().int().min(1).max(200).default(60),
+  keyword: z.string().trim().max(100).optional(),
+  year: z.string().trim().max(20).optional(),
 });
 
 const workDetailSchema = z.object({
@@ -105,13 +98,6 @@ function withPassword(url: string, kind: string, password: string): string {
   }
 }
 
-/** 分享码现在记的死活（刚登记、还没查过是 unknown） */
-const checkedHealth = (shareCode: string) => getShare(shareCode)?.status ?? "unknown";
-
-/** 分享内路径统一成不带首尾斜杠的样子再比 */
-const normPath = (p: string) => p.replace(/^\/+|\/+$/g, "");
-const isUnder = (child: string, parent: string) => parent === "" || child === parent || child.startsWith(`${parent}/`);
-
 export default async function (fastify: FastifyInstance) {
   fastify.get("/api/library", { preHandler: [fastify.authenticate] }, async () => {
     const summaries = unitSummaries();
@@ -124,13 +110,15 @@ export default async function (fastify: FastifyInstance) {
   // 作品：海报墙（同一个 tmdbId 的单元合成一张卡）
   fastify.get("/api/library/works", { preHandler: [fastify.authenticate] }, async (request) => {
     const q = parse(worksSchema, request.query, "query");
-    return listWorks(q);
+    // 本地已有的要扫盘：还没扫好不等，先只标从收藏夹存过的，告诉界面过几秒再拉
+    const local = await localOwned(0);
+    return { ...listWorks(q, ownedWorkKeys(local)), ...(local ? {} : { ownedPending: true }) };
   });
 
   fastify.get("/api/library/works/detail", { preHandler: [fastify.authenticate] }, async (request) => {
     const q = parse(workDetailSchema, request.query, "query");
-    const detail = workDetail(q.key);
-    if (!detail) throw new HttpError(404, "这部作品在影库里找不到了（分享重新抄过、或者清理掉了）：刷新一下");
+    const detail = workDetail(q.key, await localOwned(0));
+    if (!detail) throw new HttpError(404, "这部作品在收藏夹里找不到了（分享重新抄过、或者清理掉了）：刷新一下");
     return detail;
   });
 
@@ -164,129 +152,28 @@ export default async function (fastify: FastifyInstance) {
     return { health: await checkShares(body.codes) };
   });
 
+  // 批量添加：先把贴进来的一段话认成一个个分享（认法和加的时候一样），界面上加之前给人看；加还是一个一个走下面的 POST
+  fastify.post("/api/library/links", { preHandler: [fastify.authenticate] }, async (request) => {
+    const body = parse(linksSchema, request.body);
+    return {
+      links: findShareLinks(body.text).map((ref) => {
+        const covering = coveringOf(listByShareCode(ref.code), "");
+        return {
+          kind: ref.kind,
+          code: ref.code,
+          url: ref.url,
+          hasPassword: ref.password !== "",
+          inLibrary: covering !== undefined,
+          // 已经收着的带上它在影库里的名字，一眼认得出是哪个
+          ...(covering ? { title: covering.shareTitle || covering.title } : {}),
+        };
+      }),
+    };
+  });
+
   fastify.post("/api/library", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const body = parse(createSchema, request.body);
-
-    // 和 /api/share 收一样的写法（转存框就是拿用户贴的原话去开的）：整段「链接：… 提取码：…」也认。
-    // 存认出来的链接（提取码拼在里面），不存那一整段：影库页、转存到任务都要按链接认网盘
-    const ref = parseShareText(body.shareUrl);
-    if (!ref) throw new HttpError(400, "Invalid share url");
-    const shareUrl = ref.url;
-    const shareCode = ref.code;
-    const receiveCode = ref.password;
-
-    const bodyTitle = (body.title ?? "").trim();
-    const bodyCoverUrl = (body.coverUrl ?? "").trim();
-    const bodyTags = sanitizeTags(body.tags);
-    const bodyNotes = body.notes ?? "";
-    const cidStr = shareRootCidForDb(body.cid);
-    const bodyRawName = (body.rawName ?? "").trim();
-    const subdir = Boolean(cidStr && cidStr !== "0" && bodyRawName);
-    const now = Math.floor(Date.now() / 1000);
-
-    // 同一个分享的来源不重叠：已经收了它的上级（或整包）就不再收；收了它下面的子目录，新的这条把它们吸收掉
-    const bodyPath = subdir ? (body.sharePath ?? "").split("/").map((s) => s.trim()).filter(Boolean).join("/") || bodyRawName : "";
-    const sharePath = subdir ? `/${bodyPath}` : "";
-    const siblings = listByShareCode(shareCode);
-    const covering = siblings.find((s) => isUnder(bodyPath, normPath(s.sharePath)) && (isWholeShare(s) || normPath(s.sharePath) !== ""));
-    if (covering) {
-      const message = isWholeShare(covering)
-        ? `已经在影库里了：整个分享「${covering.shareTitle || covering.title || shareCode}」都收着`
-        : normPath(covering.sharePath) === bodyPath
-          ? subdir
-            ? "该子目录已在影库中"
-            : "该分享已在影库中"
-          : `已经在影库里了：它的上级目录「${covering.rawName || covering.title}」收着`;
-      throw new HttpError(409, message, { data: covering });
-    }
-    const absorbed = siblings.filter((s) => !isWholeShare(s) && isUnder(normPath(s.sharePath), bodyPath));
-
-    // 先登记分享码，再去问网盘：打不开时旁听者就能当场记下（提取码不对、已失效），不用等排队轮到它才发现
-    trackShare(shareCode, ref.kind);
-    const match = matchShareLink(shareUrl);
-    let shareTitle = "";
-    if (match) {
-      try {
-        const session = await match.provider.share!.open(match.ref);
-        shareTitle = (await match.provider.share!.info(session)).title.trim();
-      } catch {
-        // 打不开也照样收：旁听者记了死活，抄目录那边按它处理
-      }
-    }
-
-    let entry: MediaLibraryEntry;
-    if (subdir) {
-      // 目录叫 `Season 2` 这种的，标题和年份从上一级的作品目录来（见 services/library/name.ts）
-      const naming = libraryNameOf({ rawName: bodyRawName, title: "", sharePath });
-      const { title: normTitle, year: normYear } = normalizeTitle(naming.query);
-      entry = {
-        id: randomId(),
-        shareUrl,
-        shareCode,
-        receiveCode,
-        sharePath,
-        shareRootCid: cidStr,
-        rawName: bodyRawName,
-        title: bodyTitle || withSuffix(normTitle, naming.suffix) || bodyRawName,
-        fileCount: 0,
-        coverUrl: bodyCoverUrl,
-        tags: bodyTags,
-        notes: bodyNotes,
-        mediaType: "unknown",
-        tmdbId: null,
-        year: normYear || "",
-        overview: "",
-        // 海报等抄完再定：看起来是一部作品才刮（见 indexer.ts 的 maybeScrape）
-        scrapeStatus: "done",
-        createdAt: now,
-        updatedAt: now,
-        shareTitle,
-        ...freshIndexFields(),
-      };
-    } else {
-      // 标题：给了就用给的，没给用分享自己的标题（打不开就先空着，抄目录时再补）
-      const title = bodyTitle || shareTitle;
-      entry = {
-        id: randomId(),
-        shareUrl,
-        shareCode,
-        receiveCode,
-        sharePath: "",
-        shareRootCid: "",
-        rawName: title,
-        title,
-        fileCount: 0,
-        coverUrl: bodyCoverUrl,
-        tags: bodyTags,
-        notes: bodyNotes,
-        mediaType: "unknown",
-        tmdbId: null,
-        year: "",
-        overview: "",
-        scrapeStatus: "done",
-        createdAt: now,
-        updatedAt: now,
-        shareTitle,
-        ...freshIndexFields(),
-      };
-    }
-    // 被吸收的子目录：标签、备注并过来
-    for (const a of absorbed) {
-      for (const t of a.tags) if (!entry.tags.includes(t)) entry.tags.push(t);
-      if (a.notes.trim() && !entry.notes.includes(a.notes.trim())) entry.notes = entry.notes ? `${entry.notes}\n${a.notes.trim()}` : a.notes.trim();
-    }
-    insert(entry);
-    for (const a of absorbed) {
-      stopIndexing(a.id);
-      remove(a.id);
-    }
-    // 刚才一查就是失效 / 提取码不对：直接标停，不去排队
-    const health = checkedHealth(shareCode);
-    if (health === "expired" || health === "locked") {
-      setIndexState(entry.id, { indexStatus: "failed", indexError: health === "expired" ? SHARE_EXPIRED_ERROR : SHARE_LOCKED_ERROR });
-    } else enqueueIndex(entry.id);
-    const saved = listWithHealth().find((e) => e.id === entry.id) ?? entry;
-    return reply.code(201).send({ mode: subdir ? "subdir" : "single", entry: saved, ...(absorbed.length ? { absorbed: absorbed.length } : {}) });
+    return reply.code(201).send(await addToLibrary(body));
   });
 
   fastify.put("/api/library/:id", { preHandler: [fastify.authenticate] }, async (request) => {

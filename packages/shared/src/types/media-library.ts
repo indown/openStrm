@@ -193,6 +193,8 @@ export interface LibraryWork {
   seasons: number[];
   /** 最近一个单元入库的时间 */
   addedAt: number;
+  /** 已经有了：本地 strm 目录里认得出是这一部，或者从收藏夹转存过（没标的不等于没有：没整理过的目录认不出） */
+  owned?: boolean;
 }
 
 export type LibraryWorksView = "all" | "movie" | "tv" | "low" | "none";
@@ -204,11 +206,39 @@ export interface LibraryWorksResult {
   counts: { all: number; movie: number; tv: number; low: number; none: number; pending: number };
   /** 配了 TMDB 才识别 */
   tmdbConfigured: boolean;
+  /** 本地已有的还在扫（第一次要扫一遍各任务的本地目录）：这次的 owned 只算了从收藏夹存过的，过几秒再拉一次 */
+  ownedPending?: boolean;
+}
+
+/** 收藏夹里的一部作品「已经有了」 */
+export interface LibraryOwned {
+  /** local：本地 strm 目录里认出来的；saved：从收藏夹转存过 */
+  via: "local" | "saved";
+  taskId: string;
+  /** 任务：「账号 · 网盘路径」 */
+  taskLabel: string;
+  /** local：作品目录，相对任务的本地 strm 目录；saved：存进去的那个目录（分享里的名字） */
+  path: string;
+  /** 剧有哪几季：local 看季目录，saved 看存的那个单元 */
+  seasons: number[];
+  /** saved：什么时候存的（秒） */
+  savedAt?: number;
+}
+
+/** 一部剧的几季一季一个目录、分开放在同一个目录下：能一起转存（作品弹框「一起转存」、智能体 library_work 的 seriesSave） */
+export interface LibrarySeriesGroup {
+  /** 装着这几季的目录（在分享根上的是分享标题） */
+  folder: string;
+  seasons: number[];
+  /** `<sourceId>:<unitKey>`，按季排好 */
+  units: string[];
 }
 
 export interface LibraryWorkDetail {
   work: LibraryWork;
   units: LibraryUnit[];
+  owned: LibraryOwned[];
+  seriesGroups: LibrarySeriesGroup[];
 }
 
 export interface LibrarySearchResult {

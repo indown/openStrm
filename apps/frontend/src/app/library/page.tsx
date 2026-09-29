@@ -32,18 +32,21 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { StatusBadge } from "@/components/status-badge";
+import { StatusBadge, TONE_CLASS, type StatusTone } from "@/components/status-badge";
 import { ProgressBar } from "@/components/progress-bar";
 import { PageHeader } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
 import { TableSkeleton } from "@/components/loading";
 import { LibraryHits, ShareHealthBadge } from "@/components/LibraryHits";
 import {
+  AlertTriangle,
+  Bookmark,
+  BookmarkCheck,
+  CheckCircle2,
   CloudUpload,
   Edit,
   FolderOpen,
   KeyRound,
-  Library,
   Link2,
   Loader2,
   MoreHorizontal,
@@ -53,11 +56,14 @@ import {
   Share2,
   Sparkles,
   Trash2,
+  XCircle,
+  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { MediaLibraryEntry, ShareFollowSummary } from "@openstrm/shared";
-import { api } from "@/lib/api";
-import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
+import { api, type LibraryShareLink } from "@/lib/api";
+import { apiErrorBody, apiErrorMessage, apiErrorStatus } from "@/lib/axios";
+import { DRIVE_LABEL } from "@/lib/drive";
 import { formatSize, fmtWhen } from "@/lib/format";
 import { LIBRARY_CHANGED_EVENT, notifyLibraryChanged } from "@/lib/library";
 import { ViewChip } from "@/components/view-chip";
@@ -70,7 +76,7 @@ import { ShareDetailDialog } from "@/components/ShareDetailDialog";
 import { AddToLibraryDialog, type AddToLibraryInitial } from "@/components/AddToLibraryDialog";
 import { SaveToDriveDialog, type SaveToTaskChoice } from "@/components/SaveToDriveDialog";
 
-const DESCRIPTION = "收藏的分享都抄下目录树建了索引：中文名、英文名、年份都能搜到里面的每一部，点一条就能打开或转存";
+const DESCRIPTION = "收藏的 115 / 夸克分享（还没存进网盘）：目录树抄在本地建了索引，中文名、英文名、年份都能搜到里面的每一部，点一条就能打开或转存";
 
 /** 从下拉菜单里打开弹框要等菜单先关掉，否则菜单还回焦点时会把弹框顶掉 */
 const afterMenuClosed = (fn: () => void) => setTimeout(fn, 0);
@@ -87,7 +93,7 @@ export default function LibraryPage() {
     <Suspense
       fallback={
         <div className="space-y-6">
-          <PageHeader icon={Library} title="影库" description={DESCRIPTION} />
+          <PageHeader icon={Bookmark} title="收藏夹" description={DESCRIPTION} />
           <TableSkeleton rows={5} />
         </div>
       }
@@ -178,7 +184,7 @@ function LibraryContent() {
       setError(null);
     } catch (err) {
       if (seq !== seqRef.current) return;
-      const msg = apiErrorMessage(err, "加载影库失败");
+      const msg = apiErrorMessage(err, "加载收藏夹失败");
       setError(msg);
       if (!silent) toast.error(msg);
     } finally {
@@ -290,7 +296,7 @@ function LibraryContent() {
     setDeleting(true);
     try {
       await api.library.remove(deleteTarget.id);
-      toast.success(`已从影库移除「${labelOf(deleteTarget)}」`);
+      toast.success(`已从收藏夹移除「${labelOf(deleteTarget)}」`);
       setEntries((prev) => prev.filter((e) => e.id !== deleteTarget.id));
       setDeleteTarget(null);
     } catch (err) {
@@ -346,8 +352,8 @@ function LibraryContent() {
   return (
     <div className="space-y-6">
       <PageHeader
-        icon={Library}
-        title="影库"
+        icon={Bookmark}
+        title="收藏夹"
         description={DESCRIPTION}
         actionsClassName="w-full sm:w-auto"
         actions={
@@ -364,14 +370,14 @@ function LibraryContent() {
             </div>
             <Button variant="outline" onClick={() => setAddOpen(true)}>
               <Plus />
-              添加分享
+              收藏分享
             </Button>
           </>
         }
       />
 
       {!searching && loaded && entries.length > 0 && (
-        <div role="tablist" aria-label="影库视图" className="inline-flex rounded-lg border p-0.5 text-sm">
+        <div role="tablist" aria-label="收藏夹视图" className="inline-flex rounded-lg border p-0.5 text-sm">
           {(
             [
               ["works", "作品"],
@@ -396,14 +402,14 @@ function LibraryContent() {
       {searching ? (
         <LibraryHits query={query} variant="page" pageSize={30} />
       ) : loaded && entries.length > 0 && tab === "works" ? (
-        <LibraryWorks onShowShares={() => switchTab("shares")} />
+        <LibraryWorks onShowShares={() => switchTab("shares")} openWork={params.get("work")} onWorkClosed={() => router.replace("/library", { scroll: false })} />
       ) : !loaded ? (
         <TableSkeleton rows={5} />
       ) : entries.length === 0 ? (
         error ? (
           <EmptyState
-            icon={Library}
-            title="影库加载失败"
+            icon={Bookmark}
+            title="收藏夹加载失败"
             description={error}
             action={
               <Button variant="outline" onClick={() => void fetchEntries()} disabled={refreshing}>
@@ -414,13 +420,13 @@ function LibraryContent() {
           />
         ) : (
           <EmptyState
-            icon={Library}
-            title="影库是空的"
-            description="贴一个 115 / 夸克分享链接加进来，整个分享的目录树会抄下来建索引；也可以在分享详情里点「加入影库」只收其中一个目录。"
+            icon={Bookmark}
+            title="收藏夹是空的"
+            description="贴一个 115 / 夸克分享链接加进来，整个分享的目录树会抄下来建索引；也可以在分享详情里点「收藏」只收其中一个目录。"
             action={
               <Button onClick={() => setAddOpen(true)}>
                 <Plus />
-                添加分享
+                收藏分享
               </Button>
             }
           />
@@ -500,7 +506,7 @@ function LibraryContent() {
       <AlertDialog open={deleteTarget != null} onOpenChange={(o) => !o && !deleting && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>从影库移除</AlertDialogTitle>
+            <AlertDialogTitle>从收藏夹移除</AlertDialogTitle>
             <AlertDialogDescription className="break-all">
               移除「{deleteTarget ? labelOf(deleteTarget) : ""}」这条收藏和它的索引。分享本身、已经转存的文件、生成的 strm 和追更订阅都不受影响。
             </AlertDialogDescription>
@@ -526,7 +532,7 @@ function LibraryContent() {
           <AlertDialogHeader>
             <AlertDialogTitle>清理失效的分享</AlertDialogTitle>
             <AlertDialogDescription>
-              从影库移除 {expiredShares} 个已失效的分享（{counts.expired} 处收藏）和它们的索引。只删影库里的记录，网盘上的文件、生成的 strm 和追更订阅都不动；「可能已失效」的还在复查，不在这次清理里。
+              从收藏夹移除 {expiredShares} 个已失效的分享（{counts.expired} 处收藏）和它们的索引。只删收藏夹里的记录，网盘上的文件、生成的 strm 和追更订阅都不动；「可能已失效」的还在复查，不在这次清理里。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -639,7 +645,7 @@ function SourceRow({ entry, followed, savingToTask, onOpen, onSave, onEdit, onRe
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => afterMenuClosed(onDelete)}>
                   <Trash2 />
-                  从影库移除
+                  从收藏夹移除
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -690,54 +696,219 @@ function SourceRow({ entry, followed, savingToTask, onOpen, onSave, onEdit, onRe
   );
 }
 
-/** 添加分享：贴链接（整段「链接：… 提取码：…」也行），整个分享加进来抄目录树 */
+type AddState = "waiting" | "adding" | "added" | "dead" | "exists" | "failed";
+
+interface AddRow {
+  link: LibraryShareLink;
+  state: AddState;
+  /** 加上以后分享自己的标题 */
+  title: string;
+  message: string;
+}
+
+const ADD_STATE: Record<AddState, { icon: LucideIcon; tone: StatusTone; spin?: boolean }> = {
+  waiting: { icon: Link2, tone: "neutral" },
+  adding: { icon: Loader2, tone: "brand", spin: true },
+  added: { icon: CheckCircle2, tone: "success" },
+  dead: { icon: AlertTriangle, tone: "warning" },
+  exists: { icon: BookmarkCheck, tone: "neutral" },
+  failed: { icon: XCircle, tone: "danger" },
+};
+
+const previewRow = (link: LibraryShareLink): AddRow => ({
+  link,
+  state: link.inLibrary ? "exists" : "waiting",
+  title: link.title ?? "",
+  message: link.inLibrary ? "已经在收藏夹里了" : "",
+});
+
+function AddRowItem({ row }: { row: AddRow }) {
+  const { icon: Icon, tone, spin } = ADD_STATE[row.state];
+  const bad = row.state === "failed" || row.state === "dead";
+  return (
+    <li className="flex items-start gap-2 py-2">
+      <Icon className={cn("mt-0.5 size-4 shrink-0", TONE_CLASS[tone].text, spin && "animate-spin")} />
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p className="truncate text-sm">
+          {row.title && <span className="mr-2 font-medium">{row.title}</span>}
+          <span className="text-xs text-muted-foreground">
+            {DRIVE_LABEL[row.link.kind]} <span className="font-mono">{row.link.code}</span>
+            {row.link.hasPassword ? " · 有提取码" : ""}
+          </span>
+        </p>
+        {row.message && <p className={cn("text-xs [overflow-wrap:anywhere]", bad ? TONE_CLASS[tone].text : "text-muted-foreground")}>{row.message}</p>}
+      </div>
+    </li>
+  );
+}
+
+/**
+ * 添加分享：贴链接（整段「链接：… 提取码：…」也行），整个分享加进来抄目录树。
+ * 一次能贴好几个（一行一个，或者好几段）：边贴边认、列出来给人看；加的时候一个一个来（每个都要去网盘问一下分享），结果留在框里
+ */
 function AddShareDialog({ open, onOpenChange, onAdded }: { open: boolean; onOpenChange: (open: boolean) => void; onAdded: () => void }) {
   const [text, setText] = useState("");
-  const [saving, setSaving] = useState(false);
+  // 认出来的分享，连同拿哪段原话认的：原话改了就等新的，别拿旧的去加
+  const [parsed, setParsed] = useState<{ text: string; links: LibraryShareLink[] } | null>(null);
+  const [parseError, setParseError] = useState<string | null>(null);
+  // 好几个一起加的进度和结果；null 是还没开始加
+  const [rows, setRows] = useState<AddRow[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const seq = useRef(0);
+
   useEffect(() => {
-    if (open) setText("");
+    if (!open) return;
+    setText("");
+    setParsed(null);
+    setParseError(null);
+    setRows(null);
   }, [open]);
-  const submit = async () => {
-    const shareUrl = text.trim();
-    if (!shareUrl) return;
-    setSaving(true);
-    try {
-      const r = await api.library.create({ shareUrl });
-      toast.success(
-        `已加入影库：${r.entry.title || r.entry.shareCode}。正在建索引，大的分享要几分钟到几十分钟，抄到的部分已经能搜${r.absorbed ? `；之前单独收的 ${r.absorbed} 个子目录并进来了` : ""}`,
+
+  // 边贴边认：停手 300 毫秒拿去后端认（和加的时候同一套认法）
+  useEffect(() => {
+    const t = text.trim();
+    const my = ++seq.current;
+    if (!t) {
+      setParsed(null);
+      setParseError(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      api.library.links(t).then(
+        (r) => {
+          if (seq.current !== my) return;
+          setParsed({ text: t, links: r.links });
+          setParseError(null);
+        },
+        (err) => {
+          if (seq.current === my) setParseError(apiErrorMessage(err, "认链接失败"));
+        },
       );
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [text]);
+
+  const links = parsed && parsed.text === text.trim() ? parsed.links : null;
+  const todo = links?.filter((l) => !l.inLibrary) ?? [];
+  const existing = (links?.length ?? 0) - todo.length;
+
+  // 一个：和原来一样，加上就关，结果走 toast
+  const addOne = async (link: LibraryShareLink) => {
+    setBusy(true);
+    try {
+      const r = await api.library.create({ shareUrl: link.url });
+      const label = r.entry.title || r.entry.shareCode;
+      if (r.entry.indexStatus === "failed") toast.warning(`已收藏：${label}，但分享打不开：${r.entry.indexError}`);
+      else
+        toast.success(
+          `已收藏：${label}。正在建索引，大的分享要几分钟到几十分钟，抄到的部分已经能搜${r.absorbed ? `；之前单独收的 ${r.absorbed} 个子目录并进来了` : ""}`,
+        );
       onOpenChange(false);
       onAdded();
     } catch (err) {
-      toast.error(apiErrorMessage(err, "加入影库失败"));
+      toast.error(apiErrorMessage(err, "收藏失败"));
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   };
+
+  // 好几个：一个一个加，每个的结果留在框里
+  const addAll = async (list: LibraryShareLink[]) => {
+    setBusy(true);
+    const next = list.map(previewRow);
+    setRows([...next]);
+    for (let i = 0; i < next.length; i++) {
+      if (next[i].state !== "waiting") continue;
+      next[i] = { ...next[i], state: "adding" };
+      setRows([...next]);
+      try {
+        const r = await api.library.create({ shareUrl: next[i].link.url });
+        const dead = r.entry.indexStatus === "failed";
+        next[i] = {
+          ...next[i],
+          state: dead ? "dead" : "added",
+          title: r.entry.title,
+          message: dead ? `加进来了，但分享打不开：${r.entry.indexError}` : r.absorbed ? `之前单独收的 ${r.absorbed} 个子目录并进来了` : "",
+        };
+      } catch (err) {
+        next[i] = { ...next[i], state: apiErrorStatus(err) === 409 ? "exists" : "failed", message: apiErrorMessage(err, "收藏失败") };
+      }
+      setRows([...next]);
+    }
+    setBusy(false);
+    const count = (st: AddState) => next.filter((r) => r.state === st).length;
+    const added = count("added") + count("dead");
+    if (added > 0) onAdded();
+    const summary = [
+      `加入了 ${added} 个`,
+      count("dead") ? `其中 ${count("dead")} 个分享打不开` : "",
+      count("exists") ? `${count("exists")} 个已经在收藏夹里` : "",
+      count("failed") ? `${count("failed")} 个失败` : "",
+    ]
+      .filter(Boolean)
+      .join("，");
+    if (count("failed") || count("dead")) toast.warning(summary);
+    else toast.success(`${summary}${added ? "。正在建索引，抄到的部分已经能搜" : ""}`);
+  };
+
+  const shown = rows ?? links?.map(previewRow) ?? [];
+  const adding = rows?.findIndex((r) => r.state === "adding") ?? -1;
+  const status = rows
+    ? busy
+      ? `正在加第 ${adding + 1} / ${rows.length} 个…`
+      : "加完了，结果如下（没加上的可以改好再贴一次）"
+    : parseError
+      ? parseError
+      : links
+        ? links.length === 0
+          ? "没认出分享链接：支持 115 和夸克的分享链接"
+          : `认出 ${links.length} 个分享${existing ? `，其中 ${existing} 个已经在收藏夹里` : ""}`
+        : text.trim()
+          ? "正在认…"
+          : "";
+
   return (
-    <Dialog open={open} onOpenChange={(o) => !saving && onOpenChange(o)}>
+    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>添加分享到影库</DialogTitle>
+          <DialogTitle>收藏分享</DialogTitle>
           <DialogDescription>
-            整个分享的目录树会抄下来建索引，之后按片名、英文名、年份都能搜到里面的每一部。只想收其中一个目录的，在分享详情里进到那一层再点「加入影库」。
+            整个分享的目录树会抄下来建索引，之后按片名、英文名、年份都能搜到里面的每一部。一次可以贴好几个。只想收其中一个目录的，在分享详情里进到那一层再点「收藏」。
           </DialogDescription>
         </DialogHeader>
         <Textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={"https://115cdn.com/s/xxxx?password=xxxx\n或者整段「链接：… 提取码：…」"}
-          rows={3}
-          className="font-mono text-xs"
+          placeholder={"https://115cdn.com/s/xxxx?password=xxxx\n或者整段「链接：… 提取码：…」\n好几个就一行一个，或者一段接一段贴"}
+          rows={4}
+          disabled={busy || rows !== null}
+          className="max-h-48 font-mono text-xs"
         />
+        {status && <p className={cn("text-xs", parseError ? "text-destructive" : "text-muted-foreground")}>{status}</p>}
+        {shown.length > 0 && (
+          <ul className="max-h-64 divide-y overflow-y-auto rounded-md border px-3">
+            {shown.map((row) => (
+              <AddRowItem key={`${row.link.kind}:${row.link.code}`} row={row} />
+            ))}
+          </ul>
+        )}
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
-            取消
-          </Button>
-          <Button onClick={() => void submit()} disabled={saving || !text.trim()}>
-            {saving && <Loader2 className="animate-spin" />}
-            加入影库
-          </Button>
+          {rows !== null && !busy ? (
+            <Button onClick={() => onOpenChange(false)}>完成</Button>
+          ) : (
+            <>
+              <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+                取消
+              </Button>
+              <Button
+                onClick={() => void (links?.length === 1 && todo.length === 1 ? addOne(todo[0]) : addAll(links ?? []))}
+                disabled={busy || todo.length === 0}
+              >
+                {busy && <Loader2 className="animate-spin" />}
+                {todo.length > 1 ? `收藏 ${todo.length} 个` : "收藏"}
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -45,6 +45,11 @@ function WorkCard({ work, onOpen }: { work: LibraryWork; onOpen: () => void }) {
         {work.versions > 1 && (
           <span className="absolute top-1.5 right-1.5 rounded bg-background/85 px-1.5 text-[11px] leading-5 font-medium tabular-nums backdrop-blur">{work.versions}</span>
         )}
+        {work.owned && (
+          <StatusBadge tone="success" className="absolute bottom-1.5 left-1.5 bg-background/85 backdrop-blur" title="本地已经有了，或者从收藏夹存过">
+            已有
+          </StatusBadge>
+        )}
       </div>
       <div className="mt-1.5 space-y-0.5">
         <p className="truncate text-sm font-medium">{work.title}</p>
@@ -54,13 +59,25 @@ function WorkCard({ work, onOpen }: { work: LibraryWork; onOpen: () => void }) {
   );
 }
 
-export function LibraryWorks({ onShowShares }: { onShowShares: () => void }) {
+export function LibraryWorks({
+  onShowShares,
+  openWork,
+  onWorkClosed,
+}: {
+  onShowShares: () => void;
+  /** 地址里带着的作品键（`/library?work=tv:1399`，智能体给的「在 OpenStrm 里打开」）：进来就打开它的弹框 */
+  openWork?: string | null;
+  onWorkClosed?: () => void;
+}) {
   const [view, setView] = useState<LibraryWorksView>("all");
   const [sort, setSort] = useState<LibraryWorksSort>("recent");
   const [result, setResult] = useState<LibraryWorksResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [openKey, setOpenKey] = useState<string | null>(openWork ?? null);
+  useEffect(() => {
+    if (openWork) setOpenKey(openWork);
+  }, [openWork]);
   const seq = useRef(0);
   // 轮询 / 重拉时拉回已经展开的那么多条，别一刷新就缩回第一页
   const shownRef = useRef(PAGE);
@@ -94,11 +111,20 @@ export function LibraryWorks({ onShowShares }: { onShowShares: () => void }) {
 
   // 还有单元在认：隔几秒重拉（认出来的一张张冒出来）
   const pending = result?.counts.pending ?? 0;
+  const polling = pending > 0 && result?.tmdbConfigured === true;
   useEffect(() => {
-    if (pending === 0 || !result?.tmdbConfigured) return;
+    if (!polling) return;
     const t = setInterval(() => void fetchWorks(), POLL_MS);
     return () => clearInterval(t);
-  }, [pending, result?.tmdbConfigured, fetchWorks]);
+  }, [polling, fetchWorks]);
+
+  // 本地已有的第一次要扫一遍各任务的本地目录：没扫好时后端只标了存过的，过几秒再拉一次补上「已有」（在轮询的话下一次就有了）
+  const ownedPending = result?.ownedPending === true && !polling;
+  useEffect(() => {
+    if (!ownedPending) return;
+    const t = setTimeout(() => void fetchWorks(), POLL_MS);
+    return () => clearTimeout(t);
+  }, [ownedPending, fetchWorks]);
 
   const loadMore = async () => {
     if (!result) return;
@@ -167,7 +193,7 @@ export function LibraryWorks({ onShowShares }: { onShowShares: () => void }) {
       <EmptyState
         icon={Sparkles}
         title="配上 TMDB 就能按作品看"
-        description={`影库里${pending > 0 ? `切出了 ${pending} 部作品，` : ""}要用 TMDB 认出是哪一部（海报、正式名、英文名都能搜）。到设置页填入 TMDB 的 API Key，配上以后自动开始认；分享和搜索现在就能用。`}
+        description={`收藏夹里${pending > 0 ? `切出了 ${pending} 部作品，` : ""}要用 TMDB 认出是哪一部（海报、正式名、英文名都能搜）。到设置页填入 TMDB 的 API Key，配上以后自动开始认；分享和搜索现在就能用。`}
         action={
           <div className="flex flex-wrap justify-center gap-2">
             <Button asChild>
@@ -222,7 +248,15 @@ export function LibraryWorks({ onShowShares }: { onShowShares: () => void }) {
           </Button>
         </div>
       )}
-      <LibraryWorkDialog workKey={openKey} onOpenChange={(o) => !o && setOpenKey(null)} onChanged={() => void fetchWorks()} />
+      <LibraryWorkDialog
+        workKey={openKey}
+        onOpenChange={(o) => {
+          if (o) return;
+          setOpenKey(null);
+          if (openWork) onWorkClosed?.();
+        }}
+        onChanged={() => void fetchWorks()}
+      />
     </div>
   );
 }
