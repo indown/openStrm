@@ -40,7 +40,7 @@ import {
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
 import { fmtWhen } from "@/lib/format";
-import { copyGapInDialog } from "@/lib/openlist-copy";
+import { copyGapInDialog, isOpenlistRootInput, normTargetDir, OPENLIST_ROOT_TARGET } from "@/lib/openlist-copy";
 import { TreeSelectDialog } from "@/components/TreeSelectDialog";
 import { DirectoryTreeDialog } from "./DirectoryTreeDialog";
 import { LocalDirectoryTreeDialog } from "./LocalDirectoryTreeDialog";
@@ -73,7 +73,9 @@ export const taskFormSchema = z.object({
   /** 整理：库类型先验；自动整理策略（空串 = 跟随全局设置） */
   libraryType: z.enum(["mixed", "movie", "tv"]).optional(),
   organizeMode: z.enum(["", "off", "review", "auto"]).optional(),
-});
+})
+  // 「复制到哪」不收 OpenList 根；复制关着时这一栏不显示、也不提交，不拦
+  .refine((v) => !v.copyEnabled || !isOpenlistRootInput(v.copyDstDir), { message: OPENLIST_ROOT_TARGET, path: ["copyDstDir"] });
 
 export type TaskFormValues = z.infer<typeof taskFormSchema>;
 
@@ -286,7 +288,8 @@ export function AddTaskDialog({
     };
   }, [open, copyEnabled]);
   const olAccount = copySettings?.account ?? "";
-  const copyDefaultDst = (copySettings?.dstDir ?? "").trim();
+  // 设置页填成 / 的算没填，占位里就不提它
+  const copyDefaultDst = normTargetDir(copySettings?.dstDir);
   const cronExpression = useWatch({ control: form.control, name: "cronExpression" }) ?? "";
   const cronPreview = useCronPreview(cronExpression);
 
@@ -690,6 +693,7 @@ export function AddTaskDialog({
                         <FormDescription className="text-xs">
                           OpenList 里的完整路径；任务目录里的层级会原样带到这个目录下面，还不存在的目录复制时会自动建。
                         </FormDescription>
+                        <FormMessage />
                       </FormItem>
                     )}
                   />

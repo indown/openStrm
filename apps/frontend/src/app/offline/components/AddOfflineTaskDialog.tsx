@@ -25,6 +25,7 @@ import { api, type DirectoryNode, type OfflineAddResult, type TaskRow } from "@/
 import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 import { DirectoryPickerDialog } from "@/components/DirectoryPickerDialog";
 import { splitOfflineLinks } from "@/lib/offline";
+import { normTargetDir } from "@/lib/openlist-copy";
 
 type Mode = "task" | "dir";
 
@@ -43,12 +44,6 @@ interface AddOfflineTaskDialogProps {
   /** 打开时预填的链接（资源搜索页、顶栏带过来的磁力）；挤在一行里的几条会拆成一行一条 */
   initialUrls?: string;
 }
-
-/** OpenList 路径归一：去空白和尾斜杠、补头斜杠；空的还它空串 */
-const normOlDir = (v?: string): string => {
-  const t = (v ?? "").trim().replace(/\/+$/, "");
-  return t ? (t.startsWith("/") ? t : `/${t}`) : "";
-};
 
 /**
  * 添加云下载任务。目标位置二选一：
@@ -118,7 +113,7 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account: defaultAccou
         const c = s.openlistCopy;
         // 这个 115 账号得有挂载根，后端才算得出产物在 OpenList 里的位置；默认目标目录可以空着（任务上可能填了）
         if (!c?.account || !c.mounts?.[account]?.trim()) return;
-        setOpenlistCopy({ account: c.account, dstDir: normOlDir(c.dstDir) });
+        setOpenlistCopy({ account: c.account, dstDir: normTargetDir(c.dstDir) });
       })
       .catch(() => {});
     setTasksLoading(true);
@@ -159,7 +154,8 @@ export function AddOfflineTaskDialog({ open, onOpenChange, account: defaultAccou
    */
   const taskCopy = mode === "task" ? selectedTask?.copyToOpenlist : undefined;
   const taskCopies = taskCopy?.enabled === true;
-  const copyBase = (mode === "task" ? normOlDir(taskCopy?.dstDir) : "") || (openlistCopy?.dstDir ?? "");
+  // OpenList 根 / 算没填（和后端同一条规则）
+  const copyBase = (mode === "task" ? normTargetDir(taskCopy?.dstDir) : "") || (openlistCopy?.dstDir ?? "");
   const copying = Boolean(openlistCopy) && (taskCopies || copyToOpenlist);
   const copyTarget = [copyBase, ...copySegments].join("/");
   // 子目录请求只跟任务 id 和路径走，不跟任务对象的引用走（和 SaveToDriveDialog 一个道理）

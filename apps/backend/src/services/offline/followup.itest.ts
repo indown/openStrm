@@ -527,6 +527,13 @@ test("这次指定的复制目标只能在任务上、设置页的目标目录�
   assert.equal(listFollowups().length, 0);
 });
 
+test("OpenList 根 / 当复制目标：这次指定成 / 的拒；设置页填的是 / 等于没填", async () => {
+  await assert.rejects(addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", copyToOpenlist: true, copyDstDir: "/" }), /不能是 OpenList 根/);
+  patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/", mounts: { acc: "/115" } } });
+  await assert.rejects(addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", copyToOpenlist: true }), /没有复制目标目录/);
+  assert.equal(listFollowups().length, 0, "拒绝时不该留下任何回执");
+});
+
 test("同一批里有新有旧：新的登记 strm 回执（兼办复制），115 上原本就有的也登记一条只复制的", async () => {
   replaceTasks([{ ...task, copyToOpenlist: { enabled: true } }]);
   const r = await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one\nmagnet:?xt=urn:btih:dup", taskId: "t1" });

@@ -22,7 +22,7 @@ import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { TreeSelectDialog } from "@/components/TreeSelectDialog";
 import { api, type CopyAddOutcome, type CopyAddResult, type TaskRow } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/axios";
-import { AFTER_COPY_LABEL, STAGING_DIRS, taskAfterCopy } from "@/lib/openlist-copy";
+import { AFTER_COPY_LABEL, normTargetDir, STAGING_DIRS, taskAfterCopy } from "@/lib/openlist-copy";
 
 /** 从别处（strm 管理页）带进来的预填：哪个任务、哪些路径（相对任务网盘目录） */
 export interface CopyPreset {
@@ -53,11 +53,6 @@ const OUTCOME_META: Record<CopyAddOutcome, { label: string; tone: StatusTone }> 
   missing: { label: "网盘上没有", tone: "warning" },
 };
 
-/** 和后端 normConfigDir 一样：去空白、收斜杠、去尾斜杠、补头斜杠；空的还它空串 */
-const normDir = (p?: string): string => {
-  const t = (p ?? "").trim().replace(/\/{2,}/g, "/").replace(/\/+$/, "");
-  return t ? (t.startsWith("/") ? t : `/${t}`) : "";
-};
 const stripSlashes = (p: string): string => p.replace(/^\/+|\/+$/g, "");
 
 /**
@@ -119,7 +114,8 @@ export function AddCopyDialog({ open, onOpenChange, preset, onQueued }: AddCopyD
   const account = task?.account ?? "";
   const originPath = stripSlashes(task?.originPath ?? "");
   const olAccount = settings?.account ?? "";
-  const base = normDir(task?.copyToOpenlist?.dstDir) || normDir(settings?.dstDir);
+  // OpenList 根 / 算没填（和后端同一条规则）
+  const base = normTargetDir(task?.copyToOpenlist?.dstDir) || normTargetDir(settings?.dstDir);
   const dstDir = dstSub ? `${base}/${dstSub}` : base;
   const effectiveAfter: CopyAfterCopy = afterCopy || taskAfterCopy(task?.copyToOpenlist);
   // 卡在哪：任务列表带着后端算好的 copyBlocked（和真干活时同一套判断），这里不再自己猜一遍

@@ -24,7 +24,7 @@ import type { DriveProvider, SubtreeEntry } from "../drive/types.js";
 import { autoOrganizeBusy } from "../organize/auto.js";
 import { isStagingDir } from "../organize/duplicates.js";
 import { normalizeRel } from "../strm/manage.js";
-import { baseName, copyBlockerFor, copyDstProblem, copyOptionsFor, dstDirFor, joinPath, normConfigDir, normDir, parentDir, resolveCopyConfig, type CopyConfig } from "./paths.js";
+import { baseName, copyBlockerFor, copyDstProblem, copyOptionsFor, dstDirFor, joinPath, normConfigDir, normDir, normTargetDir, parentDir, resolveCopyConfig, type CopyConfig } from "./paths.js";
 import { enqueueCopy, findCoveringRecord, isMissingDir, listOpenlistNames, lookupFresh, withAfterCopy, type CopyOutcome, type CopySource } from "./service.js";
 
 const log = moduleLogger("copy-manual");
@@ -101,7 +101,7 @@ export async function enqueueManualCopy(input: ManualCopyInput): Promise<ManualC
   // 复制完删源是删东西：没明说、按任务设置落到删除的也一样要调用方允许
   if (afterCopy === "delete" && !input.allowDelete) throw http(403, "复制完删掉网盘上的源文件要有「删除」权限", "INSUFFICIENT_SCOPE", { required: "danger" });
   const cfg = resolveCopyConfig(settings);
-  const base = normConfigDir(opts.dstDir) || cfg.dstDir;
+  const base = normTargetDir(opts.dstDir) || cfg.dstDir;
 
   // 第一阶段：只看不改。到网盘核对每条路径、和目标比对；这里的任何一步不成，整个请求都不登记
   const provider = providerForTask(task);

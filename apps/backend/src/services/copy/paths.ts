@@ -32,6 +32,25 @@ export function normConfigDir(input?: string): string {
   return normDir((input ?? "").trim());
 }
 
+/** 目标目录填成 OpenList 根时的说法：设置页、任务上保存时拒 */
+export const OPENLIST_ROOT_TARGET = "目标目录不能是 OpenList 根 /：根上没有存储，复制不进去。填一个具体的目录，比如 /local/downloads";
+
+/**
+ * 复制的目标目录（设置页的默认值、任务上的、这一次指定的）：和 normConfigDir 一样归一，只是 OpenList 根 `/` 也算没填。
+ * 根是虚拟目录，不属于任何存储，复制不进去；拿它当「只能在它下面选」的范围又等于没有范围。
+ * 挂载根不走这个：存储可以直接挂在 `/` 上（见 toOpenlistPath）。
+ * 前端 apps/frontend/src/lib/openlist-copy.ts 有一份同样的规则，改的时候两边一起动
+ */
+export function normTargetDir(input?: string): string {
+  const dir = normConfigDir(input);
+  return dir === "/" ? "" : dir;
+}
+
+/** 填了东西、归一后却是 OpenList 根（`/`、`//` 这种） */
+export function isOpenlistRootInput(input?: string): boolean {
+  return Boolean(input?.trim()) && !normTargetDir(input);
+}
+
 /** 去掉尾斜杠、补上头斜杠、把连着的斜杠收成一个；空的还它空串，让调用方按「没配置」处理 */
 export function normDir(input?: string): string {
   const t = (input ?? "").replace(/\/{2,}/g, "/").replace(/\/+$/, "");
@@ -94,7 +113,7 @@ export function dstDirFor(base: string, rootPath: string | undefined, srcPath: s
 export function resolveCopyConfig(settings: AppSettings = readAppSettings()): CopyConfig {
   const cfg = settings.openlistCopy ?? {};
   // 目标目录可以只在任务上填（设置页那个是默认值），所以这里不强求；真到要用时 enqueueCopy 会再看一次
-  const dstDir = normConfigDir(cfg.dstDir);
+  const dstDir = normTargetDir(cfg.dstDir);
   if (!cfg.account) {
     throw new HttpError(400, "「复制到 OpenList」还没配置好：请在设置页选一个 OpenList 账号");
   }
@@ -119,7 +138,11 @@ export function copySettingsGap(account: string, settings: AppSettings = readApp
   const cfg = settings.openlistCopy ?? {};
   if (!cfg.account) return "设置页还没选 OpenList 账号";
   if (!normConfigDir(cfg.mounts?.[account])) return `账号 ${account} 还没填「在 OpenList 里的挂载根」`;
-  if (!normConfigDir(taskDstDir) && !normConfigDir(cfg.dstDir)) return "没有目标目录：任务上和设置页都没填";
+  if (!normTargetDir(taskDstDir) && !normTargetDir(cfg.dstDir)) {
+    // 填成 / 的（多半是以前存进去的）说清楚是 / 不算，不然「都没填」让人摸不着头脑
+    const root = [isOpenlistRootInput(taskDstDir) && "任务上", isOpenlistRootInput(cfg.dstDir) && "设置页"].filter(Boolean).join("和");
+    return root ? `没有目标目录：${root}填的是 OpenList 根 /，等于没填` : "没有目标目录：任务上和设置页都没填";
+  }
   return null;
 }
 
@@ -184,7 +207,7 @@ export function copyOptionsFor(
   const cfg = task?.copyToOpenlist;
   const byTask = cfg?.enabled === true;
   if (!account || !(forced ?? byTask)) return off;
-  const dst = normConfigDir(dstDir) || cfg?.dstDir;
+  const dst = normTargetDir(dstDir) || normTargetDir(cfg?.dstDir) || undefined;
   const gap = copySettingsGap(account, settings, dst);
   if (gap) return { ...off, blocked: gap };
   return { enabled: true, dstDir: dst, afterCopy: byTask ? afterCopyOf(cfg) : "keep" };
@@ -195,7 +218,8 @@ export function copyOptionsFor(
  * 界面和 Telegram 都是从这两个根往下选的；随便填的话能把东西复制进别的网盘的挂载里，开着删源还会删掉原件
  */
 export function copyDstProblem(dstDir: string, task: Pick<TaskDefinition, "copyToOpenlist"> | null, settings: AppSettings = readAppSettings()): string | null {
-  const bases = [...new Set([normConfigDir(task?.copyToOpenlist?.dstDir), normConfigDir(settings.openlistCopy?.dstDir)].filter(Boolean))];
+  if (isOpenlistRootInput(dstDir)) return "复制目标不能是 OpenList 根 /：根上没有存储，复制不进去";
+  const bases = [...new Set([normTargetDir(task?.copyToOpenlist?.dstDir), normTargetDir(settings.openlistCopy?.dstDir)].filter(Boolean))];
   if (bases.length === 0) return "任务上和设置页都没填复制的目标目录，没法指定这次复制到哪";
   if (bases.some((b) => relativeTo(b, dstDir) !== null)) return null;
   return `复制目标只能是 ${bases.join(" 或 ")}，或者它下面的目录`;

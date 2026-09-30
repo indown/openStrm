@@ -51,9 +51,9 @@ import { listTasks } from "../../db/repositories/tasks.js";
 import {
   baseName,
   dstDirFor,
-  normConfigDir,
   joinPath,
   normDir,
+  normTargetDir,
   parentDir,
   relativeTo,
   resolveCopyConfig,
@@ -265,7 +265,7 @@ export function enqueueCopy(req: CopyRequest): CopyEnqueueResult {
       return { queued: 0, skipped: why };
     }
 
-    const base = normConfigDir(req.dstDir) || cfg.dstDir;
+    const base = normTargetDir(req.dstDir) || cfg.dstDir;
     if (!base) {
       const why = "没有可用的目标目录：设置页的默认目标目录和任务上的都是空的";
       log.debug(`${req.account}：${why}`);

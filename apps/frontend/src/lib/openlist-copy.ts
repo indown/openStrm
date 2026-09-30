@@ -6,6 +6,24 @@ import type { CopyAfterCopy, OpenlistCopySettings, TaskCopySettings } from "@ope
  */
 export const STAGING_DIRS: readonly string[] = ["重复文件", "归档"];
 
+/** 目标目录填成 OpenList 根时的说法（和后端 OPENLIST_ROOT_TARGET 一样） */
+export const OPENLIST_ROOT_TARGET = "目标目录不能是 OpenList 根 /：根上没有存储，复制不进去。填一个具体的目录，比如 /local/downloads";
+
+/**
+ * 复制的目标目录（设置页的默认值、任务上的、这一次选的）：去空白、收斜杠、去尾斜杠、补头斜杠；
+ * 空的和 OpenList 根 `/` 都还空串——根上没有存储，复制不进去，算没填。
+ * 和后端 services/copy/paths.ts 的 normTargetDir 一样（改规则时两边一起动）；挂载根不走这个，存储可以挂在 / 上
+ */
+export function normTargetDir(p?: string): string {
+  const t = (p ?? "").trim().replace(/\/{2,}/g, "/").replace(/\/+$/, "");
+  return t ? (t.startsWith("/") ? t : `/${t}`) : "";
+}
+
+/** 填了东西、归一后却是 OpenList 根（`/`、`//` 这种）：设置页、任务上都不收 */
+export function isOpenlistRootInput(p?: string): boolean {
+  return Boolean(p?.trim()) && !normTargetDir(p);
+}
+
 /** 复制成功后源文件去向的叫法（任务弹框、队列面板、新建复制弹框共用） */
 export const AFTER_COPY_LABEL: Record<CopyAfterCopy, string> = { keep: "不动", delete: "删除", archive: "归档" };
 
@@ -33,6 +51,11 @@ export function copyGapInDialog(
     return `设置页选的 OpenList 账号「${cfg.account}」已经不在了，开着也不会复制`;
   }
   if (!cfg.mounts?.[account]?.trim()) return `账号 ${account} 还没在设置页填「在 OpenList 里的挂载根」，开着也不会复制`;
-  if (!taskDstDir?.trim() && !cfg.dstDir?.trim()) return "没有目标目录：在下面的「复制到哪」里填一个，或者到设置页填默认目标目录";
+  if (!normTargetDir(taskDstDir) && !normTargetDir(cfg.dstDir)) {
+    // 下面的「复制到哪」填成 / 的由那一栏自己报错；这里只替设置页那个说清楚 / 不算
+    return isOpenlistRootInput(cfg.dstDir) && !isOpenlistRootInput(taskDstDir)
+      ? "没有目标目录：设置页的默认目标目录填的是 OpenList 根 /，等于没填。在下面的「复制到哪」里填一个，或者到设置页改掉"
+      : "没有目标目录：在下面的「复制到哪」里填一个，或者到设置页填默认目标目录";
+  }
   return null;
 }

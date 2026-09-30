@@ -8,6 +8,7 @@ import type { AppSettings, LifeMonitorSettings, TaskDefinition } from "@openstrm
 import { normalizeStrmPrefix } from "../services/strm/naming.js";
 import { validateTemplate } from "../services/organize/template.js";
 import { parseRules } from "../services/organize/rules.js";
+import { isOpenlistRootInput, OPENLIST_ROOT_TARGET } from "../services/copy/paths.js";
 
 /** 115 的 id 超过 JS 安全整数，前端有的地方传字符串、有的传数字 */
 export const cidSchema = z.union([z.string(), z.number()]);
@@ -36,6 +37,9 @@ export const cronExpressionSchema = z
   .string()
   .refine((v) => v === "" || validateCronExpression(v).valid, { message: "invalid cron expression" });
 
+/** 复制到 OpenList 的目标目录（任务上的、设置页的默认值）：空的是没填；填成 OpenList 根 / 的不收，根上复制不进去 */
+const copyTargetDirSchema = z.string().refine((v) => !isOpenlistRootInput(v), OPENLIST_ROOT_TARGET);
+
 export const taskInputSchema = z.looseObject({
   account: z.string().min(1),
   originPath: z.string(),
@@ -56,7 +60,7 @@ export const taskInputSchema = z.looseObject({
   copyToOpenlist: z
     .object({
       enabled: z.boolean().optional(),
-      dstDir: z.string().optional(),
+      dstDir: copyTargetDirSchema.optional(),
       afterCopy: z.enum(["keep", "delete", "archive"]).optional(),
       // 旧字段：老请求还可能带，仓库层读写时归一成 afterCopy
       deleteSource: z.boolean().optional(),
@@ -250,7 +254,7 @@ export const settingsPatchSchema = z.looseObject({
   openlistCopy: z
     .looseObject({
       account: z.string().optional(),
-      dstDir: z.string().optional(),
+      dstDir: copyTargetDirSchema.optional(),
       /** 网盘账号名 → 它在 OpenList 里的挂载根 */
       mounts: z.record(z.string(), z.string()).optional(),
       /** 旧字段，升级时会尽量换算成 mounts */

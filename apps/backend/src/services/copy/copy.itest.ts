@@ -1079,6 +1079,19 @@ test("全局目标目录空着、任务上填了：照样能排（那个是默�
   assert.equal(listCopies()[0].dstDir, "/local/别处/某剧/S01");
 });
 
+test("目标目录填成 OpenList 根 / 等于没填：不往根上排；这一次给了具体目录的照样按它", async () => {
+  patchAppSettings({ openlistCopy: { account: "ol", dstDir: "/", mounts: { acc: "/115" } } });
+  const none = enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", trigger: "share" });
+  assert.equal(none.queued, 0);
+  assert.match(none.skipped ?? "", /没有可用的目标目录/);
+  const rootPick = enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", dstDir: "/", trigger: "share" });
+  assert.equal(rootPick.queued, 0, "这一次给的也是 /：一样当没给");
+  const r = enqueueCopy({ account: "acc", sources: ["/tv/某剧/S01/E01.mkv"], rootPath: "/tv", dstDir: "/hhd/tv", trigger: "share" });
+  await stopCopyWatcher();
+  assert.equal(r.queued, 1);
+  assert.equal(listCopies()[0].dstDir, "/hhd/tv/某剧/S01");
+});
+
 test("重试之后目标里还有同名的：如实报失败，不当「已经复制过」跳过", async () => {
   await seed();
   names = { "/115/tv/某剧/S01": ["E01.mkv"], "/local/media/某剧/S01": ["E01.mkv"] };

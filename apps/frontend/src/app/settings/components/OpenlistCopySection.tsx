@@ -12,6 +12,7 @@ import { TreeSelectDialog } from "@/components/TreeSelectDialog";
 import { api } from "@/lib/api";
 import { accountLabel } from "@/lib/drive";
 import { apiErrorMessage } from "@/lib/axios";
+import { isOpenlistRootInput, OPENLIST_ROOT_TARGET } from "@/lib/openlist-copy";
 
 /** OpenList 之外的账号都是「网盘」：以后接新网盘时这里不用动（services/drive 的规矩） */
 const isDriveAccount = (a: AccountInfo): boolean => a.accountType !== "openlist";
@@ -142,7 +143,8 @@ export function OpenlistCopySection({ value, onChange }: Props) {
         }
       }
       const dst = (value.dstDir ?? "").trim();
-      if (dst && (await opens(dst))) {
+      if (isOpenlistRootInput(dst)) bad.push(`默认目标目录：${OPENLIST_ROOT_TARGET}`);
+      else if (dst && (await opens(dst))) {
         const top = `/${dst.split("/").filter(Boolean)[0] ?? ""}`;
         const why = top === "/" ? null : await opens(top);
         if (why) bad.push(`默认目标目录（${dst}）所在的 ${top} 打不开：${why}`);
@@ -164,11 +166,13 @@ export function OpenlistCopySection({ value, onChange }: Props) {
     placeholder: string,
     hint?: string,
     warning?: string,
+    /** 保存时后端会拒的：红字，输入框标红 */
+    error?: string,
   ) => (
     <div key={key} className="flex flex-col gap-1.5">
       <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
       <InputGroup>
-        <InputGroupInput value={current} placeholder={placeholder} onChange={(e) => onPick(e.target.value)} />
+        <InputGroupInput value={current} placeholder={placeholder} aria-invalid={error ? true : undefined} onChange={(e) => onPick(e.target.value)} />
         <InputGroupButton
           disabled={!olName}
           title={olName ? "从 OpenList 里选" : "先选 OpenList 账号"}
@@ -179,6 +183,7 @@ export function OpenlistCopySection({ value, onChange }: Props) {
       </InputGroup>
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
       {warning && <p className="text-xs text-warning">{warning}</p>}
+      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   );
 
@@ -218,7 +223,17 @@ export function OpenlistCopySection({ value, onChange }: Props) {
                   : "用这个账号调 OpenList 的接口"}
           </p>
         </div>
-        {pathField("dst", "默认目标目录", "选择默认目标目录", value.dstDir ?? "", (v) => set({ dstDir: v.trim() }), "/local/downloads", "任务上没单独指定时复制到这里；还不存在的目录第一次复制时会自动建")}
+        {pathField(
+          "dst",
+          "默认目标目录",
+          "选择默认目标目录",
+          value.dstDir ?? "",
+          (v) => set({ dstDir: v.trim() }),
+          "/local/downloads",
+          "任务上没单独指定时复制到这里；还不存在的目录第一次复制时会自动建",
+          undefined,
+          isOpenlistRootInput(value.dstDir) ? OPENLIST_ROOT_TARGET : undefined,
+        )}
       </div>
 
       <div className="space-y-3">

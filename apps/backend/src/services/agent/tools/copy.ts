@@ -14,7 +14,7 @@ import { AFTER_COPY_LABEL, afterCopyOf } from "../../../lib/after-copy.js";
 import { readAppSettings } from "../../../db/repositories/settings.js";
 import { listTasks } from "../../../db/repositories/tasks.js";
 import { messageOf } from "../../../lib/errors.js";
-import { copyBlockerFor, joinPath, normConfigDir, resolveCopyConfig } from "../../copy/paths.js";
+import { copyBlockerFor, joinPath, normConfigDir, normTargetDir, resolveCopyConfig } from "../../copy/paths.js";
 import {
   COPY_TRIGGER_LABEL,
   canRetryCopy,
@@ -154,7 +154,7 @@ export function taskCopyView(
   if (!cfg?.enabled) return undefined;
   const blocked = blockerOf(task);
   return {
-    dstDir: normConfigDir(cfg.dstDir) || normConfigDir(settings.openlistCopy?.dstDir) || null,
+    dstDir: normTargetDir(cfg.dstDir) || normTargetDir(settings.openlistCopy?.dstDir) || null,
     ...afterCopyFields(afterCopyOf(cfg)),
     ...(blocked ? { blocked } : {}),
   };
@@ -201,7 +201,7 @@ function configView(settings: AppSettings): Record<string, unknown> {
   return {
     ...copyConfigState(settings),
     ...(cfg.account ? { openlistAccount: cfg.account } : {}),
-    defaultDstDir: normConfigDir(cfg.dstDir) || null,
+    defaultDstDir: normTargetDir(cfg.dstDir) || null,
   };
 }
 

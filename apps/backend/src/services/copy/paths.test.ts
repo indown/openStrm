@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AppSettings } from "@openstrm/shared";
-import { baseName, copyOptionsFor, copySettingsGap, dstDirFor, joinPath, normDir, parentDir, relativeTo, toOpenlistPath } from "./paths.js";
+import { baseName, copyDstProblem, copyOptionsFor, copySettingsGap, dstDirFor, isOpenlistRootInput, joinPath, normDir, normTargetDir, parentDir, relativeTo, toOpenlistPath } from "./paths.js";
 
 test("normDir：补头斜杠、去尾斜杠、收起连着的斜杠", () => {
   assert.equal(normDir("/115"), "/115");
@@ -88,4 +88,48 @@ test("copyOptionsFor：要复制却配不齐就当关，blocked 说卡在哪；�
   assert.equal(copyOptionsFor({ account: "115-b" }, undefined, s).blocked, undefined, "任务上没开");
   assert.deepEqual(copyOptionsFor({ account: "115-a" }, true, s), { enabled: true, dstDir: undefined, afterCopy: "keep" }, "一次性勾选不动源文件");
   assert.equal(copyOptionsFor({ account: "115-a", copyToOpenlist: { enabled: false, afterCopy: "archive" } }, true, s).afterCopy, "keep", "任务没开复制：一次性勾的不认任务上留着的去向");
+});
+
+test("normTargetDir：目标目录填成 OpenList 根 / 算没填；isOpenlistRootInput 认出填的是根", () => {
+  assert.equal(normTargetDir("/"), "");
+  assert.equal(normTargetDir(" / "), "");
+  assert.equal(normTargetDir("//"), "");
+  assert.equal(normTargetDir("/hhd/tv/"), "/hhd/tv");
+  assert.equal(normTargetDir("hhd"), "/hhd");
+  assert.equal(normTargetDir(undefined), "");
+  assert.equal(isOpenlistRootInput("/"), true);
+  assert.equal(isOpenlistRootInput(" // "), true);
+  assert.equal(isOpenlistRootInput(""), false, "空着是没填，不是填了根");
+  assert.equal(isOpenlistRootInput("  "), false);
+  assert.equal(isOpenlistRootInput(undefined), false);
+  assert.equal(isOpenlistRootInput("/hhd"), false);
+});
+
+test("copySettingsGap：目标目录填成 / 等于没填，并说清楚是 / 不算", () => {
+  const rootDefault = withCopy({ account: "ol", dstDir: "/", mounts: { "115-a": "/115" } });
+  assert.equal(copySettingsGap("115-a", rootDefault), "没有目标目录：设置页填的是 OpenList 根 /，等于没填");
+  assert.equal(copySettingsGap("115-a", rootDefault, "/hhd/tv"), null, "任务上填了具体目录就行");
+  assert.equal(copySettingsGap("115-a", rootDefault, "/"), "没有目标目录：任务上和设置页填的是 OpenList 根 /，等于没填");
+  const s = withCopy({ account: "ol", dstDir: "/hhd", mounts: { "115-a": "/115" } });
+  assert.equal(copySettingsGap("115-a", s, "/"), null, "任务上的 / 算没填，落回设置页的默认目标目录");
+});
+
+test("copyOptionsFor：目标目录填成 / 的不往下传，给出去的都是归一过的", () => {
+  const s = withCopy({ account: "ol", dstDir: "/hhd", mounts: { "115-a": "/115" } });
+  assert.equal(copyOptionsFor({ account: "115-a", copyToOpenlist: { enabled: true, dstDir: "/" } }, undefined, s).dstDir, undefined);
+  assert.equal(copyOptionsFor({ account: "115-a", copyToOpenlist: { enabled: true, dstDir: "/hhd/tv/" } }, undefined, s).dstDir, "/hhd/tv");
+  assert.equal(copyOptionsFor({ account: "115-a", copyToOpenlist: { enabled: true, dstDir: "/hhd/tv" } }, true, s, "/").dstDir, "/hhd/tv", "这一次给的 / 不顶掉任务上的");
+  const rootDefault = withCopy({ account: "ol", dstDir: "/", mounts: { "115-a": "/115" } });
+  const off = copyOptionsFor({ account: "115-a", copyToOpenlist: { enabled: true } }, undefined, rootDefault);
+  assert.equal(off.enabled, false);
+  assert.match(off.blocked ?? "", /OpenList 根 \/，等于没填/);
+});
+
+test("copyDstProblem：这一次指定成 / 的拒；填成 / 的也不算「只能在它下面选」的范围", () => {
+  const s = withCopy({ account: "ol", dstDir: "/hhd", mounts: {} });
+  assert.match(copyDstProblem("/", null, s) ?? "", /不能是 OpenList 根/);
+  assert.equal(copyDstProblem("/hhd/tv", null, s), null);
+  const rootDefault = withCopy({ account: "ol", dstDir: "/", mounts: {} });
+  assert.match(copyDstProblem("/115/tv", null, rootDefault) ?? "", /都没填/, "设置页填 / 不能让哪儿都成了范围");
+  assert.match(copyDstProblem("/115/tv", { copyToOpenlist: { dstDir: "/hhd/tv" } }, rootDefault) ?? "", /只能是 \/hhd\/tv，/);
 });
