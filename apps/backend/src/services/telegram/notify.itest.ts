@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import type { InlineKeyboard } from "./bot.js";
-import { __test_resetNotify, classifyAccountIssue, notify, setButtonSender, setNotifySender } from "./notify.js";
+import { __test_resetNotify, classifyAccountIssue, telegramNotify as notify, setButtonSender, setNotifySender } from "./notify.js";
 
 const baseline = readAppSettings();
 const sent: Array<{ chatId: string; text: string }> = [];

@@ -13,7 +13,7 @@ import { patchAppSettings, readAppSettings } from "../../db/repositories/setting
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
 import { OpenlistError, type OpenlistTaskInfo } from "../openlist/client.js";
-import type { NotifyEvent } from "../telegram/notify.js";
+import type { NotifyEvent } from "../notify.js";
 import { hasCopyWork, releaseCopyHolds } from "./queue.js";
 import {
   __test_resetCopy,

@@ -38,9 +38,8 @@ import { ensureSaveDir, saveSelectionToTask } from "../share/receive.js";
 import { withAfterCopy, type CopyOutcome } from "../copy/service.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { normalizeSubPath } from "../strm/naming.js";
-import { notify, type NotifyEvent } from "../telegram/notify.js";
+import { issueFromDrive, notify, type NotifyEvent } from "../notify.js";
 import { baseName, diffShareListing, groupByParent, mergeKnown, scopeIsWhole, type ListedEntry } from "./diff.js";
-import { issueFromDrive } from "../telegram/notify.js";
 import { describeFileFailure } from "../download/failure.js";
 
 const log = moduleLogger("follow");

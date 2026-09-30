@@ -88,7 +88,7 @@ import { dstDirFor } from "../copy/paths.js";
 const copyLayout = (base: string, rootPath: string | undefined, srcPath: string): string => dstDirFor(base, rootPath, srcPath).dstDir;
 import type { TmdbDetails, TmdbSearchResult } from "../tmdb.js";
 import { extSet } from "../strm/naming.js";
-import { notify } from "../telegram/notify.js";
+import { notify } from "../notify.js";
 import { describeFileFailure } from "../download/failure.js";
 import { classifyFailure, FAILURE_LABEL, messageOf, OrganizeFailure, retryableItem, revertPendingItem, revertWorkItem, StaleError } from "./failures.js";
 import { idTagFromName, identifyUnit, TmdbClient, type IdEvidence, type KnownId, type TmdbApi } from "./identify.js";

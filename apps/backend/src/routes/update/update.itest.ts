@@ -17,8 +17,12 @@ import { writeAuthPassword } from "../../db/repositories/auth.js";
 import { KEY } from "../../db/keys.js";
 import { writeKv } from "../../db/repositories/life.js";
 import { patchAppSettings, readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
-import { setNotifySender } from "../../services/telegram/notify.js";
+import { registerNotifySink } from "../../services/notify.js";
+import { setNotifySender, telegramNotify } from "../../services/telegram/notify.js";
 import { checkForUpdates, EMPTY_STATE, readState, setUpdateDeps } from "../../services/update/service.js";
+
+/** 更新检查是往通知端口发事件的：像 index.ts 那样把 Telegram 渠道登记上，发送层换成桩来接 */
+let unregisterSink: () => void = () => {};
 
 let app: FastifyInstance;
 let auth: Record<string, string>;
@@ -64,6 +68,7 @@ before(async () => {
   setNotifySender(async (_chatId, text) => {
     notified.push(text);
   });
+  unregisterSink = registerNotifySink(telegramNotify);
   app = Fastify();
   registerErrorHandling(app);
   await app.register(authPlugin);
@@ -77,6 +82,7 @@ after(async () => {
   await app.close();
   setUpdateDeps(null);
   setNotifySender(null);
+  unregisterSink();
   replaceAppSettings(baseline);
   writeKv(KEY.updateState, EMPTY_STATE);
 });

@@ -14,7 +14,7 @@ import { readKv, writeKv } from "../../db/repositories/life.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { APP_VERSION, isNewerVersion, isPrerelease, parseVersion } from "../../lib/version.js";
 import { moduleLogger } from "../../lib/logger.js";
-import { notify } from "../telegram/notify.js";
+import { notify } from "../notify.js";
 
 const log = moduleLogger("update");
 

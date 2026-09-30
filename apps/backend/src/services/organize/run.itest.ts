@@ -37,7 +37,7 @@ import { setDriveProviderFactory } from "../drive/registry.js";
 import { clearCopies, listCopies, saveCopies } from "../copy/queue.js";
 import { FakeDrive, withoutWalk } from "../../test/fake-drive.js";
 import type { TmdbDetails, TmdbEpisode, TmdbSearchResult } from "../tmdb.js";
-import type { NotifyEvent } from "../telegram/notify.js";
+import type { NotifyEvent } from "../notify.js";
 import type { TmdbApi } from "./identify.js";
 import {
   __test_dropPlanState,

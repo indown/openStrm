@@ -26,7 +26,7 @@ import { createPollingLoop } from "../../lib/polling.js";
 import { SHARE_PASSWORD_PROBLEM } from "../drive/errors.js";
 import { setShareObserver, shareProviderForRef, parseShareRef } from "../drive/registry.js";
 import { ShareGoneError, type ShareRef } from "../drive/types.js";
-import { notify } from "../telegram/notify.js";
+import { notify } from "../notify.js";
 import { onShareStatusChange } from "./indexer.js";
 
 const log = moduleLogger("library-health");

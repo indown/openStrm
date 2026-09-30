@@ -33,7 +33,7 @@ import {
 import { classifyFileFailure, summarizeFailures, type FileFailure } from "../download/failure.js";
 import { refreshEmbyNow } from "../media-server.js";
 import { extOf, extSet } from "../strm/naming.js";
-import { notify, type TaskTrigger, issueFromDrive } from "../telegram/notify.js";
+import { notify, type TaskTrigger, issueFromDrive } from "../notify.js";
 import {
   getRunningTask,
   registerRunningTask,

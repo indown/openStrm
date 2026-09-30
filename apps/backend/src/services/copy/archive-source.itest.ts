@@ -16,7 +16,7 @@ import { patchAppSettings, readAppSettings } from "../../db/repositories/setting
 import { DATA_DIR } from "../../paths.js";
 import { setDriveProviderFactory } from "../drive/registry.js";
 import type { OpenlistTaskInfo } from "../openlist/client.js";
-import type { NotifyEvent } from "../telegram/notify.js";
+import type { NotifyEvent } from "../notify.js";
 import { FakeDrive } from "../../test/fake-drive.js";
 import { __test_resetCopy, enqueueCopy, listCopies, setCopyServiceDeps, stopCopyWatcher, tickCopies } from "./service.js";
 

@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { createTelegramBot } from "../../services/telegram/bot.js";
 import { getPollingStatus, restartPolling, stopPolling } from "../../services/telegram/polling.js";
-import { DEFAULT_NOTIFY, notifyPrefs } from "../../services/telegram/notify.js";
+import { DEFAULT_NOTIFY, notifyPrefs } from "../../services/notify.js";
 import { BOT_COMMANDS } from "../../services/telegram/commands.js";
 import { deleteAppSetting, readAppSetting, readAppSettings, updateAppSetting } from "../../db/repositories/settings.js";
 import { HttpError, upstreamError } from "../../lib/http-error.js";

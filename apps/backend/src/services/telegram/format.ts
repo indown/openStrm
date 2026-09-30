@@ -11,8 +11,6 @@ export function esc(text: unknown): string {
     .replace(/>/g, "&gt;");
 }
 
-export type TaskRef = Pick<TaskDefinition, "id" | "originPath" | "targetPath" | "account">;
-
 export function taskLabel(task: Pick<TaskDefinition, "originPath" | "targetPath">): string {
   return `${task.originPath} → ${task.targetPath}`;
 }

@@ -17,7 +17,7 @@ import { KEY } from "../../db/keys.js";
 import { isAbortError } from "../../lib/errors.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { createPollingLoop, type PollingLoop } from "../../lib/polling.js";
-import { issueFromDrive, notify } from "../telegram/notify.js";
+import { issueFromDrive, notify } from "../notify.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { getAccount, listAccounts } from "../../db/repositories/accounts.js";
 import { listTasks } from "../../db/repositories/tasks.js";

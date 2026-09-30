@@ -11,7 +11,7 @@ import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { patchAppSettings, readAppSettings } from "../../db/repositories/settings.js";
 import { setOfflineTransport, type OfflineListPage, type OfflineTask, type OfflineTransport } from "../cloud-115/offline.js";
-import type { NotifyEvent } from "../telegram/notify.js";
+import type { NotifyEvent } from "../notify.js";
 import type { CopyRequest } from "../copy/service.js";
 import {
   __test_resetOffline,

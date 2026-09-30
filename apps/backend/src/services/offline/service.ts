@@ -47,7 +47,7 @@ import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
 import { normalizeSubPath } from "../strm/naming.js";
 import { generateStrmForSelected, type GenerateResult, type SelectedItem } from "../strm/share-strm.js";
 import { providerFor } from "../drive/registry.js";
-import { notify, type NotifyEvent } from "../telegram/notify.js";
+import { notify, type NotifyEvent } from "../notify.js";
 import { describeFileFailure } from "../download/failure.js";
 
 const log = moduleLogger("offline");

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import type { AppSettings } from "@openstrm/shared";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
-import type { NotifyEvent } from "../telegram/notify.js";
+import type { NotifyEvent } from "../notify.js";
 import {
   __test_resetEmbyNew,
   getEmbyNewWatcherStatus,

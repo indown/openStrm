@@ -18,7 +18,7 @@ import { HttpError } from "../../lib/http-error.js";
 import { DATA_DIR } from "../../paths.js";
 import { setDriveProviderFactory } from "../drive/registry.js";
 import { FakeDrive, type FakeTree } from "../../test/fake-drive.js";
-import type { NotifyEvent } from "../telegram/notify.js";
+import type { NotifyEvent } from "../notify.js";
 import {
   __test_resetFollows,
   checkFollow,

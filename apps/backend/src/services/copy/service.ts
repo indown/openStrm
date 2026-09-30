@@ -36,7 +36,7 @@ import {
   OpenlistError,
   type OpenlistTaskInfo,
 } from "../openlist/client.js";
-import { notify, type NotifyEvent } from "../telegram/notify.js";
+import { notify, type NotifyEvent } from "../notify.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
 import { maybeAutoOrganize, type AutoOrganizeInput } from "../organize/auto.js";
 import fsp from "node:fs/promises";

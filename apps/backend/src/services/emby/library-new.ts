@@ -17,7 +17,7 @@ import { KEY } from "../../db/keys.js";
 import { DEFAULT_TIMEOUT_MS } from "../../lib/http.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { createPollingLoop } from "../../lib/polling.js";
-import { notify, notifyPrefs, type EmbyNewGroup, type NotifyEvent } from "../telegram/notify.js";
+import { notify, notifyPrefs, type EmbyNewGroup, type NotifyEvent } from "../notify.js";
 
 const log = moduleLogger("emby-new");
 
