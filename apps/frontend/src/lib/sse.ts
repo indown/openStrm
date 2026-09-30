@@ -3,6 +3,7 @@
  *
  * 用 fetch 而不是 EventSource：EventSource 带不了 Authorization 头，也只能 GET。
  * 代价是绕开了 axios 的拦截器，所以会话失效那套要自己走一遍（handleAuthFailure）。
+ * 两处在用：strm 校验（POST，带 body）和同步任务的实时日志（GET）。
  */
 import { asApiError, getToken, handleAuthFailure } from "@/lib/axios";
 
@@ -19,10 +20,20 @@ export interface StreamOptions<T> {
   /** 退订 / 关弹框时掐断：连接一断，后端那一轮活儿也跟着停 */
   signal?: AbortSignal;
   onEvent: (event: T) => void;
+  /** 默认 POST；GET 不带 body */
+  method?: "GET" | "POST";
+  /** POST 的请求体，JSON 序列化 */
+  body?: unknown;
+  /** 流开起来了（响应头到了、还没读到事件）：日志页借它把上一次连接回放的行清掉再合并 */
+  onOpen?: () => void;
 }
 
-/** 发一个 POST，把回来的事件流逐条交给 onEvent；流正常结束时 resolve */
-export async function streamSse<T>(path: string, body: unknown, opts: StreamOptions<T>): Promise<void> {
+/**
+ * 连上事件流，把回来的事件逐条交给 onEvent；流正常结束时 resolve。
+ * 流开不起来（鉴权、任务不存在、入参不对）抛的是 axios 那种形状的错（apiErrorStatus 能取到状态码），
+ * 会话失效那种在抛之前已经在跳登录 / 改密码页了
+ */
+export async function streamSse<T>(path: string, opts: StreamOptions<T>): Promise<void> {
   const controller = new AbortController();
   const abortAll = () => controller.abort();
   if (opts.signal?.aborted) abortAll();
@@ -40,14 +51,15 @@ export async function streamSse<T>(path: string, body: unknown, opts: StreamOpti
 
   try {
     armWatchdog();
+    const method = opts.method ?? "POST";
     const res = await fetch(`${API_BASE}${path}`, {
-      method: "POST",
+      method,
       headers: {
-        "Content-Type": "application/json",
+        ...(method === "POST" ? { "Content-Type": "application/json" } : {}),
         Accept: "text/event-stream",
         Authorization: `Bearer ${getToken() ?? ""}`,
       },
-      body: JSON.stringify(body),
+      ...(method === "POST" ? { body: JSON.stringify(opts.body ?? {}) } : {}),
       signal: controller.signal,
     });
 
@@ -57,6 +69,7 @@ export async function streamSse<T>(path: string, body: unknown, opts: StreamOpti
       handleAuthFailure(res.status, data, path);
       throw asApiError(res.status, data, `HTTP ${res.status}`);
     }
+    opts.onOpen?.();
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();

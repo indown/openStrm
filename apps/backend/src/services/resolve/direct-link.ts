@@ -15,6 +15,7 @@ import { listAccounts } from "../../db/repositories/accounts.js";
 import { listTasks } from "../../db/repositories/tasks.js";
 import { readSettingsSafe } from "../settings-safe.js";
 import { getIdToPath, getDownloadUrlWeb } from "../cloud-115/client.js";
+import { PermanentError } from "../../lib/errors.js";
 
 type Account115 = Extract<AccountInfo, { accountType: "115" }>;
 
@@ -153,15 +154,13 @@ async function toDirectUrl(
   panPath: string,
   userAgent: string | undefined,
 ): Promise<ResolveResult> {
-  // getIdToPath 找不到文件时是抛异常而不是返回空，这里翻译成 not-found，
-  // 真正的网络/接口错误继续往上抛，不要被伪装成"文件不存在"
+  // getIdToPath 找不到文件 / 目录时抛 PermanentError（网盘明确说没有），这里翻译成 not-found；
+  // 网络 / 接口错误是别的类型，继续往上抛。按类型认、不按文案猜：接口报错的文案里也可能带着路径
   let pickcode: Awaited<ReturnType<typeof getIdToPath>>;
   try {
     pickcode = await getIdToPath({ path: panPath, userAgent, accountInfo: account });
   } catch (err) {
-    if (err instanceof Error && /not found/i.test(err.message)) {
-      return { ok: false, reason: "not-found" };
-    }
+    if (err instanceof PermanentError) return { ok: false, reason: "not-found" };
     throw err;
   }
   if (!pickcode) return { ok: false, reason: "not-found" };

@@ -404,14 +404,6 @@ export function replaceItems(runId: string, items: NewItem[]): void {
   });
 }
 
-/** 只换掉某个单元的项（用户改匹配后重新规划），其它单元不动 */
-export function replaceUnitItems(runId: string, unitKey: string, items: NewItem[]): void {
-  db.transaction((tx) => {
-    tx.delete(organizeItems).where(and(eq(organizeItems.runId, runId), eq(organizeItems.unitKey, unitKey))).run();
-    for (const it of items) tx.insert(organizeItems).values(itemValues(runId, it)).run();
-  });
-}
-
 /** 一次整理的项（按 seq）；给了 unitKey 只要这个单元的（"" 是建目录 / 删空目录） */
 export function listItems(runId: string, unitKey?: string): OrganizeItem[] {
   return db

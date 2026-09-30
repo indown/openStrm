@@ -24,7 +24,8 @@ import { ProgressBar } from "@/components/progress-bar";
 import { EmptyState } from "@/components/empty-state";
 import { Spinner } from "@/components/loading";
 import { api } from "@/lib/api";
-import { apiErrorMessage, getToken } from "@/lib/axios";
+import { apiErrorMessage, apiErrorStatus } from "@/lib/axios";
+import { streamSse } from "@/lib/sse";
 import { RUN_STATUS } from "@/lib/status";
 import { useCountUp } from "@/hooks/use-count-up";
 import { FILE_FAILURE_LABEL, failureActionLink } from "@/lib/task-failures";
@@ -187,11 +188,11 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
     };
   }, [taskId, executionId, router]);
 
-  // 实时模式：SSE，断了自动重连；任务没在跑就跳到最近一次执行记录
+  // 实时模式：SSE（传输层在 lib/sse.ts：看门狗、会话失效跳登录），断了自动重连；任务没在跑就跳到最近一次执行记录
   useEffect(() => {
     if (executionId) return;
     let cancelled = false;
-    let controller: AbortController | null = null;
+    const controller = new AbortController();
     const pending: LogEvent[] = [];
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     const flush = () => {
@@ -208,15 +209,28 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
     (async () => {
       let attempts = 0;
       while (!cancelled) {
-        controller = new AbortController();
         setConnection(attempts === 0 ? "connecting" : "reconnecting");
         let finished = false;
         try {
-          const res = await fetch(`/api/taskLog/${encodeURIComponent(taskId)}`, {
-            headers: { Accept: "text/event-stream", Authorization: `Bearer ${getToken() ?? ""}` },
+          await streamSse<unknown>(`/api/taskLog/${encodeURIComponent(taskId)}`, {
+            method: "GET",
             signal: controller.signal,
+            onOpen: () => {
+              setConnection("live");
+              // 服务端每次连上都把已有日志整个回放一遍：先清掉再合并，重连不会重复
+              dispatch({ type: "reset" });
+            },
+            onEvent: (raw) => {
+              const ev = normalizeEvent(raw);
+              if (!ev) return;
+              queue(ev);
+              if (ev.type === "done") finished = true;
+            },
           });
-          if (res.status === 404) {
+        } catch (err) {
+          if (cancelled) return;
+          const status = apiErrorStatus(err);
+          if (status === 404) {
             // 没在跑：有历史就看最近一次，让 /log?taskId= 永远有东西可看
             const list = await api.history.list(taskId).catch(() => []);
             if (cancelled) return;
@@ -227,38 +241,20 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
             setConnection("not-running");
             return;
           }
-          if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-          setConnection("live");
-          // 服务端每次连上都把已有日志整个回放一遍：先清掉再合并，重连不会重复
-          dispatch({ type: "reset" });
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() ?? "";
-            for (const line of lines) {
-              if (!line.startsWith("data: ")) continue; // 心跳是注释行
-              const ev = normalizeEvent(line.slice(6));
-              if (!ev) continue;
-              queue(ev);
-              if (ev.type === "done") finished = true;
-            }
+          // 会话失效 / 要先改密码：streamSse 已经在跳页了，别再连
+          if (status === 401 || status === 403) {
+            setConnection("closed");
+            return;
           }
-          flush();
-        } catch (err) {
-          if (cancelled || controller.signal.aborted) return;
           console.error("task log stream error", err);
         }
         if (cancelled) return;
+        flush();
         if (finished) {
           setConnection("closed");
           return;
         }
-        // 流没带结束事件就断了：多半是反代掐了空闲连接，任务还在跑；重连几次
+        // 流没带结束事件就断了：多半是反代掐了空闲连接、或 60 秒没动静被看门狗掐了，任务还在跑；重连几次
         attempts += 1;
         if (attempts > MAX_RECONNECTS) {
           setConnection("closed");
@@ -270,7 +266,7 @@ function TaskLogView({ taskId, executionId }: { taskId: string; executionId?: st
 
     return () => {
       cancelled = true;
-      controller?.abort();
+      controller.abort();
       if (flushTimer) clearTimeout(flushTimer);
     };
   }, [taskId, executionId, router]);

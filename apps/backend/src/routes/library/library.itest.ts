@@ -14,7 +14,8 @@ import libraryRoute from "./index.js";
 import { DEFAULT_AUTH } from "../../db/defaults.js";
 import { writeAuthPassword } from "../../db/repositories/auth.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
-import { remove } from "../../db/repositories/media-library.js";
+import { getById, remove } from "../../db/repositories/media-library.js";
+import { isLibraryShare } from "../../db/repositories/library-shares.js";
 import { deleteAppSetting, readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 
 let app: FastifyInstance;
@@ -90,6 +91,38 @@ test("季目录子目录：标题和年份从上一级的作品目录来，rawNa
   assert.equal(entry.year, "2023");
   assert.equal(entry.rawName, "Season 2");
   assert.equal(entry.sharePath, "/美剧/怒呛人生 (2023)/Season 2");
+});
+
+test("DELETE /api/library/:id：删条目，这个分享没别的条目在用了就不再巡检；再删一次 404", async () => {
+  const { entry } = await add({ shareUrl: "https://115.com/s/swlib006xyz?password=abcd", title: "删我", fileCount: 1 });
+  assert.equal(isLibraryShare(entry.shareCode), true, "加进来的分享要登记巡检");
+  const res = await app.inject({ method: "DELETE", url: `/api/library/${entry.id}`, headers: auth });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.equal(getById(entry.id), null);
+  assert.equal(isLibraryShare(entry.shareCode), false, "分享没人用了，巡检登记一起去掉");
+  const again = await app.inject({ method: "DELETE", url: `/api/library/${entry.id}`, headers: auth });
+  assert.equal(again.statusCode, 404);
+});
+
+test("PUT /api/library/:id 改提取码：同一个分享收的几处一起改，链接里的提取码也换；别的字段只改自己", async () => {
+  const a = await add({ shareUrl: "https://115.com/s/swlib007xyz?password=aaaa", cid: "555", rawName: "Season 1", sharePath: "剧/Season 1" });
+  const b = await add({ shareUrl: "https://115.com/s/swlib007xyz?password=aaaa", cid: "556", rawName: "Season 2", sharePath: "剧/Season 2" });
+  assert.equal(a.entry.shareCode, b.entry.shareCode);
+
+  const res = await app.inject({ method: "PUT", url: `/api/library/${a.entry.id}`, headers: auth, payload: { title: "改过的标题", receiveCode: "bbbb" } });
+  assert.equal(res.statusCode, 200, res.body);
+  const body = res.json() as MediaLibraryEntry & { health?: unknown };
+  assert.equal(body.title, "改过的标题");
+  assert.equal(body.receiveCode, "bbbb");
+  assert.equal(body.shareUrl, "https://115.com/s/swlib007xyz?password=bbbb");
+  assert.ok(body.health, "改了提取码要顺手查一次分享，结果带回去");
+  const other = getById(b.entry.id)!;
+  assert.equal(other.receiveCode, "bbbb", "同一个分享的另一条也改了");
+  assert.equal(other.shareUrl, "https://115.com/s/swlib007xyz?password=bbbb");
+  assert.equal(other.title, b.entry.title, "标题是各条自己的，不跟着改");
+
+  const missing = await app.inject({ method: "PUT", url: "/api/library/no-such-entry", headers: auth, payload: { title: "x" } });
+  assert.equal(missing.statusCode, 404);
 });
 
 test("认不出分享的还是 400", async () => {

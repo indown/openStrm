@@ -549,12 +549,6 @@ export const api = {
     /** 115 目录导出可能要等很久，超时放宽到 3 分钟 */
     start: (id: string) => data(axiosInstance.post<StartTaskResult>("/api/startTask", { id }, { timeout: 180_000 })),
     cancel: (id: string) => data(axiosInstance.post<{ message: string; taskId: string }>("/api/cancelTask", { taskId: id })),
-    /** 任务是否正在跑（有实时日志可看） */
-    isRunning: (id: string) =>
-      axiosInstance
-        .get<{ taskId: string }>(`/api/taskLog/${encodeURIComponent(id)}`)
-        .then(() => true)
-        .catch(() => false),
     /** 试算 cron 接下来几次什么时候跑。表达式不合法回 400，由调用方当"还没打完"处理 */
     cronPreview: (expression: string) =>
       data(axiosInstance.post<{ next: string[] }>("/api/task/cron/preview", { expression })),
@@ -792,7 +786,7 @@ export const api = {
      * signal 一掐连接就断，后端那一轮校验跟着停（不再接着打网盘）。
      */
     verifyStream: (taskId: string, path: string, opts: { signal?: AbortSignal; onEvent: (event: StrmVerifyEvent) => void }) =>
-      streamSse<StrmVerifyEvent>("/api/strm/verify/stream", { taskId, path }, opts),
+      streamSse<StrmVerifyEvent>("/api/strm/verify/stream", { body: { taskId, path }, ...opts }),
     /** 读 115 目录再生成，最长五分钟；根目录 400、任务同步中 409、115 目录没了 404 */
     regenerate: (taskId: string, path: string, mode: StrmRegenerateMode) =>
       data(axiosInstance.post<StrmRegenerateResult>("/api/strm/regenerate", { taskId, path, mode }, { timeout: 330_000 })),

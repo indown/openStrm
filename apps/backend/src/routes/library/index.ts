@@ -1,23 +1,20 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { MediaLibraryEntry } from "@openstrm/shared";
-import { getById, healthOf, listByShareCode, listWithHealth, remove, update } from "../../db/repositories/media-library.js";
-import { getShare, listExpiredCodes } from "../../db/repositories/library-shares.js";
-import { childrenOf, deleteAll } from "../../db/repositories/library-nodes.js";
-import { deleteUnits, getUnit, unitSummaries } from "../../db/repositories/library-units.js";
+import { getById, healthOf, listByShareCode, listWithHealth } from "../../db/repositories/media-library.js";
+import { getShare } from "../../db/repositories/library-shares.js";
+import { getUnit, unitSummaries } from "../../db/repositories/library-units.js";
 import { ignoreUnit, matchUnit, reidentifySource, reidentifyUnit } from "../../services/library/identify.js";
 import { listWorks, unitView, workDetail } from "../../services/library/works.js";
 import { localOwned, ownedWorkKeys } from "../../services/library/owned.js";
-import { findShareLinks, matchShareLink, parseShareText } from "../../services/drive/registry.js";
-import { listWholeShareDir } from "../../services/drive/share-walk.js";
-import { driveErrorToHttp } from "../../services/drive/errors.js";
-import { checkShare, checkShares, trackShare, untrackShareIfUnused } from "../../services/library/health.js";
-import { enqueueIndex, isWholeShare, stopIndexing } from "../../services/library/indexer.js";
+import { findShareLinks } from "../../services/drive/registry.js";
+import { checkShare, checkShares } from "../../services/library/health.js";
+import { enqueueIndex } from "../../services/library/indexer.js";
 import { searchLibrary } from "../../services/library/search.js";
+import { relinkEntry, removeEntry, removeExpiredEntries, updateEntry } from "../../services/library/entries.js";
 import { HttpError, upstreamError } from "../../lib/http-error.js";
 import { parse } from "../../lib/validate.js";
 import { cidSchema, idParamsSchema } from "../../schemas/entities.js";
-import { addToLibrary, coveringOf, sanitizeTags } from "../../services/library/add.js";
+import { addToLibrary, coveringOf } from "../../services/library/add.js";
 
 const createSchema = z.looseObject({
   shareUrl: z.string().trim().min(1, "shareUrl is required"),
@@ -84,19 +81,6 @@ const relinkSchema = z.object({
   /** 新链接的内容和原来差很多时，第一次会 409 要确认；确认了再带 true */
   confirm: z.boolean().optional(),
 });
-
-/** 链接里的提取码换成新的：原链接用哪个参数名（password / pwd）就换哪个，没有就按网盘加 */
-function withPassword(url: string, kind: string, password: string): string {
-  try {
-    const u = new URL(url);
-    const key = u.searchParams.has("pwd") ? "pwd" : u.searchParams.has("password") ? "password" : kind === "quark" ? "pwd" : "password";
-    if (password) u.searchParams.set(key, password);
-    else u.searchParams.delete(key);
-    return u.toString();
-  } catch {
-    return url;
-  }
-}
 
 export default async function (fastify: FastifyInstance) {
   fastify.get("/api/library", { preHandler: [fastify.authenticate] }, async () => {
@@ -179,29 +163,9 @@ export default async function (fastify: FastifyInstance) {
   fastify.put("/api/library/:id", { preHandler: [fastify.authenticate] }, async (request) => {
     const { id } = parse(idParamsSchema, request.params, "params");
     const body = parse(patchSchema, request.body);
-    const current = getById(id);
-    if (!current) throw new HttpError(404, "Entry not found");
-
-    const updates: Partial<MediaLibraryEntry> = {};
-    if (body.title !== undefined) updates.title = body.title.trim();
-    if (body.coverUrl !== undefined) updates.coverUrl = body.coverUrl.trim();
-    if (body.notes !== undefined) updates.notes = body.notes;
-    if (body.tags !== undefined) updates.tags = sanitizeTags(body.tags);
-
-    const merged = update(id, updates);
-    if (!merged) throw new HttpError(404, "Entry not found");
-    // 提取码是分享的：同一个分享收的几处一起改，改完查一次、没抄完的重新抄
-    const receiveCode = body.receiveCode?.trim();
-    if (receiveCode !== undefined && receiveCode !== current.receiveCode) {
-      const kind = parseShareText(current.shareUrl)?.kind ?? "115";
-      for (const s of listByShareCode(current.shareCode)) update(s.id, { receiveCode, shareUrl: withPassword(s.shareUrl, kind, receiveCode) });
-      const health = await checkShare(current.shareCode);
-      if (health.status !== "expired" && health.status !== "locked") {
-        for (const s of listByShareCode(current.shareCode)) if (s.indexStatus !== "done") enqueueIndex(s.id);
-      }
-      return { ...getById(id)!, health };
-    }
-    return merged;
+    const entry = await updateEntry(id, body);
+    if (!entry) throw new HttpError(404, "Entry not found");
+    return entry;
   });
 
   /**
@@ -231,83 +195,21 @@ export default async function (fastify: FastifyInstance) {
     return { ...getById(id)!, health: healthOf(getShare(entry.shareCode)) };
   });
 
-  /**
-   * 换链接：上传者重发了新链接。先确认新链接打得开；和原来的内容差很多（根下的名字对上的不到三成）时 409 要确认。
-   * 换成整个新分享，索引清空重抄，标签备注保留
-   */
+  /** 换链接（上传者重发了新链接）：内容和原来差很多时 409 要确认，确认了带 confirm 再来 */
   fastify.post("/api/library/:id/relink", { preHandler: [fastify.authenticate] }, async (request) => {
     const { id } = parse(idParamsSchema, request.params, "params");
     const body = parse(relinkSchema, request.body);
-    const current = getById(id);
-    if (!current) throw new HttpError(404, "Entry not found");
-    const match = matchShareLink(body.shareUrl);
-    if (!match) {
-      const ref = parseShareText(body.shareUrl);
-      throw new HttpError(400, ref ? "没有能打开这个分享的账号：先到「账户」页加一个" : "认不出这个分享链接");
-    }
-    const share = match.provider.share!;
-    let title: string;
-    let names: string[];
-    try {
-      const session = await share.open(match.ref);
-      title = (await share.info(session)).title.trim();
-      names = (await listWholeShareDir(share, session, "0")).map((e) => e.name);
-    } catch (err) {
-      throw driveErrorToHttp(err, "新链接打不开");
-    }
-    if (!body.confirm) {
-      const oldRoot = isWholeShare(current) ? "0" : current.shareRootCid;
-      const oldNames = new Set(childrenOf(id, oldRoot).map((n) => n.name));
-      if (oldNames.size > 0 && names.length > 0) {
-        const overlap = names.filter((n) => oldNames.has(n)).length / Math.min(oldNames.size, names.length);
-        if (overlap < 0.3) {
-          throw new HttpError(409, `新链接「${title || match.ref.code}」里的内容和原来的对不上几条，确定要换吗？`, { code: "RELINK_MISMATCH", newTitle: title, overlap: Math.round(overlap * 100) });
-        }
-      }
-    }
-    stopIndexing(id);
-    const oldCode = current.shareCode;
-    update(id, {
-      shareUrl: match.ref.url,
-      shareCode: match.ref.code,
-      receiveCode: match.ref.password,
-      sharePath: "",
-      shareRootCid: "",
-      shareTitle: title,
-      rawName: title || current.rawName,
-    });
-    trackShare(match.ref.code, match.ref.kind);
-    if (oldCode !== match.ref.code) untrackShareIfUnused(oldCode);
-    // 旧分享的索引作废：新旧分享的节点 id 不相干，先清干净再抄
-    deleteAll(id);
-    // 作品单元跟着换：新分享抄完再切
-    deleteUnits(id);
-    enqueueIndex(id);
-    return getById(id);
+    const entry = await relinkEntry(id, body);
+    if (!entry) throw new HttpError(404, "Entry not found");
+    return entry;
   });
 
-  /** 清理全部已失效的分享：只删影库里的记录和索引，网盘和 strm 都不动 */
-  fastify.delete("/api/library/expired", { preHandler: [fastify.authenticate] }, async () => {
-    const codes = listExpiredCodes();
-    let removedSources = 0;
-    for (const code of codes) {
-      for (const s of listByShareCode(code)) {
-        stopIndexing(s.id);
-        remove(s.id);
-        removedSources++;
-      }
-      untrackShareIfUnused(code);
-    }
-    return { shares: codes.length, sources: removedSources };
-  });
+  /** 清理全部已失效的分享：只删收藏夹里的记录和索引，网盘和 strm 都不动 */
+  fastify.delete("/api/library/expired", { preHandler: [fastify.authenticate] }, async () => removeExpiredEntries());
 
   fastify.delete("/api/library/:id", { preHandler: [fastify.authenticate] }, async (request) => {
     const { id } = parse(idParamsSchema, request.params, "params");
-    const entry = getById(id);
-    if (!entry) throw new HttpError(404, "Entry not found");
-    stopIndexing(id);
-    remove(id);
-    untrackShareIfUnused(entry.shareCode);
+    if (!removeEntry(id)) throw new HttpError(404, "Entry not found");
     return { success: true };
   });
 }

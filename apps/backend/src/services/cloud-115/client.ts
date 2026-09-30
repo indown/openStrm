@@ -113,8 +113,9 @@ interface ExportDirParseOptions {
   accountInfo: AccountInfo;
   /** 中止：提交、轮询、下载、解析每一步都认它 */
   signal?: AbortSignal;
-  /** 调用方一直在传的两个参数，这条链路其实用不上 */
+  /** 调用方一直在传，这条链路其实用不上 */
   targetPid?: number;
+  /** 解析完把 115 上的导出文件删掉，默认删；传 pickcode 复用旧导出文件的没有它的 file_id，删不了 */
   deleteAfter?: boolean;
 }
 
@@ -135,6 +136,7 @@ export async function exportDirParse(options: ExportDirParseOptions) {
     layerLimit = 0, // number; <=0 no limit
     timeoutMs = 10 * 60 * 1000, // default 10 minutes
     checkIntervalMs = 1000, // polling interval
+    deleteAfter = true,
     userAgent = defaultUA(), // optional: override user-agent; some endpoints validate UA
     accountInfo, // required: account information
     signal,
@@ -144,8 +146,6 @@ export async function exportDirParse(options: ExportDirParseOptions) {
 
   let pickcode: string | undefined;
   let result: ExportDirResult | undefined;
-  // let mustDelete = !!deleteAfter;
-  const mustDelete = true;
 
   if (!exportId) {
     // 1) Submit export task
@@ -185,7 +185,7 @@ export async function exportDirParse(options: ExportDirParseOptions) {
   if (!url) throw new Error("Failed to resolve download URL");
 
   // 4) Download and parse
-  const fileIdForDelete = result && result.file_id;
+  const fileIdForDelete = result?.file_id;
   try {
     const stream = await openFileStream(url, { userAgent, signal });
     const tree = new TreeBuilder();
@@ -197,9 +197,8 @@ export async function exportDirParse(options: ExportDirParseOptions) {
     }
     return tree.nodes;
   } finally {
-    // 5) Optionally delete export file
-    // if (mustDelete && fileIdForDelete) {
-    if (mustDelete) {
+    // 5) 删掉 115 上的导出文件。没拿到 file_id（复用旧导出文件、接口没回这个字段）就没得删，别拿 "undefined" 去打接口
+    if (deleteAfter && fileIdForDelete != null && fileIdForDelete !== "") {
       try {
         await fsDelete(String(fileIdForDelete), { userAgent, accountInfo });
       } catch {
