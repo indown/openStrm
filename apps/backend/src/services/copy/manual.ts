@@ -22,7 +22,7 @@ import { providerForTask } from "../drive/registry.js";
 import { subtreeEntries } from "../drive/walk.js";
 import type { DriveProvider, SubtreeEntry } from "../drive/types.js";
 import { autoOrganizeBusy } from "../organize/auto.js";
-import { isStagingDir } from "../organize/duplicates.js";
+import { isStagingDir } from "../strm/staging.js";
 import { normalizeRel } from "../strm/manage.js";
 import { baseName, copyBlockerFor, copyDstProblem, copyOptionsFor, dstDirFor, joinPath, normConfigDir, normDir, normTargetDir, parentDir, resolveCopyConfig, type CopyConfig } from "./paths.js";
 import { enqueueCopy, findCoveringRecord, isMissingDir, listOpenlistNames, lookupFresh, withAfterCopy, type CopyOutcome, type CopySource } from "./service.js";

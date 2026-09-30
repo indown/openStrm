@@ -19,7 +19,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { AppSettings, CopyAfterCopy, TaskDefinition } from "@openstrm/shared";
-import { ARCHIVE_DIR, underArchive } from "../organize/duplicates.js";
+import { ARCHIVE_DIR, underArchive } from "../strm/staging.js";
 import { KEY } from "../../db/keys.js";
 import { readKv, writeKv } from "../../db/repositories/life.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
@@ -43,7 +43,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { removeEmptyParents } from "../../lib/fs.js";
 import { matchTask } from "../life/handlers.js";
-import { mirrorDelete } from "../organize/mirror.js";
+import { mirrorDelete } from "../strm/mirror.js";
 import { accountIssueOf, driveErrorFacts } from "../drive/errors.js";
 import { providerForAccount } from "../drive/registry.js";
 import type { DriveEntry, DriveNode, DriveProvider } from "../drive/types.js";

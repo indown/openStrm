@@ -17,7 +17,7 @@
  * 路径：输入输出都是相对任务 originPath 的路径；run.ts 落库时再拼成网盘绝对路径。
  */
 import type { OrganizeAction, OrganizeConflictChoice, OrganizeConflictResolution, OrganizeFileKind, OrganizeMatch } from "@openstrm/shared";
-import { DUPLICATES_DIR, duplicatePathFor } from "./duplicates.js";
+import { DUPLICATES_DIR, duplicatePathFor } from "../strm/staging.js";
 import { isNamedAfter, normalizeTitle, trailingNumber } from "./parse-name.js";
 import type { ResolvedOrganizeSettings } from "./settings.js";
 import { pickCategory } from "./settings.js";

@@ -17,7 +17,7 @@ import { normalizePath, type ChangeEvent, type DriveEntry, type DriveProvider } 
 import { resolveInDataDir } from "../../paths.js";
 import { decodeSegments, strmContent, toStrmPath } from "../strm/naming.js";
 import { isDirectoryEntry, pathExists, removeEmptyParents } from "../../lib/fs.js";
-import { isStagingDir } from "../organize/duplicates.js";
+import { isStagingDir } from "../strm/staging.js";
 
 export interface LifeContext {
   provider: DriveProvider;

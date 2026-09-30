@@ -45,7 +45,7 @@ import {
   type StartOutcome,
 } from "./registry.js";
 import { LogBatcher } from "./log-batch.js";
-import { isStagingDir } from "../organize/duplicates.js";
+import { isStagingDir } from "../strm/staging.js";
 import { planSync } from "./plan.js";
 import { collectFilesAndTopEmptyDirs, type TreeNode } from "./tree.js";
 

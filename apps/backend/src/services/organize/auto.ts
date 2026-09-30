@@ -11,7 +11,7 @@ import { readAppSettings } from "../../db/repositories/settings.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { HttpError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
-import { isStagingDir } from "./duplicates.js";
+import { isStagingDir } from "../strm/staging.js";
 import { createRun } from "./run.js";
 import { taskAutoMode } from "./settings.js";
 import { releaseCopyHolds } from "../copy/queue.js";
