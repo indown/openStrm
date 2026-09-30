@@ -107,5 +107,18 @@ routes/telegram/bot 的 `notifyPrefs`）；`password-check` 用 `notifySecurityA
    做完 copy → organize 只剩 `copy/manual.ts → organize/auto.ts` 的 `autoOrganizeBusy` 查询（organize 不 import manual，不成环）；
    organize → copy 保留 queue / paths 两条。
 
-**没做 / 待验**：真机没验（任务完成的 Telegram 通知、转存后自动整理）——三步都是接线，测试覆盖了每条路，但 index.ts 的登记顺序
-只能真起一次后端看日志确认。
+**本机真进程验过（2026-09-30 晚，rc.3 代码）**：全新 scratch 库起后端（生产拓扑，`FRONTEND_DIR` 托管 `next build` 产物），
+`TELEGRAM_API_BASE` 指到本机一个假 Telegram（scratchpad `lab/fake-telegram.mjs`，只记 sendMessage）；建一个假 cookie 的 115 账号 + 任务，
+`POST /api/startTask` 500（errno 990001 登录超时）→ `task-start-failed` 走端口 → Telegram 渠道 → 假 Telegram 收到「网盘账号需要处理」。
+说明 index.ts 里渠道登记在任务能跑起来之前就生效。顺带在 Chrome 里验了前端 `usePolling`：设置页「网页客户端」面板 `GET /api/agent/oauth`
+在标签页隐藏时 30 秒零请求，模拟切到前台那一刻立刻一次、之后每 3 秒一次，再隐藏就停。
+
+**转存 → 自动整理 → 执行 / 撤销也在真网盘上验过（同晚，用户给了 TMDB 令牌、准许用 115 / 夸克）**：配置库只读拷到 scratch
+（监控 / Telegram 轮询 / Emby / 定时全关，令牌只写进拷贝），两个网盘根上各建一个空的 `openstrm-lab`，各建一个 review 模式的实验任务。
+夸克：转存测试分享两集（识别词直指 tmdbid）→ 3.5 秒转存完 + 2 个 strm → `files.landed` → 10 秒后清单 ready（1 部、4 项：建 2 个目录 + 挪 2 个文件）
+→ 假 Telegram 收到「整理待确认」→ 浏览器打开 `/organize?run=…` 点「执行 4 项」→ 执行中的进度靠 usePolling 在动 → 7 秒 4/4 完成，网盘和本地 strm 都到了
+`35岁的少女 (2020) [tmdbid=111240]/Season 01/…S01E01.mp4` → 页面点「撤销」→ 12 秒 4/4 退回原名、空目录删掉、本地 strm 退回。
+115：转存一集 → 8 秒清单 ready（TMDB 搜索命中 125988，「标题和年份都对上」）→ API 执行 3/3（9 秒）→ 撤销 3/3（12 秒），网盘和本地两边都核对过。
+通知三条（待确认 / 完成 / 已撤销）都到了假 Telegram。真 Telegram 渠道本身没动，没验。
+两个网盘上的 `openstrm-lab` 目录和里面的测试文件留着没删（夸克 2 集约 2.2 GB、115 一集 4.2 GB），删不删用户定。
+REST 的转存要求保存目录（任务根 + subPath）已经存在，只有追更那条会自建——这是既有行为，不是这次改出来的。
