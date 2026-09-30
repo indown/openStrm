@@ -44,6 +44,7 @@ import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { EmptyState } from "@/components/empty-state";
 import { TableSkeleton } from "@/components/loading";
 import { api, type FollowListResponse } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
 import { apiErrorMessage } from "@/lib/axios";
 import { FOLLOW_INTERVALS, intervalLabel, scopeLabel } from "@/lib/follow";
 import { keywordFromName, searchHref } from "@/lib/resource";
@@ -135,14 +136,7 @@ export default function FollowPage() {
     () => Boolean(data?.follows.some((f) => f.status === "checking") || (data?.watcher.checking.length ?? 0) > 0),
     [data],
   );
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => {
-      if (document.visibilityState === "hidden") return;
-      void load(true);
-    }, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [active, load]);
+  usePolling(() => load(true), POLL_INTERVAL_MS, { enabled: active });
 
   const mergeFollow = (next: ShareFollowSummary) =>
     setData((prev) => (prev ? { ...prev, follows: prev.follows.map((f) => (f.id === next.id ? next : f)) } : prev));

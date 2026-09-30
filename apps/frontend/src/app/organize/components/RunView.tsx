@@ -21,6 +21,7 @@ import { ProgressBar } from "@/components/progress-bar";
 import { EmptyState } from "@/components/empty-state";
 import { Spinner, TableSkeleton } from "@/components/loading";
 import { api, type TaskRow } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
 import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 import { accountLabel } from "@/lib/drive";
 import { fmtTime } from "@/lib/format";
@@ -139,17 +140,16 @@ export function RunView({
       ).slice(0, BACKDROP_TILES),
     [detail],
   );
-  useEffect(() => {
-    if (!status || !isBusyStatus(status)) return;
-    let tick = 0;
-    const timer = setInterval(() => {
-      if (document.visibilityState === "hidden") return;
-      tick += 1;
-      if (tick % FULL_EVERY === 0) void load();
-      else void loadSummary();
-    }, POLL_MS);
-    return () => clearInterval(timer);
-  }, [status, load, loadSummary]);
+  // 进行中隔几秒拉一次摘要，每 FULL_EVERY 次拉一次全量（清单、日志）
+  const pollTick = useRef(0);
+  usePolling(
+    () => {
+      pollTick.current += 1;
+      return pollTick.current % FULL_EVERY === 0 ? load() : loadSummary();
+    },
+    POLL_MS,
+    { enabled: !!status && isBusyStatus(status) },
+  );
 
   // 日志展开着就一直停在最底下
   const logLength = detail?.run.log.length ?? 0;

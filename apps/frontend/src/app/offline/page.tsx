@@ -58,6 +58,7 @@ import {
   type OfflineTask,
   type OfflineTaskState,
 } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
 import { apiErrorMessage } from "@/lib/axios";
 import { takeOfflineHandoff } from "@/lib/offline";
 import { AddOfflineTaskDialog } from "./components/AddOfflineTaskDialog";
@@ -224,15 +225,7 @@ function OfflineContent() {
       ),
     [data],
   );
-  useEffect(() => {
-    if (!active) return;
-    const tick = () => {
-      if (document.visibilityState === "hidden") return;
-      void load(true);
-    };
-    const timer = setInterval(tick, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [active, load]);
+  usePolling(() => load(true), POLL_INTERVAL_MS, { enabled: active });
 
   // 列表变了就把已经不在页面上的勾选去掉
   useEffect(() => {

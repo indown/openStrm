@@ -17,6 +17,7 @@ import { ViewChip } from "@/components/view-chip";
 import { WorkPoster } from "@/components/work-poster";
 import { LibraryWorkDialog, seasonsLabel } from "@/components/LibraryWorkDialog";
 import { api } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
 import { apiErrorMessage } from "@/lib/axios";
 import { LIBRARY_CHANGED_EVENT } from "@/lib/library";
 
@@ -112,11 +113,7 @@ export function LibraryWorks({
   // 还有单元在认：隔几秒重拉（认出来的一张张冒出来）
   const pending = result?.counts.pending ?? 0;
   const polling = pending > 0 && result?.tmdbConfigured === true;
-  useEffect(() => {
-    if (!polling) return;
-    const t = setInterval(() => void fetchWorks(), POLL_MS);
-    return () => clearInterval(t);
-  }, [polling, fetchWorks]);
+  usePolling(() => fetchWorks(), POLL_MS, { enabled: polling });
 
   // 本地已有的第一次要扫一遍各任务的本地目录：没扫好时后端只标了存过的，过几秒再拉一次补上「已有」（在轮询的话下一次就有了）
   const ownedPending = result?.ownedPending === true && !polling;

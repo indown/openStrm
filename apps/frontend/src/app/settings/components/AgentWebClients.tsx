@@ -33,6 +33,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { StatusBadge, TONE_CLASS } from "@/components/status-badge";
 import { FieldHint } from "@/components/field-hint";
 import { api } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
 import { apiErrorMessage } from "@/lib/axios";
 import { fmtWhen } from "@/lib/format";
 import { CUSTOM, CopyButton, PRESETS, SCOPE_LABEL, TOOLSETS, grantedPreview, hasAllToolsets, presetIdOf, presetLabel, toolsetText } from "./agent-common";
@@ -535,20 +536,9 @@ export function AgentWebClients({
 
   useEffect(() => {
     void load();
-    const timer = setInterval(() => {
-      // 上一轮还没回来就跳过这一轮，不叠着发
-      if (document.visibilityState === "visible" && !inFlight.current) void load();
-    }, POLL_MS);
-    // 后台标签页不轮询；切回来时立刻取一次——人多半是从授权页切过来批准的，别让他干等一轮
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void load();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
   }, [load]);
+  // 后台标签页不轮询；切回来时立刻取一次——人多半是从授权页切过来批准的，别让他干等一轮
+  usePolling(load, POLL_MS);
 
   // 公网地址换了、共用开关变了：上一次的自检结果说的是旧的设置
   useEffect(() => {

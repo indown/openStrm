@@ -31,6 +31,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { FormSkeleton } from "@/components/loading";
 import type { LifeMonitorSettings } from "@openstrm/shared";
 import { api, type LifeEventMode as EventMode, type LifeEventRow, type LifeMonitorStatus as Status } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
 import { FieldHint } from "@/components/field-hint";
 import { apiErrorMessage } from "@/lib/axios";
 
@@ -169,14 +170,7 @@ export default function LifeMonitorPage() {
   }, [loadStatus, loadEvents, form]);
 
   // 运行时每 5s 刷新一次状态，停止时不必轮询
-  useEffect(() => {
-    if (!status?.running) return;
-    const t = setInterval(() => {
-      loadStatus();
-      loadEvents();
-    }, 5000);
-    return () => clearInterval(t);
-  }, [status?.running, loadStatus, loadEvents]);
+  usePolling(() => Promise.all([loadStatus(), loadEvents()]), 5000, { enabled: Boolean(status?.running) });
 
   const saveConfig = async (values: ConfigValues) => {
     try {

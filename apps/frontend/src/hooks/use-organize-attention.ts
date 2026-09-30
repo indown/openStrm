@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { api } from "@/lib/api";
 import { ORGANIZE_CHANGED_EVENT } from "@/lib/organize";
+import { usePolling } from "./use-polling";
 
 const REFRESH_MS = 60_000;
 
@@ -15,30 +16,24 @@ export function useOrganizeAttentionCount(): number {
   const pathname = usePathname();
   const [count, setCount] = useState(0);
 
-  useEffect(() => {
-    let alive = true;
-    const load = () => {
-      if (document.visibilityState === "hidden") return;
+  const load = useCallback(
+    () =>
       api.organize
         .attention()
-        .then((r) => {
-          if (alive) setCount(r.runs.filter((a) => a.reason !== "busy").length);
-        })
+        .then((r) => setCount(r.runs.filter((a) => a.reason !== "busy").length))
         .catch(() => {
           /* 角标拉不到就不显示，别打扰 */
-        });
-    };
-    load();
-    const timer = setInterval(load, REFRESH_MS);
-    window.addEventListener(ORGANIZE_CHANGED_EVENT, load);
-    document.addEventListener("visibilitychange", load);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      window.removeEventListener(ORGANIZE_CHANGED_EVENT, load);
-      document.removeEventListener("visibilitychange", load);
-    };
-  }, [pathname]);
+        }),
+    [],
+  );
+
+  useEffect(() => {
+    void load();
+    const onChanged = () => void load();
+    window.addEventListener(ORGANIZE_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(ORGANIZE_CHANGED_EVENT, onChanged);
+  }, [pathname, load]);
+  usePolling(load, REFRESH_MS);
 
   return count;
 }

@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Inbox } from "lucide-react";
 import type { OrganizeAttention, OrganizeRun } from "@openstrm/shared";
 import { StatusBadge } from "@/components/status-badge";
 import { api, type TaskRow } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
 import { accountLabel } from "@/lib/drive";
 import { fmtTime, fmtWhen } from "@/lib/format";
 import { ATTENTION_META, ORGANIZE_CHANGED_EVENT, RUN_STATUS_META, TRIGGER_LABEL, notifyOrganizeChanged, scopeLabel } from "@/lib/organize";
@@ -40,34 +41,28 @@ function scopeTitle(run: OrganizeRun): string {
 /** 没打开 run 时列出要人管的整理（跨任务）：自动整理的待确认清单、有失败要处理的、撤销没退完的 */
 export function AttentionList({ tasks, onOpen }: { tasks: TaskRow[] | null; onOpen: (run: OrganizeRun) => void }) {
   const [list, setList] = useState<OrganizeAttention[] | null>(null);
-  useEffect(() => {
-    let alive = true;
-    // 上一次拉到的清单：这里先发现变了（监控刚建了待确认的预览这种），就让侧栏角标也刷一下，别等它一分钟一轮
-    let seenKey: string | null = null;
-    const load = () => {
-      if (document.visibilityState === "hidden") return;
+  // 上一次拉到的清单：这里先发现变了（监控刚建了待确认的预览这种），就让侧栏角标也刷一下，别等它一分钟一轮
+  const seenKey = useRef<string | null>(null);
+  const load = useCallback(
+    () =>
       api.organize
         .attention()
         .then((r) => {
-          if (!alive) return;
           setList(r.runs);
           const key = r.runs.map((a) => `${a.run.id}:${a.reason}`).join(",");
-          if (seenKey !== null && key !== seenKey) notifyOrganizeChanged();
-          seenKey = key;
+          if (seenKey.current !== null && key !== seenKey.current) notifyOrganizeChanged();
+          seenKey.current = key;
         })
-        .catch(() => {
-          if (alive) setList([]);
-        });
-    };
-    load();
-    const timer = setInterval(load, POLL_MS * 5);
-    window.addEventListener(ORGANIZE_CHANGED_EVENT, load);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      window.removeEventListener(ORGANIZE_CHANGED_EVENT, load);
-    };
-  }, []);
+        .catch(() => setList([])),
+    [],
+  );
+  useEffect(() => {
+    void load();
+    const onChanged = () => void load();
+    window.addEventListener(ORGANIZE_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(ORGANIZE_CHANGED_EVENT, onChanged);
+  }, [load]);
+  usePolling(load, POLL_MS * 5);
   if (!list || list.length === 0) return null;
   // 115 和夸克上都可以有个叫 tv 的任务：只写目录名分不出是哪个网盘的
   const label = (run: OrganizeRun) => {

@@ -55,6 +55,7 @@ import { TableSkeleton } from "@/components/loading";
 import { useAllPosters } from "@/hooks/use-all-posters";
 import { RUN_STATUS } from "@/lib/status";
 import { api, type TaskRow } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
 import { startTaskWithToast } from "@/lib/task-start";
 import { apiErrorBody, apiErrorMessage } from "@/lib/axios";
 import { normTargetDir } from "@/lib/openlist-copy";
@@ -226,22 +227,7 @@ function HomeContent() {
 
   // 有任务在跑时每 5 秒刷一次状态；页面切到后台不刷，切回来立刻刷一次
   const hasProcessing = data.some((task) => task.status === "processing");
-  useEffect(() => {
-    if (!hasProcessing) return;
-    const tick = () => {
-      if (document.visibilityState === "hidden") return;
-      void fetchTasks(true);
-    };
-    const timer = setInterval(tick, POLL_INTERVAL_MS);
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") void fetchTasks(true);
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [hasProcessing, fetchTasks]);
+  usePolling(() => fetchTasks(true), POLL_INTERVAL_MS, { enabled: hasProcessing });
 
   /* ---- 海报墙：整个 strm 库的作品。纯装饰：有任务在跑或在启动就淡出，把「在动」让给那一行 ---- */
   // 任务表的指纹：增删任务、改本地目录才重拉，每 5 秒的状态轮询不会触发

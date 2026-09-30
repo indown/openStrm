@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { api, type CopyItem } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
 import { apiErrorMessage } from "@/lib/axios";
 
 const STATUS_META: Record<CopyItem["status"], { tone: StatusTone; label: string; pulse?: boolean }> = {
@@ -77,11 +78,7 @@ export function CopyQueuePanel() {
   }, [load]);
 
   // 有在跑的就盯着，跑完自己停
-  useEffect(() => {
-    if (pending === 0) return;
-    const timer = setInterval(() => void load(), 5000);
-    return () => clearInterval(timer);
-  }, [pending, load]);
+  usePolling(load, 5000, { enabled: pending > 0 });
 
   const act = async (id: string, what: "retry" | "remove") => {
     setWorking((prev) => new Set(prev).add(id));

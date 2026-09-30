@@ -62,6 +62,7 @@ import {
 import { toast } from "sonner";
 import type { MediaLibraryEntry, ShareFollowSummary } from "@openstrm/shared";
 import { api, type LibraryShareLink } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
 import { apiErrorBody, apiErrorMessage, apiErrorStatus } from "@/lib/axios";
 import { DRIVE_LABEL } from "@/lib/drive";
 import { formatSize, fmtWhen } from "@/lib/format";
@@ -218,11 +219,7 @@ function LibraryContent() {
   // 有来源在建索引 / 刮海报：每 3 秒刷一次进度
   // 在抄目录、还有作品在认：来源卡片上的进度要跟着动
   const busy = entries.some((e) => indexing(e) || (e.works?.pending ?? 0) > 0);
-  useEffect(() => {
-    if (!busy) return;
-    const t = setInterval(() => void fetchEntries(true), 3000);
-    return () => clearInterval(t);
-  }, [busy, fetchEntries]);
+  usePolling(() => fetchEntries(true), 3000, { enabled: busy });
 
   const followedKeys = useMemo(() => new Set(follows.map((f) => `${f.shareCode}:${f.watchCid}`)), [follows]);
   const followKeyOf = (e: MediaLibraryEntry) => `${e.shareCode}:${e.shareRootCid && e.shareRootCid !== "0" ? e.shareRootCid : "0"}`;
