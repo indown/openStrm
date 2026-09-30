@@ -36,6 +36,84 @@ test("例行按间隔跑；stop 之后不再跑，并等在跑的那一轮收尾
   assert.equal(ticks, seen, "停了就不该再有新的一轮");
 });
 
+test("stop 会中止交给 tick 的 signal：挂着的长活儿立刻退出，不算失败", async () => {
+  let aborted = false;
+  const loop = createPollingLoop({
+    name: "测试循环",
+    log,
+    intervalMs: 5,
+    tick: (signal) =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 2000);
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            aborted = true;
+            reject(new Error("aborted"));
+          },
+          { once: true },
+        );
+      }),
+  });
+  loop.start();
+  await wait(20);
+  const t0 = Date.now();
+  await loop.stop();
+  assert.ok(Date.now() - t0 < 500, "不用等那两秒");
+  assert.equal(aborted, true);
+  assert.equal(loop.lastError, null, "被 stop 掐断的不算失败");
+});
+
+test("backoffBaseMs：间隔为 0 的长轮询失败后按基数退避，不是按 0 退避", async () => {
+  const at: number[] = [];
+  const loop = createPollingLoop({
+    name: "测试循环",
+    log,
+    intervalMs: 0,
+    backoffBaseMs: 30,
+    maxBackoffMs: 60,
+    tick: async () => {
+      at.push(Date.now());
+      throw new Error("x");
+    },
+  });
+  loop.start();
+  await wait(260);
+  await loop.stop();
+  const gaps = at.slice(1).map((t, i) => t - at[i]);
+  assert.ok(gaps.length >= 3, `该有好几轮，实际 ${gaps.length}`);
+  assert.ok(gaps[0] >= 25, `第一次失败后等基数 30ms，实际 ${gaps[0]}ms`);
+  assert.ok(gaps[1] >= 50, `第二次翻倍到 60ms，实际 ${gaps[1]}ms`);
+  assert.ok(gaps[2] >= 50 && gaps[2] < 150, `封顶 60ms，实际 ${gaps[2]}ms`);
+});
+
+test("onExit：自己收工的、被 stop 的都叫，每次 start 只叫一次", async () => {
+  let exits = 0;
+  let keep = true;
+  const loop = createPollingLoop({
+    name: "测试循环",
+    log,
+    intervalMs: 5,
+    tick: async () => {},
+    shouldContinue: () => keep,
+    onExit: () => exits++,
+  });
+  loop.start();
+  await wait(20);
+  keep = false;
+  await wait(60);
+  assert.equal(loop.running, false, "shouldContinue 说不干了就退");
+  assert.equal(exits, 1, "自己收工叫一次");
+  await loop.stop();
+  assert.equal(exits, 1, "已经退了的再 stop 不再叫");
+  keep = true;
+  loop.start();
+  await wait(20);
+  await loop.stop();
+  assert.equal(exits, 2, "被 stop 的也叫");
+});
+
 test("上一轮没跑完不会再起一轮", async () => {
   let inFlight = 0;
   let peak = 0;

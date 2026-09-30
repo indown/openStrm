@@ -16,6 +16,7 @@ import type { AccountInfo, LifeEventMode, LifeMonitorSettings, LifePullMode } fr
 import { KEY } from "../../db/keys.js";
 import { isAbortError } from "../../lib/errors.js";
 import { moduleLogger } from "../../lib/logger.js";
+import { createPollingLoop, type PollingLoop } from "../../lib/polling.js";
 import { issueFromDrive, notify } from "../telegram/notify.js";
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { getAccount, listAccounts } from "../../db/repositories/accounts.js";
@@ -50,7 +51,6 @@ import {
 import { describeFileFailure } from "../download/failure.js";
 
 const DEFAULT_INTERVAL_SEC = 15;
-const ERROR_BACKOFF_MS = 30_000;
 const ALL_EVENT_MODES: LifeEventMode[] = ["create", "move", "rename", "remove"];
 const LOG_LIMIT = 500;
 const ZERO_CURSOR: ChangeCursor = { time: 0, id: "0" };
@@ -214,6 +214,10 @@ class AccountMonitor {
   readonly stats = zeroStats();
   /** 循环退出时落定；没起来过是 null */
   loopDone: Promise<void> | null = null;
+  private resolveDone: (() => void) | null = null;
+  private loop: PollingLoop | null = null;
+  /** 账号被删了、不再支持监控：这条循环自己退出 */
+  private retired = false;
   private readonly log: ChangeLog;
   private source: ChangeSource | null = null;
 
@@ -283,41 +287,64 @@ class AccountMonitor {
     Object.assign(this.stats, zeroStats());
     const effective = Math.max(intervalMs, source.minIntervalSeconds * 1000);
     this.log("info", `启动：来源 ${source.label}，模式 ${pullMode}，间隔 ${effective / 1000}s`);
-    this.loopDone = this.loop(effective);
+    this.retired = false;
+    this.loopDone = new Promise<void>((resolve) => {
+      this.resolveDone = resolve;
+    });
+    // 轮询失败按次数退避（基数就是间隔，封顶十分钟）：cookie 失效、被风控时不再每 30 秒去撞一次
+    this.loop = createPollingLoop({
+      name: `账号 ${this.name} 的网盘监控`,
+      log: lifeLog,
+      intervalMs: effective,
+      tick: () => this.round(),
+      // 账号删了、整体 stop 掐了信号：这条循环自己退出
+      shouldContinue: () => !this.retired && !this.signal.aborted,
+      onExit: () => this.exited(),
+    });
+    this.loop.start();
     return { ok: true, message: "已启动" };
   }
 
-  private async loop(intervalMs: number): Promise<void> {
-    const signal = this.signal;
-    while (!signal.aborted) {
-      let provider: DriveProvider | null = null;
-      try {
-        // 每轮现取账号：cookie 在「账户」页改过就直接用新的；账号删了这条循环自己退出
-        provider = pickProvider(this.name);
-        if (!provider) {
-          this.lastError = "账号已删除或不再支持监控，监控已停止";
-          this.log("warn", this.lastError);
-          break;
-        }
-        // 部分根没拉到时 warnings 留在 lastError 让状态页看见；全好才清掉
-        this.lastError = (await this.runOnce(provider, signal)) ?? null;
-        if (signal.aborted) break;
-        await this.sleep(intervalMs);
-      } catch (err) {
-        if (signal.aborted) break;
-        const msg = err instanceof Error ? err.message : String(err);
-        this.lastError = msg;
-        this.log("error", `轮询失败：${msg}`);
-        void notify({ type: "account-alert", account: this.name, reason: msg, source: "网盘监控", issue: issueFromDrive(provider?.classifyError(err)) });
-        this.log("info", `${ERROR_BACKOFF_MS / 1000}s 后重试`);
-        await this.sleep(ERROR_BACKOFF_MS);
-      }
+  /** 停这条循环：把睡在两轮之间的等待叫醒，等在跑的那一轮收尾（整体的 signal 已经掐了，它会很快退出） */
+  async stop(): Promise<void> {
+    await this.loop?.stop();
+  }
+
+  /**
+   * 一轮：每轮现取账号（cookie 在「账户」页改过就直接用新的），拉变更、逐条处理。
+   * 失败抛出去由循环退避；被中止的不算
+   */
+  private async round(): Promise<void> {
+    const provider = pickProvider(this.name);
+    if (!provider) {
+      this.lastError = "账号已删除或不再支持监控，监控已停止";
+      this.log("warn", this.lastError);
+      this.retired = true;
+      return;
     }
+    try {
+      // 部分根没拉到时 warnings 留在 lastError 让状态页看见；全好才清掉
+      this.lastError = (await this.runOnce(provider, this.signal)) ?? null;
+    } catch (err) {
+      if (this.signal.aborted) return;
+      const msg = err instanceof Error ? err.message : String(err);
+      this.lastError = msg;
+      this.log("error", `轮询失败：${msg}`);
+      void notify({ type: "account-alert", account: this.name, reason: msg, source: "网盘监控", issue: issueFromDrive(provider.classifyError(err)) });
+      this.log("info", "稍后重试；连续失败会把间隔逐步拉长，最多十分钟");
+      throw err;
+    }
+  }
+
+  /** 循环退出（自己退的、被 stop 的都走这里，只走一次）：游标落库，最后一条退出时把攒着的 Emby 刷新发掉 */
+  private exited(): void {
     writeKv(KEY.lifeCursor(this.name), this.cursor);
     this.running = false;
     // 文件已经落盘了，攒着的 Emby 刷新不能丢；但别的账号还在跑就留给它们继续攒，最后一条退出时才发
     if (![...monitors.values()].some((m) => m.running)) flushEmbyRefresh();
     this.log("info", "已退出网盘监控");
+    this.resolveDone?.();
+    this.resolveDone = null;
   }
 
   /** 返回这轮的告警文案（部分根没拉到）；全好返回 null */
@@ -437,20 +464,6 @@ class AccountMonitor {
     return warning;
   }
 
-  /** 可中断的等待：stop 掐掉 signal 就立刻醒 */
-  private sleep(ms: number): Promise<void> {
-    const signal = this.signal;
-    if (signal.aborted) return Promise.resolve();
-    return new Promise((resolve) => {
-      const finish = () => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", finish);
-        resolve();
-      };
-      const timer = setTimeout(finish, ms);
-      signal.addEventListener("abort", finish, { once: true });
-    });
-  }
 }
 
 /* --------------------------------- 生命周期 --------------------------------- */
@@ -560,6 +573,8 @@ export async function stopLifeMonitor(): Promise<{ ok: boolean; message: string 
       /* doStart 自己处理 */
     }
   }
+  // 循环可能正睡在两轮之间的等待（或退避）里：stop 把它叫醒并等在跑的那一轮收尾
+  await Promise.allSettled([...monitors.values()].map((m) => m.stop()));
   await Promise.allSettled([...monitors.values()].map((m) => m.loopDone));
   return { ok: true, message: "网盘监控已停止" };
 }

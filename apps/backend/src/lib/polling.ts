@@ -1,7 +1,8 @@
 /**
- * 后台循环的公共实现：云下载回执、追更、Emby 入库通知都跑在它上面。
+ * 后台循环的公共实现：云下载回执、追更、Emby 入库通知、复制队列、收藏夹巡检、网盘监控（每账号一条）、
+ * Telegram 长轮询都跑在它上面。
  *
- * 这三处以前各写了一份「running + timer + ticking + schedule + runTick」，除了间隔之外一模一样，
+ * 这些地方以前各写了一份「running + timer + ticking + schedule + runTick」，除了间隔之外一模一样，
  * 而且都有同一个毛病：这一轮失败了，下一轮照原间隔再来——cookie 失效、被封控的时候
  * 会一直以同样的频率去撞。这里把同一件事交给 rxjs 表达：
  *
@@ -14,6 +15,8 @@
  *   - **加急能打断等待**（race）：Emby 刷新之后的加急不该被一个十分钟的退避吞掉。
  *   - **shouldContinue 自己抛了不算数**：它背后是 better-sqlite3 的同步读，SQLITE_BUSY 不该把
  *     整个后端带崩（rxjs 的未处理错误会走 uncaughtException），更不该留下一个 running=true 的空壳。
+ *   - **stop 会掐断交给 tick 的 signal**：长轮询、拉网盘这种长活儿挂上它，停机不用等它自己跑完；
+ *     被掐断的那一轮不算失败、不记日志（订阅已经退了）。
  *
  * 一轮里能自己消化的失败（某个账号的列表拿不到，其余照跑）不该抛出来，在 tick 里 noteError()
  * 记一句就行：跑完一轮如果没人记过，状态里的错就清掉；这一轮失败了，原因会一直留到下一轮跑完。
@@ -36,14 +39,18 @@ export interface PollingLoopOptions {
   intervalMs: number;
   /** 第一轮的延迟，默认立刻 */
   firstDelayMs?: number;
-  /** 跑一轮。抛出来的错由这里退避重试 */
-  tick: () => Promise<void>;
+  /** 跑一轮。抛出来的错由这里退避重试。signal 在 stop() 时中止：长活儿挂上它，停机不用等它自己跑完 */
+  tick: (signal: AbortSignal) => Promise<void>;
   /** 每轮跑完（成败都问）还要不要继续；false = 收工。自己抛了当没问过 */
   shouldContinue?: () => boolean;
   /** 收工时记的那行日志 */
   doneMessage?: string;
   /** 连续失败的退避上限，默认 10 分钟 */
   maxBackoffMs?: number;
+  /** 失败退避的基数：第一次失败等这么久、之后翻倍。默认就是 intervalMs；长轮询这种间隔为 0 的循环要单独给 */
+  backoffBaseMs?: number;
+  /** 循环退出时叫一次：自己收工的、异常退出的、被 stop 的都走到。状态收尾（写游标、置 running）放这里 */
+  onExit?: () => void;
 }
 
 export interface PollingLoop {
@@ -51,7 +58,7 @@ export interface PollingLoop {
   /** 最近一轮的失败原因；跑成了且没人 noteError 就是 null */
   readonly lastError: string | null;
   start(): void;
-  /** 停循环，并等正在跑的那一轮收尾 */
+  /** 停循环：掐断 tick 的 signal，并等正在跑的那一轮收尾 */
   stop(): Promise<void>;
   /** delayMs 之后插一轮加急；这段窗口里重复调只算一次，有一轮正在跑就跳过 */
   nudge(delayMs: number): void;
@@ -62,6 +69,7 @@ export interface PollingLoop {
 export function createPollingLoop(opts: PollingLoopOptions): PollingLoop {
   const { name, log, intervalMs, tick } = opts;
   const maxBackoffMs = opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
+  const backoffBaseMs = opts.backoffBaseMs ?? intervalMs;
   const stop$ = new Subject<void>();
   /** shouldContinue 说收工 */
   const retire$ = new Subject<void>();
@@ -79,10 +87,14 @@ export function createPollingLoop(opts: PollingLoopOptions): PollingLoop {
   let failStreak = 0;
   /** 正在跑的那一轮：停机要等它收尾，不然 stop 返回之后还有写操作落下来 */
   let ticking: Promise<void> | null = null;
+  /** 这次 start 交给 tick 的信号：stop 掐它 */
+  let controller: AbortController | null = null;
+  /** 这次 start 的退出收尾：自己退和被 stop 只走一次 */
+  let exitOnce: (() => void) | null = null;
 
   const runOnce = async (): Promise<void> => {
     roundError = null;
-    const started = tick();
+    const started = tick(controller?.signal ?? new AbortController().signal);
     // 等的那份要吞掉错误：stop() 里 await 它，不能把失败重新抛给停机流程
     const settled = started.then(
       () => {},
@@ -107,8 +119,9 @@ export function createPollingLoop(opts: PollingLoopOptions): PollingLoop {
     }
   };
 
-  const waitMs = (): number =>
-    failStreak === 0 ? intervalMs : Math.min(maxBackoffMs, intervalMs * 2 ** (failStreak - 1));
+  /** 连续失败 failStreak 次之后等多久 */
+  const backoffMs = (): number => Math.min(maxBackoffMs, backoffBaseMs * 2 ** (failStreak - 1));
+  const waitMs = (): number => (failStreak === 0 ? intervalMs : backoffMs());
 
   /** 等一会儿；加急到点能把这次等待打断 */
   const waiting$ = (ms: number) => (ms > 0 ? race(unrefTimer(ms), urgent$).pipe(take(1)) : unrefTimer(0));
@@ -133,6 +146,15 @@ export function createPollingLoop(opts: PollingLoopOptions): PollingLoop {
       running = true;
       let retired = false;
       failStreak = 0;
+      controller = new AbortController();
+      let exited = false;
+      const exit = () => {
+        if (exited) return;
+        exited = true;
+        if (exitOnce === exit) exitOnce = null;
+        opts.onExit?.();
+      };
+      exitOnce = exit;
 
       // 加急：第一条起一个延时，这段窗口里再来的丢掉（exhaustMap）；到点了投给 urgent$。
       // 那一刻要是正好有一轮在跑，urgent$ 没人听，这一下就丢了——和以前 `if (ticking) return` 一个意思
@@ -153,8 +175,7 @@ export function createPollingLoop(opts: PollingLoopOptions): PollingLoop {
         catchError((err: unknown) => {
           failStreak += 1;
           lastError = messageOf(err);
-          const wait = Math.min(maxBackoffMs, intervalMs * 2 ** (failStreak - 1));
-          log.warn({ err }, `${name}这一轮失败（连续 ${failStreak} 次），${Math.round(wait / 1000)}s 后重试`);
+          log.warn({ err }, `${name}这一轮失败（连续 ${failStreak} 次），${Math.round(backoffMs() / 1000)}s 后重试`);
           // 失败也算跑完一轮：下面照样要问 shouldContinue，不能一直醒着打接口
           return [false];
         }),
@@ -181,11 +202,13 @@ export function createPollingLoop(opts: PollingLoopOptions): PollingLoop {
             sub = null;
             lastError = messageOf(err);
             log.error({ err }, `${name}异常退出`);
+            exit();
           },
           complete: () => {
             running = false;
             sub = null;
             if (retired && opts.doneMessage) log.info(opts.doneMessage);
+            exit();
           },
         });
     },
@@ -196,7 +219,11 @@ export function createPollingLoop(opts: PollingLoopOptions): PollingLoop {
       sub = null;
       nudgeSub?.unsubscribe();
       nudgeSub = null;
+      // 先退订再掐信号：被掐断的那一轮抛出来的错没人听，不算失败、不记日志
+      controller?.abort();
+      controller = null;
       await ticking;
+      exitOnce?.();
     },
   };
 }

@@ -22,6 +22,7 @@ import { ensureShare, getShare, listDueChecks, listShares, updateShare, deleteSh
 import { readAppSettings } from "../../db/repositories/settings.js";
 import { messageOf } from "../../lib/errors.js";
 import { moduleLogger } from "../../lib/logger.js";
+import { createPollingLoop } from "../../lib/polling.js";
 import { SHARE_PASSWORD_PROBLEM } from "../drive/errors.js";
 import { setShareObserver, shareProviderForRef, parseShareRef } from "../drive/registry.js";
 import { ShareGoneError, type ShareRef } from "../drive/types.js";
@@ -257,23 +258,29 @@ export async function patrolOnce(): Promise<number> {
   }
 }
 
-let timer: NodeJS.Timeout | null = null;
+/** 十分钟一轮；启动后先等一个周期再开始——刚起来时抄目录、认作品都在抢网盘。出错由循环退避 */
+const patrol = createPollingLoop({
+  name: "收藏夹巡检",
+  log,
+  intervalMs: TICK_MS,
+  firstDelayMs: TICK_MS,
+  tick: async () => {
+    await patrolOnce();
+  },
+});
 
 /** 启动时调：装上旁听者，开始巡检。升级上来的老来源还没登记分享码，这里补上 */
 export function startLibraryHealth(opts: { patrol?: boolean } = {}): void {
   codes = null;
   for (const s of getAll()) ensureShare(s.shareCode, parseShareRef(s.shareUrl)?.kind ?? "115");
   setShareObserver(observer);
-  if (opts.patrol === false || timer) return;
-  timer = setInterval(() => {
-    void patrolOnce().catch((err: unknown) => log.warn({ err }, "收藏夹巡检出错"));
-  }, TICK_MS);
-  timer.unref?.();
+  if (opts.patrol === false) return;
+  patrol.start();
 }
 
 export function stopLibraryHealth(): void {
   setShareObserver(null);
-  if (timer) clearInterval(timer);
-  timer = null;
+  // 一轮巡检里的网盘请求不用等它做完：这里只保证不再起下一轮
+  void patrol.stop();
   codes = null;
 }
