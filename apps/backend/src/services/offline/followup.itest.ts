@@ -18,6 +18,8 @@ import {
   addOfflineTasks,
   getOfflineWatcherStatus,
   listFollowups,
+  removeOfflineTasks,
+  rewriteOfflineSubPaths,
   setOfflineServiceDeps,
   startOfflineWatcher,
   stopOfflineWatcher,
@@ -37,6 +39,8 @@ const listCalls: number[] = [];
 const generated: GenerateParams[] = [];
 const notified: NotifyEvent[] = [];
 let generateError: Error | null = null;
+/** 生成 strm 那一步（对 115 是整目录导出，可能要几分钟）中途插进来的别的动作：加任务、删任务、整理改落点 */
+let onGenerate: (() => Promise<void>) | null = null;
 
 /** 交给复制队列的请求 */
 const copyCalls: CopyRequest[] = [];
@@ -52,7 +56,11 @@ const row = (over: Partial<OfflineTask>): OfflineTask => ({
 });
 
 const transport: OfflineTransport = {
-  async web() { throw new Error("回执测试里不该走 web 传输层"); },
+  async web(_acc, ac) {
+    // 删任务只要 115 说成了；别的 web 接口回执测试用不到
+    if (ac === "task_del") return { state: true };
+    throw new Error("回执测试里不该走 web 传输层");
+  },
   async ssp(_acc, _ac, payload) {
     const urls = Object.keys(payload).filter((k) => k.startsWith("url[")).map((k) => String(payload[k]));
     // 链接里带 "dup" 的模拟 115 的「任务已存在」：state=false 但仍回 info_hash
@@ -95,6 +103,7 @@ before(() => {
     },
     generate: async (p) => {
       generated.push(p);
+      if (onGenerate) await onGenerate();
       if (generateError) throw generateError;
       return { generatedCount: 3, skippedCount: 1, invalidNames: [] };
     },
@@ -109,6 +118,7 @@ beforeEach(async () => {
   pages = [[]];
   listError = null;
   generateError = null;
+  onGenerate = null;
   listCalls.length = 0;
   generated.length = 0;
   notified.length = 0;
@@ -544,4 +554,58 @@ test("同一批里有新有旧：新的登记 strm 回执（兼办复制），11
   assert.equal(byHash.get("hash0")?.kind ?? "strm", "strm");
   assert.equal(byHash.get("hash0")?.copyDstDir, "/local/dl");
   assert.equal(byHash.get("hash1")?.kind, "openlist-copy", "原本就有的不能漏掉");
+});
+
+/* ------------------------------- 一轮中途别处改了回执 ------------------------------- */
+
+const byHash = () => new Map(listFollowups().map((f) => [f.infoHash, f]));
+
+test("一轮中途新加的回执不会被这一轮的写回盖掉", async () => {
+  await seed();
+  pages = [[row({})]];
+  onGenerate = async () => {
+    await addOfflineTasks({ urls: "magnet:?xt=urn:btih:solo", taskId: "t1", subPath: "S2" });
+    await stopOfflineWatcher();
+  };
+  await tickFollowups();
+  assert.equal(byHash().get("hash0")?.status, "done");
+  assert.equal(byHash().get("hash9")?.status, "pending", "中途加的那条还在，等下一轮去对");
+  assert.equal(byHash().get("hash9")?.subPath, "S2");
+});
+
+test("一轮中途被删掉的回执不会被写回复活", async () => {
+  await seed("magnet:?xt=urn:btih:one\nmagnet:?xt=urn:btih:two");
+  pages = [[row({ infoHash: "hash0" }), row({ infoHash: "hash1", state: "downloading", status: 1, percent: 10 })]];
+  onGenerate = async () => {
+    await removeOfflineTasks("acc", ["hash1"], false);
+  };
+  await tickFollowups();
+  assert.deepEqual(listFollowups().map((f) => f.infoHash), ["hash0"]);
+  assert.equal(listFollowups()[0].status, "done");
+});
+
+test("一轮中途整理改写了落点：这一轮写回时不把它改回去", async () => {
+  await seed("magnet:?xt=urn:btih:one\nmagnet:?xt=urn:btih:two");
+  pages = [[row({ infoHash: "hash0" }), row({ infoHash: "hash1", state: "downloading", status: 1, percent: 10 })]];
+  onGenerate = async () => {
+    rewriteOfflineSubPaths("t1", [{ from: "S1", to: "Season 1" }]);
+  };
+  await tickFollowups();
+  const f = byHash().get("hash1");
+  assert.equal(f?.subPath, "Season 1", "整理改过的落点要留住");
+  assert.match(f?.detail ?? "", /下载中 10%/, "这一轮的进度照样写进去");
+});
+
+test("一轮中途同一个磁力被重新登记：按新登记的算，不被这一轮的结果盖成已完成", async () => {
+  await seed();
+  pages = [[row({})]];
+  onGenerate = async () => {
+    // 登记时间要和上一条分得开：同一毫秒里登记的分不出新旧
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await addOfflineTasks({ urls: "magnet:?xt=urn:btih:one", taskId: "t1", subPath: "S1" });
+    await stopOfflineWatcher();
+  };
+  await tickFollowups();
+  assert.equal(listFollowups().length, 1);
+  assert.equal(listFollowups()[0].status, "pending", "新登记的那条等下一轮自己去对");
 });

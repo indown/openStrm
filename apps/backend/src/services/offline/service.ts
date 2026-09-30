@@ -112,6 +112,10 @@ export function listFollowups(): OfflineFollowup[] {
   return Array.isArray(rows) ? rows : [];
 }
 
+/**
+ * 整份写回。只给读—改—写之间没有 await 的调用方（登记、删除、重试、整理改落点）用：
+ * 推进循环中间夹着网络等待，这期间别处随时会改同一个键，循环里一律走 commitFollowups
+ */
 function saveFollowups(rows: OfflineFollowup[]): void {
   const now = Date.now();
   const kept = rows
@@ -119,6 +123,34 @@ function saveFollowups(rows: OfflineFollowup[]): void {
     .sort((a, b) => b.addedAt - a.addedAt)
     .slice(0, MAX_RECORDS);
   writeKv(FOLLOWUP_KEY, kept);
+}
+
+/** 回执的身份：同一个账号、同一个 info hash 只有一条（addFollowups 按它去重） */
+const keyOf = (f: Pick<OfflineFollowup, "account" | "infoHash">): string => JSON.stringify([f.account, f.infoHash]);
+
+/**
+ * 推进循环这一轮手里的待办（按身份）。循环中间夹着网络等待，这期间整理改写落点要同时改到这些对象上：
+ * 这一轮收尾是按身份把手里的对象写回去的，只改库里那份会被盖掉（同 copy/queue.ts 的 mirrorLive）。
+ * 一轮开始时登记、结束时清空
+ */
+const liveFollowups = new Map<string, OfflineFollowup>();
+
+/**
+ * 把这一轮改过的回执合并回库：重读一份、按身份覆盖。期间别处新登记的照旧留着，删掉的不复活；
+ * 同一个磁力被重新登记过的（用户删了任务又加了一遍，addedAt 变了）按新登记的算，这一轮对旧任务的结论不盖上去。
+ * 读—改—写之间没有 await，对别的 JS 代码是原子的（同 copy/queue.ts 的 commitCopies）
+ */
+function commitFollowups(changed: OfflineFollowup[]): void {
+  if (changed.length === 0) return;
+  const byKey = new Map(listFollowups().map((f) => [keyOf(f), f]));
+  let touched = false;
+  for (const f of changed) {
+    const current = byKey.get(keyOf(f));
+    if (!current || current.addedAt !== f.addedAt) continue;
+    byKey.set(keyOf(f), f);
+    touched = true;
+  }
+  if (touched) saveFollowups([...byKey.values()]);
 }
 
 function addFollowups(items: OfflineFollowup[]): void {
@@ -554,64 +586,77 @@ function finish(f: OfflineFollowup, status: "done" | "failed", detail: string): 
  * 导出为函数是为了测试能直接触发，不用等 30 秒。
  */
 export async function tickFollowups(): Promise<void> {
-  const all = listFollowups();
-  const pending = all.filter((f) => f.status === "pending");
+  const pending = listFollowups().filter((f) => f.status === "pending");
   if (pending.length === 0) return;
-  const persist = () => saveFollowups(all);
+  for (const f of pending) liveFollowups.set(keyOf(f), f);
 
   const byAccount = new Map<string, OfflineFollowup[]>();
   for (const f of pending) byAccount.set(f.account, [...(byAccount.get(f.account) ?? []), f]);
 
-  for (const [accountName, items] of byAccount) {
-    const accountInfo = getAccount(accountName);
-    if (!accountInfo || accountInfo.accountType !== "115" || !accountInfo.cookie) {
-      for (const f of items) finish(f, "failed", `账号 ${accountName} 不存在、不是 115 账号或没有 cookie`);
-      persist();
-      continue;
-    }
+  try {
+    for (const [accountName, items] of byAccount) {
+      // 这个账号改过、还没写回库的；写一次清一次，一条只写一次：写回之后别处的重试、改落点才不会被这一轮再盖一遍
+      const changed: OfflineFollowup[] = [];
+      const flush = () => commitFollowups(changed.splice(0));
 
-    const want = new Set(items.map((i) => i.infoHash));
-    const found = new Map<string, OfflineTask>();
-    try {
-      for (let page = 1; page <= MAX_PAGES && found.size < want.size; page++) {
-        const res = await deps.list(accountInfo, page);
-        for (const t of res.tasks) if (want.has(t.infoHash)) found.set(t.infoHash, t);
-        if (res.tasks.length === 0 || page >= res.pageCount) break;
+      const accountInfo = getAccount(accountName);
+      if (!accountInfo || accountInfo.accountType !== "115" || !accountInfo.cookie) {
+        for (const f of items) {
+          finish(f, "failed", `账号 ${accountName} 不存在、不是 115 账号或没有 cookie`);
+          changed.push(f);
+        }
+        flush();
+        continue;
       }
-    } catch (err) {
-      // 这一轮列表拿不到（风控、断网）：什么都不改，下轮再来。
-      // 记在循环状态里而不是抛出去：其余账号还要接着对，整轮不算失败
-      loop.noteError(messageOf(err));
-      log.warn({ err }, `读取账号 ${accountName} 的云下载列表失败，回执下轮再对`);
-      continue;
-    }
 
-    for (const f of items) {
-      const t = found.get(f.infoHash);
-      if (!t) {
-        f.misses += 1;
-        if (f.misses >= MAX_MISSES) finish(f, "failed", "任务已不在 115 的云下载列表里");
-        else f.detail = `列表里暂时没找到这条任务（${f.misses}/${MAX_MISSES}）`;
+      const want = new Set(items.map((i) => i.infoHash));
+      const found = new Map<string, OfflineTask>();
+      try {
+        for (let page = 1; page <= MAX_PAGES && found.size < want.size; page++) {
+          const res = await deps.list(accountInfo, page);
+          for (const t of res.tasks) if (want.has(t.infoHash)) found.set(t.infoHash, t);
+          if (res.tasks.length === 0 || page >= res.pageCount) break;
+        }
+      } catch (err) {
+        // 这一轮列表拿不到（风控、断网）：什么都不改，下轮再来。
+        // 记在循环状态里而不是抛出去：其余账号还要接着对，整轮不算失败
+        loop.noteError(messageOf(err));
+        log.warn({ err }, `读取账号 ${accountName} 的云下载列表失败，回执下轮再对`);
         continue;
       }
-      f.misses = 0;
-      if (t.name) f.name = t.name;
-      if (t.state === "failed") {
-        finish(f, "failed", `115 下载失败：${t.statusText}`);
-        continue;
+
+      for (const f of items) {
+        // 下面每条路都会改到 f（至少 misses / detail），先记上
+        changed.push(f);
+        const t = found.get(f.infoHash);
+        if (!t) {
+          f.misses += 1;
+          if (f.misses >= MAX_MISSES) finish(f, "failed", "任务已不在 115 的云下载列表里");
+          else f.detail = `列表里暂时没找到这条任务（${f.misses}/${MAX_MISSES}）`;
+          continue;
+        }
+        f.misses = 0;
+        if (t.name) f.name = t.name;
+        if (t.state === "failed") {
+          finish(f, "failed", `115 下载失败：${t.statusText}`);
+          continue;
+        }
+        if (t.state !== "done") {
+          f.detail = t.state === "downloading" ? `115 下载中 ${t.percent}%` : t.statusText;
+          if (Date.now() - f.addedAt > PENDING_MAX_AGE_MS) finish(f, "failed", "等了 7 天还没下完，不再跟踪");
+          continue;
+        }
+        if (kindOf(f) === "openlist-copy") await handoffCopy(f, t, accountInfo);
+        else await completeFollowup(f, t, accountInfo);
+        // 生成 strm / 交给复制队列是长活儿：办完一条落一次，进程中途没了也不重做
+        flush();
       }
-      if (t.state !== "done") {
-        f.detail = t.state === "downloading" ? `115 下载中 ${t.percent}%` : t.statusText;
-        if (Date.now() - f.addedAt > PENDING_MAX_AGE_MS) finish(f, "failed", "等了 7 天还没下完，不再跟踪");
-        continue;
-      }
-      if (kindOf(f) === "openlist-copy") await handoffCopy(f, t, accountInfo);
-      else await completeFollowup(f, t, accountInfo);
-      persist();
+      flush();
     }
-    persist();
+    lastTickAt = Date.now();
+  } finally {
+    liveFollowups.clear();
   }
-  lastTickAt = Date.now();
 }
 
 async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo: AccountInfo): Promise<void> {
@@ -752,6 +797,9 @@ export function rewriteOfflineSubPaths(taskId: string, mappings: Array<{ from: s
     if (!m) continue;
     hit.push(f.subPath);
     f.subPath = normalizeSubPath(f.subPath === m.from ? m.to : `${m.to}${f.subPath.slice(m.from.length)}`);
+    // 推进循环这一轮手里的同一条也改：它收尾时按自己手里的对象写回，只改库里这份会被盖回去
+    const live = liveFollowups.get(keyOf(f));
+    if (live) live.subPath = f.subPath;
     changed = true;
   }
   if (changed) saveFollowups(rows);
