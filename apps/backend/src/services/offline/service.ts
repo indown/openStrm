@@ -43,7 +43,8 @@ import {
 import { enqueueCopy, type CopyEnqueueResult, type CopyRequest } from "../copy/service.js";
 import { copyDstProblem, copyOptionsFor, normDir, relativeTo, resolveCopyConfig } from "../copy/paths.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
-import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
+import { events } from "../events.js";
+import { effectiveAutoMode } from "../organize/auto.js";
 import { normalizeSubPath } from "../strm/naming.js";
 import { generateStrmForSelected, type GenerateResult, type SelectedItem } from "../strm/share-strm.js";
 import { providerFor } from "../drive/registry.js";
@@ -673,7 +674,7 @@ async function completeFollowup(f: OfflineFollowup, t: OfflineTask, accountInfo:
     finish(f, "done", `已生成 ${r.generatedCount} 个 strm（跳过 ${r.skippedCount} 个${invalid}）`);
     log.info(`云下载完成：${t.name} → ${f.detail}`);
     if (r.generatedCount > 0) scheduleEmbyRefresh();
-    maybeAutoOrganize({ task, paths: [f.subPath ? `${f.subPath}/${item.name}` : item.name], trigger: "offline" });
+    events.emit("files.landed", { task, paths: [f.subPath ? `${f.subPath}/${item.name}` : item.name], trigger: "offline" });
     if (f.copyDstDir) {
       const dir = `${task.originPath}${f.subPath ? `/${f.subPath}` : ""}`;
       const queued = deps.enqueueCopy({

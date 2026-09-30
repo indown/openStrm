@@ -1,6 +1,6 @@
 /**
- * 自动整理的入口：转存 / 追更 / 云下载 / 网盘监控把「新落到任务目录的路径」交到这里，
- * 按任务的 organize.mode（off / review / auto）决定要不要建一个 auto 模式的 run。
+ * 自动整理的入口：转存 / 追更 / 云下载 / 网盘监控 / 复制完成发 files.landed 事件（services/events.ts），
+ * 这里订阅它，按任务的 organize.mode（off / review / auto）决定要不要建一个 auto 模式的 run。
  *
  *   - 监控的新增事件一条一条来（一部剧转存进来是几十条），按任务攒 30 秒再建 run；其它入口立刻建。
  *   - 任务已有一次整理在进行中（409）就过一分钟再试，路径合并进去。
@@ -11,6 +11,7 @@ import { readAppSettings } from "../../db/repositories/settings.js";
 import { getTask } from "../../db/repositories/tasks.js";
 import { HttpError } from "../../lib/http-error.js";
 import { moduleLogger } from "../../lib/logger.js";
+import { events, type FilesLandedEvent } from "../events.js";
 import { isStagingDir } from "../strm/staging.js";
 import { createRun } from "./run.js";
 import { taskAutoMode } from "./settings.js";
@@ -51,17 +52,6 @@ export function setAutoOrganizeDeps(partial: Partial<Deps> | null): void {
   deps = partial ? { ...realDeps, ...partial } : { ...realDeps };
 }
 
-export interface AutoOrganizeInput {
-  task: TaskDefinition;
-  /** 相对任务 originPath 的新增路径（文件或目录） */
-  paths: string[];
-  trigger: OrganizeTrigger;
-  /** 攒一会再建 run（监控事件用） */
-  debounce?: boolean;
-  /** 这一次强制按这个策略来（转存弹框勾了「转存后整理」）；不给就按任务的设置 */
-  mode?: "review" | "auto";
-}
-
 /** 这次会按哪种方式自动整理：强制给了就按它，不给按任务的设置；没配 TMDB 一律 off（识别不了） */
 export function effectiveAutoMode(task: TaskDefinition, forced?: "review" | "auto", settings = readAppSettings()): "off" | "review" | "auto" {
   const mode = forced ?? taskAutoMode(task, settings);
@@ -69,7 +59,16 @@ export function effectiveAutoMode(task: TaskDefinition, forced?: "review" | "aut
   return mode;
 }
 
-export function maybeAutoOrganize(input: AutoOrganizeInput): void {
+let subscribed = false;
+
+/** 订阅 files.landed。index.ts 启动时调；要看自动整理的测试在 before 里调。幂等 */
+export function startAutoOrganize(): void {
+  if (subscribed) return;
+  subscribed = true;
+  events.on("files.landed", onFilesLanded);
+}
+
+function onFilesLanded(input: FilesLandedEvent): void {
   // 重复文件目录、归档目录是暂存区，扫它只会空跑一轮
   const paths = input.paths.map((p) => p.replace(/^\/+|\/+$/g, "")).filter((p) => p && !isStagingDir(p));
   if (paths.length === 0) return;

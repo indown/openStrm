@@ -13,7 +13,7 @@ import { getShareFollow } from "../../db/repositories/share-follows.js";
 import { readAppSettings, replaceAppSettings } from "../../db/repositories/settings.js";
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { __test_resetCopy, listCopies } from "../copy/service.js";
-import { __test_flushAutoOrganize, __test_resetAutoOrganize, setAutoOrganizeDeps } from "../organize/auto.js";
+import { __test_flushAutoOrganize, __test_resetAutoOrganize, setAutoOrganizeDeps, startAutoOrganize } from "../organize/auto.js";
 import { HttpError } from "../../lib/http-error.js";
 import { DATA_DIR } from "../../paths.js";
 import { setDriveProviderFactory } from "../drive/registry.js";
@@ -75,6 +75,7 @@ const inDrive = (p: string) => drive.tree.get(p) !== undefined;
 const strmExists = (rel: string) => fs.existsSync(path.join(LOCAL, ...rel.split("/")));
 
 before(() => {
+  startAutoOrganize();
   baseline = { tasks: listTasks(), accounts: listAccounts(), settings: readAppSettings() };
   replaceAccounts([account]);
   replaceTasks([task]);

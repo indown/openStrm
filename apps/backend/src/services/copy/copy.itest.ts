@@ -14,6 +14,7 @@ import { readKv, writeKv } from "../../db/repositories/life.js";
 import { KEY } from "../../db/keys.js";
 import { OpenlistError, type OpenlistTaskInfo } from "../openlist/client.js";
 import type { NotifyEvent } from "../notify.js";
+import { events } from "../events.js";
 import { hasCopyWork, releaseCopyHolds } from "./queue.js";
 import {
   __test_resetCopy,
@@ -74,6 +75,10 @@ let copyGate: Promise<void> | null = null;
 const notified: NotifyEvent[] = [];
 let embyRefreshes = 0;
 const organized: Array<{ taskId: string; paths: string[]; trigger: string }> = [];
+// 复制完交给自动整理走的是 files.landed 事件：这里订上，断言发了什么
+events.on("files.landed", (input) => {
+  organized.push({ taskId: input.task.id, paths: input.paths, trigger: input.trigger });
+});
 const removeCalls: Array<{ account: string; path: string; nodeId?: string }> = [];
 let removeResult: "removed" | "missing" | "changed" | "unsupported" = "removed";
 /** 删源依次抛这些错（一次取一个，取完了按 removeResult 回）：测「碰上网盘超时晚点再删」 */
@@ -135,9 +140,6 @@ before(() => {
     now: () => now,
     embyRefresh: () => {
       embyRefreshes++;
-    },
-    organize: (input) => {
-      organized.push({ taskId: input.task.id, paths: input.paths, trigger: input.trigger });
     },
     removeSource: async (account, path, nodeId) => {
       removeCalls.push({ account, path, nodeId });

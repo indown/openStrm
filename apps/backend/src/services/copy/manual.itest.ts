@@ -11,7 +11,8 @@ import { patchAppSettings, readAppSettings } from "../../db/repositories/setting
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { HttpError } from "../../lib/http-error.js";
 import { setDriveProviderFactory } from "../drive/registry.js";
-import { __test_resetAutoOrganize, maybeAutoOrganize } from "../organize/auto.js";
+import { events } from "../events.js";
+import { __test_resetAutoOrganize, startAutoOrganize } from "../organize/auto.js";
 import { OpenlistError } from "../openlist/client.js";
 import { FakeDrive, withoutWalk } from "../../test/fake-drive.js";
 import { enqueueManualCopy, MANUAL_PATHS_MAX } from "./manual.js";
@@ -32,6 +33,7 @@ const listed: string[] = [];
 let listOutage: Error | null = null;
 
 before(() => {
+  startAutoOrganize();
   baseline = { accounts: listAccounts(), tasks: listTasks(), openlistCopy: readAppSettings().openlistCopy, tmdb: readAppSettings().tmdb };
   replaceAccounts([account, ol]);
   setCopyServiceDeps({
@@ -178,7 +180,7 @@ test("拒绝：任务目录本身、带 ..、暂存区、太多条、目标目�
   patchAppSettings({ openlistCopy: COPY_SETTINGS });
 
   // 攒着一次会直接执行的自动整理：整理会改名挪目录，这时不登记
-  maybeAutoOrganize({ task: { ...task, organize: { mode: "auto" } }, paths: ["某剧"], trigger: "share", debounce: true });
+  events.emit("files.landed", { task: { ...task, organize: { mode: "auto" } }, paths: ["某剧"], trigger: "share", debounce: true });
   await rejects(go(["电影.mkv"]), 409, "TASK_ORGANIZING", /正在整理/);
   __test_resetAutoOrganize();
   assert.equal(sub.queued, 1);

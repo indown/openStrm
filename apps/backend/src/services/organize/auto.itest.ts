@@ -10,12 +10,14 @@ import { patchAppSettings, readAppSettings } from "../../db/repositories/setting
 import { listTasks, replaceTasks } from "../../db/repositories/tasks.js";
 import { HttpError } from "../../lib/http-error.js";
 import { clearCopies, listCopies, saveCopies } from "../copy/queue.js";
-import { __test_flushAutoOrganize, __test_resetAutoOrganize, autoOrganizeBusy, maybeAutoOrganize, setAutoOrganizeDeps } from "./auto.js";
+import { events } from "../events.js";
+import { __test_flushAutoOrganize, __test_resetAutoOrganize, autoOrganizeBusy, setAutoOrganizeDeps, startAutoOrganize } from "./auto.js";
 
 const task: TaskDefinition = { id: "t1", account: "acc", accountType: "115", originPath: "tv", targetPath: "tv", strmPrefix: "/mnt", organize: { mode: "auto" } };
 let baseline: { tasks: TaskDefinition[]; tmdb: AppSettings["tmdb"] };
 
 before(() => {
+  startAutoOrganize();
   baseline = { tasks: listTasks(), tmdb: readAppSettings().tmdb };
   replaceTasks([task]);
   patchAppSettings({ tmdb: { apiKey: "k" } });
@@ -58,7 +60,7 @@ test("整理建 run 失败（不是「正在整理」）：为等它压着的复
       throw new HttpError(400, "识别词有语法错误：第 1 行");
     },
   });
-  maybeAutoOrganize({ task, paths: ["某剧/E01.mkv"], trigger: "share" });
+  events.emit("files.landed",{ task, paths: ["某剧/E01.mkv"], trigger: "share" });
   await __test_flushAutoOrganize();
   assert.equal(listCopies()[0].holdUntil, undefined);
 });
@@ -93,7 +95,7 @@ test("任务正有整理在跑（409）：接着压着，等重试的那一次�
     },
     retryMs: 60_000,
   });
-  maybeAutoOrganize({ task, paths: ["某剧/E01.mkv"], trigger: "share" });
+  events.emit("files.landed",{ task, paths: ["某剧/E01.mkv"], trigger: "share" });
   await __test_flushAutoOrganize();
   assert.equal(listCopies()[0].holdUntil, now + 600_000);
   __test_resetAutoOrganize();
@@ -108,11 +110,11 @@ test("有攒着的自动整理（把握大的直接执行）时 autoOrganizeBusy
   });
   try {
     assert.equal(autoOrganizeBusy("t1"), false);
-    maybeAutoOrganize({ task, paths: ["某剧/E01.mkv"], trigger: "monitor", debounce: true });
+    events.emit("files.landed",{ task, paths: ["某剧/E01.mkv"], trigger: "monitor", debounce: true });
     assert.equal(autoOrganizeBusy("t1"), true);
     __test_resetAutoOrganize();
     assert.equal(autoOrganizeBusy("t1"), false);
-    maybeAutoOrganize({ task: { ...task, organize: { mode: "review" } }, paths: ["某剧/E01.mkv"], trigger: "monitor", debounce: true });
+    events.emit("files.landed",{ task: { ...task, organize: { mode: "review" } }, paths: ["某剧/E01.mkv"], trigger: "monitor", debounce: true });
     assert.equal(autoOrganizeBusy("t1"), false, "只出待确认清单的不会自己动网盘");
   } finally {
     __test_resetAutoOrganize();

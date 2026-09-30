@@ -18,7 +18,8 @@ import { splitPath, type DriveProvider, type ShareEntry, type ShareRef } from ".
 import { scopeFromSelection } from "../../follow/diff.js";
 import { createFollowAfterSave } from "../../follow/service.js";
 import { addOfflineTasks, listOfflineTasks, type AddOfflineResponse } from "../../offline/service.js";
-import { autoOrganizeBusy, autoOrganizeFor, effectiveAutoMode, maybeAutoOrganize } from "../../organize/auto.js";
+import { events } from "../../events.js";
+import { autoOrganizeBusy, autoOrganizeFor, effectiveAutoMode } from "../../organize/auto.js";
 import {
   SaveDirError,
   enqueueReceivedCopy,
@@ -617,7 +618,7 @@ export const shareSaveTool = defineTool({
         else {
           organizeSince = Date.now();
           const paths = wholeDir && createdDir ? [createdDir] : saved.map((i) => (subPath ? `${subPath}/${i.name}` : i.name));
-          maybeAutoOrganize({ task, paths, trigger: "share", mode: forcedOrganizeMode(task, true) });
+          events.emit("files.landed", { task, paths, trigger: "share", mode: forcedOrganizeMode(task, true) });
           organizeMode = mode;
         }
       }

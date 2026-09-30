@@ -34,7 +34,8 @@ import {
 import { bumpOwnHit, findOwnOperation, getRun as getOrganizeRun } from "../../db/repositories/organize.js";
 import { enqueueCopy } from "../copy/service.js";
 import { copyOptionsFor } from "../copy/paths.js";
-import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
+import { events } from "../events.js";
+import { effectiveAutoMode } from "../organize/auto.js";
 import { providerFor } from "../drive/registry.js";
 import type { AccountIssue, ChangeCursor, ChangeEvent, ChangeKind, ChangeLog, ChangeSource, DriveProvider, ProbeResult } from "../drive/types.js";
 import { flushEmbyRefresh, getEmbyRefreshState, scheduleEmbyRefresh } from "../media-server.js";
@@ -416,7 +417,7 @@ class AccountMonitor {
             if (res.arrived && res.changed) {
               const m = matchTask(ctx, ev.path);
               if (m?.relPath) {
-                maybeAutoOrganize({ task: m.task, paths: [m.relPath], trigger: "monitor", debounce: true });
+                events.emit("files.landed", { task: m.task, paths: [m.relPath], trigger: "monitor", debounce: true });
                 // 整理自己造成的事件走的是上面的 ownOk 分支，进不到这里，所以不会把整理搬过的文件再复制一遍
                 const copyOpts = copyOptionsFor(m.task, undefined);
                 if (copyOpts.blocked) this.log("info", `${name} 没复制到 OpenList：${copyOpts.blocked}`);

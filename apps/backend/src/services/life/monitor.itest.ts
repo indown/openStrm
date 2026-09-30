@@ -27,7 +27,7 @@ import { DATA_DIR } from "../../paths.js";
 import { setDriveProviderFactory } from "../drive/registry.js";
 import type { ChangeEvent } from "../drive/types.js";
 import { FakeDrive } from "../../test/fake-drive.js";
-import { __test_flushAutoOrganize, __test_resetAutoOrganize, setAutoOrganizeDeps } from "../organize/auto.js";
+import { __test_flushAutoOrganize, __test_resetAutoOrganize, setAutoOrganizeDeps, startAutoOrganize } from "../organize/auto.js";
 import { __test_resetCopy, listCopies } from "../copy/service.js";
 import { QuarkSnapshotSource } from "./sources/quark.js";
 import { getLifeMonitorStatus, probeLifeEvents, startLifeMonitor, stopLifeMonitor } from "./monitor.js";
@@ -64,6 +64,7 @@ const ev = (o: Partial<ChangeEvent> & Pick<ChangeEvent, "kind" | "path">): Chang
 });
 
 before(() => {
+  startAutoOrganize();
   replaceAccounts([acctA, acctQ]);
   replaceTasks([taskA, taskQ]);
   replaceAppSettings({ ...baseline.settings, strmExtensions: [".mkv"], downloadExtensions: [".nfo"] });

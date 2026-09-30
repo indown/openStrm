@@ -74,7 +74,6 @@ before(() => {
     },
     now: () => now,
     embyRefresh: () => {},
-    organize: () => {},
     // archiveSource / removeLocalMirror / listDriveChildren 故意不给：就是要跑真的
   });
 });

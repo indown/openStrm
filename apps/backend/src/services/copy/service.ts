@@ -38,7 +38,7 @@ import {
 } from "../openlist/client.js";
 import { notify, type NotifyEvent } from "../notify.js";
 import { scheduleEmbyRefresh } from "../media-server.js";
-import { maybeAutoOrganize, type AutoOrganizeInput } from "../organize/auto.js";
+import { events } from "../events.js";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { removeEmptyParents } from "../../lib/fs.js";
@@ -128,9 +128,8 @@ interface Deps {
   settings: () => AppSettings;
   listTasks: () => TaskDefinition[];
   now: () => number;
-  /** 复制完的后续动作，抽出来是为了测试能断言它们被调过 */
+  /** 复制完的后续动作，抽出来是为了测试能断言它们被调过（自动整理走 files.landed 事件，测试订阅它） */
   embyRefresh: () => void;
-  organize: (input: AutoOrganizeInput) => void;
   /** 删源：按网盘路径找到节点再删，找不到 / id 对不上就不删 */
   removeSource: (account: string, path: string, nodeId?: string) => Promise<"removed" | "missing" | "changed" | "unsupported">;
   /**
@@ -158,7 +157,6 @@ const realDeps: Deps = {
   listTasks,
   now: () => Date.now(),
   embyRefresh: scheduleEmbyRefresh,
-  organize: maybeAutoOrganize,
   removeSource: removeSourceReal,
   archiveSource: archiveSourceReal,
   listDriveChildren: listDriveChildrenReal,
@@ -1022,7 +1020,7 @@ async function afterCopiedInner(c: CopyRecord, cfg: CopyConfig): Promise<void> {
     .map((t) => ({ task: t, rel: relativeTo(t.originPath, full) }))
     .filter((x): x is { task: TaskDefinition; rel: string } => x.rel !== null)
     .sort((a, b) => b.task.originPath.length - a.task.originPath.length)[0];
-  if (hit && hit.rel) deps.organize({ task: hit.task, paths: [hit.rel], trigger: "copy", debounce: true });
+  if (hit && hit.rel) events.emit("files.landed", { task: hit.task, paths: [hit.rel], trigger: "copy", debounce: true });
 
   if (c.afterCopy === "keep") {
     if (c.sourceKept) c.detail += `；${c.sourceKept}，源文件没动`;

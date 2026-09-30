@@ -13,7 +13,8 @@ import { normalizePath, splitPath, type DriveProvider, type ShareRef } from "../
 import { COPY_TRIGGER_LABEL, enqueueCopyFor, type CopyOutcome } from "../copy/service.js";
 import { copyBlockerFor, copyOptionsFor } from "../copy/paths.js";
 import { releaseCopyHoldsById, type CopyTrigger } from "../copy/queue.js";
-import { effectiveAutoMode, maybeAutoOrganize } from "../organize/auto.js";
+import { events } from "../events.js";
+import { effectiveAutoMode } from "../organize/auto.js";
 import { generateStrmForSelected, type SelectedItem } from "../strm/share-strm.js";
 import { recordLibrarySave } from "../library/saves.js";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -229,7 +230,7 @@ export async function saveSelectionToTask(opts: SaveSelectionOpts): Promise<Save
       const { generatedCount, skippedCount, invalidNames } = await generateStrmForSelected({ task, provider, selectedItems, settings, subPath });
       // 刚转存进来的这些条目交给整理，识别失败或没开都不影响这次转存
       if (opts.organize !== false) {
-        maybeAutoOrganize({ task, paths: organizePathsOf(subPath, items, opts.createdDir), trigger: opts.organizeTrigger ?? "share", mode: organizeMode });
+        events.emit("files.landed", { task, paths: organizePathsOf(subPath, items, opts.createdDir), trigger: opts.organizeTrigger ?? "share", mode: organizeMode });
       }
       return { mode: "sync", generatedCount, skippedCount, invalidNames, ...withCopy };
     } catch (err) {

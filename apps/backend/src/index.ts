@@ -23,6 +23,7 @@ await initDb();
 import { authPlugin } from "./plugins/auth.js";
 import { cronPlugin } from "./plugins/cron.js";
 import { registerNotifySink } from "./services/notify.js";
+import { startAutoOrganize } from "./services/organize/auto.js";
 import { telegramNotify } from "./services/telegram/notify.js";
 import { startPolling, stopPolling } from "./services/telegram/polling.js";
 import { cancelAllRunningTasks } from "./services/task/registry.js";
@@ -117,6 +118,8 @@ registerErrorHandling(app);
 // 通知渠道：领域模块只往 services/notify.ts 的端口发事件，Telegram 是登记在端口上的渠道。
 // 要在任何可能发通知的东西起来之前登记，不然那几条就悄悄丢了
 registerNotifySink(telegramNotify);
+// 自动整理听 files.landed 事件（转存 / 追更 / 云下载 / 监控 / 复制完成都发）：同样要在它们起来之前订上
+startAutoOrganize();
 
 // 上个进程退出时还在跑的任务已经没了，历史里不能永远挂着 running
 const interrupted = reconcileInterruptedExecutions();

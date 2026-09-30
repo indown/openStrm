@@ -33,7 +33,7 @@ import { setDriveProviderFactory } from "../../services/drive/registry.js";
 import { __test_resetAgentQuota } from "../../services/agent/rate-limit.js";
 import { __test_resetJobs } from "../../services/agent/jobs.js";
 import { __test_resetTransferCaches } from "../../services/agent/tools/transfer.js";
-import { __test_flushAutoOrganize, __test_resetAutoOrganize } from "../../services/organize/auto.js";
+import { __test_flushAutoOrganize, __test_resetAutoOrganize, startAutoOrganize } from "../../services/organize/auto.js";
 import { __test_resetFollows, listFollows, setFollowServiceDeps } from "../../services/follow/service.js";
 import { __test_dropPlanState, applyRun, cancelAllRuns, getRunDetail, setOrganizeDeps, waitForRun } from "../../services/organize/run.js";
 import type { TmdbApi } from "../../services/organize/identify.js";
@@ -94,6 +94,7 @@ function seed(): void {
 }
 
 before(async () => {
+  startAutoOrganize();
   baseline = { tasks: listTasks(), accounts: listAccounts(), settings: readAppSettings() };
   replaceAccounts([quark]);
   replaceTasks([tv]);

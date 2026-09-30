@@ -100,7 +100,6 @@ before(() => {
     notify: async () => {},
     now: () => now,
     embyRefresh: () => {},
-    organize: () => {},
     // removeSource / listDriveChildren 故意不给：就是要跑真的那两个
   });
 });

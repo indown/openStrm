@@ -42,7 +42,7 @@ import { saveCopies } from "../../services/copy/queue.js";
 import { __test_resetFollows, setFollowServiceDeps } from "../../services/follow/service.js";
 import { setOfflineTransport, type OfflineTransport } from "../../services/cloud-115/offline.js";
 import { __test_resetOffline, listFollowups, setOfflineServiceDeps, type OfflineFollowup } from "../../services/offline/service.js";
-import { __test_resetAutoOrganize } from "../../services/organize/auto.js";
+import { __test_resetAutoOrganize, startAutoOrganize } from "../../services/organize/auto.js";
 import { cancelAllRuns, setOrganizeDeps } from "../../services/organize/run.js";
 import type { TmdbApi } from "../../services/organize/identify.js";
 import { cancelAllRunningTasks } from "../../services/task/registry.js";
@@ -118,6 +118,7 @@ let followOnlyToken: string;
 let baseline: { tasks: TaskDefinition[]; accounts: AccountInfo[]; settings: AppSettings };
 
 before(async () => {
+  startAutoOrganize();
   baseline = { tasks: listTasks(), accounts: listAccounts(), settings: readAppSettings() };
   replaceAccounts([a115, ol]);
   replaceTasks([tv, movies, anime]);
