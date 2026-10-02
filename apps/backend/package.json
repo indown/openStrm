@@ -1,6 +1,6 @@
 {
   "name": "@openstrm/backend",
-  "version": "2.13.1",
+  "version": "2.13.2-rc.1",
   "private": true,
   "files": [
     "dist"
