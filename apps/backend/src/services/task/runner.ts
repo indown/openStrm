@@ -31,6 +31,7 @@ import {
   updateTaskExecution,
 } from "../task-history.js";
 import { classifyFileFailure, summarizeFailures, type FileFailure } from "../download/failure.js";
+import { throttleSettings } from "../throttle.js";
 import { refreshEmbyNow } from "../media-server.js";
 import { extOf, extSet } from "../strm/naming.js";
 import { notify, type TaskTrigger, issueFromDrive } from "../notify.js";
@@ -385,7 +386,10 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
     ),
   );
 
-  // 真正要下载的文件走账号级限流；取直链失败和下载失败都算这一个文件的失败
+  // 真正要下载的文件走账号级限流；取直链失败和下载失败都算这一个文件的失败。
+  // 同时在管线里的文件数跟着设置走：下载并发那么多个在下，另有接口并发那么多个在取直链——
+  // 再多只是让取好的直链干等下载槽位（以前写死 10，下载并发设得比它大也没用）
+  const { requestConcurrency, downloadConcurrency } = throttleSettings();
   const download$ = from(downloadFiles).pipe(
     mergeMap(
       (filePath) =>
@@ -408,7 +412,7 @@ async function launch(task: TaskDefinition, trigger?: TaskTrigger): Promise<Star
           tap({ next: (p) => report(p, "download"), complete: () => finishOne(filePath) }),
           catchError((err: unknown) => failOne(filePath, "download", err)),
         ),
-      10,
+      downloadConcurrency + requestConcurrency,
     ),
   );
 

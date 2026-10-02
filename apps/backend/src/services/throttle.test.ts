@@ -11,12 +11,21 @@ import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 import { firstValueFrom, Observable } from "rxjs";
 import { patchAppSettings } from "../db/repositories/settings.js";
-import { enqueueForAccount, normalizeThrottle, resetThrottle, scheduleForAccount } from "./throttle.js";
+import {
+  applyThrottleSettings,
+  enqueueForAccount,
+  normalizeThrottle,
+  paceIntervalMs,
+  resetThrottle,
+  scheduleForAccount,
+} from "./throttle.js";
 
 const ACCOUNT = "throttle-test";
 
 const timeout = <T>(p: Promise<T>, ms: number, what: string) =>
   Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${what}：${ms}ms 内没有完成`)), ms))]);
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** 换一组限流设置，并丢掉按旧值建好的限流器 */
 function useThrottle(perSecond: number, requestConcurrency: number, downloadConcurrency: number): void {
@@ -141,8 +150,8 @@ test("通道各有各的并发：接口并发和文件下载并发分开算，�
   await blocked;
 });
 
-test("账号名里带冒号的两个账号各用各的每秒配额", async () => {
-  // 每秒 1 个：共用一个配额的话，第二个要等到下一秒
+test("账号名里带冒号的两个账号各走各的节奏", async () => {
+  // 每秒 1 个：共用一个节奏的话，第二个要等一秒
   useThrottle(1, 1, 1);
   const t0 = Date.now();
   await timeout(
@@ -153,13 +162,86 @@ test("账号名里带冒号的两个账号各用各的每秒配额", async () =>
   assert.ok(Date.now() - t0 < 500, `不该互相等，实际用了 ${Date.now() - t0}ms`);
 });
 
-test("设置里的值：没填补默认，越界夹回上下限，小数取整", () => {
+test("匀速：请求一个一个按间隔发，闲了一阵之后来一批也不会一起出去", async () => {
+  useThrottle(10, 5, 1); // 100ms 一个；并发放开，排队的只剩节奏
+  const stamps: number[] = [];
+  const fire = () => scheduleForAccount(ACCOUNT, "normal", async () => { stamps.push(Date.now()); });
+  await fire();
+  await sleep(250); // 闲两个多间隔：没用掉的不能攒着一起发
+  stamps.length = 0;
+  await timeout(Promise.all([fire(), fire(), fire(), fire()]), 3000, "四个请求");
+  stamps.sort((a, b) => a - b);
+  const gaps = stamps.slice(1).map((t, i) => t - stamps[i]);
+  // 定时器会晚不会早，前一个晚了后一个的间隔就短一点：留一半的余量
+  assert.ok(gaps.every((g) => g >= 50), `相邻两个应隔 100ms 左右，实际 ${gaps.join(", ")}`);
+  assert.ok(stamps[3] - stamps[0] >= 240, `四个应摊在 300ms 上，实际 ${stamps[3] - stamps[0]}ms`);
+});
+
+test("每秒几个 → 间隔：可以慢到几秒一个", () => {
+  assert.equal(paceIntervalMs(2), 500);
+  assert.equal(paceIntervalMs(3), 333);
+  assert.equal(paceIntervalMs(0.5), 2000);
+  assert.equal(paceIntervalMs(0.1), 10_000);
+  assert.equal(paceIntervalMs(100), 10);
+});
+
+test("改了每秒请求数原地生效：队列里的活接着按新间隔发，没有卡死", async () => {
+  useThrottle(5, 1, 1); // 200ms 一个
+  let done = 0;
+  const all = Promise.all(Array.from({ length: 10 }, () => scheduleForAccount(ACCOUNT, "normal", async () => { done++; })));
+  await sleep(50);
+  patchAppSettings({ download: { linkMaxPerSecond: 100, linkMaxConcurrent: 1, downloadMaxConcurrent: 1 } });
+  await applyThrottleSettings();
+  const t0 = Date.now();
+  // 按旧间隔剩下的还要 1.8 秒；改完只有已经排好时刻的那一两个还按旧间隔走
+  await timeout(all, 1200, "剩下的请求");
+  assert.equal(done, 10);
+  assert.ok(Date.now() - t0 < 900, `应该很快发完，实际 ${Date.now() - t0}ms`);
+});
+
+test("改了并发原地生效：排着的活马上多开几个，在跑的不受影响", async () => {
+  let running = 0;
+  let peak = 0;
+  const hold = async () => {
+    running++;
+    peak = Math.max(peak, running);
+    await sleep(60);
+    running--;
+  };
+  const all = Promise.all(Array.from({ length: 6 }, () => scheduleForAccount(ACCOUNT, "download", hold)));
+  await sleep(20);
+  assert.equal(peak, 1);
+  patchAppSettings({ download: { linkMaxPerSecond: 100, linkMaxConcurrent: 1, downloadMaxConcurrent: 3 } });
+  await applyThrottleSettings();
+  await timeout(all, 3000, "六个下载");
+  assert.equal(peak, 3);
+});
+
+test("文件下载不占接口的节奏：接口两秒一个时，下载照样按并发数同时开始", async () => {
+  useThrottle(0.5, 1, 4);
+  await scheduleForAccount(ACCOUNT, "normal", async () => {}); // 接口上刚发过一个，下一个要等两秒
+  let running = 0;
+  let peak = 0;
+  const hold = async () => {
+    running++;
+    peak = Math.max(peak, running);
+    await sleep(30);
+    running--;
+  };
+  const t0 = Date.now();
+  await timeout(Promise.all(Array.from({ length: 4 }, () => scheduleForAccount(ACCOUNT, "download", hold))), 1000, "四个下载");
+  assert.equal(peak, 4);
+  assert.ok(Date.now() - t0 < 500, `下载不该等接口的间隔，实际 ${Date.now() - t0}ms`);
+});
+
+test("设置里的值：没填补默认，越界夹回上下限，并发取整、每秒请求数留着小数", () => {
   assert.deepEqual(normalizeThrottle(undefined), { requestsPerSecond: 2, requestConcurrency: 2, downloadConcurrency: 5 });
   assert.deepEqual(normalizeThrottle({ linkMaxPerSecond: 7 }), { requestsPerSecond: 7, requestConcurrency: 2, downloadConcurrency: 5 });
+  assert.deepEqual(normalizeThrottle({ linkMaxPerSecond: 0.5 }), { requestsPerSecond: 0.5, requestConcurrency: 2, downloadConcurrency: 5 });
   // 并发 0.5 原样交给限流器会让这个账号的请求永远排队
   assert.deepEqual(
     normalizeThrottle({ linkMaxPerSecond: 0, linkMaxConcurrent: 0.5, downloadMaxConcurrent: 1.9 }),
-    { requestsPerSecond: 1, requestConcurrency: 1, downloadConcurrency: 1 },
+    { requestsPerSecond: 0.1, requestConcurrency: 1, downloadConcurrency: 1 },
   );
   assert.deepEqual(
     normalizeThrottle({ linkMaxPerSecond: 1e9, linkMaxConcurrent: 999, downloadMaxConcurrent: -3 }),

@@ -1,12 +1,13 @@
 /**
- * 网盘请求限流：每个账号一把每秒配额，账号的每条通道一把并发上限，通道都链在配额上。
+ * 网盘请求限流：每个账号一个节奏（接口请求一个一个匀速发），账号的每条通道一个并发上限。
  *
  *   normal    普通接口请求（列目录、取直链、转存、整理……）
  *   life      网盘监控的轮询
  *   offline   云下载的列表 / 添加：界面上刷列表不该和取直链抢同一个槽位
- *   download  文件下载
+ *   download  文件下载：只有并发上限，不占接口的节奏
  *
  * 调用方只说账号和通道，每秒几个、并发多少都在这里按设置定——以前四个调用点各读一遍设置、各带一个兜底值。
+ * 设置保存后 applyThrottleSettings 原地换成新值，不用重启、不用等在跑的任务结束。
  * 这个文件不 import 网盘那一侧的任何东西：三家的客户端都要用它，反过来 import 就成环。
  */
 import Bottleneck from "bottleneck";
@@ -29,12 +30,12 @@ function within(value: unknown, fallback: number, { min, max }: { min: number; m
 }
 
 /**
- * 设置里存的 → 实际用的：没填的补默认，越界的夹回上下限，取整。
+ * 设置里存的 → 实际用的：没填的补默认，越界的夹回上下限，并发取整（每秒请求数可以是小数，0.5 = 两秒一个）。
  * 库里的值不一定经过校验（老数据、直接调接口写的）：并发 0.5 原样交给限流器的话，这个账号的请求会全部永远排队。
  */
 export function normalizeThrottle(raw: AppSettings["download"]): ThrottleValues {
   return {
-    requestsPerSecond: Math.floor(within(raw?.linkMaxPerSecond, THROTTLE_DEFAULTS.requestsPerSecond, THROTTLE_LIMITS.requestsPerSecond)),
+    requestsPerSecond: within(raw?.linkMaxPerSecond, THROTTLE_DEFAULTS.requestsPerSecond, THROTTLE_LIMITS.requestsPerSecond),
     requestConcurrency: Math.floor(within(raw?.linkMaxConcurrent, THROTTLE_DEFAULTS.requestConcurrency, THROTTLE_LIMITS.requestConcurrency)),
     downloadConcurrency: Math.floor(within(raw?.downloadMaxConcurrent, THROTTLE_DEFAULTS.downloadConcurrency, THROTTLE_LIMITS.downloadConcurrency)),
   };
@@ -44,8 +45,16 @@ export function throttleSettings(): ThrottleValues {
   return normalizeThrottle(readAppSetting("download"));
 }
 
+/** 每秒几个 → 相邻两个请求最少隔多少毫秒 */
+export function paceIntervalMs(requestsPerSecond: number): number {
+  return Math.round(1000 / requestsPerSecond);
+}
+
+const concurrencyOf = (channel: ThrottleChannel, values: ThrottleValues): number =>
+  channel === "download" ? values.downloadConcurrency : values.requestConcurrency;
+
 interface AccountLimiters {
-  /** 每秒配额：这个账号所有通道共用 */
+  /** 接口请求的节奏：这个账号除 download 以外的通道共用 */
   pace: Bottleneck;
   channels: Map<ThrottleChannel, Bottleneck>;
 }
@@ -53,12 +62,16 @@ interface AccountLimiters {
 /** 按账号名分。以前的键是「账号名:通道」再按冒号切回账号名，名字里带冒号的两个账号会共用一个配额 */
 const accounts = new Map<string, AccountLimiters>();
 
+/**
+ * 节奏用「相邻两个请求的最小间隔」，不用「每秒补满一次的配额」。后者是一秒发一批：额度一补满，排着的请求同时出去，
+ * 上一秒末没用完的还能和下一秒的连成两批。而且带那种配额的限流器一调 updateSettings，补额度的定时器就被停掉，
+ * 发完手里那一批就永远不再发——设置也就没法原地生效。别换回去。
+ */
 function limitersOf(account: string): AccountLimiters {
   let entry = accounts.get(account);
   if (!entry) {
-    const reservoir = throttleSettings().requestsPerSecond;
     entry = {
-      pace: new Bottleneck({ reservoir, reservoirRefreshAmount: reservoir, reservoirRefreshInterval: 1000 }),
+      pace: new Bottleneck({ minTime: paceIntervalMs(throttleSettings().requestsPerSecond) }),
       channels: new Map(),
     };
     accounts.set(account, entry);
@@ -66,24 +79,39 @@ function limitersOf(account: string): AccountLimiters {
   return entry;
 }
 
-/** 并发数只在第一次建的时候生效，改了设置要 resetThrottle 才按新值重建 */
 function channelLimiter(account: string, channel: ThrottleChannel): Bottleneck {
   const entry = limitersOf(account);
   let limiter = entry.channels.get(channel);
   if (!limiter) {
-    const { requestConcurrency, downloadConcurrency } = throttleSettings();
-    limiter = new Bottleneck({ maxConcurrent: channel === "download" ? downloadConcurrency : requestConcurrency });
-    limiter.chain(entry.pace);
+    limiter = new Bottleneck({ maxConcurrent: concurrencyOf(channel, throttleSettings()) });
+    // 下载打的是 CDN，不是网盘接口：每个下载之前都要先取到直链，取链是按节奏来的，下载开始得再密也密不过它
+    if (channel !== "download") limiter.chain(entry.pace);
     entry.channels.set(channel, limiter);
   }
   return limiter;
 }
 
 /**
- * 丢掉现有限流器，之后的请求按当前设置新建。
+ * 设置改了之后调：已经建好的限流器原地换成新值，排着的、在跑的任务都不受影响。
+ * 已经排好发出时刻的那几个请求还按旧间隔走完，之后才是新间隔：每秒 2、接口并发 2 时大约一秒多。
+ */
+export async function applyThrottleSettings(): Promise<void> {
+  const values = throttleSettings();
+  const minTime = paceIntervalMs(values.requestsPerSecond);
+  // updateSettings 的类型声明写的是同步返回，实际回的是 Promise：等它们都落定，调用方回话时新值已经生效
+  const updates: unknown[] = [];
+  for (const { pace, channels } of accounts.values()) {
+    updates.push(pace.updateSettings({ minTime }));
+    for (const [channel, limiter] of channels) updates.push(limiter.updateSettings({ maxConcurrent: concurrencyOf(channel, values) }));
+  }
+  await Promise.all(updates);
+}
+
+/**
+ * 丢掉现有限流器，之后的请求按当前设置新建。测试之间用；设置变了走 applyThrottleSettings，不用丢。
  *
  * 旧的让它排空：stop() 默认会把排队中的任务全部拒绝掉，正在跑的全量任务就此卡成永远 processing。
- * 顺序也有讲究：通道限流器链在每秒配额上，任务（包括 stop 自己放进去的收尾哨兵）
+ * 顺序也有讲究：通道限流器链在节奏上，任务（包括 stop 自己放进去的收尾哨兵）
  * 是异步提交给父级的——父级先停，子级的收尾就会被父级拒掉。所以先等子级全部收完，再停父级。
  */
 export function resetThrottle(): void {
@@ -96,8 +124,8 @@ export function resetThrottle(): void {
 }
 
 /**
- * 这个账号的每秒配额上有没有别人在排队 / 在跑：后台慢活（影库抄目录）发请求前看一眼，忙就先让，
- * 同步、302 取直链这些人在等的请求不用排在它后面
+ * 这个账号的接口上有没有别人在排队 / 在跑：后台慢活（影库抄目录）发请求前看一眼，忙就先让，
+ * 同步、302 取直链这些人在等的请求不用排在它后面。文件下载不算——它不占接口的节奏
  */
 export function accountBusy(account: string): boolean {
   const pace = accounts.get(account)?.pace;

@@ -9,9 +9,14 @@ import { normalizeStrmPrefix } from "../services/strm/naming.js";
 import { validateTemplate } from "../services/organize/template.js";
 import { parseRules } from "../services/organize/rules.js";
 import { isOpenlistRootInput, OPENLIST_ROOT_TARGET } from "../services/copy/paths.js";
+import { THROTTLE_LIMITS } from "../db/defaults.js";
 
 /** 115 的 id 超过 JS 安全整数，前端有的地方传字符串、有的传数字 */
 export const cidSchema = z.union([z.string(), z.number()]);
+
+/** 限流的一个值：上下限和设置页表单的一致（db/defaults.ts 的 THROTTLE_LIMITS） */
+const throttleNumber = ({ min, max }: { min: number; max: number }, label: string) =>
+  z.number().min(min, `${label}填 ${min}–${max}`).max(max, `${label}填 ${min}–${max}`);
 
 /** 地址后面要拼 /api/…：带用户名密码（user:pass@）、? 参数、# 的都拼不对，也不该把凭据写在地址里 */
 function isPlainBaseUrl(v: string): boolean {
@@ -243,11 +248,12 @@ export const settingsPatchSchema = z.looseObject({
         .optional(),
     })
     .optional(),
+  // 网盘限流。以前只要求正数：并发填 0.5 能存进去，那个账号的请求就全部永远排队
   download: z
     .looseObject({
-      linkMaxPerSecond: z.number().positive().optional(),
-      linkMaxConcurrent: z.number().positive().optional(),
-      downloadMaxConcurrent: z.number().positive().optional(),
+      linkMaxPerSecond: throttleNumber(THROTTLE_LIMITS.requestsPerSecond, "每秒请求数").optional(),
+      linkMaxConcurrent: throttleNumber(THROTTLE_LIMITS.requestConcurrency, "接口并发数").int("接口并发数要填整数").optional(),
+      downloadMaxConcurrent: throttleNumber(THROTTLE_LIMITS.downloadConcurrency, "文件下载并发数").int("文件下载并发数要填整数").optional(),
     })
     .optional(),
   lifeMonitor: lifeMonitorSchema.optional(),

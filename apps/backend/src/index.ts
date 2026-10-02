@@ -104,7 +104,6 @@ import oauthTokenRoute from "./routes/oauth/token.js";
 
 // System routes
 import clearDirectoryRoute from "./routes/system/clear-directory.js";
-import clearRateLimitersRoute from "./routes/system/clear-rate-limiters.js";
 import healthRoute from "./routes/system/health.js";
 import updateRoute from "./routes/update/index.js";
 import backupRoute from "./routes/system/backup.js";
@@ -201,7 +200,6 @@ await app.register(oauthTokenRoute);
 
 // System routes
 await app.register(clearDirectoryRoute);
-await app.register(clearRateLimitersRoute);
 await app.register(healthRoute);
 await app.register(updateRoute);
 await app.register(backupRoute);

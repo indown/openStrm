@@ -13,6 +13,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import type { AppSettings, LifeEventMode, TaskDefinition } from "@openstrm/shared";
 import { downloadFile, writeStrm } from "../download/rate-limited.js";
+import { scheduleForAccount } from "../throttle.js";
 import { normalizePath, type ChangeEvent, type DriveEntry, type DriveProvider } from "../drive/types.js";
 import { resolveInDataDir } from "../../paths.js";
 import { decodeSegments, strmContent, toStrmPath } from "../strm/naming.js";
@@ -152,7 +153,13 @@ async function materializeFile(
   if (downloadExts(ctx).has(ext)) {
     const link = await ctx.provider.downloadLink(panPath, { token, signal: ctx.signal });
     if (!link.url) return "skip";
-    await downloadFile(link.url, savePath, { displayPath: relFile, headers: link.headers });
+    // 和同步任务的下载共用这个账号的「文件下载并发数」：监控自己是一个一个下，同时在跑的同步任务可不是
+    await scheduleForAccount(
+      ctx.provider.account.name,
+      "download",
+      () => downloadFile(link.url, savePath, { displayPath: relFile, headers: link.headers }),
+      ctx.signal,
+    );
     return "download";
   }
 

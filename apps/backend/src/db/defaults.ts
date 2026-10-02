@@ -5,7 +5,7 @@ export const DEFAULT_AUTH = {
   password: "admin",
 } as const;
 
-/** 网盘限流三个值的默认和上下限。只此一份：建库、services/throttle.ts 的兜底都用它 */
+/** 网盘限流三个值的默认和上下限。只此一份：建库、services/throttle.ts 的兜底、设置接口的校验都用它 */
 export const THROTTLE_DEFAULTS = {
   /** 每个账号每秒最多发几个接口请求 */
   requestsPerSecond: 2,
@@ -16,7 +16,8 @@ export const THROTTLE_DEFAULTS = {
 } as const;
 
 export const THROTTLE_LIMITS = {
-  requestsPerSecond: { min: 1, max: 100 },
+  /** 可以填小数：0.5 是两秒一个，0.1 是十秒一个 */
+  requestsPerSecond: { min: 0.1, max: 100 },
   requestConcurrency: { min: 1, max: 50 },
   downloadConcurrency: { min: 1, max: 50 },
 } as const;
