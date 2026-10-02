@@ -21,7 +21,7 @@ import { accountIssueOf } from "../drive/errors.js";
 import { KIND_LABEL, parseShareRef, shareProviderForRef } from "../drive/registry.js";
 import { listWholeShareDir } from "../drive/share-walk.js";
 import { ShareGoneError, type DriveProvider, type ShareEntry, type ShareRef } from "../drive/types.js";
-import { accountBusy } from "../download/rate-limited.js";
+import { accountBusy } from "../throttle.js";
 import { kickIdentify } from "./identify.js";
 import { rebuildUnits } from "./units.js";
 import { SEARCH_TEXT_VERSION, dirSearchText, isVideoName } from "./search-text.js";

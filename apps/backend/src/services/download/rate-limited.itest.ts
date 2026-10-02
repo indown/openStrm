@@ -12,7 +12,8 @@ import path from "node:path";
 import axios from "axios";
 import { lastValueFrom, tap } from "rxjs";
 import type { AccountInfo } from "@openstrm/shared";
-import { clearRateLimiters, downloadOrCreateStrm, getRealDownloadLink } from "./rate-limited.js";
+import { resetThrottle } from "../throttle.js";
+import { downloadOrCreateStrm, getRealDownloadLink } from "./rate-limited.js";
 
 let stalled: http.ServerResponse | null = null;
 let held: http.ServerResponse | null = null;
@@ -118,7 +119,7 @@ test("进度按整数百分比去重：几百个 chunk 只发一百来条，100 
 });
 
 test("取直链：OpenList 明确说没有这个文件就立刻失败，不重试", async () => {
-  clearRateLimiters();
+  resetThrottle();
   fsGetMode = "missing";
   fsGetCalls = 0;
   const t0 = Date.now();
@@ -131,7 +132,7 @@ test("取直链：OpenList 明确说没有这个文件就立刻失败，不重�
 });
 
 test("取直链：HTTP 5xx 这类临时失败照常重试", async () => {
-  clearRateLimiters();
+  resetThrottle();
   fsGetMode = "flaky";
   fsGetCalls = 0;
   const url = await getRealDownloadLink("/x/ok.nfo", "ol-itest", olAccounts, { maxRetries: 3, retryDelay: 10 });
@@ -140,7 +141,7 @@ test("取直链：HTTP 5xx 这类临时失败照常重试", async () => {
 });
 
 test("取直链：signal 中止会掐断进行中的请求并立刻拒绝", async () => {
-  clearRateLimiters();
+  resetThrottle();
   fsGetMode = "hold";
   fsGetCalls = 0;
   fsGetAborted = 0;

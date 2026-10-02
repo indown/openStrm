@@ -3,8 +3,7 @@
  * 列子树时 refresh:true 绕过 OpenList 的目录缓存（115 刚下完的文件必须这么刷一下才看得见）；浏览时不刷。
  */
 import type { AccountOpenlist } from "@openstrm/shared";
-import { readAppSettings } from "../../../db/repositories/settings.js";
-import { scheduleForAccount } from "../../download/rate-limited.js";
+import { scheduleForAccount } from "../../throttle.js";
 import {
   OpenlistError,
   openlistListDir,
@@ -113,13 +112,7 @@ export class OpenlistProvider implements DriveProvider {
 
   async downloadLink(path: string, opts?: { token?: string; signal?: AbortSignal }): Promise<{ url: string }> {
     const p = normalizePath(path);
-    const maxConcurrent = readAppSettings().download?.linkMaxConcurrent || 2;
-    const url = await scheduleForAccount(
-      `${this.account.name}:normal`,
-      () => openlistRawUrl(this.account, p, opts?.signal),
-      maxConcurrent,
-      opts?.signal,
-    );
+    const url = await scheduleForAccount(this.account.name, "normal", () => openlistRawUrl(this.account, p, opts?.signal), opts?.signal);
     return { url };
   }
 

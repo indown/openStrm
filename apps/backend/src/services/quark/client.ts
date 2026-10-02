@@ -16,8 +16,7 @@ import axios, { type AxiosRequestConfig } from "axios";
 import { LRUCache } from "lru-cache";
 import type { AccountQuark } from "@openstrm/shared";
 import { updateAccountWith } from "../../db/repositories/accounts.js";
-import { readAppSettings } from "../../db/repositories/settings.js";
-import { scheduleForAccount } from "../download/rate-limited.js";
+import { scheduleForAccount } from "../throttle.js";
 import { PermanentError, isAbortError } from "../../lib/errors.js";
 import { DEFAULT_TIMEOUT_MS } from "../../lib/http.js";
 import { moduleLogger } from "../../lib/logger.js";
@@ -175,9 +174,9 @@ export async function quarkRequest<T>(
   path: string,
   { params, data, signal }: RequestOptions = {},
 ): Promise<Envelope<T>> {
-  const maxConcurrent = readAppSettings().download?.linkMaxConcurrent ?? 2;
   return scheduleForAccount(
-    `${account.name}:normal`,
+    account.name,
+    "normal",
     async () => {
       // 记住发这个请求时的 cookie：响应里轮换出来的 __puus 只属于它，中途换了 cookie 的话这份轮换作废
       const sent = account.cookie;
@@ -208,7 +207,6 @@ export async function quarkRequest<T>(
       }
       return body;
     },
-    maxConcurrent,
     signal,
   );
 }

@@ -13,7 +13,7 @@ import remoteRoute from "./remote.js";
 import { DEFAULT_AUTH } from "../../db/defaults.js";
 import { writeAuthPassword } from "../../db/repositories/auth.js";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
-import { clearRateLimiters } from "../../services/download/rate-limited.js";
+import { resetThrottle } from "../../services/throttle.js";
 import { clearQuarkCaches, setQuarkApiBase } from "../../services/quark/client.js";
 
 const tree: Record<string, Array<{ fid: string; file_name: string; file: boolean }>> = {
@@ -66,7 +66,7 @@ after(async () => {
   await app.close();
   setQuarkApiBase(null);
   clearQuarkCaches();
-  clearRateLimiters();
+  resetThrottle();
   replaceAccounts(baseline);
   await writeAuthPassword(DEFAULT_AUTH.password);
   server.closeAllConnections();

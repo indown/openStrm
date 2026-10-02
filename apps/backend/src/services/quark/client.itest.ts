@@ -9,7 +9,7 @@ import http from "node:http";
 import type { AccountQuark } from "@openstrm/shared";
 import { getAccount, listAccounts, replaceAccounts, updateAccount } from "../../db/repositories/accounts.js";
 import { PermanentError } from "../../lib/errors.js";
-import { clearRateLimiters } from "../download/rate-limited.js";
+import { resetThrottle } from "../throttle.js";
 import {
   clearQuarkCaches,
   QUARK_REFERER,
@@ -106,7 +106,7 @@ before(() => {
 after(async () => {
   setQuarkApiBase(null);
   clearQuarkCaches();
-  clearRateLimiters();
+  resetThrottle();
   replaceAccounts(baseline);
   server.closeAllConnections();
   await new Promise<void>((r) => server.close(() => r()));

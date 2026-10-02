@@ -14,7 +14,7 @@ import { readAppSettings, replaceAppSettings } from "../../db/repositories/setti
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
 import { deleteTask, insertTask, updateTask } from "../../db/repositories/tasks.js";
 import { deleteTaskExecution, getTaskExecution, getTaskHistory } from "../task-history.js";
-import { clearRateLimiters } from "../download/rate-limited.js";
+import { resetThrottle } from "../throttle.js";
 import { clearQuarkCaches, QUARK_UA, setQuarkApiBase } from "../quark/client.js";
 import { cancelRunningTask, isTaskRunning, waitForTaskStart } from "./registry.js";
 import { startTask } from "./runner.js";
@@ -334,7 +334,7 @@ test("取消：进行中的下载被中止且不留半截文件，排队的不�
     ...readAppSettings(),
     download: { linkMaxPerSecond: 10, linkMaxConcurrent: 2, downloadMaxConcurrent: 1 },
   });
-  clearRateLimiters();
+  resetThrottle();
   holdRaw = true;
   rawRequests = 0;
   try {
@@ -361,7 +361,7 @@ test("取消：进行中的下载被中止且不留半截文件，排队的不�
     for (const r of held) r.destroy();
     tree[`${ORIGIN}/S1`].length = 2;
     replaceAppSettings({ ...readAppSettings(), download: baseline.settings.download });
-    clearRateLimiters();
+    resetThrottle();
   }
 });
 

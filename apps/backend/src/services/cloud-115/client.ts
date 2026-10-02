@@ -4,7 +4,7 @@ import axios, { type AxiosRequestConfig } from "axios";
 import { encrypt, decrypt } from "./crypto.js";
 import { LRUCache } from "lru-cache";
 import { readAppSettings } from "../../db/repositories/settings.js";
-import { scheduleForAccount } from "../download/rate-limited.js";
+import { scheduleForAccount, type ThrottleChannel } from "../throttle.js";
 import { isAbortError, PermanentError } from "../../lib/errors.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { TreeBuilder } from "../task/tree.js";
@@ -58,8 +58,8 @@ export class Cloud115ApiError extends Error {
  * 分享接口一时回不了话：操作太频繁、系统繁忙，或者只回了个错误码、一句话都没说（share.ts 的 checkShareResponse 认）。
  * 不是分享没了，过一会儿再试多半就好。故意不是 ShareApiError：那个会被认成「分享没了」，追更就此停掉、资源搜索页把这条标成已失效。
  * 算 115 的业务错误，登录失效、风控照样能按文案认出来。
- * 放在这里不放 share.ts：两个文件绕一圈互相 import（这边经下载限流 → 网盘注册表 → 115 的 Provider 又 import 了 share.ts），
- * 在 share.ts 里继承这个类，先加载的是这个文件时会报没初始化
+ * 放在这里不放 share.ts 是当时绕不开：这个文件经下载限流 → 网盘注册表 → 115 的 Provider 又 import 到 share.ts，
+ * 在 share.ts 里继承这个类，先加载的是这个文件时会报没初始化。限流器搬成独立的 services/throttle.ts 之后这一环没了，类没挪
  */
 export class ShareBusyError extends Cloud115ApiError {
   constructor(message: string, errno?: number) {
@@ -475,9 +475,8 @@ export async function request115<T = unknown>(
     rawError?: boolean;
     /** 拿未经 JSON.parse 的原始响应文本，用于自行处理超出 JS 安全整数的 id */
     rawText?: boolean;
-    /** 覆盖限流通道；默认 `${account}:normal` */
-    limiterChannel?: string;
-    maxConcurrent?: number;
+    /** 走哪条限流通道；默认 normal */
+    limiterChannel?: ThrottleChannel;
     /** 中止：进行中的请求掐断，排在限流器里的不再发 */
     signal?: AbortSignal;
   }
@@ -494,11 +493,8 @@ export async function request115<T = unknown>(
     rawError = false,
     rawText = false,
     limiterChannel = "normal",
-    maxConcurrent,
     signal,
   } = options || {};
-  const settings = readAppSettings();
-  const downloadConfig = settings.download ?? {};
   // 从 accountInfo 中获取 cookie
   const cookie = accountInfo?.cookie || null;
   
@@ -524,12 +520,11 @@ export async function request115<T = unknown>(
       config.responseType = "text";
       config.transformResponse = [(d: unknown) => d];
     }
-    const accountKey = accountInfo?.name + ':' + limiterChannel;
     // 单次请求走 Promise 版限流：没有订阅 / 退订那一层，也就没有"退订后槽位漏掉"（rc.9）那类坑
     const respData = await scheduleForAccount(
-      accountKey,
+      accountInfo?.name ?? "",
+      limiterChannel,
       async () => (await axios(config)).data as T,
-      maxConcurrent ?? downloadConfig.linkMaxConcurrent ?? 2,
       signal,
     );
     if (shouldEnsureOk) ensureOk(respData as unknown as Record<string, unknown>, url);

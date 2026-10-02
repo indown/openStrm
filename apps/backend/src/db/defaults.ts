@@ -5,6 +5,22 @@ export const DEFAULT_AUTH = {
   password: "admin",
 } as const;
 
+/** 网盘限流三个值的默认和上下限。只此一份：建库、services/throttle.ts 的兜底都用它 */
+export const THROTTLE_DEFAULTS = {
+  /** 每个账号每秒最多发几个接口请求 */
+  requestsPerSecond: 2,
+  /** 每个账号每条通道同时在路上的接口请求数 */
+  requestConcurrency: 2,
+  /** 每个账号同时下载几个文件 */
+  downloadConcurrency: 5,
+} as const;
+
+export const THROTTLE_LIMITS = {
+  requestsPerSecond: { min: 1, max: 100 },
+  requestConcurrency: { min: 1, max: 50 },
+  downloadConcurrency: { min: 1, max: 50 },
+} as const;
+
 export function buildDefaultAppSettings(): AppSettings {
   return {
     "user-agent":
@@ -17,9 +33,9 @@ export function buildDefaultAppSettings(): AppSettings {
     ],
     downloadExtensions: [".srt", ".ass", ".sub", ".nfo", ".jpg", ".png"],
     download: {
-      linkMaxPerSecond: 2,
-      linkMaxConcurrent: 2,
-      downloadMaxConcurrent: 5,
+      linkMaxPerSecond: THROTTLE_DEFAULTS.requestsPerSecond,
+      linkMaxConcurrent: THROTTLE_DEFAULTS.requestConcurrency,
+      downloadMaxConcurrent: THROTTLE_DEFAULTS.downloadConcurrency,
     },
   };
 }

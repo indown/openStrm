@@ -8,7 +8,7 @@ import { after, before, test } from "node:test";
 import http from "node:http";
 import type { AccountQuark } from "@openstrm/shared";
 import { listAccounts, replaceAccounts } from "../../db/repositories/accounts.js";
-import { clearRateLimiters } from "../download/rate-limited.js";
+import { resetThrottle } from "../throttle.js";
 import { clearQuarkCaches, QuarkError, setQuarkApiBase } from "./client.js";
 import {
   clearQuarkShareCaches,
@@ -116,7 +116,7 @@ after(async () => {
   setQuarkApiBase(null);
   clearQuarkCaches();
   clearQuarkShareCaches();
-  clearRateLimiters();
+  resetThrottle();
   replaceAccounts(baseline);
   server.closeAllConnections();
   await new Promise<void>((r) => server.close(() => r()));

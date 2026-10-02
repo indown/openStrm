@@ -1,10 +1,9 @@
 import axios from "axios";
-import Bottleneck from "bottleneck";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { defer, lastValueFrom, Observable, retry, Subscription, throwError, timer } from "rxjs";
+import { defer, lastValueFrom, Observable, retry, throwError, timer } from "rxjs";
 import type { AccountInfo } from "@openstrm/shared";
 import { providerFor } from "../drive/registry.js";
 import type { DriveProvider } from "../drive/types.js";
@@ -13,6 +12,7 @@ import { readAppSettings } from "../../db/repositories/settings.js";
 import { strmContent, toStrmPath } from "../strm/naming.js";
 import { moduleLogger } from "../../lib/logger.js";
 import { DEFAULT_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, guardIdleStream } from "../../lib/http.js";
+import { enqueueForAccount } from "../throttle.js";
 import { classifyFileFailure, nameTooLongError, overlongSegment } from "./failure.js";
 
 const log = moduleLogger("download");
@@ -23,122 +23,6 @@ interface Progress {
   overallPercent?: string;
   done?: boolean;
   error?: string;
-}
-
-const limiters = new Map<string, Bottleneck>();
-const sharedLimiters = new Map<string, Bottleneck>();
-
-/**
- * 丢掉现有限流器，之后的请求按当前设置新建。
- *
- * 旧的让它排空：stop() 默认会把排队中的任务全部拒绝掉，正在跑的全量任务就此卡成永远 processing。
- * 顺序也有讲究：账号限流器链在共享限流器上，任务（包括 stop 自己放进去的收尾哨兵）
- * 是异步提交给父级的——父级先停，子级的收尾就会被父级拒掉。所以先等子级全部收完，再停父级。
- */
-export function clearRateLimiters(): void {
-  const children = [...limiters.values()];
-  const shared = [...sharedLimiters.values()];
-  limiters.clear();
-  sharedLimiters.clear();
-  void Promise.allSettled(children.map((l) => l.stop({ dropWaitingJobs: false }))).then(() =>
-    Promise.allSettled(shared.map((l) => l.stop({ dropWaitingJobs: false }))),
-  );
-}
-
-function getSharedLimiter(account: string): Bottleneck {
-  const accountType = account.split(":")[0];
-  if (!sharedLimiters.has(accountType)) {
-    const reservoir = readAppSettings().download?.linkMaxPerSecond || 2;
-    sharedLimiters.set(
-      accountType,
-      new Bottleneck({ reservoir, reservoirRefreshAmount: reservoir, reservoirRefreshInterval: 1000 })
-    );
-  }
-  return sharedLimiters.get(accountType)!;
-}
-
-/**
- * 这个账号的每秒配额上有没有别人在排队 / 在跑：后台慢活（影库抄目录）发请求前看一眼，忙就先让，
- * 同步、302 取直链这些人在等的请求不用排在它后面
- */
-export function accountBusy(account: string): boolean {
-  const shared = sharedLimiters.get(account.split(":")[0]);
-  if (!shared) return false;
-  const c = shared.counts();
-  return c.QUEUED + c.RUNNING + c.EXECUTING > 0;
-}
-
-/**
- * 账号 + 通道一把并发限流器，链在账号级的每秒配额上。
- * 并发数只在第一次建的时候生效，改了设置要 clearRateLimiters 才按新值重建。
- */
-function getLimiter(accountKey: string, maxConcurrent: number): Bottleneck {
-  let limiter = limiters.get(accountKey);
-  if (!limiter) {
-    limiter = new Bottleneck({ maxConcurrent });
-    limiter.chain(getSharedLimiter(accountKey.split(":")[0]));
-    limiters.set(accountKey, limiter);
-  }
-  return limiter;
-}
-
-/**
- * 单次请求的账号限流（取直链、115 接口）。Bottleneck 本来就是 Promise 接口：
- * 槽位随 Promise 落定归还，没有订阅 / 退订那一层。signal 已中止的任务轮到时直接拒绝，不再发请求。
- */
-export function scheduleForAccount<T>(
-  accountKey: string,
-  fn: () => Promise<T>,
-  maxConcurrent = 2,
-  signal?: AbortSignal,
-): Promise<T> {
-  return getLimiter(accountKey, maxConcurrent).schedule(async () => {
-    signal?.throwIfAborted();
-    return fn();
-  });
-}
-
-/**
- * 会发进度的流排进账号限流器（下载用；单次请求用 scheduleForAccount）。
- * 限流器在订阅时才取：clearRateLimiters 之后再订阅的拿到新建的，而不是已经 stop 的旧限流器。
- */
-export function enqueueForAccount<T>(
-  accountKey: string,
-  fn: () => Observable<T>,
-  maxConcurrent = 2
-): Observable<T> {
-  return new Observable<T>((observer) => {
-    const limiter = getLimiter(accountKey, maxConcurrent);
-    let cancelled = false;
-    let inner: Subscription | null = null;
-    /** 任务已开始时，调它就是把限流器的槽位还回去 */
-    let release: (() => void) | null = null;
-    limiter
-      .schedule(
-        () =>
-          new Promise<void>((resolve) => {
-            // 排到队头时订阅方早已退订（任务取消）：直接放过，别再发请求、写盘
-            if (cancelled) return resolve();
-            release = resolve;
-            inner = fn().subscribe({
-              next: (v) => observer.next(v),
-              // 错误只走 observer；这里 resolve 是为了让限流器释放槽位
-              error: (err) => { observer.error(err); resolve(); },
-              complete: () => { observer.complete(); resolve(); },
-            });
-          }),
-      )
-      // 限流器被 stop、fn 同步抛出之类的失败以前被丢掉，订阅方永远等不到结果
-      .catch((err) => observer.error(err));
-    return () => {
-      cancelled = true;
-      inner?.unsubscribe();
-      // 订阅方退订了也要还槽位——不只是任务取消：firstValueFrom 这类"拿到第一个值就退订"的消费者
-      // 退订之后，内层随后的 complete 送不到这里。只靠 complete 来 resolve 的话，一个账号的两个槽位
-      // 两次请求就全部漏光，第三次起所有调用永远排队（rc.9 的 request115 就是这样挂死的）
-      release?.();
-    };
-  });
 }
 
 export interface LinkOptions {
@@ -332,13 +216,8 @@ export function downloadOrCreateStrmLimited(
   maxRetries = 10,
   retryDelay = 2000
 ): Observable<Progress> {
-  const maxConcurrent = readAppSettings().download?.downloadMaxConcurrent || 5;
   return defer(() =>
-    enqueueForAccount(
-      `${account}:download`,
-      () => downloadOrCreateStrm(filePathOrUrl, savePath, opts),
-      maxConcurrent
-    )
+    enqueueForAccount(account, "download", () => downloadOrCreateStrm(filePathOrUrl, savePath, opts)),
   ).pipe(
     retry({
       count: maxRetries,
