@@ -9,7 +9,9 @@
  *   - 标题里同时有中文和英文时给出多个候选，识别时依次去 TMDB 搜；
  *   - 零宽空格这类看不见的字符先去掉（分享里的文件名常夹着它们躲关键词过滤，`S01E\u200B36` 看着正常却认不出）；
  *   - 标题后面粘着的补零数字（`我和僵尸有个约会01`）是集数；不补零的（`流浪地球2`）和整个标题就是数字的（`129 4K`）
- *     解析时不定，见 `trailingNumber` / `numericTitle`。
+ *     解析时不定，见 `trailingNumber` / `numericTitle`；
+ *   - 特别篇 / 花絮 / sample 的标记要看位置：集号后面、技术词前面的正文是集标题（`S05E04.Whos.Making.Dinner`），
+ *     片名里后面还跟着年份 / 季集标记的普通单词是标题词（`The.Menu.2022`），都不算标记。
  */
 import { stripInvisible } from "../../lib/text.js";
 
@@ -184,6 +186,8 @@ const RE_YEAR = /^(19|20)\d{2}$/;
 const RE_SPECIAL = /^(sp|special|specials|ova|oad|oav|特别篇|特別篇|番外|番外篇|sp\d{1,2}|ova\d{1,2}|oad\d{1,2})$/i;
 const RE_SPECIAL_NUM = /^(?:sp|ova|oad)(\d{1,2})$/i;
 const RE_EXTRA = /^(ncop|nced|pv|cm|menu|trailer|trailers|preview|featurette|featurettes|bts|making|makingof|behindthescenes|creditless)\d*$/i;
+/** 上面几类标记里本身是普通单词的：也可能就是片名里的词（《The Menu》《Making a Murderer》《Special Ops》），要看位置，见 `titleGoesOn` */
+const RE_WORD_MARKER = /^(special|specials|menu|trailer|trailers|preview|making|bts|sample)$/i;
 const RE_PART = /^(?:part|pt|cd|disc|disk|dvd)[.\-_ ]?(\d{1,2})$/i;
 const RE_PART_CN = /^(?:上|中|下)[部集]?$/;
 const RE_TECH_GROUP = /^(.+?)-([A-Za-z0-9@_]{2,})$/;
@@ -423,7 +427,10 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
   let cut = false;
   let yearBeforeCut: string | undefined;
   let yearAfterCut: string | undefined;
+  /** 集号 / 日期之后、技术词之前的正文是集标题（`S05E04.Whos.Making.Dinner.2160p`）：里面的词不是标记 */
+  let episodeTitle = false;
   const cutAt = (why: ParseCutoff) => {
+    if (why === "tech") episodeTitle = false;
     if (!cut) {
       cut = true;
       result.cutoff = why;
@@ -433,12 +440,14 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
     if (result.episode === undefined) {
       result.episode = ep;
       if (end !== undefined && end > ep) result.episodeEnd = end;
+      episodeTitle = true;
     }
   };
   const setAbsolute = (ep: number, end?: number) => {
     if (result.absolute === undefined && result.episode === undefined) {
       result.absolute = ep;
       if (end !== undefined && end > ep) result.absoluteEnd = end;
+      episodeTitle = true;
     }
   };
   const setSeason = (n: number) => {
@@ -485,8 +494,8 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
     return false;
   };
 
-  /** 一个词是不是标记（季集 / 年份 / 特别篇 …），是就登记并切断 */
-  const marker = (word: string, ctx: { bracket: boolean; afterDash: boolean; nextIsTech: boolean; atEnd?: boolean }): boolean => {
+  /** 一个词是不是标记（季集 / 年份 / 特别篇 …），是就登记并切断。`inTitle`：这个词在标题 / 集标题的正文里，不当特别篇 / 花絮 / sample 的标记 */
+  const marker = (word: string, ctx: { bracket: boolean; afterDash: boolean; nextIsTech: boolean; atEnd?: boolean; inTitle?: boolean }): boolean => {
     const w = stripEdges(word);
     if (!w) return false;
     let m: RegExpExecArray | null;
@@ -536,22 +545,24 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
       cutAt("episode");
       return true;
     }
-    if (RE_SPECIAL.test(w)) {
-      result.isSpecial = true;
-      const sm = RE_SPECIAL_NUM.exec(w);
-      if (sm) setEpisode(Number(sm[1]));
-      cutAt("special");
-      return true;
-    }
-    if (RE_EXTRA.test(w)) {
-      result.isExtra = true;
-      cutAt("extra");
-      return true;
-    }
-    if (lower(w) === "sample") {
-      result.isSample = true;
-      cutAt("extra");
-      return true;
+    if (!ctx.inTitle) {
+      if (RE_SPECIAL.test(w)) {
+        result.isSpecial = true;
+        const sm = RE_SPECIAL_NUM.exec(w);
+        if (sm) setEpisode(Number(sm[1]));
+        cutAt("special");
+        return true;
+      }
+      if (RE_EXTRA.test(w)) {
+        result.isExtra = true;
+        cutAt("extra");
+        return true;
+      }
+      if (lower(w) === "sample") {
+        result.isSample = true;
+        cutAt("extra");
+        return true;
+      }
     }
     if ((m = RE_PART.exec(w))) {
       result.part ??= Number(m[1]);
@@ -559,6 +570,7 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
       return true;
     }
     if (w === "DATEMARK") {
+      episodeTitle = true;
       cutAt("date");
       return true;
     }
@@ -632,6 +644,26 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
     return !!(RESOLUTION[s] || SOURCE[s] || VIDEO[s] || AUDIO[s] || HDR[s] || NOISE.has(s)) || (RE_CJK.test(s) && CJK_RELEASE.test(s)) || GLUED_TECH.test(s) || RE_SIZE.test(s);
   };
 
+  /** 这个词本身就是标题的终点：年份、季集标记、日期 */
+  const endsTitle = (w: string): boolean =>
+    RE_YEAR.test(w) || RE_SXXEXX.test(w) || RE_NXN.test(w) || RE_SXX.test(w) || RE_SEASON_ATTACHED.test(w) || RE_CN_SEASON.test(w) || RE_CN_EP.test(w) || (RE_EXX.test(w) && w.length >= 3) || w === "DATEMARK";
+
+  /**
+   * 标题还没完：后面还有年份 / 季集标记，中间没隔着技术词（`The.Menu.2022`、`Making.a.Murderer.S01E01`、`The Menu (2022)`）。
+   * 这时候 menu / making / special 这种普通单词是标题里的词；后面只剩技术词或什么都没有的（`Dune.2024.Trailer.1080p`、
+   * `Show.Trailer`）才是标记。字幕组风格里方括号的年份不算，`[Group] Show Special [2015]` 照旧是特别篇
+   */
+  const titleGoesOn = (words: string[], i: number, ci: number): boolean => {
+    for (let k = i + 1; k < words.length; k++) {
+      const w = stripEdges(words[k]);
+      if (!w) continue;
+      if (endsTitle(w) || (RE_SEASON_WORD.test(w) && /^\d{1,2}$/.test(words[k + 1] ?? ""))) return true;
+      if (isTechWord(w)) return false;
+    }
+    const next = chunks[ci + 1];
+    return !animeStyle && next?.kind === "bracket" && endsTitle(next.value.trim());
+  };
+
   let bracketIndex = 0;
   let groupFromBracket: string | undefined;
   // 非字幕组风格、开头一个方括号段后面紧跟正文：【高清剧集】【4K】这类站点标签，扔掉
@@ -653,8 +685,10 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
         if (marker(inner.replace(/\s+/g, ""), { bracket: true, afterDash: false, nextIsTech: false })) return;
         if (words.length === 1 && marker(words[0], { bracket: true, afterDash: false, nextIsTech: false })) return;
       }
-      // 多词的段：全是技术词就整段当噪音；否则若还没切断就是标题（字幕组的 [Sousou no Frieren]）
-      const allTech = words.every((w) => isTechWord(w) || marker(w, { bracket: true, afterDash: false, nextIsTech: true }));
+      // 多词的段：全是技术词就整段当噪音；否则若还没切断就是标题（字幕组的 [Sousou no Frieren]）。
+      // 集号后面的多词段是集标题（`S01E01 (Making Friends)`）、整段是个版本名的（`(Special Edition)`），里面的词都不是特别篇 / 花絮的标记
+      const inTitle = episodeTitle || editionAt(words, 0)?.len === words.length;
+      const allTech = words.every((w) => isTechWord(w) || marker(w, { bracket: true, afterDash: false, nextIsTech: true, inTitle }));
       if (allTech) {
         cutAt("tech");
         return;
@@ -706,7 +740,8 @@ export function parseMediaName(rawName: string, opts: ParseOptions = {}): Parsed
         i++;
         continue;
       }
-      if (marker(w, { bracket: false, afterDash, nextIsTech, atEnd })) {
+      const inTitle = episodeTitle || (!cut && RE_WORD_MARKER.test(stripEdges(w)) && titleGoesOn(words, i, ci));
+      if (marker(w, { bracket: false, afterDash, nextIsTech, atEnd, inTitle })) {
         afterDash = false;
         continue;
       }

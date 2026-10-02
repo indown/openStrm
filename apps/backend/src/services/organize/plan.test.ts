@@ -120,6 +120,22 @@ test("没识别 / 没勾选：全部 skip；花絮按设置挪进 extras", () =>
   assert.equal(moved.items.find((i) => i.srcPath.endsWith("making.mkv"))!.dstPath, "沙丘：第二部 (2024) [tmdbid=693134]/extras/making.mkv");
 });
 
+test("集标题里带 making 这种词的正片不是花絮：和别的集一样挪，字幕跟着；extras=move 也不进 extras/", () => {
+  const paths = [
+    "inbox/BEEF.S01.1080p/BEEF.S01E03.No.New.Tricks.1080p.WEB-DL.mkv",
+    "inbox/BEEF.S01.1080p/BEEF.S01E04.Whos.Making.Dinner.1080p.WEB-DL.mkv",
+    "inbox/BEEF.S01.1080p/BEEF.S01E04.Whos.Making.Dinner.1080p.WEB-DL.chs.srt",
+  ];
+  for (const s of [settings, { ...settings, extras: "move" as const }]) {
+    const { items } = plan(paths, beef, {}, s);
+    const byName = (n: string) => items.find((i) => i.srcPath.endsWith(n))!;
+    assert.equal(byName("Dinner.1080p.WEB-DL.mkv").action, "move");
+    assert.equal(byName("Dinner.1080p.WEB-DL.mkv").dstPath, "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E04.mkv");
+    assert.equal(byName("chs.srt").dstPath, "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E04.zh-CN.srt");
+    assert.ok(items.every((i) => i.reason !== "花絮不动" && !i.dstPath.includes("/extras/")));
+  }
+});
+
 test("跨单元冲突：目标已存在（且不是正在挪走的源）", () => {
   const es = [...entries(["inbox/Dune.2024.1080p.mkv"]), { path: "沙丘：第二部 (2024) [tmdbid=693134]/沙丘：第二部 (2024) - 1080p.mkv", isDir: false }];
   const units = buildUnits(es, { scopePath: "", taskRootName: "root", videoExts, rules: [] });

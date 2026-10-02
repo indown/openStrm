@@ -111,6 +111,45 @@ const samples: Array<[string, Expect]> = [
   ["四季", { title: "四季" }],
   ["一代宗师 2013", { title: "一代宗师", year: "2013" }],
   ["三十五岁在东京", { title: "三十五岁在东京" }],
+  // 集号 / 日期后面的正文是集标题：里面的 making / menu / special / sample 不是花絮、特别篇的标记
+  ["Hacks.S05E04.Whos.Making.Dinner.2160p.Stan.WEB-DL.DDP.5.1.H.265-BlackTV", { title: "Hacks", season: 5, episode: 4, isExtra: undefined, tags: { resolution: "2160p", group: "BlackTV" } }],
+  ["Hacks - S05E04 - Who's Making Dinner", { title: "Hacks", season: 5, episode: 4, isExtra: undefined }],
+  ["Show.S01E03.The.Christmas.Special.1080p.WEB-DL", { season: 1, episode: 3, isSpecial: undefined }],
+  ["Show.S01E03.Free.Sample.1080p.WEB-DL", { season: 1, episode: 3, isSample: undefined }],
+  ["Show.S00E01.Making.Of.1080p", { season: 0, episode: 1, isExtra: undefined }],
+  ["Show - 05 - The Menu [1080p]", { title: "Show", absolute: 5, isExtra: undefined }],
+  ["某剧 第03集 Making Of", { title: "某剧", absolute: 3, isExtra: undefined }],
+  ["Conan.2019-11-14.Making.Friends", { title: "Conan", date: "2019-11-14", isExtra: undefined }],
+  ["Show - S01E01 (Making Friends)", { season: 1, episode: 1, isExtra: undefined }],
+  // 集号后面，技术词之后的、单独成段的还是标记
+  ["show.s01e01.720p.hdtv.x264-grp.sample", { season: 1, episode: 1, isSample: true }],
+  ["Show.S01E01.1080p.WEB-DL.Trailer", { season: 1, episode: 1, isExtra: true }],
+  ["Show S01E05 (Preview)", { season: 1, episode: 5, isExtra: true }],
+  ["[Group] Show - 01 [NCOP][1080p]", { title: "Show", absolute: 1, isExtra: true }],
+  // 片名里的普通单词：后面还有年份 / 季集标记，标题没完，它是标题词
+  ["The.Menu.2022.1080p.BluRay.x264", { title: "The Menu", year: "2022", isExtra: undefined }],
+  ["The Menu (2022)", { title: "The Menu", year: "2022", isExtra: undefined }],
+  ["菜单.The.Menu.2022.2160p.WEB-DL", { title: "菜单", titles: ["菜单", "The Menu", "菜单 The Menu"], year: "2022", isExtra: undefined }],
+  ["Making.a.Murderer.S01E01.1080p.NF.WEB-DL", { title: "Making a Murderer", season: 1, episode: 1, isExtra: undefined }],
+  ["Making.the.Cut.Season.2.1080p", { title: "Making the Cut", season: 2, isExtra: undefined }],
+  ["Trailer Park Boys (2001)", { title: "Trailer Park Boys", year: "2001", isExtra: undefined }],
+  ["Special.Ops.S01E01.1080p", { title: "Special Ops", season: 1, episode: 1, isSpecial: undefined }],
+  ["Special (2019)", { title: "Special", year: "2019", isSpecial: undefined }],
+  ["Sample.This.2012.1080p", { title: "Sample This", year: "2012", isSample: undefined }],
+  // 后面只剩技术词 / 数字 / 什么都没有：照旧是花絮、特别篇；sp / ova / ncop 这种行话不看后面
+  ["Dune.2024.Making.Of.1080p", { title: "Dune", year: "2024", isExtra: true }],
+  ["Dune.2024.Trailer.2.1080p", { title: "Dune", year: "2024", isExtra: true }],
+  ["Dune (2024) - Trailer", { title: "Dune", year: "2024", isExtra: true }],
+  ["Show.Trailer", { title: "Show", isExtra: true }],
+  ["making", { title: "", isExtra: true }],
+  ["Show.S01.Special.1080p", { title: "Show", season: 1, isSpecial: true }],
+  ["[Group] Show - Preview 05 [1080p]", { title: "Show", absolute: 5, isExtra: true }],
+  ["[Group] Show Special [2015][BDRip]", { title: "Show", year: "2015", isSpecial: true }],
+  ["孤独的美食家.SP.2019.1080p", { title: "孤独的美食家", year: "2019", isSpecial: true }],
+  // 括号里整段是版本名：不是特别篇；括号里的版本名后面跟着的补零数字照旧是集数
+  ["Star Wars (1977) (Special Edition)", { title: "Star Wars", year: "1977", isSpecial: undefined }],
+  ["Blade Runner [Special Edition] 1982", { title: "Blade Runner", year: "1982", isSpecial: undefined }],
+  ["某剧 [未删减版] 01", { title: "某剧", absolute: 1 }],
 ];
 
 for (const [name, expect] of samples) {

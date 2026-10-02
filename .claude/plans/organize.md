@@ -1180,3 +1180,42 @@ UPDATE organize_items SET error_kind = 'mirror' WHERE status = 'done' AND error 
 后端日志没有警告和错误。
 
 **没在真机上覆盖**：转存本身失败时收回建出来的目录（真网盘上造不出转存失败）；补整理「混进了别的只交条目」那条。都有用例。
+
+## 集标题 / 片名里的词被当成花絮（2026-10-02）
+
+用户在 115 `/tv` 上预览《绝望写手》第五季：十集里九集照常挪，`Hacks.S05E04.Whos.Making.Dinner.2160p.Stan.WEB-DL.DDP.5.1.H.265-BlackTV.mkv` 标「不变 · 花絮不动」，问「为什么认为是花絮」。
+
+### 根因
+
+`parseMediaName` 的 `marker()` 对每个词都查一遍 `RE_EXTRA` / `RE_SPECIAL` / `sample`，不看这个词站在哪。集标题「Whos Making Dinner」里的 `Making` 撞上花絮词表里的 `making`（本意是 making-of），整个文件 `isExtra`，规划时走「花絮不动」；花絮设成「挪进 extras/」的话会被挪进去。
+
+同一个毛病的其它样子（都实跑确认过）：
+
+- 集标题里有 menu / trailer / preview / pv → 花絮；有 special → 特别篇；有 sample → `isSample`，分单元时直接丢掉，预览里连这一行都没有。
+- 片名里有这些词：`The.Menu.2022` 标题只剩「The」还带花絮标记；`Making.a.Murderer.S01E01`、`Trailer.Park.Boys.S01E01`、`Special.Ops.S01E01` 标题是空的。目录里一个正片都数不出来，成不了单元，预览里看不到这部作品。
+- 默认剧集模板带 `{episodeTitle}`：整理好的 `Show - S01E03 - The Menu.mkv` 再过一遍也会被当成花絮。
+- 括号里的 `(Special Edition)` 当成特别篇（逐词试「是不是全是技术词」时，`special` 先被认成了标记）。
+
+### 修法：标记要看位置
+
+- **集标题**：认出集号（`S05E04`、`1x03`、`E03`、`第03集`、字幕组的 ` - 05`）或日播日期之后、第一个技术词之前的正文是集标题，里面的词不当特别篇 / 花絮 / sample 的标记。实现是一个 `episodeTitle` 开关：`setEpisode` / `setAbsolute` / 日期打开，`cutAt("tech")` 关上。这一段里的多词括号也算正文（`S01E01 (Making Friends)`）。
+- **片名**：`special(s)` / `menu` / `trailer(s)` / `preview` / `making` / `bts` / `sample` 这几个普通单词（`RE_WORD_MARKER`），标题还没切断、后面还有年份或季集标记（中间没隔着技术词；紧跟的括号年份也算，字幕组风格的方括号年份不算）时是标题词（`titleGoesOn`）。`sp` / `ova` / `ncop` / `pv` 这种行话、带数字的 `menu01` / `trailer2` 不看后面，照旧。
+- **括号里整段是版本名**（`(Special Edition)`）：里面的词不当标记，和别的括号版本名一样当噪音切掉。只修误判，不顺手把括号里的版本名记成 `edition`——记了的话 `某剧 [未删减版] 01` 末尾的 01 会按「剧场版 01 是第 1 部电影」那条规则不再当集数（试过，退回来了）。
+
+照旧算标记的：前面没有集号的（`Show.S01.NCOP`、`Show - PV 03`、`Dune.2024.Trailer.1080p`、`Show.Trailer`、`making.mkv`）、集号后面单独成段的（`S01E05 (Preview)`、`- 01 [NCOP]`）、技术词之后的（`s01e01.720p.hdtv.x264-grp.sample`）。
+
+### 没动的
+
+- 没有年份也没有季集标记的 `The Menu.mkv`、`The.Menu.1080p.BluRay`：单看名字和 `Dune Trailer.mkv` 是一个形状，还是当花絮。
+- `Making a Murderer - 01`：字幕组式的 ` - 01` 不算标题终点（`Trailer - 01` 得是花絮）。
+- 换来的代价：标记写在年份 / 集号前面的花絮（`Dune.Trailer.2024.1080p`、`Dune - Making Of (2024)`、`Show.Special.S00E01`）现在读成标题的一部分，表现为认不出作品或和正片撞名。预览里看得见，不会悄悄动错。
+- 本来就认不出的花絮写法（`Movie-trailer`、`Movie.2020.1080p-trailer`、分开写的 `Behind the Scenes`）、括号里的版本名不进 `{edition}`，都没碰。
+
+### 测试
+
+- 新旧解析器逐条对比（脚本在会话 scratchpad，没进仓库）：HEAD 上 126 个测试文件里的名字 + 本机 `data/` 的路径段共 9719 条，结果一条没变；手写的一百五十多个边角样本和新加的测试样本里变了 64 个，逐条看过方向都对，「真花絮不能变」那一组一条没变。
+- `parse-name.test.ts` 样本表加 34 条：20 条在旧解析器上过不了，其余是回归（真花絮照旧、`某剧 [未删减版] 01` 照旧是第 1 集）。`plan.test.ts` 加一条：带 Making 的那一集和别的集一样挪、字幕跟着，花絮设成挪也不进 `extras/`。
+- 用户现场的目录（十集 + 三张图）过一遍分单元 → 规划：十集都进 `Season 05`。
+- 当前线上版本的临时办法也验过：识别词加一行 `Whos.Making.Dinner => Whos.Dinner`，旧解析器就认成 S05E04。
+- 那次整理要是已经执行了（旧目录里只剩 E04）：修复后再预览一次，E04 认成正片挪进 `Season 05`，旧目录跟着删掉（模拟过）。
+- 后端全量 1470 个通过，tsc / eslint 干净。真机没验。
