@@ -232,7 +232,8 @@ export function buildUnits(entries: ScopeEntry[], opts: BuildUnitsOptions): Unit
     const kind = fileKindOf(name, opts.videoExts);
     const stem = ext ? name.slice(0, -ext.length) : name;
     const { parsed, direct } = parseWithRules(stem, opts.rules, kind === "subtitle");
-    if (parsed.isSample) continue;
+    // sample 当花絮：不参与认作品 / 排集数，整理时和花絮一个去向。丢掉的话预览里看不到它，旧目录也因为它删不掉
+    if (parsed.isSample) parsed.isExtra = true;
     const { root, seasonFromDir, inExtrasDir, artDir } = unitRootFor(dirOf(e.path), boundaryOf(scopeOf(e.path)), opts.taskRootName);
     rooted.push({ root, file: { path: e.path, name, stem, ext, kind, parsed, id: e.id, size: e.size, seasonFromDir, inExtrasDir, artDir, direct } });
   }

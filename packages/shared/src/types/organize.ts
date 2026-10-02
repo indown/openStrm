@@ -75,7 +75,7 @@ export type OrganizeIdTagStyle = "emby" | "jellyfin" | "plex" | "none";
 /** 冒号处理：smart（`: ` → ` - `，其余 → `-`）、delete、dash（`-`）、spaceDash（` -`） */
 export type OrganizeColonStyle = "smart" | "delete" | "dash" | "spaceDash";
 
-/** 花絮（trailer / featurette / extras 目录里的）怎么办：不动，或挪进作品目录下的 extras/ */
+/** 花絮（trailer / featurette / sample / extras 目录里的）怎么办：跟着正片挪进作品目录下的 extras/（默认），或留在原处 */
 export type OrganizeExtrasMode = "keep" | "move";
 
 /** 任务级自动整理：off 不自动；review 只生成待确认的 run 并通知；auto 高置信度且无冲突的直接执行 */

@@ -47,7 +47,11 @@ test("电影目录：一个视频没有集标记就是电影；同名多版本�
   assert.equal(units[0].kindHint, "movie");
   assert.equal(units[0].parsed.title, "Dune Part Two");
   assert.equal(units[0].parsed.year, "2024");
-  assert.equal(units[0].files.length, 2, "sample 不进单元");
+  assert.equal(units[0].multiVersion, 2, "sample 不算正片：两个版本，不是三个");
+  const sample = units[0].files.find((f) => f.name === "sample.mkv")!;
+  assert.equal(sample.parsed.isExtra, true, "sample 留在单元里当花絮，整理时和花絮一个去向");
+  // 目录里只有 sample：成不了单元
+  assert.equal(buildUnits(files(["Some.Movie.2020.1080p/sample.mkv"]), { ...opts, taskRootName: "movie" }).length, 0);
 });
 
 test("扁平的电影堆：按标题拆成多个单元；字幕按同名前缀跟着视频", () => {

@@ -48,6 +48,7 @@ function definePack() {
   const t = share.define("pack", { title: "老K", password: "ab12" });
   t.addFile("/老K/1. 电影/阿甘正传 4K原盘REMUX 杜比视界/Forrest.Gump.1994.2160p.BluRay.REMUX.mkv", { size: 50 });
   t.addFile("/老K/1. 电影/阿甘正传 4K原盘REMUX 杜比视界/阿甘正传.jpg", { size: 1 });
+  t.addFile("/老K/1. 电影/阿甘正传 4K原盘REMUX 杜比视界/sample.mkv", { size: 2 });
   t.addFile("/老K/1. 电影/一次别离 奥斯卡提名 豆瓣8.8 蓝光原盘REMUX/A.Separation.2011.1080p.BluRay.REMUX.mkv", { size: 28 });
   t.addFile("/老K/1. 电影/大白鲨 4部 4K原盘REMUX/大白鲨1 4K原盘REMUX/Jaws.1975.2160p.mkv", { size: 40 });
   t.addFile("/老K/1. 电影/大白鲨 4部 4K原盘REMUX/大白鲨2 4K原盘REMUX/Jaws.2.1978.2160p.mkv", { size: 30 });
@@ -210,7 +211,7 @@ test("抄完切作品单元：电影一部一个、合集拆开、剧的季目�
   assert.ok(gump.parsedTitles.includes("Forrest Gump"), "文件名里的英文名也是搜索候选");
   assert.equal(gump.ownsDir, true);
   assert.equal(gump.videoCount, 1);
-  assert.equal(gump.fileIds.length, 2, "图片跟着");
+  assert.equal(gump.fileIds.length, 2, "图片跟着；sample 不算这部作品的文件，转存时不带");
   const mi2 = list.find((u) => u.rawName.startsWith("碟中谍 第2部"))!;
   assert.equal(mi2.kindHint, "movie", "电影合集里的「第2部」不当季");
   assert.deepEqual(mi2.seasons, []);

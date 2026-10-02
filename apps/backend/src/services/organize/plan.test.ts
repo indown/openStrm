@@ -109,24 +109,104 @@ test("绝对集数按每季集数折算；季覆盖和集偏移", () => {
   assert.deepEqual(resolveEpisode(u2.files[0], u2, { ...beef, seasons: undefined }, 1, -12), { season: 1, episode: 1, episodeEnd: undefined, absolute: 13, note: undefined });
 });
 
-test("没识别 / 没勾选：全部 skip；花絮按设置挪进 extras", () => {
+test("没识别 / 没勾选：全部 skip；花絮默认跟着进 extras/，设置成留在原处才不动", () => {
   const none = plan(["x/a.mkv"], dune, { match: null });
   assert.ok(none.items.every((i) => i.action === "skip"));
   const unselected = plan(["x/a.mkv"], dune, { selected: false });
   assert.equal(unselected.items[0].reason, "未勾选");
-  const keep = plan(["x/Dune.2024.mkv", "x/Featurettes/making.mkv"], dune);
-  assert.equal(keep.items.find((i) => i.srcPath.endsWith("making.mkv"))!.action, "keep");
-  const moved = plan(["x/Dune.2024.mkv", "x/Featurettes/making.mkv"], dune, {}, { ...settings, extras: "move" });
-  assert.equal(moved.items.find((i) => i.srcPath.endsWith("making.mkv"))!.dstPath, "沙丘：第二部 (2024) [tmdbid=693134]/extras/making.mkv");
+  assert.equal(resolveOrganizeSettings({}).extras, "move", "没设过：跟着走");
+  assert.equal(resolveOrganizeSettings({ organize: { extras: "keep" } }).extras, "keep", "设过的照设的来");
+  const moved = plan(["x/Dune.2024.mkv", "x/Featurettes/making.mkv"], dune);
+  const extra = moved.items.find((i) => i.srcPath.endsWith("making.mkv"))!;
+  assert.equal(extra.dstPath, "沙丘：第二部 (2024) [tmdbid=693134]/extras/making.mkv");
+  assert.equal(extra.reason, "按花絮处理", "预览里看得出它是按花絮走的");
+  const keep = plan(["x/Dune.2024.mkv", "x/Featurettes/making.mkv"], dune, {}, { ...settings, extras: "keep" });
+  assert.deepEqual([keep.items.find((i) => i.srcPath.endsWith("making.mkv"))!.action, keep.items.find((i) => i.srcPath.endsWith("making.mkv"))!.reason], ["keep", "花絮不动"]);
 });
 
-test("集标题里带 making 这种词的正片不是花絮：和别的集一样挪，字幕跟着；extras=move 也不进 extras/", () => {
+const DUNE_DIR = "沙丘：第二部 (2024) [tmdbid=693134]";
+const REL = "inbox/Dune.Part.Two.2024.2160p.WEB-DL";
+
+test("正片走了，留下的跟着走：花絮 / sample 进 extras/，认不出类型的原名进作品目录，源目录腾空删掉", () => {
+  const { items } = plan(
+    [
+      `${REL}/Dune.Part.Two.2024.2160p.WEB-DL.mkv`,
+      `${REL}/Dune.Part.Two.2024.Trailer.mkv`,
+      `${REL}/Dune.Part.Two.2024.Trailer.chs.srt`,
+      `${REL}/Featurettes/making.mkv`,
+      `${REL}/sample.mkv`,
+      `${REL}/更多资源请访问.txt`,
+      `${REL}/广告.url`,
+      `${REL}/ost.flac`,
+      `${REL}/广告图.png`,
+    ],
+    dune,
+  );
+  const dst = (n: string) => items.find((i) => i.srcPath.endsWith(n))!.dstPath;
+  assert.equal(dst("2160p.WEB-DL.mkv"), `${DUNE_DIR}/沙丘：第二部 (2024) - 2160p.mkv`);
+  assert.equal(dst("Trailer.mkv"), `${DUNE_DIR}/extras/Dune.Part.Two.2024.Trailer.mkv`, "按名字认出的花絮");
+  assert.equal(dst("Trailer.chs.srt"), `${DUNE_DIR}/extras/Dune.Part.Two.2024.Trailer.chs.srt`, "花絮的字幕原名跟着，不去找正片当主人");
+  assert.equal(dst("Featurettes/making.mkv"), `${DUNE_DIR}/extras/making.mkv`, "花絮目录里的平铺进 extras/");
+  assert.equal(dst("sample.mkv"), `${DUNE_DIR}/extras/sample.mkv`, "sample 当花絮，预览里看得见");
+  for (const n of ["更多资源请访问.txt", "广告.url", "ost.flac", "广告图.png"]) assert.equal(dst(n), `${DUNE_DIR}/${n}`, `${n} 原名进作品目录`);
+  assert.equal(items.filter((i) => i.action === "conflict" || i.action === "skip" || i.action === "keep").length, 0, "没有留下的");
+  assert.deepEqual(items.filter((i) => i.action === "rmdir").map((i) => i.srcPath), [`${REL}/Featurettes`, REL, "inbox"], "源目录腾空，从深到浅删掉");
+});
+
+test("花絮撞名：留在原处，不算冲突，不卡正片", () => {
+  const { items } = plan([`${REL}/Dune.Part.Two.2024.2160p.WEB-DL.mkv`, `${REL}/Featurettes/01.mkv`, `${REL}/Trailers/01.mkv`], dune);
+  const of = (n: string) => items.find((i) => i.srcPath.endsWith(n))!;
+  assert.equal(of("2160p.WEB-DL.mkv").action, "move");
+  assert.equal(of("Featurettes/01.mkv").dstPath, `${DUNE_DIR}/extras/01.mkv`);
+  assert.deepEqual([of("Trailers/01.mkv").action, of("Trailers/01.mkv").reason], ["skip", "和 01.mkv 要去同一个位置，留在原处"]);
+  assert.equal(items.filter((i) => i.action === "conflict").length, 0, "自动整理有冲突就整轮不执行：花絮不能卡住正片");
+});
+
+test("正片没挪，花絮和认不出类型的都不跟；任务根 / 收件箱里散着的认不出类型的不动", () => {
+  const main = `${REL}/Dune.Part.Two.2024.2160p.WEB-DL.mkv`;
+  const stay = plan([main, `${REL}/Featurettes/making.mkv`, `${REL}/readme.txt`], dune, { excluded: new Set([main]) });
+  for (const n of ["making.mkv", "readme.txt"]) {
+    const it = stay.items.find((i) => i.srcPath.endsWith(n))!;
+    assert.deepEqual([it.action, it.reason], ["skip", "对应的视频没挪，跟着留在原处"], n);
+  }
+  assert.equal(stay.items.filter((i) => i.action === "rmdir" || i.action === "mkdir").length, 0);
+  // 任务根：目录不是这部作品自己的，txt 不知道归谁
+  const loose = plan(["Dune.Part.Two.2024.2160p.WEB-DL.mkv", "Dune.Part.Two.2024.2160p.WEB-DL.txt"], dune);
+  const txt = loose.items.find((i) => i.srcPath.endsWith(".txt"))!;
+  assert.deepEqual([txt.action, txt.reason], ["keep", "不认识的文件类型，不动"]);
+});
+
+test("整理过的库再跑：已经在作品目录里的花絮 / 杂项不重新摆", () => {
+  const movie = plan(
+    [
+      `${DUNE_DIR}/沙丘：第二部 (2024) - 2160p.mkv`,
+      `${DUNE_DIR}/extras/making.mkv`,
+      `${DUNE_DIR}/Featurettes/interview.mkv`,
+      `${DUNE_DIR}/沙丘：第二部 (2024)-trailer.mkv`,
+      `${DUNE_DIR}/sample.mkv`,
+      `${DUNE_DIR}/readme.txt`,
+    ],
+    dune,
+  );
+  assert.deepEqual(movie.items.map((i) => i.action), Array(6).fill("keep"), "媒体服务器本来就认的放法（-trailer 后缀、Featurettes/）也不动");
+  const tv = plan(
+    [
+      "怒呛人生 (2023) [tmdbid=153312]/Season 01/怒呛人生 - S01E01.mkv",
+      "怒呛人生 (2023) [tmdbid=153312]/Season 01/ost.flac",
+      "怒呛人生 (2023) [tmdbid=153312]/Season 01/Extras/making.mkv",
+    ],
+    beef,
+  );
+  assert.deepEqual(tv.items.map((i) => i.action), ["keep", "keep", "keep"], "季目录里的杂项、花絮不往剧根目录拽");
+});
+
+test("集标题里带 making 这种词的正片不是花絮：和别的集一样挪，字幕跟着；花絮不管挪不挪都不进 extras/", () => {
   const paths = [
     "inbox/BEEF.S01.1080p/BEEF.S01E03.No.New.Tricks.1080p.WEB-DL.mkv",
     "inbox/BEEF.S01.1080p/BEEF.S01E04.Whos.Making.Dinner.1080p.WEB-DL.mkv",
     "inbox/BEEF.S01.1080p/BEEF.S01E04.Whos.Making.Dinner.1080p.WEB-DL.chs.srt",
   ];
-  for (const s of [settings, { ...settings, extras: "move" as const }]) {
+  for (const s of [{ ...settings, extras: "keep" as const }, { ...settings, extras: "move" as const }]) {
     const { items } = plan(paths, beef, {}, s);
     const byName = (n: string) => items.find((i) => i.srcPath.endsWith(n))!;
     assert.equal(byName("Dinner.1080p.WEB-DL.mkv").action, "move");

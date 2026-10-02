@@ -72,7 +72,8 @@ export function resolveOrganizeSettings(settings: AppSettings): ResolvedOrganize
     },
     rules: Array.isArray(o.rules) ? o.rules.filter((r): r is string => typeof r === "string") : [],
     cleanupEmptyDirs: o.cleanupEmptyDirs !== false,
-    extras: o.extras ?? "keep",
+    // 没设过就跟着正片走：留在旧目录的花絮以后成不了单元，没人再管，还让旧目录删不掉
+    extras: o.extras ?? "move",
     auto: o.auto ?? "off",
   };
 }

@@ -649,6 +649,43 @@ test("自动模式：全 high 且无冲突直接执行；有拿不准的只通�
   assert.ok(drive.tree.get("/tv/inbox/BEEF.S01.1080p/BEEF.S01E01.1080p.WEB-DL.mkv"), "没动");
 });
 
+test("正片走了留下的跟着走：花絮 / sample 进 extras/、认不出类型的进作品目录，花絮撞名不卡自动整理；撤销全退回", async () => {
+  const rel = "/tv/inbox/Alien.1979.1080p.BluRay";
+  drive.tree.addDir(rel);
+  for (const f of ["Alien.1979.1080p.BluRay.mkv", "Alien.1979.Trailer.mkv", "Featurettes/01.mkv", "Trailers/01.mkv", "sample.mkv", "更多资源请访问.txt"]) drive.tree.addFile(`${rel}/${f}`);
+  // 同步任务给每个视频都生成了 strm，花絮和 sample 也有
+  for (const f of ["Alien.1979.1080p.BluRay", "Alien.1979.Trailer", "Featurettes/01", "Trailers/01", "sample"]) {
+    writeLocalStrm(`inbox/Alien.1979.1080p.BluRay/${f}.strm`, `tv/inbox/Alien.1979.1080p.BluRay/${f}.mkv`);
+  }
+  replaceTasks([{ ...task, organize: { mode: "auto" } }]);
+  const run = await createRun({ taskId: "t1", paths: ["inbox/Alien.1979.1080p.BluRay"], mode: "auto", trigger: "share" });
+  const done = await untilStatus(run.id, ["done"]);
+  assert.equal(done.stats.conflicts, 0, "两个 01.mkv 撞名是留下，不是冲突");
+  assert.equal(notified.filter((e) => e.type === "organize-review").length, 0, "没有因为花絮撞名改成等人确认");
+  const work = "/tv/异形 (1979) [tmdbid=348]";
+  for (const p of [`${work}/异形 (1979) - 1080p.mkv`, `${work}/extras/Alien.1979.Trailer.mkv`, `${work}/extras/01.mkv`, `${work}/extras/sample.mkv`, `${work}/更多资源请访问.txt`]) {
+    assert.ok(drive.tree.get(p), p);
+  }
+  const items = listItems(run.id);
+  assert.equal(items.find((i) => i.dstPath === `${work}/extras/sample.mkv`)!.reason, "按花絮处理");
+  const stayed = items.filter((i) => i.srcPath.endsWith("/01.mkv") && i.action === "skip");
+  assert.deepEqual(stayed.map((i) => i.reason), ["和 01.mkv 要去同一个位置，留在原处"]);
+  assert.ok(drive.tree.get(stayed[0].srcPath), "撞名的那个留在原处");
+  assert.ok(drive.tree.get(rel), "还剩一个文件，源目录不删");
+  // 本地：花絮的 strm 跟到 extras/，内容改成新路径；留下的那个还在原处
+  assert.equal(localRead("异形 (1979) [tmdbid=348]/extras/Alien.1979.Trailer.strm"), "/mnt/tv/异形 (1979) [tmdbid=348]/extras/Alien.1979.Trailer.mkv");
+  assert.ok(localExists("异形 (1979) [tmdbid=348]/extras/sample.strm"));
+  assert.ok(!localExists("inbox/Alien.1979.1080p.BluRay/Alien.1979.Trailer.strm"));
+  assert.ok(localExists(`${stayed[0].srcPath.replace("/tv/", "").replace(/\.mkv$/, ".strm")}`));
+  // 撤销：全部回到原处，建出来的目录删掉
+  await revertRun(run.id);
+  await untilStatus(run.id, ["reverted"]);
+  for (const f of ["Alien.1979.1080p.BluRay.mkv", "Alien.1979.Trailer.mkv", "Featurettes/01.mkv", "Trailers/01.mkv", "sample.mkv", "更多资源请访问.txt"]) assert.ok(drive.tree.get(`${rel}/${f}`), `${f} 退回来了`);
+  assert.equal(drive.tree.get(work), undefined, "作品目录和 extras/ 都删掉");
+  assert.ok(localExists("inbox/Alien.1979.1080p.BluRay/Alien.1979.Trailer.strm"));
+  assert.ok(!localExists("异形 (1979) [tmdbid=348]"));
+});
+
 test("自动整理挪走 / 改名了还没提交的复制：队列里的路径跟过去（发布目录没腾空也跟），整理办完放行等它的复制", async () => {
   replaceTasks([{ ...task, organize: { mode: "auto" } }]);
   const base = { account: "acc", dstBase: "/local/media", rootPath: "tv", taskId: "t1", trigger: "share" as const, afterCopy: "keep" as const, status: "pending" as const, stage: "waiting" as const, detail: "", attempts: 0, waits: 0, misses: 0 };

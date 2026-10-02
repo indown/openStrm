@@ -179,8 +179,8 @@ export function OrganizeSection({ value, onChange }: Props) {
         />
         <SwitchRow
           label="花絮挪进作品目录下的 extras/"
-          description="预告、NCOP、Featurettes 目录里的文件；关掉就原地不动。"
-          checked={value.extras === "move"}
+          description="预告、NCOP、sample、Featurettes 目录里的文件跟着正片走；关掉就留在原处，旧目录也就删不掉。"
+          checked={value.extras !== "keep"}
           onCheckedChange={(v) => set({ extras: v ? "move" : "keep" })}
         />
         <SwitchRow

@@ -146,7 +146,8 @@ export function rebuildUnits(sourceId: string, now = Math.floor(Date.now() / 100
       const base = titles.find((t) => HAN.test(t));
       if (n !== null && n >= 2 && base) titles = [...new Set([`${base}${n}`, ...titles])];
     }
-    const others = u.files.filter((f) => !videos.includes(f));
+    // sample 不算这部作品的文件（转存时不带上）
+    const others = u.files.filter((f) => !videos.includes(f) && !f.parsed.isSample);
     const biggest = [...videos].sort((a, b) => (b.size ?? 0) - (a.size ?? 0))[0];
     const seasons = new Set<number>();
     if (kindHint === "tv") {

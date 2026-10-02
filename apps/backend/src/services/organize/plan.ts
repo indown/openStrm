@@ -6,8 +6,8 @@
  *   move      跨目录（可能同时改名）
  *   mkdir     目标目录不存在
  *   rmdir     执行后腾空的源目录（可关）
- *   conflict  目标已存在且不是同一节点 / 两个源指向同一目标 / 目标落进别的任务（附属文件——字幕 / nfo / 图片——撞名不算，留在原处）
- *   skip      没识别、没集数、找不到对应视频的字幕、不认识的文件；附属文件的目标被占、或它跟着的视频没挪
+ *   conflict  目标已存在且不是同一节点 / 两个源指向同一目标 / 目标落进别的任务（附属文件——字幕 / nfo / 图片 / 花絮 / 认不出类型的——撞名不算，留在原处）
+ *   skip      没识别、没集数、找不到对应视频的字幕；附属文件的目标被占、或它跟着的视频没挪
  *
  * 冲突项可以选怎么办（`resolutions`）：改名保留（加区分后缀）、自己填名字、挪进任务根下的重复文件目录、
  * 删掉这一份、覆盖（删掉目标那份再挪过去）；跟着的字幕 / nfo 一起走。不选就留在原处。
@@ -33,7 +33,7 @@ export interface PlannedItem {
   dstPath: string;
   nodeId: string;
   reason: string;
-  /** 附属文件（字幕 / nfo / 图片）跟着哪些视频：一个都没落到计划的位置（冲突 / 跳过）就不挪。规划期用，不落库 */
+  /** 附属文件（字幕 / nfo / 图片 / 花絮 / 认不出类型的）跟着哪些视频：一个都没落到计划的位置（冲突 / 跳过）就不挪。规划期用，不落库 */
   follows?: string[];
   /** 附属文件：目标被占了就留在原处（skip），不算冲突、不卡自动整理。规划期用，不落库 */
   soft?: boolean;
@@ -378,9 +378,14 @@ export function planUnit(input: UnitPlanInput, ctx: PlanContext): UnitPlan {
       continue;
     }
 
-    // 花絮：按设置挪进 extras/ 或不动
+    // 「跟着走」只管作品目录外面的：已经在作品目录里的花絮 / 杂项不重新摆（整理过的库再跑不折腾；
+    // `片名 (2024)-trailer.mkv`、`Featurettes/` 这种媒体服务器本来就认的放法也不动）
+    const inWork = !!dstRoot && f.path.startsWith(`${dstRoot}/`);
+
+    // 花絮（sample 也算）：跟着正片进作品目录下的 extras/，平铺、原名（媒体服务器不认 extras 里再套目录）；设置成留在原处就不动。
+    // 算附属：正片一个都没挪它也不挪，目标被占就留下、不算冲突
     if (f.inExtrasDir || f.parsed.isExtra) {
-      if (s.extras === "move" && dstRoot) push(f, join(join(dstRoot, "extras"), f.name));
+      if (s.extras === "move" && dstRoot && !inWork) push(f, join(join(dstRoot, "extras"), f.name), "按花絮处理", undefined, { follows: allVideos, soft: true });
       else push(f, f.path, "花絮不动", "keep");
       continue;
     }
@@ -424,7 +429,11 @@ export function planUnit(input: UnitPlanInput, ctx: PlanContext): UnitPlan {
       else push(f, place.dst, "", undefined, { follows: place.follows, soft: true });
       continue;
     }
-    push(f, f.path, "不认识的文件类型，不动", "keep");
+    // 认不出类型的（txt / url / 音频 / 压缩包）：和认不出名字的图片 / nfo 一个规矩——作品自己的目录里原名跟进作品目录，
+    // 留下就成了没人管的孤儿、旧目录也删不掉；收件箱里散着的不知道归谁，不动
+    const place = dstRoot && !inWork ? placeOf(f) : null;
+    if (place && typeof place !== "string") push(f, place.dst, "", undefined, { follows: place.follows, soft: true });
+    else push(f, f.path, "不认识的文件类型，不动", "keep");
   }
 
   return { unitKey: unit.key, dstRoot, items, notes };
