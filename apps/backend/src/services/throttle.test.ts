@@ -217,6 +217,26 @@ test("改了并发原地生效：排着的活马上多开几个，在跑的不�
   assert.equal(peak, 3);
 });
 
+test("设置是别的进程改的（没人通知这边）：下一个请求排队时发现值变了，已经建好的限流器跟着调", async () => {
+  let running = 0;
+  let peak = 0;
+  const hold = async () => {
+    running++;
+    peak = Math.max(peak, running);
+    await sleep(80);
+    running--;
+  };
+  const queued = Promise.all(Array.from({ length: 6 }, () => scheduleForAccount(ACCOUNT, "download", hold)));
+  await sleep(20);
+  assert.equal(peak, 1);
+  // Emby 代理进程就是这种处境：设置由 API 进程写进库，它这边只有库里的值变了
+  patchAppSettings({ throttle: { requestsPerSecond: 100, requestConcurrency: 1, downloadConcurrency: 3 } });
+  await sleep(20);
+  assert.equal(peak, 1, "还没有新请求进来，没人去看设置");
+  await timeout(Promise.all([queued, scheduleForAccount(ACCOUNT, "download", hold)]), 3000, "七个下载");
+  assert.equal(peak, 3);
+});
+
 test("文件下载不占接口的节奏：接口两秒一个时，下载照样按并发数同时开始", async () => {
   useThrottle(0.5, 1, 4);
   await scheduleForAccount(ACCOUNT, "normal", async () => {}); // 接口上刚发过一个，下一个要等两秒

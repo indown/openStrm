@@ -7,7 +7,8 @@
  *   download  文件下载：只有并发上限，不占接口的节奏
  *
  * 调用方只说账号和通道，每秒几个、并发多少都在这里按设置定——以前四个调用点各读一遍设置、各带一个兜底值。
- * 设置保存后 applyThrottleSettings 原地换成新值，不用重启、不用等在跑的任务结束。
+ * 设置改了，已经建好的限流器原地换成新值，不用重启、不用等在跑的任务结束。
+ * 限流器在进程里：API 进程和 Emby 代理进程各有各的一套，同一个账号两边各按各的节奏发，互相不排队。
  * 这个文件不 import 网盘那一侧的任何东西：三家的客户端都要用它，反过来 import 就成环。
  */
 import Bottleneck from "bottleneck";
@@ -15,6 +16,9 @@ import { Observable, type Subscription } from "rxjs";
 import type { ThrottleSettings } from "@openstrm/shared";
 import { THROTTLE_DEFAULTS, THROTTLE_LIMITS } from "../db/defaults.js";
 import { readAppSetting } from "../db/repositories/settings.js";
+import { moduleLogger } from "../lib/logger.js";
+
+const log = moduleLogger("throttle");
 
 export type ThrottleChannel = "normal" | "life" | "offline" | "download";
 
@@ -58,28 +62,60 @@ interface AccountLimiters {
 /** 按账号名分。以前的键是「账号名:通道」再按冒号切回账号名，名字里带冒号的两个账号会共用一个配额 */
 const accounts = new Map<string, AccountLimiters>();
 
+/** 手上这批限流器是按哪组值建的 / 调的 */
+let applied: ThrottleValues | null = null;
+
+const sameValues = (a: ThrottleValues, b: ThrottleValues): boolean =>
+  a.requestsPerSecond === b.requestsPerSecond && a.requestConcurrency === b.requestConcurrency && a.downloadConcurrency === b.downloadConcurrency;
+
+/**
+ * 把已经建好的限流器原地调成这组值，排着的、在跑的任务都不受影响。
+ * 已经排好发出时刻的那几个请求还按旧间隔走完，之后才是新间隔：每秒 2、接口并发 2 时大约一秒多。
+ */
+function retune(values: ThrottleValues): Promise<unknown> {
+  applied = values;
+  const minTime = paceIntervalMs(values.requestsPerSecond);
+  // updateSettings 的类型声明写的是同步返回，实际回的是 Promise
+  const updates: unknown[] = [];
+  for (const { pace, channels } of accounts.values()) {
+    updates.push(pace.updateSettings({ minTime }));
+    for (const [channel, limiter] of channels) updates.push(limiter.updateSettings({ maxConcurrent: concurrencyOf(channel, values) }));
+  }
+  return Promise.all(updates);
+}
+
+/**
+ * 每次排队前看一眼设置（按主键读一行）：和手上这批限流器用的不一样，就原地调过来。
+ * 不能只靠保存设置时调一下 applyThrottleSettings——Emby 代理是另一个进程，设置是 API 进程写的，那一下到不了它。
+ * 库读不了（代理进程在库没就绪时会降级启动）就沿用手上的。
+ */
+function currentValues(): ThrottleValues {
+  let values: ThrottleValues;
+  try {
+    values = throttleSettings();
+  } catch {
+    return applied ?? normalizeThrottle(undefined);
+  }
+  if (!applied) applied = values;
+  else if (!sameValues(values, applied)) void retune(values).catch((err) => log.warn({ err }, "限流设置没能原地生效"));
+  return values;
+}
+
 /**
  * 节奏用「相邻两个请求的最小间隔」，不用「每秒补满一次的配额」。后者是一秒发一批：额度一补满，排着的请求同时出去，
  * 上一秒末没用完的还能和下一秒的连成两批。而且带那种配额的限流器一调 updateSettings，补额度的定时器就被停掉，
  * 发完手里那一批就永远不再发——设置也就没法原地生效。别换回去。
  */
-function limitersOf(account: string): AccountLimiters {
+function channelLimiter(account: string, channel: ThrottleChannel): Bottleneck {
+  const values = currentValues();
   let entry = accounts.get(account);
   if (!entry) {
-    entry = {
-      pace: new Bottleneck({ minTime: paceIntervalMs(throttleSettings().requestsPerSecond) }),
-      channels: new Map(),
-    };
+    entry = { pace: new Bottleneck({ minTime: paceIntervalMs(values.requestsPerSecond) }), channels: new Map() };
     accounts.set(account, entry);
   }
-  return entry;
-}
-
-function channelLimiter(account: string, channel: ThrottleChannel): Bottleneck {
-  const entry = limitersOf(account);
   let limiter = entry.channels.get(channel);
   if (!limiter) {
-    limiter = new Bottleneck({ maxConcurrent: concurrencyOf(channel, throttleSettings()) });
+    limiter = new Bottleneck({ maxConcurrent: concurrencyOf(channel, values) });
     // 下载打的是 CDN，不是网盘接口：每个下载之前都要先取到直链，取链是按节奏来的，下载开始得再密也密不过它
     if (channel !== "download") limiter.chain(entry.pace);
     entry.channels.set(channel, limiter);
@@ -88,23 +124,15 @@ function channelLimiter(account: string, channel: ThrottleChannel): Bottleneck {
 }
 
 /**
- * 设置改了之后调：已经建好的限流器原地换成新值，排着的、在跑的任务都不受影响。
- * 已经排好发出时刻的那几个请求还按旧间隔走完，之后才是新间隔：每秒 2、接口并发 2 时大约一秒多。
+ * 保存设置的那个进程调：马上把新值用上，等它落定再回话。
+ * 不调也会生效——下一个请求排队时 currentValues 会发现值变了；调一下是为了不等那个请求，排着的活立刻按新并发放行。
  */
 export async function applyThrottleSettings(): Promise<void> {
-  const values = throttleSettings();
-  const minTime = paceIntervalMs(values.requestsPerSecond);
-  // updateSettings 的类型声明写的是同步返回，实际回的是 Promise：等它们都落定，调用方回话时新值已经生效
-  const updates: unknown[] = [];
-  for (const { pace, channels } of accounts.values()) {
-    updates.push(pace.updateSettings({ minTime }));
-    for (const [channel, limiter] of channels) updates.push(limiter.updateSettings({ maxConcurrent: concurrencyOf(channel, values) }));
-  }
-  await Promise.all(updates);
+  await retune(throttleSettings());
 }
 
 /**
- * 丢掉现有限流器，之后的请求按当前设置新建。测试之间用；设置变了走 applyThrottleSettings，不用丢。
+ * 丢掉现有限流器，之后的请求按当前设置新建。测试之间用；设置变了是原地调，不用丢。
  *
  * 旧的让它排空：stop() 默认会把排队中的任务全部拒绝掉，正在跑的全量任务就此卡成永远 processing。
  * 顺序也有讲究：通道限流器链在节奏上，任务（包括 stop 自己放进去的收尾哨兵）
@@ -113,6 +141,7 @@ export async function applyThrottleSettings(): Promise<void> {
 export function resetThrottle(): void {
   const old = [...accounts.values()];
   accounts.clear();
+  applied = null;
   const children = old.flatMap((a) => [...a.channels.values()]);
   void Promise.allSettled(children.map((l) => l.stop({ dropWaitingJobs: false }))).then(() =>
     Promise.allSettled(old.map((a) => a.pace.stop({ dropWaitingJobs: false }))),
@@ -121,7 +150,7 @@ export function resetThrottle(): void {
 
 /**
  * 这个账号的接口上有没有别人在排队 / 在跑：后台慢活（影库抄目录）发请求前看一眼，忙就先让，
- * 同步、302 取直链这些人在等的请求不用排在它后面。文件下载不算——它不占接口的节奏
+ * 同步、界面上的操作这些有人在等的请求不用排在它后面。文件下载不算——它不占接口的节奏
  */
 export function accountBusy(account: string): boolean {
   const pace = accounts.get(account)?.pace;
