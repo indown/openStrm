@@ -5,7 +5,10 @@ export const DEFAULT_AUTH = {
   password: "admin",
 } as const;
 
-/** 网盘限流三个值的默认和上下限。只此一份：建库、services/throttle.ts 的兜底、设置接口的校验都用它 */
+/**
+ * 网盘限流三个值的默认和上下限。只此一份：建库、services/throttle.ts 的兜底、设置接口的校验都用它，
+ * GET /api/settings 回的也是按它补齐的——前端没有自己的兜底数字（以前设置页和 README 写的默认值和这里对不上）。
+ */
 export const THROTTLE_DEFAULTS = {
   /** 每个账号每秒最多发几个接口请求 */
   requestsPerSecond: 2,
@@ -33,10 +36,6 @@ export function buildDefaultAppSettings(): AppSettings {
       ".m3u8", ".mp3", ".flac", ".ogg", ".m4a", ".wav", ".opus", ".wma",
     ],
     downloadExtensions: [".srt", ".ass", ".sub", ".nfo", ".jpg", ".png"],
-    download: {
-      linkMaxPerSecond: THROTTLE_DEFAULTS.requestsPerSecond,
-      linkMaxConcurrent: THROTTLE_DEFAULTS.requestConcurrency,
-      downloadMaxConcurrent: THROTTLE_DEFAULTS.downloadConcurrency,
-    },
+    throttle: { ...THROTTLE_DEFAULTS },
   };
 }

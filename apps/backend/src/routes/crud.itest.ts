@@ -425,20 +425,20 @@ test("PUT /api/settings：类型不对 → 400 VALIDATION", async () => {
 
 test("PUT /api/settings：限流的值越界、并发不是整数 → 400；合法值保存后已经建好的限流器立刻按新值走", async () => {
   for (const bad of [
-    { linkMaxPerSecond: 0.05 },
-    { linkMaxPerSecond: 101 },
-    { linkMaxConcurrent: 1.5 },
-    { linkMaxConcurrent: 0 },
-    { downloadMaxConcurrent: 0.5 },
-    { downloadMaxConcurrent: 51 },
+    { requestsPerSecond: 0.05 },
+    { requestsPerSecond: 101 },
+    { requestConcurrency: 1.5 },
+    { requestConcurrency: 0 },
+    { downloadConcurrency: 0.5 },
+    { downloadConcurrency: 51 },
   ]) {
-    const res = await call("PUT", "/api/settings", { download: bad });
+    const res = await call("PUT", "/api/settings", { throttle: bad });
     assert.equal(res.statusCode, 400, JSON.stringify(bad));
     assert.equal(res.json().code, "VALIDATION");
   }
 
   // 先按「下载并发 1」把这个账号的限流器建出来，六个活排着
-  await call("PUT", "/api/settings", { download: { linkMaxPerSecond: 100, linkMaxConcurrent: 1, downloadMaxConcurrent: 1 } });
+  await call("PUT", "/api/settings", { throttle: { requestsPerSecond: 100, requestConcurrency: 1, downloadConcurrency: 1 } });
   resetThrottle();
   let running = 0;
   let peak = 0;
@@ -452,11 +452,24 @@ test("PUT /api/settings：限流的值越界、并发不是整数 → 400；合�
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(peak, 1);
 
-  const ok = await call("PUT", "/api/settings", { download: { linkMaxPerSecond: 0.5, linkMaxConcurrent: 1, downloadMaxConcurrent: 3 } });
+  const ok = await call("PUT", "/api/settings", { throttle: { requestsPerSecond: 0.5, requestConcurrency: 1, downloadConcurrency: 3 } });
   assert.equal(ok.statusCode, 200, ok.body);
   await all;
   assert.equal(peak, 3, "不用重启，也不用等在跑的任务结束");
-  assert.equal(readAppSettings().download?.linkMaxPerSecond, 0.5, "每秒请求数可以存小数（0.5 = 两秒一个）");
+  assert.equal(readAppSettings().throttle?.requestsPerSecond, 0.5, "每秒请求数可以存小数（0.5 = 两秒一个）");
+});
+
+test("GET /api/settings：限流那一组总是补齐的三个值，库里没有、只填过一部分也一样", async () => {
+  const throttleOf = async () => (await call("GET", "/api/settings")).json().throttle;
+  const before = readAppSettings().throttle;
+  try {
+    patchAppSettings({ throttle: undefined });
+    assert.deepEqual(await throttleOf(), { requestsPerSecond: 2, requestConcurrency: 2, downloadConcurrency: 5 });
+    patchAppSettings({ throttle: { requestsPerSecond: 0.5 } });
+    assert.deepEqual(await throttleOf(), { requestsPerSecond: 0.5, requestConcurrency: 2, downloadConcurrency: 5 });
+  } finally {
+    patchAppSettings({ throttle: before });
+  }
 });
 
 test("GET /api/settings：直接返回设置对象，没有 code 壳", async () => {

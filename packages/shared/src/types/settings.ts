@@ -68,12 +68,8 @@ export type AppSettings = {
   "user-agent"?: string;
   strmExtensions?: string[];
   downloadExtensions?: string[];
-  /** 下载限流：每秒取直链次数、取直链并发、文件下载并发 */
-  download?: {
-    linkMaxPerSecond?: number;
-    linkMaxConcurrent?: number;
-    downloadMaxConcurrent?: number;
-  };
+  /** 网盘限流：每个网盘账号各算各的，保存后立即生效 */
+  throttle?: ThrottleSettings;
   /** 手填的额外挂载前缀；开了 302 的任务的 strmPrefix 会自动算作挂载点，不用填在这里 */
   mediaMountPath?: string[];
   emby?: {
@@ -111,6 +107,19 @@ export type AppSettings = {
   /** 影库：收藏的分享抄目录树建索引 */
   library?: LibrarySettings;
 } & Record<string, unknown>;
+
+/**
+ * 网盘限流。默认值和上下限只在后端有一份（db/defaults.ts），GET /api/settings 回的总是补齐的三个值。
+ * 2.13 及以前这一组叫 download，字段是 linkMaxPerSecond / linkMaxConcurrent / downloadMaxConcurrent（迁移 0021 换的名）。
+ */
+export type ThrottleSettings = {
+  /** 一个账号每秒最多发几个接口请求（列目录、取直链、转存、整理、监控都算），匀速发；可以是小数，0.5 = 两秒一个 */
+  requestsPerSecond?: number;
+  /** 一个账号同时在路上的接口请求数；监控、云下载各有自己的一份 */
+  requestConcurrency?: number;
+  /** 一个账号同时下载几个文件；下载不占每秒请求数 */
+  downloadConcurrency?: number;
+};
 
 /** 影库 */
 export type LibrarySettings = {

@@ -31,7 +31,7 @@ import { SectionNav, type Section } from "./components/SectionNav";
 const SECTIONS: Section[] = [
   { id: "update", title: "更新" },
   { id: "basic", title: "基础设置" },
-  { id: "throttle", title: "下载限流" },
+  { id: "throttle", title: "网盘限流" },
   { id: "emby", title: "Emby" },
   { id: "tmdb", title: "TMDB" },
   { id: "pansou", title: "资源搜索" },
@@ -129,12 +129,27 @@ function publicOriginOfPage(): string | null {
   return `https://${host}${port ? `:${port}` : ""}`;
 }
 
-/** 并发 / 频率这类计数在表单里是字符串：以前 `parseInt(v) || 2` 会把打错的字悄悄改回默认值 */
+/** 并发这类计数在表单里是字符串：以前 `parseInt(v) || 2` 会把打错的字悄悄改回默认值 */
 const count = (min: number, max: number) =>
   z
     .string()
     .trim()
     .refine((v) => /^\d+$/.test(v) && Number(v) >= min && Number(v) <= max, `填 ${min}–${max} 之间的整数`);
+
+/**
+ * 每秒请求数：可以是小数（0.5 = 两秒一个）。上下限和后端 db/defaults.ts 的 THROTTLE_LIMITS 一个口径
+ * （后端是准，这里只为了不等保存就提示）
+ */
+const RATE = { min: 0.1, max: 100 };
+const isRate = (v: string) => /^\d+(\.\d{1,2})?$/.test(v.trim()) && Number(v) >= RATE.min && Number(v) <= RATE.max;
+const rate = z.string().trim().refine(isRate, `填 ${RATE.min}–${RATE.max} 之间的数，最多两位小数`);
+
+/** 每秒几个请求换算成间隔，给个直观的数：2 →「每 500 毫秒一个」，0.5 →「每 2 秒一个」。填的值存不进去就不说 */
+function paceText(raw: string): string | null {
+  if (!isRate(raw)) return null;
+  const ms = 1000 / Number(raw);
+  return ms >= 1000 ? `每 ${Number((ms / 1000).toFixed(1))} 秒一个` : `每 ${Math.round(ms)} 毫秒一个`;
+}
 
 /** PanSou 地址比「是不是同一台」用：末尾的 /、误填的 /api 去掉（和后端 services/pansou/client.ts 的 apiBase 一个口径） */
 const pansouServer = (url?: string) => (url ?? "").trim().replace(/\/+$/, "").replace(/\/api$/i, "");
@@ -155,10 +170,11 @@ const schema = z.object({
     apiKey: z.string(),
     allowAnonymousRedirect: z.boolean(),
   }),
-  download: z.object({
-    linkMaxPerSecond: count(1, 100),
-    linkMaxConcurrent: count(1, 50),
-    downloadMaxConcurrent: count(1, 50),
+  // 两个并发的上下限同样照着后端的 THROTTLE_LIMITS
+  throttle: z.object({
+    requestsPerSecond: rate,
+    requestConcurrency: count(1, 50),
+    downloadConcurrency: count(1, 50),
   }),
   tmdb: z.object({ apiKey: z.string(), language: z.string() }),
   pansou: z
@@ -212,10 +228,11 @@ function fromSettings(s: AppSettings): SettingsValues {
       apiKey: s.emby?.apiKey ?? "",
       allowAnonymousRedirect: s.emby?.allowAnonymousRedirect === true,
     },
-    download: {
-      linkMaxPerSecond: String(s.download?.linkMaxPerSecond ?? 2),
-      linkMaxConcurrent: String(s.download?.linkMaxConcurrent ?? 10),
-      downloadMaxConcurrent: String(s.download?.downloadMaxConcurrent ?? 2),
+    // 后端回的总是补齐的三个值，这里不放兜底数字：以前这里写的默认值和后端真正在用的对不上
+    throttle: {
+      requestsPerSecond: String(s.throttle?.requestsPerSecond ?? ""),
+      requestConcurrency: String(s.throttle?.requestConcurrency ?? ""),
+      downloadConcurrency: String(s.throttle?.downloadConcurrency ?? ""),
     },
     tmdb: { apiKey: s.tmdb?.apiKey ?? "", language: s.tmdb?.language ?? "" },
     pansou: {
@@ -249,10 +266,10 @@ function toSettings(v: SettingsValues): AppSettings {
     downloadExtensions: v.downloadExtensions,
     mediaMountPath: v.mediaMountPath,
     emby: v.emby,
-    download: {
-      linkMaxPerSecond: Number(v.download.linkMaxPerSecond),
-      linkMaxConcurrent: Number(v.download.linkMaxConcurrent),
-      downloadMaxConcurrent: Number(v.download.downloadMaxConcurrent),
+    throttle: {
+      requestsPerSecond: Number(v.throttle.requestsPerSecond),
+      requestConcurrency: Number(v.throttle.requestConcurrency),
+      downloadConcurrency: Number(v.throttle.downloadConcurrency),
     },
     tmdb: v.tmdb,
     pansou: v.pansou,
@@ -366,10 +383,7 @@ export default function SettingsPage() {
       } catch (error: unknown) {
         if (error && typeof error === "object" && "response" in error) {
           const apiError = error as { response?: { status?: number; data?: { message?: string } } };
-          if (apiError.response?.status === 409) {
-            // 有任务正在执行
-            toast.error(apiError.response.data?.message || "有任务正在执行中，无法保存设置。请等待任务完成后再试。");
-          } else if (apiError.response?.status === 400) {
+          if (apiError.response?.status === 400) {
             // 表单自己校验过的不会走到这；能到这的是只有服务端才判得了的（比如公网地址撞了管理界面的域名），原因要让人看见
             toast.error(`保存失败：${apiError.response.data?.message || "参数错误"}`);
           } else {
@@ -443,6 +457,8 @@ export default function SettingsPage() {
   };
 
   const description = "配置全局选项与 Emby 通知";
+  /** 每秒请求数换算出来的间隔，跟着输入框里的值变 */
+  const pace = paceText(values.throttle?.requestsPerSecond ?? "");
   /** 密钥字段拿它判断"还是库里那份掩码、没动过" */
   const saved = form.formState.defaultValues;
   /**
@@ -554,32 +570,40 @@ export default function SettingsPage() {
             </section>
 
             <section id="throttle" className="scroll-mt-20 space-y-4 rounded-xl border bg-card p-6">
-              <h2 className="text-base font-medium">下载限流配置</h2>
+              <h2 className="text-base font-medium">网盘限流</h2>
+              <p className="text-sm text-muted-foreground">
+                每个网盘账号各算各的，保存后立即生效，不用重启。被网盘风控过，就把每秒请求数调小。
+              </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <FormField
                   control={form.control}
-                  name="download.linkMaxPerSecond"
+                  name="throttle.requestsPerSecond"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>链接获取每秒请求数</FormLabel>
+                      <FormLabel>每秒请求数</FormLabel>
                       <FormControl>
-                        <Input inputMode="numeric" placeholder="2" {...field} />
+                        <Input inputMode="decimal" {...field} />
                       </FormControl>
-                      <FormDescription className="text-xs">控制获取下载链接的每秒请求数</FormDescription>
+                      <FormDescription className="text-xs">
+                        一个账号每秒最多发几个接口请求：列目录、取直链、转存、整理、监控都算。可以填小数
+                        {pace ? `，现在是${pace}` : ""}。
+                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
                 <FormField
                   control={form.control}
-                  name="download.linkMaxConcurrent"
+                  name="throttle.requestConcurrency"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>链接获取并发数</FormLabel>
+                      <FormLabel>接口并发数</FormLabel>
                       <FormControl>
-                        <Input inputMode="numeric" placeholder="10" {...field} />
+                        <Input inputMode="numeric" {...field} />
                       </FormControl>
-                      <FormDescription className="text-xs">控制同时获取下载链接的数量</FormDescription>
+                      <FormDescription className="text-xs">
+                        一个账号同时在路上的接口请求数。监控和云下载各有自己的一份，不会被同步占满。
+                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -588,14 +612,16 @@ export default function SettingsPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <FormField
                   control={form.control}
-                  name="download.downloadMaxConcurrent"
+                  name="throttle.downloadConcurrency"
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>文件下载并发数</FormLabel>
                       <FormControl>
-                        <Input inputMode="numeric" placeholder="2" {...field} />
+                        <Input inputMode="numeric" {...field} />
                       </FormControl>
-                      <FormDescription className="text-xs">控制同时下载文件的数量</FormDescription>
+                      <FormDescription className="text-xs">
+                        一个账号同时下载几个文件（字幕、nfo、图片这类随片文件）。下载不占每秒请求数。
+                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}

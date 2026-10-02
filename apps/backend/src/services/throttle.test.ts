@@ -28,12 +28,12 @@ const timeout = <T>(p: Promise<T>, ms: number, what: string) =>
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** 换一组限流设置，并丢掉按旧值建好的限流器 */
-function useThrottle(perSecond: number, requestConcurrency: number, downloadConcurrency: number): void {
-  patchAppSettings({ download: { linkMaxPerSecond: perSecond, linkMaxConcurrent: requestConcurrency, downloadMaxConcurrent: downloadConcurrency } });
+function useThrottle(requestsPerSecond: number, requestConcurrency: number, downloadConcurrency: number): void {
+  patchAppSettings({ throttle: { requestsPerSecond, requestConcurrency, downloadConcurrency } });
   resetThrottle();
 }
 
-// 并发 1：只要有一个槽位泄漏，下一个任务就永远轮不到。每秒配额放到最大，别让它掺进来
+// 并发 1：只要有一个槽位泄漏，下一个任务就永远轮不到。每秒请求数放到最大，别让节奏掺进来
 beforeEach(() => useThrottle(100, 1, 1));
 
 /** 模拟 request115 的内层：next 之后同步 complete */
@@ -190,7 +190,7 @@ test("改了每秒请求数原地生效：队列里的活接着按新间隔发�
   let done = 0;
   const all = Promise.all(Array.from({ length: 10 }, () => scheduleForAccount(ACCOUNT, "normal", async () => { done++; })));
   await sleep(50);
-  patchAppSettings({ download: { linkMaxPerSecond: 100, linkMaxConcurrent: 1, downloadMaxConcurrent: 1 } });
+  patchAppSettings({ throttle: { requestsPerSecond: 100, requestConcurrency: 1, downloadConcurrency: 1 } });
   await applyThrottleSettings();
   const t0 = Date.now();
   // 按旧间隔剩下的还要 1.8 秒；改完只有已经排好时刻的那一两个还按旧间隔走
@@ -211,7 +211,7 @@ test("改了并发原地生效：排着的活马上多开几个，在跑的不�
   const all = Promise.all(Array.from({ length: 6 }, () => scheduleForAccount(ACCOUNT, "download", hold)));
   await sleep(20);
   assert.equal(peak, 1);
-  patchAppSettings({ download: { linkMaxPerSecond: 100, linkMaxConcurrent: 1, downloadMaxConcurrent: 3 } });
+  patchAppSettings({ throttle: { requestsPerSecond: 100, requestConcurrency: 1, downloadConcurrency: 3 } });
   await applyThrottleSettings();
   await timeout(all, 3000, "六个下载");
   assert.equal(peak, 3);
@@ -236,20 +236,20 @@ test("文件下载不占接口的节奏：接口两秒一个时，下载照样�
 
 test("设置里的值：没填补默认，越界夹回上下限，并发取整、每秒请求数留着小数", () => {
   assert.deepEqual(normalizeThrottle(undefined), { requestsPerSecond: 2, requestConcurrency: 2, downloadConcurrency: 5 });
-  assert.deepEqual(normalizeThrottle({ linkMaxPerSecond: 7 }), { requestsPerSecond: 7, requestConcurrency: 2, downloadConcurrency: 5 });
-  assert.deepEqual(normalizeThrottle({ linkMaxPerSecond: 0.5 }), { requestsPerSecond: 0.5, requestConcurrency: 2, downloadConcurrency: 5 });
+  assert.deepEqual(normalizeThrottle({ requestsPerSecond: 7 }), { requestsPerSecond: 7, requestConcurrency: 2, downloadConcurrency: 5 });
+  assert.deepEqual(normalizeThrottle({ requestsPerSecond: 0.5 }), { requestsPerSecond: 0.5, requestConcurrency: 2, downloadConcurrency: 5 });
   // 并发 0.5 原样交给限流器会让这个账号的请求永远排队
   assert.deepEqual(
-    normalizeThrottle({ linkMaxPerSecond: 0, linkMaxConcurrent: 0.5, downloadMaxConcurrent: 1.9 }),
+    normalizeThrottle({ requestsPerSecond: 0, requestConcurrency: 0.5, downloadConcurrency: 1.9 }),
     { requestsPerSecond: 0.1, requestConcurrency: 1, downloadConcurrency: 1 },
   );
   assert.deepEqual(
-    normalizeThrottle({ linkMaxPerSecond: 1e9, linkMaxConcurrent: 999, downloadMaxConcurrent: -3 }),
+    normalizeThrottle({ requestsPerSecond: 1e9, requestConcurrency: 999, downloadConcurrency: -3 }),
     { requestsPerSecond: 100, requestConcurrency: 50, downloadConcurrency: 1 },
   );
   // 存进来的不是数字（手改过库）
   assert.deepEqual(
-    normalizeThrottle({ linkMaxPerSecond: "3", linkMaxConcurrent: null, downloadMaxConcurrent: NaN } as never),
+    normalizeThrottle({ requestsPerSecond: "3", requestConcurrency: null, downloadConcurrency: NaN } as never),
     { requestsPerSecond: 2, requestConcurrency: 2, downloadConcurrency: 5 },
   );
 });

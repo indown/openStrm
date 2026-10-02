@@ -332,7 +332,7 @@ test("取消：进行中的下载被中止且不留半截文件，排队的不�
   // 下载并发 1：一个挂在半路，另外两个排在限流器队列里
   replaceAppSettings({
     ...readAppSettings(),
-    download: { linkMaxPerSecond: 10, linkMaxConcurrent: 2, downloadMaxConcurrent: 1 },
+    throttle: { requestsPerSecond: 10, requestConcurrency: 2, downloadConcurrency: 1 },
   });
   resetThrottle();
   holdRaw = true;
@@ -360,7 +360,7 @@ test("取消：进行中的下载被中止且不留半截文件，排队的不�
     holdRaw = false;
     for (const r of held) r.destroy();
     tree[`${ORIGIN}/S1`].length = 2;
-    replaceAppSettings({ ...readAppSettings(), download: baseline.settings.download });
+    replaceAppSettings({ ...readAppSettings(), throttle: baseline.settings.throttle });
     resetThrottle();
   }
 });

@@ -249,11 +249,11 @@ export const settingsPatchSchema = z.looseObject({
     })
     .optional(),
   // 网盘限流。以前只要求正数：并发填 0.5 能存进去，那个账号的请求就全部永远排队
-  download: z
+  throttle: z
     .looseObject({
-      linkMaxPerSecond: throttleNumber(THROTTLE_LIMITS.requestsPerSecond, "每秒请求数").optional(),
-      linkMaxConcurrent: throttleNumber(THROTTLE_LIMITS.requestConcurrency, "接口并发数").int("接口并发数要填整数").optional(),
-      downloadMaxConcurrent: throttleNumber(THROTTLE_LIMITS.downloadConcurrency, "文件下载并发数").int("文件下载并发数要填整数").optional(),
+      requestsPerSecond: throttleNumber(THROTTLE_LIMITS.requestsPerSecond, "每秒请求数").optional(),
+      requestConcurrency: throttleNumber(THROTTLE_LIMITS.requestConcurrency, "接口并发数").int("接口并发数要填整数").optional(),
+      downloadConcurrency: throttleNumber(THROTTLE_LIMITS.downloadConcurrency, "文件下载并发数").int("文件下载并发数要填整数").optional(),
     })
     .optional(),
   lifeMonitor: lifeMonitorSchema.optional(),

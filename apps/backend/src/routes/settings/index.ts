@@ -10,11 +10,14 @@ import { samePansouServer } from "../../services/pansou/search.js";
 import { assertCurrentPassword } from "../../services/current-password.js";
 import { APPROVAL_OFF_NOTE, approversChanged } from "../../services/oauth/telegram-approval.js";
 import { kickIdentify } from "../../services/library/identify.js";
-import { applyThrottleSettings } from "../../services/throttle.js";
+import { applyThrottleSettings, throttleSettings } from "../../services/throttle.js";
 
 export default async function (fastify: FastifyInstance) {
-  // 密钥只给末 4 位；表单原样提交掩码值等于不改（见 lib/secrets.ts）
-  fastify.get("/api/settings", { preHandler: [fastify.authenticate] }, async () => maskSettings(readAppSettings()));
+  // 密钥只给末 4 位；表单原样提交掩码值等于不改（见 lib/secrets.ts）。
+  // 限流那一组总是回补齐的三个值：默认值只在后端有一份，前端不带自己的兜底数字
+  fastify.get("/api/settings", { preHandler: [fastify.authenticate] }, async () =>
+    maskSettings({ ...readAppSettings(), throttle: throttleSettings() }),
+  );
 
   /**
    * 按顶层键合并，不是整体替换：设置页只发它自己拥有的键，
@@ -61,7 +64,7 @@ export default async function (fastify: FastifyInstance) {
     // 公网守卫缓存着公网地址和共用开关：清掉，保存完马上按新的来（紧接着点自检也不会看到旧的）
     invalidatePublicHost();
     // 限流的值建限流器时才读：原地换成新的，不用重启，在跑的任务也不用停
-    if (patch.download) await applyThrottleSettings();
+    if (patch.throttle) await applyThrottleSettings();
     // 刚配上 / 换了 TMDB：影库里等着认的作品接着认
     if (patch.tmdb) kickIdentify();
     return { message: "ok", ...(approvalOff ? { telegramOAuthApprovalOff: APPROVAL_OFF_NOTE } : {}) };

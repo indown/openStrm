@@ -12,18 +12,14 @@
  */
 import Bottleneck from "bottleneck";
 import { Observable, type Subscription } from "rxjs";
-import type { AppSettings } from "@openstrm/shared";
+import type { ThrottleSettings } from "@openstrm/shared";
 import { THROTTLE_DEFAULTS, THROTTLE_LIMITS } from "../db/defaults.js";
 import { readAppSetting } from "../db/repositories/settings.js";
 
 export type ThrottleChannel = "normal" | "life" | "offline" | "download";
 
 /** 补齐、夹过上下限之后实际用的三个值 */
-export interface ThrottleValues {
-  requestsPerSecond: number;
-  requestConcurrency: number;
-  downloadConcurrency: number;
-}
+export type ThrottleValues = Required<ThrottleSettings>;
 
 function within(value: unknown, fallback: number, { min, max }: { min: number; max: number }): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
@@ -33,16 +29,16 @@ function within(value: unknown, fallback: number, { min, max }: { min: number; m
  * 设置里存的 → 实际用的：没填的补默认，越界的夹回上下限，并发取整（每秒请求数可以是小数，0.5 = 两秒一个）。
  * 库里的值不一定经过校验（老数据、直接调接口写的）：并发 0.5 原样交给限流器的话，这个账号的请求会全部永远排队。
  */
-export function normalizeThrottle(raw: AppSettings["download"]): ThrottleValues {
+export function normalizeThrottle(raw: ThrottleSettings | undefined): ThrottleValues {
   return {
-    requestsPerSecond: within(raw?.linkMaxPerSecond, THROTTLE_DEFAULTS.requestsPerSecond, THROTTLE_LIMITS.requestsPerSecond),
-    requestConcurrency: Math.floor(within(raw?.linkMaxConcurrent, THROTTLE_DEFAULTS.requestConcurrency, THROTTLE_LIMITS.requestConcurrency)),
-    downloadConcurrency: Math.floor(within(raw?.downloadMaxConcurrent, THROTTLE_DEFAULTS.downloadConcurrency, THROTTLE_LIMITS.downloadConcurrency)),
+    requestsPerSecond: within(raw?.requestsPerSecond, THROTTLE_DEFAULTS.requestsPerSecond, THROTTLE_LIMITS.requestsPerSecond),
+    requestConcurrency: Math.floor(within(raw?.requestConcurrency, THROTTLE_DEFAULTS.requestConcurrency, THROTTLE_LIMITS.requestConcurrency)),
+    downloadConcurrency: Math.floor(within(raw?.downloadConcurrency, THROTTLE_DEFAULTS.downloadConcurrency, THROTTLE_LIMITS.downloadConcurrency)),
   };
 }
 
 export function throttleSettings(): ThrottleValues {
-  return normalizeThrottle(readAppSetting("download"));
+  return normalizeThrottle(readAppSetting("throttle"));
 }
 
 /** 每秒几个 → 相邻两个请求最少隔多少毫秒 */

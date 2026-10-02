@@ -8,6 +8,7 @@ export type {
   LibrarySettings,
   TelegramSettings,
   TelegramNotifySettings,
+  ThrottleSettings,
   UpdateSettings,
 } from "./settings.js";
 export type {
